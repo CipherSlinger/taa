@@ -22,6 +22,7 @@ import (
 	"github.com/CipherSlinger/teellm"
 	"github.com/CipherSlinger/teetls"
 	"taa/internal/codeaudit"
+	"taa/internal/llmclient"
 )
 
 // treeEntry is one file's identity in a package snapshot: its path relative to
@@ -203,7 +204,7 @@ type healthCheckFailureLLMClient struct {
 	err      error
 }
 
-func (c *healthCheckFailureLLMClient) VerifyFinding(context.Context, *teellm.RequestEnvelope) (*teellm.ResponseEnvelope, error) {
+func (c *healthCheckFailureLLMClient) Generate(context.Context, *llmclient.GenerateRequest) (*llmclient.GenerateResponse, error) {
 	return nil, nil
 }
 

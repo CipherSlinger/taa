@@ -5,8 +5,6 @@ import (
 	"strings"
 	"testing"
 	"time"
-
-	"github.com/CipherSlinger/teellm"
 )
 
 // ── The predicate ─────────────────────────────────────────
@@ -288,7 +286,7 @@ func TestAHighFindingStillBlocksAnIncompleteScan(t *testing.T) {
 		t.Error("Passed = true for a report with a HIGH finding")
 	}
 	// And the exoneration path must not launder it either.
-	r.Findings[0].LLMVerdict = teellm.VerdictBenign
+	r.Findings[0].LLMVerdict = VerdictBenign
 	recomputeReportPassed(r, true)
 	if r.Passed {
 		t.Error("Passed = true for a truncated report whose HIGH finding the LLM exonerated; " +

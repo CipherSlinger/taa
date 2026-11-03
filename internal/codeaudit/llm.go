@@ -7,15 +7,20 @@ import (
 	"strings"
 	"time"
 
-	"github.com/CipherSlinger/teellm"
 	"github.com/CipherSlinger/teetls"
+
+	"taa/internal/llmclient"
 )
 
-// llmArbitrationPolicy is the mode sent to the inference service and the only
-// arbitration the audit applies: the LLM's verdict decides a static HIGH, and
-// MEDIUM findings still block. It is a constant rather than a setting because a
-// deployment must not be able to turn the LLM's decision back into advisory.
-const llmArbitrationPolicy = teellm.PolicyModeGate
+// Verdicts the audit parser recognises. They are defined locally because the
+// inference service no longer carries audit concepts: it returns raw text and
+// TAA decides what a verdict is.
+const (
+	VerdictMalicious  = "MALICIOUS"
+	VerdictSuspicious = "SUSPICIOUS"
+	VerdictBenign     = "BENIGN"
+	VerdictUncertain  = "UNCERTAIN"
+)
 
 // LLMConfig controls the local LLM verifier.
 type LLMConfig struct {
@@ -39,12 +44,11 @@ type LLMConfig struct {
 	CircuitBreakerThreshold int
 	CooldownSec             int
 
-	// Temperature is the sampling temperature sent in the verify request.
-	// nil leaves the choice to the inference service, which decodes
-	// deterministically (temperature 0) so that the same finding yields the
-	// same verdict. A non-nil value overrides that and re-enables sampling:
-	// identical findings may then be judged differently, and under fail-closed
-	// a single MALICIOUS draw blocks the import.
+	// Temperature is the sampling temperature sent with every generate
+	// request. nil means 0: deterministic decoding, so the same finding yields
+	// the same verdict. A non-nil value re-enables sampling; identical findings
+	// may then be judged differently, and under fail-closed a single MALICIOUS
+	// draw blocks the import.
 	Temperature *float32
 
 	// TEE-TLS configuration
@@ -89,8 +93,9 @@ type LLMDecision struct {
 	Risk    string `json:"risk"`
 }
 
-// LLMClient abstracts the standardized inference client interface.
-type LLMClient = teellm.Client
+// LLMClient is the transport the verifier talks to. It is the generic
+// inference client: prompt in, text out.
+type LLMClient = llmclient.Client
 
 // FileAnalyzer defines an optional interface for file-level analysis.
 type FileAnalyzer interface {
@@ -137,7 +142,7 @@ func buildTEETLSConfig(cfg LLMConfig) *teetls.Config {
 func NewInferenceClient(cfg LLMConfig) (LLMClient, error) {
 	teeTLSConfig := buildTEETLSConfig(cfg)
 
-	return teellm.NewClient(teellm.Config{
+	return llmclient.NewClient(llmclient.Config{
 		Endpoint:                       cfg.Endpoint,
 		Timeout:                        cfg.Timeout,
 		AllowedHosts:                   cfg.AllowedHosts,
@@ -185,19 +190,19 @@ func parseDecision(raw string) LLMDecision {
 		}
 	}
 	if start < 0 || end <= start {
-		return LLMDecision{Verdict: "UNCERTAIN", Reason: "unable to parse model output"}
+		return LLMDecision{Verdict: VerdictUncertain, Reason: "unable to parse model output"}
 	}
 
 	var decision LLMDecision
 	if err := json.Unmarshal([]byte(raw[start:end]), &decision); err != nil {
-		return LLMDecision{Verdict: "UNCERTAIN", Reason: "model output json parse error"}
+		return LLMDecision{Verdict: VerdictUncertain, Reason: "model output json parse error"}
 	}
 
 	switch decision.Verdict {
-	case "MALICIOUS", "SUSPICIOUS", "BENIGN", "UNCERTAIN":
+	case VerdictMalicious, VerdictSuspicious, VerdictBenign, VerdictUncertain:
 		// valid
 	default:
-		decision.Verdict = "UNCERTAIN"
+		decision.Verdict = VerdictUncertain
 	}
 	return decision
 }

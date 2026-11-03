@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/CipherSlinger/teellm"
+	"taa/internal/llmclient"
 )
 
 // VerifyReport runs the LLM verifier on a static scan report.
@@ -35,7 +35,7 @@ func VerifyReport(ctx context.Context, report *Report, cfg LLMConfig, client LLM
 			for j := i; j < len(report.Findings); j++ {
 				rem := &report.Findings[j]
 				if rem.LLMVerdict == "" {
-					rem.LLMVerdict = "UNCERTAIN"
+					rem.LLMVerdict = VerdictUncertain
 					rem.LLMReason = fmt.Sprintf("SERVICE_UNAVAILABLE: %v", ctx.Err())
 				}
 			}
@@ -50,37 +50,27 @@ func VerifyReport(ctx context.Context, report *Report, cfg LLMConfig, client LLM
 			ctxAfter = f.CPGEvidence
 		}
 
-		req := &teellm.RequestEnvelope{
-			ProtocolVersion: teellm.CurrentProtocolVersion,
-			RequestID:       fmt.Sprintf("verify-%d", time.Now().UnixNano()),
-			Timestamp:       time.Now().Unix(),
-			Action:          teellm.ActionVerifyFinding,
-			FindingPayload: &teellm.FindingPayload{
-				RuleID:      f.RuleID,
-				Category:    f.Category,
-				Severity:    f.Severity,
-				Description: f.Description,
-				Target: teellm.CodeTarget{
-					FilePath:      f.File,
-					Line:          f.Line,
-					CodeSnippet:   f.CodeSnippet,
-					ContextBefore: f.ContextBefore,
-					ContextAfter:  ctxAfter,
-				},
-			},
-			Policy: teellm.PolicyOptions{
-				Mode:        llmArbitrationPolicy,
-				Temperature: cfg.Temperature,
-			},
-		}
-		if cfg.Model != "" {
-			req.ModelRef = &teellm.ModelReference{Name: cfg.Model}
+		prompt := BuildFindingPrompt(*f, ctxAfter)
+
+		options := map[string]any{"temperature": 0.0}
+		if cfg.Temperature != nil {
+			options["temperature"] = *cfg.Temperature
 		}
 
-		resp, err := client.VerifyFinding(ctx, req)
-		if err != nil || resp == nil || resp.Status != teellm.StatusSuccess {
-			f.LLMVerdict = "UNCERTAIN"
-			if errors.Is(err, teellm.ErrCircuitOpen) {
+		req := &llmclient.GenerateRequest{
+			ProtocolVersion: llmclient.CurrentProtocolVersion,
+			RequestID:       fmt.Sprintf("verify-%d", time.Now().UnixNano()),
+			Prompt:          prompt,
+			Options:         options,
+		}
+		if cfg.Model != "" {
+			req.Model = cfg.Model
+		}
+
+		resp, err := client.Generate(ctx, req)
+		if err != nil || resp == nil || resp.Status != llmclient.StatusSuccess {
+			f.LLMVerdict = VerdictUncertain
+			if errors.Is(err, llmclient.ErrCircuitOpen) {
 				f.LLMReason = "SERVICE_UNAVAILABLE: circuit breaker open"
 			} else if err != nil {
 				f.LLMReason = fmt.Sprintf("SERVICE_UNAVAILABLE: %v", err)
@@ -93,19 +83,10 @@ func VerifyReport(ctx context.Context, report *Report, cfg LLMConfig, client LLM
 			continue
 		}
 
-		if resp.Decision == nil {
-			f.LLMVerdict = "UNCERTAIN"
-			f.LLMReason = "SERVICE_UNAVAILABLE: empty decision payload"
-			hasInferenceFailure = true
-			continue
-		}
-
-		f.LLMVerdict = resp.Decision.Verdict
-		f.LLMReason = resp.Decision.Explanation
-		f.LLMRisk = resp.Decision.RiskLevel
-		if f.LLMRisk == "" && resp.Decision.SuggestedRemediation != "" {
-			f.LLMRisk = resp.Decision.SuggestedRemediation
-		}
+		decision := parseDecision(resp.Text)
+		f.LLMVerdict = decision.Verdict
+		f.LLMReason = decision.Reason
+		f.LLMRisk = decision.Risk
 		// Record why a presence-only finding is reported below its rule's
 		// severity, so the report can tell "the rule says LOW" from "the rule
 		// says HIGH but this finding did not earn it". The conditions mirror
@@ -126,7 +107,7 @@ func VerifyReport(ctx context.Context, report *Report, cfg LLMConfig, client LLM
 		if cfg.FailClosed {
 			failedClosed := false
 			for _, f := range report.Findings {
-				if (f.Severity == SeverityHigh || f.Severity == SeverityMedium) && f.LLMVerdict != teellm.VerdictBenign {
+				if (f.Severity == SeverityHigh || f.Severity == SeverityMedium) && f.LLMVerdict != VerdictBenign {
 					failedClosed = true
 					break
 				}
@@ -158,7 +139,7 @@ func recomputeReportPassed(report *Report, honorExoneration bool) {
 	for _, f := range report.Findings {
 		switch f.Severity {
 		case SeverityHigh:
-			if honorExoneration && f.LLMVerdict == teellm.VerdictBenign {
+			if honorExoneration && f.LLMVerdict == VerdictBenign {
 				// Exonerated: no longer blocks.
 				continue
 			}
@@ -516,8 +497,8 @@ func runBinaryChannel(ctx context.Context, dir string, binCfg BinaryConfig) *Bin
 //
 // Both branches are behind the FileAnalyzer assertion above, and the binary one
 // is reachable today only through a client that implements that interface. The
-// production client does not: it is teellm.Client (LLMClient above), whose
-// interface declares VerifyFinding, HealthCheck and Close and no AnalyzeFile,
+// production client does not: it is llmclient.Client (LLMClient above), whose
+// interface declares Generate, HealthCheck and Close and no AnalyzeFile,
 // and newLLMClient returns that value unchanged. The only AnalyzeFile
 // implementation in the tree is a test mock. So in production a binary file
 // falls through to synthesizeFileSummary - which is the same situation the
@@ -612,7 +593,7 @@ func synthesizeFileSummary(filePath string, findings []Finding) FileSummary {
 	categories := make(map[string]struct{})
 
 	for _, f := range findings {
-		if strings.ToUpper(strings.TrimSpace(f.LLMVerdict)) == "BENIGN" {
+		if strings.ToUpper(strings.TrimSpace(f.LLMVerdict)) == VerdictBenign {
 			continue
 		}
 		risk := ClassifyFindingRisk(f)

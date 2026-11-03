@@ -11,8 +11,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/CipherSlinger/teellm"
 	"github.com/CipherSlinger/teetls"
+
+	"taa/internal/llmclient"
 )
 
 // ── parseDecision tests ──────────────────────────────────
@@ -57,27 +58,20 @@ type mockLLMClient struct {
 	filePrompts []string
 }
 
-func (m *mockLLMClient) VerifyFinding(_ context.Context, _ *teellm.RequestEnvelope) (*teellm.ResponseEnvelope, error) {
-	if m.callCount >= len(m.decisions) {
-		return &teellm.ResponseEnvelope{
-			ProtocolVersion: teellm.CurrentProtocolVersion,
-			Status:          teellm.StatusSuccess,
-			Decision: &teellm.DecisionResult{
-				Verdict:     "UNCERTAIN",
-				Explanation: "no more mock decisions",
-			},
-		}, nil
+func (m *mockLLMClient) Generate(_ context.Context, _ *llmclient.GenerateRequest) (*llmclient.GenerateResponse, error) {
+	decision := LLMDecision{Verdict: VerdictUncertain, Reason: "no more mock decisions"}
+	if m.callCount < len(m.decisions) {
+		decision = m.decisions[m.callCount]
+		m.callCount++
 	}
-	d := m.decisions[m.callCount]
-	m.callCount++
-	return &teellm.ResponseEnvelope{
-		ProtocolVersion: teellm.CurrentProtocolVersion,
-		Status:          teellm.StatusSuccess,
-		Decision: &teellm.DecisionResult{
-			Verdict:     d.Verdict,
-			Explanation: d.Reason,
-			RiskLevel:   d.Risk,
-		},
+	text, err := json.Marshal(decision)
+	if err != nil {
+		return nil, err
+	}
+	return &llmclient.GenerateResponse{
+		ProtocolVersion: llmclient.CurrentProtocolVersion,
+		Status:          llmclient.StatusSuccess,
+		Text:            string(text),
 	}, nil
 }
 
@@ -106,24 +100,27 @@ type mockInferenceClient struct {
 	err     error
 }
 
-func (m *mockInferenceClient) VerifyFinding(ctx context.Context, req *teellm.RequestEnvelope) (*teellm.ResponseEnvelope, error) {
+func (m *mockInferenceClient) Generate(_ context.Context, _ *llmclient.GenerateRequest) (*llmclient.GenerateResponse, error) {
 	if m.err != nil {
 		return nil, m.err
 	}
-	return &teellm.ResponseEnvelope{
-		ProtocolVersion: teellm.CurrentProtocolVersion,
-		Status:          teellm.StatusSuccess,
-		Decision: &teellm.DecisionResult{
-			Verdict:     m.verdict,
-			Confidence:  0.9,
-			RiskLevel:   "HIGH",
-			Explanation: "mock explanation",
-		},
+	text, err := json.Marshal(LLMDecision{
+		Verdict: m.verdict,
+		Reason:  "mock explanation",
+		Risk:    "HIGH",
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &llmclient.GenerateResponse{
+		ProtocolVersion: llmclient.CurrentProtocolVersion,
+		Status:          llmclient.StatusSuccess,
+		Text:            string(text),
 	}, nil
 }
 
-func (m *mockInferenceClient) HealthCheck(ctx context.Context) error { return m.err }
-func (m *mockInferenceClient) Close() error                          { return nil }
+func (m *mockInferenceClient) HealthCheck(context.Context) error { return m.err }
+func (m *mockInferenceClient) Close() error                      { return nil }
 
 // ── VerifyReport tests ───────────────────────────────────
 
@@ -264,7 +261,7 @@ func TestVerifyReport_InferenceClient_Malicious(t *testing.T) {
 			{File: "a.py", Line: 1, RuleID: "NET_001", Severity: SeverityHigh, CodeSnippet: "requests.post(url)"},
 		},
 	}
-	client := &mockInferenceClient{verdict: teellm.VerdictMalicious}
+	client := &mockInferenceClient{verdict: VerdictMalicious}
 	cfg := LLMConfig{Enabled: true, MaxFindings: 10}
 
 	res, err := VerifyReport(context.Background(), report, cfg, client)
@@ -274,8 +271,8 @@ func TestVerifyReport_InferenceClient_Malicious(t *testing.T) {
 	if res.Passed {
 		t.Fatal("expected report to not pass when verdict is MALICIOUS in gate mode")
 	}
-	if res.Findings[0].LLMVerdict != teellm.VerdictMalicious {
-		t.Fatalf("verdict = %s, want %s", res.Findings[0].LLMVerdict, teellm.VerdictMalicious)
+	if res.Findings[0].LLMVerdict != VerdictMalicious {
+		t.Fatalf("verdict = %s, want %s", res.Findings[0].LLMVerdict, VerdictMalicious)
 	}
 }
 
@@ -288,7 +285,7 @@ func TestVerifyReport_InferenceClient_BenignDowngrade(t *testing.T) {
 			{File: "a.py", Line: 1, RuleID: "NET_001", Severity: SeverityHigh, CodeSnippet: "requests.post(url)"},
 		},
 	}
-	client := &mockInferenceClient{verdict: teellm.VerdictBenign}
+	client := &mockInferenceClient{verdict: VerdictBenign}
 	cfg := LLMConfig{Enabled: true, MaxFindings: 10}
 
 	res, err := VerifyReport(context.Background(), report, cfg, client)
@@ -301,8 +298,8 @@ func TestVerifyReport_InferenceClient_BenignDowngrade(t *testing.T) {
 	if res.HighCount != 0 {
 		t.Fatalf("HighCount = %d, want 0", res.HighCount)
 	}
-	if res.Findings[0].LLMVerdict != teellm.VerdictBenign {
-		t.Fatalf("verdict = %s, want %s", res.Findings[0].LLMVerdict, teellm.VerdictBenign)
+	if res.Findings[0].LLMVerdict != VerdictBenign {
+		t.Fatalf("verdict = %s, want %s", res.Findings[0].LLMVerdict, VerdictBenign)
 	}
 }
 
@@ -315,7 +312,7 @@ func TestVerifyReport_InferenceClient_CircuitOpen_GateFailClosed(t *testing.T) {
 			{File: "a.py", Line: 1, RuleID: "NET_001", Severity: SeverityHigh, CodeSnippet: "requests.post(url)"},
 		},
 	}
-	client := &mockInferenceClient{err: teellm.ErrCircuitOpen}
+	client := &mockInferenceClient{err: llmclient.ErrCircuitOpen}
 	cfg := LLMConfig{Enabled: true, FailClosed: true, MaxFindings: 10}
 
 	res, err := VerifyReport(context.Background(), report, cfg, client)
@@ -347,7 +344,7 @@ func TestVerifyReport_InferenceClient_GateFailOpen(t *testing.T) {
 			{File: "a.py", Line: 1, RuleID: "DYN_001", Severity: SeverityMedium, CodeSnippet: "eval(expr)"},
 		},
 	}
-	client := &mockInferenceClient{err: teellm.ErrCircuitOpen}
+	client := &mockInferenceClient{err: llmclient.ErrCircuitOpen}
 	// FailClosed: false -> fallback to static scan result
 	cfg := LLMConfig{Enabled: true, FailClosed: false, MaxFindings: 10}
 
@@ -394,64 +391,24 @@ func TestSynthesizeFileSummary_BenignExfilIgnored(t *testing.T) {
 	}
 }
 
-type mockNilDecisionClient struct{}
-
-func (m *mockNilDecisionClient) VerifyFinding(_ context.Context, _ *teellm.RequestEnvelope) (*teellm.ResponseEnvelope, error) {
-	return &teellm.ResponseEnvelope{
-		ProtocolVersion: teellm.CurrentProtocolVersion,
-		Status:          teellm.StatusSuccess,
-		Decision:        nil,
-	}, nil
-}
-func (m *mockNilDecisionClient) HealthCheck(_ context.Context) error { return nil }
-func (m *mockNilDecisionClient) Close() error                        { return nil }
-
-func TestVerifyReport_NilDecisionTreatedAsFailure(t *testing.T) {
-	report := &Report{
-		ScanComplete: true,
-		HighCount:    1,
-		Passed:       false,
-		Findings: []Finding{
-			{File: "a.py", Line: 1, RuleID: "NET_001", Severity: SeverityHigh, CodeSnippet: "requests.post(url)"},
-		},
-	}
-	client := &mockNilDecisionClient{}
-	cfg := LLMConfig{Enabled: true, FailClosed: true, MaxFindings: 10}
-
-	res, err := VerifyReport(context.Background(), report, cfg, client)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if !res.LLMDegraded {
-		t.Fatal("expected LLMDegraded = true on nil decision")
-	}
-	if res.Passed {
-		t.Fatal("expected report to fail closed on nil decision")
-	}
-	if res.Findings[0].LLMVerdict != "UNCERTAIN" {
-		t.Fatalf("verdict = %s, want UNCERTAIN", res.Findings[0].LLMVerdict)
-	}
-	if res.Findings[0].LLMReason != "SERVICE_UNAVAILABLE: empty decision payload" {
-		t.Fatalf("reason = %s, want SERVICE_UNAVAILABLE: empty decision payload", res.Findings[0].LLMReason)
-	}
+type mockCaptureRequestClient struct {
+	capturedReq *llmclient.GenerateRequest
 }
 
-type mockCaptureEnvelopeClient struct {
-	capturedReq *teellm.RequestEnvelope
-}
-
-func (m *mockCaptureEnvelopeClient) VerifyFinding(_ context.Context, req *teellm.RequestEnvelope) (*teellm.ResponseEnvelope, error) {
+func (m *mockCaptureRequestClient) Generate(_ context.Context, req *llmclient.GenerateRequest) (*llmclient.GenerateResponse, error) {
 	m.capturedReq = req
-	return &teellm.ResponseEnvelope{
-		ProtocolVersion: teellm.CurrentProtocolVersion,
-		Status:          teellm.StatusSuccess,
-		Decision: &teellm.DecisionResult{
-			Verdict: teellm.VerdictBenign,
-		},
+	text, err := json.Marshal(LLMDecision{Verdict: VerdictBenign})
+	if err != nil {
+		return nil, err
+	}
+	return &llmclient.GenerateResponse{
+		ProtocolVersion: llmclient.CurrentProtocolVersion,
+		Status:          llmclient.StatusSuccess,
+		Text:            string(text),
 	}, nil
 }
-func (m *mockCaptureEnvelopeClient) HealthCheck(_ context.Context) error { return nil }
-func (m *mockCaptureEnvelopeClient) Close() error                        { return nil }
+func (m *mockCaptureRequestClient) HealthCheck(_ context.Context) error { return nil }
+func (m *mockCaptureRequestClient) Close() error                        { return nil }
 
 func TestVerifyReport_ModelRefPopulated(t *testing.T) {
 	report := &Report{
@@ -462,29 +419,31 @@ func TestVerifyReport_ModelRefPopulated(t *testing.T) {
 			{File: "a.py", Line: 1, RuleID: "NET_001", Severity: SeverityHigh, CodeSnippet: "requests.post(url)"},
 		},
 	}
-	client := &mockCaptureEnvelopeClient{}
+	client := &mockCaptureRequestClient{}
 	cfg := LLMConfig{Enabled: true, Model: "qwen2.5-coder:0.5b", MaxFindings: 10}
 
 	_, err := VerifyReport(context.Background(), report, cfg, client)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if client.capturedReq == nil || client.capturedReq.ModelRef == nil {
-		t.Fatal("expected ModelRef to be populated")
+	if client.capturedReq == nil {
+		t.Fatal("expected the request to be captured")
 	}
-	if client.capturedReq.ModelRef.Name != "qwen2.5-coder:0.5b" {
-		t.Fatalf("ModelRef.Name = %s, want qwen2.5-coder:0.5b", client.capturedReq.ModelRef.Name)
+	if client.capturedReq.Model != "qwen2.5-coder:0.5b" {
+		t.Fatalf("Model = %s, want qwen2.5-coder:0.5b", client.capturedReq.Model)
+	}
+	if !strings.Contains(client.capturedReq.Prompt, "a.py") {
+		t.Fatalf("prompt does not name the finding's file:\n%s", client.capturedReq.Prompt)
 	}
 }
 
 // TestVerifyReport_PolicyTemperature pins the wire form of the sampling
-// temperature, in both states.
+// temperature, in all three states.
 //
-// The unset case is the default deployment and the load-bearing one: nil must
-// stay nil so the field is omitted from the request body entirely, leaving the
-// inference service on its own deterministic default. If this ever started
-// sending an explicit value, the default would become two places that have to
-// agree instead of one.
+// TAA now owns the default: the service no longer decides it, so nil must be
+// sent as an explicit 0 rather than omitted. An explicit zero stays zero, and a
+// non-zero value is carried as configured. If nil ever went back to omitting
+// the field, determinism would depend on the service's own default again.
 func TestVerifyReport_PolicyTemperature(t *testing.T) {
 	temp := func(v float32) *float32 { return &v }
 
@@ -492,7 +451,7 @@ func TestVerifyReport_PolicyTemperature(t *testing.T) {
 		name  string
 		given *float32
 	}{
-		{"unset leaves the policy temperature nil", nil},
+		{"unset sends zero", nil},
 		{"explicit zero is carried, not dropped", temp(0)},
 		{"non-zero is carried", temp(0.3)},
 	} {
@@ -504,7 +463,7 @@ func TestVerifyReport_PolicyTemperature(t *testing.T) {
 					{File: "a.py", Line: 1, RuleID: "NET_001", Severity: SeverityHigh, CodeSnippet: "requests.post(url)"},
 				},
 			}
-			client := &mockCaptureEnvelopeClient{}
+			client := &mockCaptureRequestClient{}
 			cfg := LLMConfig{Enabled: true, MaxFindings: 10, Temperature: tc.given}
 
 			if _, err := VerifyReport(context.Background(), report, cfg, client); err != nil {
@@ -514,14 +473,25 @@ func TestVerifyReport_PolicyTemperature(t *testing.T) {
 				t.Fatal("expected the request to be captured")
 			}
 
-			got := client.capturedReq.Policy.Temperature
-			switch {
-			case tc.given == nil && got != nil:
-				t.Fatalf("Policy.Temperature = %v, want nil", *got)
-			case tc.given != nil && got == nil:
-				t.Fatalf("Policy.Temperature = nil, want %v", *tc.given)
-			case tc.given != nil && *got != *tc.given:
-				t.Fatalf("Policy.Temperature = %v, want %v", *got, *tc.given)
+			raw, ok := client.capturedReq.Options["temperature"]
+			if !ok {
+				t.Fatal("Options carries no temperature")
+			}
+			var got float64
+			switch v := raw.(type) {
+			case float32:
+				got = float64(v)
+			case float64:
+				got = v
+			default:
+				t.Fatalf("temperature has type %T, want a float", raw)
+			}
+			want := 0.0
+			if tc.given != nil {
+				want = float64(*tc.given)
+			}
+			if got != want {
+				t.Fatalf("temperature = %v, want %v", got, want)
 			}
 		})
 	}
@@ -537,7 +507,7 @@ func TestVerifyReport_ContextCancelled(t *testing.T) {
 			{File: "b.py", Line: 2, RuleID: "CMD_001", Severity: SeverityHigh, CodeSnippet: "os.system(cmd)"},
 		},
 	}
-	client := &mockInferenceClient{verdict: teellm.VerdictBenign}
+	client := &mockInferenceClient{verdict: VerdictBenign}
 	cfg := LLMConfig{Enabled: true, FailClosed: true, MaxFindings: 10}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -570,7 +540,7 @@ func TestVerifyReport_InferenceClient_CircuitOpen_FailClosed(t *testing.T) {
 			{File: "a.py", Line: 1, RuleID: "DYN_001", Severity: SeverityMedium, CodeSnippet: "eval(expr)"},
 		},
 	}
-	client := &mockInferenceClient{err: teellm.ErrCircuitOpen}
+	client := &mockInferenceClient{err: llmclient.ErrCircuitOpen}
 	cfg := LLMConfig{Enabled: true, FailClosed: true, MaxFindings: 10}
 
 	res, err := VerifyReport(context.Background(), report, cfg, client)
@@ -651,14 +621,12 @@ func TestBuildTEETLSConfigMeasurement(t *testing.T) {
 
 func TestOllamaClientSuccess(t *testing.T) {
 	server := newTestTEETLSServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/v1/llm/verify" {
-			json.NewEncoder(w).Encode(teellm.ResponseEnvelope{
-				ProtocolVersion: teellm.CurrentProtocolVersion,
-				Status:          teellm.StatusSuccess,
-				Decision: &teellm.DecisionResult{
-					Verdict:     teellm.VerdictBenign,
-					Explanation: "safe code",
-				},
+		if r.URL.Path == "/v1/llm/generate" {
+			text, _ := json.Marshal(LLMDecision{Verdict: VerdictBenign, Reason: "safe code"})
+			json.NewEncoder(w).Encode(llmclient.GenerateResponse{
+				ProtocolVersion: llmclient.CurrentProtocolVersion,
+				Status:          llmclient.StatusSuccess,
+				Text:            string(text),
 			})
 			return
 		}
@@ -675,18 +643,20 @@ func TestOllamaClientSuccess(t *testing.T) {
 	}
 	defer client.Close()
 
-	req := &teellm.RequestEnvelope{
-		ProtocolVersion: teellm.CurrentProtocolVersion,
+	req := &llmclient.GenerateRequest{
+		ProtocolVersion: llmclient.CurrentProtocolVersion,
 		RequestID:       "req-1",
-		Timestamp:       time.Now().Unix(),
-		Action:          teellm.ActionVerifyFinding,
+		Prompt:          "ping",
 	}
-	resp, err := client.VerifyFinding(context.Background(), req)
+	resp, err := client.Generate(context.Background(), req)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if resp.Decision == nil || resp.Decision.Verdict != teellm.VerdictBenign {
-		t.Fatalf("verdict = %v, want BENIGN", resp.Decision)
+	if resp.Status != llmclient.StatusSuccess {
+		t.Fatalf("status = %s, want SUCCESS", resp.Status)
+	}
+	if d := parseDecision(resp.Text); d.Verdict != VerdictBenign {
+		t.Fatalf("verdict = %s, want BENIGN", d.Verdict)
 	}
 }
 
@@ -703,13 +673,12 @@ func TestOllamaClientServerError(t *testing.T) {
 	}
 	defer client.Close()
 
-	req := &teellm.RequestEnvelope{
-		ProtocolVersion: teellm.CurrentProtocolVersion,
+	req := &llmclient.GenerateRequest{
+		ProtocolVersion: llmclient.CurrentProtocolVersion,
 		RequestID:       "req-1",
-		Timestamp:       time.Now().Unix(),
-		Action:          teellm.ActionVerifyFinding,
+		Prompt:          "ping",
 	}
-	_, err := client.VerifyFinding(context.Background(), req)
+	_, err := client.Generate(context.Background(), req)
 	if err == nil {
 		t.Fatal("expected error for server error response")
 	}
@@ -760,14 +729,12 @@ def report_metrics(acc, loss):
 
 	// Mock server that returns BENIGN
 	server := newTestTEETLSServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/v1/llm/verify" {
-			json.NewEncoder(w).Encode(teellm.ResponseEnvelope{
-				ProtocolVersion: teellm.CurrentProtocolVersion,
-				Status:          teellm.StatusSuccess,
-				Decision: &teellm.DecisionResult{
-					Verdict:     teellm.VerdictBenign,
-					Explanation: "metrics reporting only",
-				},
+		if r.URL.Path == "/v1/llm/generate" {
+			text, _ := json.Marshal(LLMDecision{Verdict: VerdictBenign, Reason: "metrics reporting only"})
+			json.NewEncoder(w).Encode(llmclient.GenerateResponse{
+				ProtocolVersion: llmclient.CurrentProtocolVersion,
+				Status:          llmclient.StatusSuccess,
+				Text:            string(text),
 			})
 			return
 		}

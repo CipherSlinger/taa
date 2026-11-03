@@ -13,6 +13,13 @@ import (
 
 // ── Audit Report Types ────────────────────────────────────
 
+// auditPolicyMode records the arbitration the report was produced under. The
+// wire protocol no longer carries a policy, but the report still states which
+// one TAA applied: the LLM's verdict decides a static HIGH, and MEDIUM findings
+// still block. It is a constant rather than a setting because a deployment must
+// not be able to turn the LLM's decision back into advisory.
+const auditPolicyMode = "gate"
+
 // AuditReport is the comprehensive security audit result for a code directory.
 type AuditReport struct {
 	ReportID     string          `json:"report_id"`
@@ -477,7 +484,7 @@ func AssembleAuditReport(
 			RulesCount:     len(DefaultRules()),
 			LLMModel:       cfg.Model,
 			LLMEnabled:     cfg.Enabled,
-			Policy:         llmArbitrationPolicy,
+			Policy:         auditPolicyMode,
 			ScanDurationMs: duration.Milliseconds(),
 			LLMDegraded:    scanReport != nil && scanReport.LLMDegraded,
 

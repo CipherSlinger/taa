@@ -2,8 +2,6 @@ package codeaudit
 
 import (
 	"testing"
-
-	"github.com/CipherSlinger/teellm"
 )
 
 // The production decision is the classified check over the statistics, where
@@ -62,7 +60,7 @@ func finding(ruleID, severity, verdict string) Finding {
 // on: a static HIGH no longer blocks by itself. The LLM's BENIGN verdict decides
 // it, and both halves of the decision must agree.
 func TestGateLLMBenignClearsStaticHigh(t *testing.T) {
-	findings := []Finding{finding("CMD_001", SeverityHigh, teellm.VerdictBenign)}
+	findings := []Finding{finding("CMD_001", SeverityHigh, VerdictBenign)}
 
 	conclusionOnly, reportPassed, final := productionDecision(findings)
 
@@ -84,9 +82,9 @@ func TestGateLLMBenignClearsStaticHigh(t *testing.T) {
 // demoted to LOW; TestPresenceOnlySuspiciousDemotesToLow pins that exception.
 func TestGateStaticHighNonBenignBlocks(t *testing.T) {
 	for _, verdict := range []string{
-		teellm.VerdictMalicious,
-		teellm.VerdictSuspicious,
-		teellm.VerdictUncertain,
+		VerdictMalicious,
+		VerdictSuspicious,
+		VerdictUncertain,
 		"",
 	} {
 		t.Run(verdict, func(t *testing.T) {
@@ -114,18 +112,18 @@ func TestStaticSeverityFollowsVerdict(t *testing.T) {
 		want     map[string]bool
 	}{
 		{"medium", "ENV_001", SeverityMedium, map[string]bool{
-			teellm.VerdictMalicious:  false, // classified HIGH
-			teellm.VerdictSuspicious: false, // classified MEDIUM
-			teellm.VerdictBenign:     true,  // classified LOW
-			teellm.VerdictUncertain:  false, // classified MEDIUM
-			"":                       false, // static fallback: MEDIUM
+			VerdictMalicious:  false, // classified HIGH
+			VerdictSuspicious: false, // classified MEDIUM
+			VerdictBenign:     true,  // classified LOW
+			VerdictUncertain:  false, // classified MEDIUM
+			"":                false, // static fallback: MEDIUM
 		}},
 		{"low", "CMD_002", SeverityLow, map[string]bool{
-			teellm.VerdictMalicious:  false, // classified HIGH
-			teellm.VerdictSuspicious: false, // classified MEDIUM
-			teellm.VerdictBenign:     true,  // classified LOW
-			teellm.VerdictUncertain:  false, // classified MEDIUM
-			"":                       true,  // static fallback: LOW
+			VerdictMalicious:  false, // classified HIGH
+			VerdictSuspicious: false, // classified MEDIUM
+			VerdictBenign:     true,  // classified LOW
+			VerdictUncertain:  false, // classified MEDIUM
+			"":                true,  // static fallback: LOW
 		}},
 	}
 
