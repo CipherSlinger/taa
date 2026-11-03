@@ -1910,7 +1910,9 @@ curl -X POST "http://${PLATFORM_ADDR}/v1/llm/register" \
 | --- | --- | --- | --- | --- |
 | `:8443` | `/v1/llm/getAttestation` | `POST` | TEE-TLS（RFC 8998） | 平台获取远程证明报告与出示的证书 |
 
-同端口上的 `/v1/llm/verify`（审计判定）与 `/v1/llm/healthz`（就绪检查）是 **TAA 调 LLM** 的接口，平台不参与，不在本文范围内。
+同端口上的 `/v1/llm/generate`（通用推理）与 `/v1/llm/healthz`（就绪检查）是 **TAA 调 LLM** 的接口，
+平台不参与，不在本文范围内。审计提示词、裁决解析与 fail-closed 判定全部位于 TAA 侧；
+LLM 只把提示词转给模型并返回原始文本。
 
 三个路由共用同一份证书缓存，因此握手时出示的证书与响应里的 `certificate` 是**同一张**。
 
