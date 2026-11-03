@@ -73,3 +73,26 @@
 `TEELLM_IMAGE_BASE_ARCHIVE`、`TEELLM_IMAGE_KEEP_BUILDER`。
 测试侧删掉了 stub 脚本，改为在 `MOCK_BIN` 里放一个 `docker` 模拟器（`commit`/`cp`/`exec`/`image
 inspect`/`push`），并新增一例：`MOCK_REGISTRY_CONFIG` 等于本地 ID 时不出现 SCP 与 push。
+
+## 后续：与参考脚本完全对齐（2026-11-03）
+
+上文「不做的事」里「不改 `TEELLM_POD_CPU=8`」与「不动启动命令」两条已按用户要求撤回：
+
+1. **预检前置**：`preflight_pod_cluster` 在选镜像/构建之前确认 API server 可达、Pod 名合法、
+   命名空间与 RuntimeClass 存在。命名空间写错不该先付几十分钟的构建代价。
+   registry `tags/list` 探测保留，但只在本次运行**没有**自己推送过该 tag 时执行
+   （`TEELLM_POD_IMAGE_BUILT`），否则等于让已成功的路径多一个失败理由。
+2. **启动命令**：`/bin/bash -c` → 读 `/proc/misc` 取 csv-guest 次设备号 → `mknod -m 666` →
+   `exec` 交棒给 supervisor。原来容器内的「supervisor 退出后 2s 重启」循环删除，
+   改为依赖 `restartPolicy: Always`（参考脚本的语义）。
+3. **securityContext**：`privileged` / `allowPrivilegeEscalation` / `runAsUser: 0` /
+   `runAsNonRoot: false`，与参考脚本一致；`mknod` 需要 `CAP_MKNOD`。
+4. **默认值**：CPU 8 → 2（参考脚本的 requests），内存仍 16Gi，其余（pull 策略按路径、
+   `Always`、宽限期 30s）不变；命名空间仍是 `osr`。
+5. **业务内存余量**：overlay 检查只证明镜像放得下。新增
+   `app_room = 可见 − 解包 − 256`，与 cgroup 上限取小后低于 1024MiB 告警 ——
+   对应的是 Ready 之后 llama-server 被 OOM 杀掉那类故障。
+
+测试：`deploy_llm_remote_pod_test.sh` 增加预检断言（含 `--raw /version` 与 RuntimeClass）、
+CPU=2、业务内存余量的输出断言，以及新增用例 8：命名空间不存在时必须**先失败**，
+既不提交镜像也不 apply。
