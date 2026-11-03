@@ -49,7 +49,7 @@ flowchart TB
             direction LR
             subgraph Stage1["Phase 1: Identity & Attestation"]
                 direction TB
-                S1["<b>Ephemeral Keypair & Cert Validation</b><br/><sub>In-Memory SM2 Key • Report-Embedded PEK Signature</sub>"]
+                S1["<b>Ephemeral Keypair & Cert Validation</b><br/><sub>In-Memory SM2 Key • HRK ➔ HSK ➔ CEK Chain</sub>"]
                 CSVDriver[("<b>Hygon CSV PSP</b><br/><code>/dev/csv-guest ioctl</code>")]
                 S1 <-->|"Inject USERDATA & Sign Report"| CSVDriver
             end
@@ -132,7 +132,7 @@ flowchart TB
 ```
 
 1. **Hardware-Enforced Attestation**: On boot, TAA generates an ephemeral SM2 keypair, injects the public key into the CSV hardware `USERDATA` slot (`X || Y`), and retrieves a hardware-signed attestation report via direct `/dev/csv-guest` ioctl (`pkg/csvattest`).
-2. **Identity Registration & Binding**: TAA registers with the platform by submitting its SM2 public key and raw CSV attestation report (`/v1/taa/register`), permanently tying the container workload to the genuine CSV hardware root of trust. On CSV hardware the request also carries `taaSecretKey`, a hardware-key-wrapped copy of the private scalar that lets the platform restore the same key pair after the guest filesystem is lost (see [TAA Key Recovery](#taa-key-recovery-taasecretkey)).
+2. **Identity Registration & Binding**: TAA registers with the platform by submitting its SM2 public key, raw CSV attestation report, and certificate validation parameters (`/v1/taa/register`), permanently tying the container workload to the genuine CSV hardware root of trust. On CSV hardware the request also carries `taaSecretKey`, a hardware-key-wrapped copy of the private scalar that lets the platform restore the same key pair after the guest filesystem is lost (see [TAA Key Recovery](#taa-key-recovery-taasecretkey)).
 3. **Ciphertext Ingress**: The platform delivers encrypted resource packages via HTTP (`/v1/taa/import`, `/v1/taa/importModel`). Both endpoints accept either the URL-carried data key (`?dataKeyCipher=`) or the legacy in-file envelope. TAA decrypts, unpacks, and validates the resources strictly inside the TEE memory and local disk sandbox.
 4. **Two-Tier Code Audit (Advisory Verdict)**: TAA performs rule-based static security scanning with 13 built-in pattern rules (covering command execution, network egress, sensitive file and environment access, obfuscation, and dynamic evaluation) over Python source, followed by semantic verification against a decoupled local LLM (`teellm-service`) over RFC 8998 TEE-TLS 1.3 to eliminate false positives. The audit runs in the background and in parallel with training, and both a scan error and any HIGH-severity finding make the audit fail closed - i.e. the verdict is `1`/`2` rather than `0`. The verdict is a *reference result*: it is reported to the platform via `/v1/taa/reportAudit` and decides nothing on the TAA side, so a failing audit neither rolls back the import nor stops training. Acting on the verdict is the platform's call.
 5. **Real-time Progress & Dual-Log Telemetry**: During training execution, TAA monitors intermediate progress snapshots (`/v1/taa/reportProgress`), streams chunked deduplicated terminal execution logs (`/v1/taa/modelLog`), and actively reports internal operational logs (`/v1/taa/taaLog`).
