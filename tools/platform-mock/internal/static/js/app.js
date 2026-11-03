@@ -1948,6 +1948,8 @@ document.addEventListener('DOMContentLoaded', () => {
   refreshDashboardStatus();
   fetchModelLogs();
   fetchTaaLogs();
+  initLLMPanel();
+  refreshLLMStatus();
 
   // Start unified Visibility-aware Polling Manager
   PollingManager.start();

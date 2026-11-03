@@ -337,6 +337,9 @@ const PollingManager = {
       if (typeof fetchTaaLogs === 'function') {
         fetchTaaLogs();
       }
+      if (typeof refreshLLMStatus === 'function') {
+        refreshLLMStatus();
+      }
     } catch (_) {}
   }
 };
