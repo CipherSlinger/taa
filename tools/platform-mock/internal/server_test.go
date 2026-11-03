@@ -90,7 +90,7 @@ func TestRequestLogsHandlersExposeAndResetCapturedTraffic(t *testing.T) {
 
 func TestReportResStatusIncludesTaskIDReportAndRawBody(t *testing.T) {
 	store := &reportStateStore{path: filepath.Join(t.TempDir(), "reportRes-state.json")}
-	handler := reportResHandler(store)
+	handler := reportResHandler(testManagerWith(t, "", func(b *instanceStores) { b.reportRes = store }))
 
 	body := sealedReader(t, `{"dockerId":"docker-1","requestId":"req-1","taskId":"task-1","code":0,"msg":null,"report":"{\"schema_version\":\"1.0\"}"}`)
 	req := httptest.NewRequest(http.MethodPost, "/v1/taa/reportRes", body)
@@ -115,7 +115,7 @@ func TestReportResStatusIncludesTaskIDReportAndRawBody(t *testing.T) {
 
 func TestReportModelImportStatusIncludesRequestID(t *testing.T) {
 	store := &reportStateStore{path: filepath.Join(t.TempDir(), "reportModelImport-state.json")}
-	handler := reportModelImportHandler(store)
+	handler := reportModelImportHandler(testManagerWith(t, "", func(b *instanceStores) { b.reportModelImport = store }))
 
 	body := sealedReader(t, `{"dockerId":"docker-1","requestId":"req-1","taskId":"task-1","code":0,"msg":null,"report":"{\"conclusion\":{\"passed\":true}}","checksum":{"size":581632,"algorithm":"sm3","value":"a1b2c3d4"}}`)
 	req := httptest.NewRequest(http.MethodPost, "/v1/taa/reportModelImport", body)
@@ -143,7 +143,7 @@ func TestReportModelImportStatusIncludesRequestID(t *testing.T) {
 
 func TestReportModelImportRequiresDockerID(t *testing.T) {
 	store := &reportStateStore{path: filepath.Join(t.TempDir(), "reportModelImport-state.json")}
-	handler := reportModelImportHandler(store)
+	handler := reportModelImportHandler(testManagerWith(t, "", func(b *instanceStores) { b.reportModelImport = store }))
 
 	body := sealedReader(t, `{"taskId":"task-1","code":0}`)
 	req := httptest.NewRequest(http.MethodPost, "/v1/taa/reportModelImport", body)
@@ -157,7 +157,7 @@ func TestReportModelImportRequiresDockerID(t *testing.T) {
 
 func TestReportAuditStatusIncludesRequestID(t *testing.T) {
 	store := &reportStateStore{path: filepath.Join(t.TempDir(), "reportAudit-state.json")}
-	handler := reportAuditHandler(store)
+	handler := reportAuditHandler(testManagerWith(t, "", func(b *instanceStores) { b.reportAudit = store }))
 
 	body := sealedReader(t, `{"dockerId":"docker-1","requestId":"req-1","taskId":"task-1","code":0,"msg":null,"report":"{\"conclusion\":{\"passed\":true}}"}`)
 	req := httptest.NewRequest(http.MethodPost, "/v1/taa/reportAudit", body)
@@ -218,7 +218,7 @@ func TestTAAGetResourceInfoProxy(t *testing.T) {
 
 func TestRegisterHandlerAcceptsJSONPayload(t *testing.T) {
 	store := &registerStateStore{path: filepath.Join(t.TempDir(), "register-state.json")}
-	handler := registerHandler(store, false)
+	handler := registerHandler(testManagerWith(t, "docker-1", func(b *instanceStores) { b.register = store }), false)
 	attestation := base64.StdEncoding.EncodeToString([]byte("attestation-body"))
 	body := sealedReader(t, `{"dockerId":"docker-1","authInfo":null,"taaPublicKey":"`+taaPublicKeyHex(t)+`","taaSecretKey":"c0ffee","attestationValues":"{\"userdata\":\"abcd\",\"mnonce\":\"ef01\",\"digest\":\"2345\",\"chipId\":\"6789\"}","timestamp":"1234567890","verifiedPass":true,"attestation":"`+attestation+`"}`)
 	req := httptest.NewRequest(http.MethodPost, "/v1/taa/register", body)
@@ -1021,7 +1021,7 @@ func TestDefaultConfig(t *testing.T) {
 
 func TestReportModelImportStrictValidationAndChecksum(t *testing.T) {
 	store := &reportStateStore{path: filepath.Join(t.TempDir(), "reportModelImport-state.json")}
-	handler := reportModelImportHandler(store)
+	handler := reportModelImportHandler(testManagerWith(t, "", func(b *instanceStores) { b.reportModelImport = store }))
 
 	// 1. 缺少 requestId 时返回 400
 	reqNoReqID := httptest.NewRequest(http.MethodPost, "/v1/taa/reportModelImport", sealedReader(t, `{
@@ -1102,7 +1102,7 @@ func TestReportModelImportStrictValidationAndChecksum(t *testing.T) {
 
 func TestReportAuditStatisticsParsing(t *testing.T) {
 	store := &reportStateStore{path: filepath.Join(t.TempDir(), "reportAudit-state.json")}
-	handler := reportAuditHandler(store)
+	handler := reportAuditHandler(testManagerWith(t, "", func(b *instanceStores) { b.reportAudit = store }))
 
 	// 1. 测试缺少 dockerId
 	reqNoDockerID := httptest.NewRequest(http.MethodPost, "/v1/taa/reportAudit", sealedReader(t, `{
@@ -1191,7 +1191,7 @@ func TestReportAuditStatisticsParsing(t *testing.T) {
 
 func TestReportProgressHandlingAndTimestampOrdering(t *testing.T) {
 	store := newProgressStateStore(t.TempDir())
-	handler := reportProgressHandler(store)
+	handler := reportProgressHandler(testManagerWith(t, "", func(b *instanceStores) { b.progress = store }))
 
 	sendProgress := func(body string) *httptest.ResponseRecorder {
 		req := httptest.NewRequest(http.MethodPost, "/v1/taa/reportProgress", sealedReader(t, body))
@@ -1289,7 +1289,7 @@ func TestReportProgressHandlingAndTimestampOrdering(t *testing.T) {
 
 func TestReportProgressStatusAndReset(t *testing.T) {
 	store := newProgressStateStore(t.TempDir())
-	reportHandler := reportProgressHandler(store)
+	reportHandler := reportProgressHandler(testManagerWith(t, "", func(b *instanceStores) { b.progress = store }))
 	statusHandler := progressStatusHandler(store)
 	resetHandler := progressResetHandler(store)
 
@@ -1341,7 +1341,7 @@ func TestReportProgressStatusAndReset(t *testing.T) {
 func TestModelLogDeduplicationAndRingBuffer(t *testing.T) {
 	// 容量设为 5
 	store := newModelLogStore(t.TempDir(), 5)
-	handler := modelLogHandler(store)
+	handler := modelLogHandler(testManagerWith(t, "", func(b *instanceStores) { b.modelLog = store }))
 
 	sendLogs := func(body string) *httptest.ResponseRecorder {
 		req := httptest.NewRequest(http.MethodPost, "/v1/taa/modelLog", sealedReader(t, body))
@@ -1441,7 +1441,7 @@ func TestModelLogDeduplicationAndRingBuffer(t *testing.T) {
 
 func TestModelLogValidation(t *testing.T) {
 	store := newModelLogStore(t.TempDir(), 2000)
-	handler := modelLogHandler(store)
+	handler := modelLogHandler(testManagerWith(t, "", func(b *instanceStores) { b.modelLog = store }))
 
 	send := func(body string) *httptest.ResponseRecorder {
 		req := httptest.NewRequest(http.MethodPost, "/v1/taa/modelLog", sealedReader(t, body))
@@ -1487,7 +1487,7 @@ func TestModelLogValidation(t *testing.T) {
 
 func TestModelLogStatusAndReset(t *testing.T) {
 	store := newModelLogStore(t.TempDir(), 2000)
-	logHandler := modelLogHandler(store)
+	logHandler := modelLogHandler(testManagerWith(t, "", func(b *instanceStores) { b.modelLog = store }))
 	statusHandler := modelLogStatusHandler(store)
 	resetHandler := modelLogResetHandler(store)
 
@@ -1546,7 +1546,7 @@ func TestModelLogStatusAndReset(t *testing.T) {
 
 func TestTaaLogDeduplicationAndRingBuffer(t *testing.T) {
 	store := newTaaLogStore(t.TempDir(), 5)
-	handler := taaLogHandler(store)
+	handler := taaLogHandler(testManagerWith(t, "", func(b *instanceStores) { b.taaLog = store }))
 
 	sendLogs := func(body string) *httptest.ResponseRecorder {
 		req := httptest.NewRequest(http.MethodPost, "/v1/taa/taaLog", sealedReader(t, body))
@@ -1639,7 +1639,7 @@ func TestTaaLogDeduplicationAndRingBuffer(t *testing.T) {
 
 func TestTaaLogValidation(t *testing.T) {
 	store := newTaaLogStore(t.TempDir(), 2000)
-	handler := taaLogHandler(store)
+	handler := taaLogHandler(testManagerWith(t, "", func(b *instanceStores) { b.taaLog = store }))
 
 	send := func(body string) *httptest.ResponseRecorder {
 		req := httptest.NewRequest(http.MethodPost, "/v1/taa/taaLog", sealedReader(t, body))
@@ -1685,7 +1685,7 @@ func TestTaaLogValidation(t *testing.T) {
 
 func TestTaaLogStatusAndReset(t *testing.T) {
 	store := newTaaLogStore(t.TempDir(), 2000)
-	logHandler := taaLogHandler(store)
+	logHandler := taaLogHandler(testManagerWith(t, "", func(b *instanceStores) { b.taaLog = store }))
 	statusHandler := taaLogStatusHandler(store)
 	resetHandler := taaLogResetHandler(store)
 
@@ -1823,7 +1823,7 @@ func TestModelLogPrintsMessagesInSeqOrder(t *testing.T) {
 	store := newModelLogStore(t.TempDir(), 100)
 	var output bytes.Buffer
 	store.out = &output
-	handler := modelLogHandler(store)
+	handler := modelLogHandler(testManagerWith(t, "", func(b *instanceStores) { b.modelLog = store }))
 
 	body := `{
 		"dockerId": "docker-test",
@@ -2122,7 +2122,7 @@ func TestReportResHistoryPersistenceAndReset(t *testing.T) {
 	store := &reportStateStore{path: tempFile}
 	store.load()
 
-	handler := reportResHandler(store)
+	handler := reportResHandler(testManagerWith(t, "", func(b *instanceStores) { b.reportRes = store }))
 
 	// Post report 1
 	body1 := sealedReader(t, `{"dockerId":"docker-1","requestId":"req-1","taskId":"task-1","code":0,"msg":null,"report":"{\"step\":1}"}`)

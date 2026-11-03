@@ -14,19 +14,20 @@ import (
 	"taa/pkg/utils"
 )
 
-// openTAARequestBody reads a request TAA sent and returns the plaintext inside
-// its envelope. Every callback route uses this, so no handler can decode the
-// outer {dockerId, cipher, sign} object as if it were the business body.
-func openTAARequestBody(r *http.Request) ([]byte, error) {
+// openTAARequestBody reads a request TAA sent and returns the plaintext and the
+// instance identity that signed it. The identity comes from the envelope hint,
+// cross-checked against the plaintext, so handlers can select the right store
+// without decoding the outer object as business JSON.
+func openTAARequestBody(r *http.Request) ([]byte, string, error) {
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
-		return nil, fmt.Errorf("读取请求体失败: %w", err)
+		return nil, "", fmt.Errorf("读取请求体失败: %w", err)
 	}
-	plaintext, err := currentPlatformKeys().openBody(body)
+	plaintext, dockerID, err := currentPlatformKeys().openBodyWithID(body)
 	if err != nil {
-		return nil, fmt.Errorf("报文解密或验签失败: %w", err)
+		return nil, "", fmt.Errorf("报文解密或验签失败: %w", err)
 	}
-	return plaintext, nil
+	return plaintext, dockerID, nil
 }
 
 type reportRequest struct {
@@ -39,7 +40,7 @@ type reportRequest struct {
 	Checksum  map[string]any `json:"checksum,omitempty"`
 }
 
-func registerHandler(store *registerStateStore, allowEmptyAttestation bool) http.HandlerFunc {
+func registerHandler(mgr *instanceManager, allowEmptyAttestation bool) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		setCORS(w)
 		if r.Method == http.MethodOptions {
@@ -62,7 +63,7 @@ func registerHandler(store *registerStateStore, allowEmptyAttestation bool) http
 		if err != nil {
 			state.StatusCode = http.StatusBadRequest
 			state.Message = "读取请求体失败: " + err.Error()
-			store.set(state)
+			mgr.instanceForWrite("").register.set(state)
 			writeEnvelope(w, http.StatusBadRequest, state.Message, nil, http.StatusBadRequest)
 			return
 		}
@@ -74,7 +75,7 @@ func registerHandler(store *registerStateStore, allowEmptyAttestation bool) http
 		if err != nil {
 			state.StatusCode = http.StatusUnauthorized
 			state.Message = "报文解密或验签失败: " + err.Error()
-			store.set(state)
+			mgr.instanceForWrite("").register.set(state)
 			writeEnvelope(w, http.StatusUnauthorized, state.Message, nil, http.StatusUnauthorized)
 			return
 		}
@@ -83,12 +84,15 @@ func registerHandler(store *registerStateStore, allowEmptyAttestation bool) http
 		if err := json.Unmarshal(plaintext, &req); err != nil {
 			state.StatusCode = http.StatusBadRequest
 			state.Message = "解析 application/json 失败: " + err.Error()
-			store.set(state)
+			mgr.instanceForWrite("").register.set(state)
 			writeEnvelope(w, http.StatusBadRequest, state.Message, nil, http.StatusBadRequest)
 			return
 		}
 
 		state.DockerID = req.DockerID
+		// The instance directory and the key map both index by this id, while
+		// the envelope hint is already trimmed; keep them identical.
+		state.DockerID = strings.TrimSpace(state.DockerID)
 		// authInfo is expected to be JSON null (or omitted); normalize both to "null".
 		state.AuthInfo = strings.TrimSpace(string(req.AuthInfo))
 		if state.AuthInfo == "" {
@@ -110,7 +114,7 @@ func registerHandler(store *registerStateStore, allowEmptyAttestation bool) http
 			if decodeErr != nil {
 				state.StatusCode = http.StatusBadRequest
 				state.Message = "attestation Base64 解码失败: " + decodeErr.Error()
-				store.set(state)
+				mgr.instanceForWrite(state.DockerID).register.set(state)
 				writeEnvelope(w, http.StatusBadRequest, state.Message, nil, http.StatusBadRequest)
 				return
 			}
@@ -146,7 +150,11 @@ func registerHandler(store *registerStateStore, allowEmptyAttestation bool) http
 			}
 		}
 
-		store.set(state)
+		// Until the request is accepted the bundle is the instance that is
+		// already known under this id (or the legacy bundle): a rejected
+		// registration must not create a directory for a stranger.
+		bundle := mgr.instanceForRegistration(state.DockerID, state.Accepted)
+		bundle.register.set(state)
 		if !state.Accepted {
 			log.Printf("register rejected: status=%d dockerId=%q message=%s", state.StatusCode, state.DockerID, state.Message)
 			writeEnvelope(w, state.StatusCode, state.Message, state, state.StatusCode)
@@ -155,11 +163,13 @@ func registerHandler(store *registerStateStore, allowEmptyAttestation bool) http
 
 		// Adopt the key only once the registration is accepted: a request that
 		// failed validation must not replace the key a running TAA is using.
-		if err := currentPlatformKeys().setTaaPublicKey(registeredPub); err != nil {
+		// The key is recorded under the instance id so two instances never
+		// overwrite each other's signing key.
+		if err := currentPlatformKeys().setTaaPublicKeyFor(state.DockerID, registeredPub); err != nil {
 			state.Accepted = false
 			state.StatusCode = http.StatusInternalServerError
 			state.Message = "保存 TAA 公钥失败: " + err.Error()
-			store.set(state)
+			bundle.register.set(state)
 			writeEnvelope(w, http.StatusInternalServerError, state.Message, nil, http.StatusInternalServerError)
 			return
 		}
@@ -172,7 +182,7 @@ func registerHandler(store *registerStateStore, allowEmptyAttestation bool) http
 	}
 }
 
-func reportResourceResHandler(store *reportStateStore) http.HandlerFunc {
+func reportResourceResHandler(mgr *instanceManager) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		setCORS(w)
 		if r.Method == http.MethodOptions {
@@ -190,11 +200,11 @@ func reportResourceResHandler(store *reportStateStore) http.HandlerFunc {
 			ReceivedAt: time.Now().Format(time.RFC3339),
 		}
 
-		bodyBytes, err := openTAARequestBody(r)
+		bodyBytes, dockerID, err := openTAARequestBody(r)
 		if err != nil {
 			state.StatusCode = http.StatusUnauthorized
 			state.Message = err.Error()
-			store.set(state)
+			mgr.instanceForWrite(dockerID).reportResourceRes.set(state)
 			writeEnvelope(w, http.StatusUnauthorized, state.Message, nil, http.StatusUnauthorized)
 			return
 		}
@@ -203,7 +213,7 @@ func reportResourceResHandler(store *reportStateStore) http.HandlerFunc {
 		if !strings.Contains(state.ContentType, "application/json") {
 			state.StatusCode = http.StatusBadRequest
 			state.Message = "Content-Type 应为 application/json"
-			store.set(state)
+			mgr.instanceForWrite(dockerID).reportResourceRes.set(state)
 			writeEnvelope(w, http.StatusBadRequest, state.Message, nil, http.StatusBadRequest)
 			return
 		}
@@ -212,7 +222,7 @@ func reportResourceResHandler(store *reportStateStore) http.HandlerFunc {
 		if err := json.Unmarshal(bodyBytes, &req); err != nil {
 			state.StatusCode = http.StatusBadRequest
 			state.Message = "解析 JSON 失败: " + err.Error()
-			store.set(state)
+			mgr.instanceForWrite(dockerID).reportResourceRes.set(state)
 			writeEnvelope(w, http.StatusBadRequest, state.Message, nil, http.StatusBadRequest)
 			return
 		}
@@ -238,7 +248,7 @@ func reportResourceResHandler(store *reportStateStore) http.HandlerFunc {
 			state.Message = "平台已收到资源下载结果上报，并返回 HTTP 200"
 		}
 
-		store.set(state)
+		mgr.instanceForWrite(dockerID).reportResourceRes.set(state)
 		if !state.Accepted {
 			log.Printf("report rejected: status=%d dockerId=%q requestId=%q message=%s", state.StatusCode, state.DockerID, state.RequestID, state.Message)
 			writeEnvelope(w, state.StatusCode, state.Message, reportStateResult(state), state.StatusCode)
@@ -253,7 +263,7 @@ func reportResourceResHandler(store *reportStateStore) http.HandlerFunc {
 }
 
 // reportResHandler handles POST /v1/taa/reportRes — TAA 上报训练完成结果
-func reportResHandler(store *reportStateStore) http.HandlerFunc {
+func reportResHandler(mgr *instanceManager) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		setCORS(w)
 		if r.Method == http.MethodOptions {
@@ -271,11 +281,11 @@ func reportResHandler(store *reportStateStore) http.HandlerFunc {
 			ReceivedAt: time.Now().Format(time.RFC3339),
 		}
 
-		bodyBytes, err := openTAARequestBody(r)
+		bodyBytes, dockerID, err := openTAARequestBody(r)
 		if err != nil {
 			state.StatusCode = http.StatusUnauthorized
 			state.Message = err.Error()
-			store.set(state)
+			mgr.instanceForWrite(dockerID).reportRes.set(state)
 			writeEnvelope(w, http.StatusUnauthorized, state.Message, nil, http.StatusUnauthorized)
 			return
 		}
@@ -286,7 +296,7 @@ func reportResHandler(store *reportStateStore) http.HandlerFunc {
 		if err := json.Unmarshal(bodyBytes, &req); err != nil {
 			state.StatusCode = http.StatusBadRequest
 			state.Message = "解析 JSON 失败: " + err.Error()
-			store.set(state)
+			mgr.instanceForWrite(dockerID).reportRes.set(state)
 			writeEnvelope(w, http.StatusBadRequest, state.Message, nil, http.StatusBadRequest)
 			return
 		}
@@ -309,7 +319,7 @@ func reportResHandler(store *reportStateStore) http.HandlerFunc {
 			state.Message = "平台已收到训练完成结果上报，并返回 HTTP 200"
 		}
 
-		store.set(state)
+		mgr.instanceForWrite(dockerID).reportRes.set(state)
 		if !state.Accepted {
 			log.Printf("reportRes rejected: status=%d requestId=%q message=%s", state.StatusCode, state.RequestID, state.Message)
 			writeEnvelope(w, state.StatusCode, state.Message, reportStateResult(state), state.StatusCode)
@@ -365,7 +375,7 @@ func isValidModelChecksum(cs map[string]any) bool {
 }
 
 // reportModelImportHandler handles POST /v1/taa/reportModelImport — TAA 上报模型导入与完整性校验结果
-func reportModelImportHandler(store *reportStateStore) http.HandlerFunc {
+func reportModelImportHandler(mgr *instanceManager) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		setCORS(w)
 		if r.Method == http.MethodOptions {
@@ -383,11 +393,11 @@ func reportModelImportHandler(store *reportStateStore) http.HandlerFunc {
 			ReceivedAt: time.Now().Format(time.RFC3339),
 		}
 
-		bodyBytes, err := openTAARequestBody(r)
+		bodyBytes, dockerID, err := openTAARequestBody(r)
 		if err != nil {
 			state.StatusCode = http.StatusUnauthorized
 			state.Message = err.Error()
-			store.set(state)
+			mgr.instanceForWrite(dockerID).reportModelImport.set(state)
 			writeEnvelope(w, http.StatusUnauthorized, state.Message, nil, http.StatusUnauthorized)
 			return
 		}
@@ -398,7 +408,7 @@ func reportModelImportHandler(store *reportStateStore) http.HandlerFunc {
 		if err := json.Unmarshal(bodyBytes, &req); err != nil {
 			state.StatusCode = http.StatusBadRequest
 			state.Message = "解析 JSON 失败: " + err.Error()
-			store.set(state)
+			mgr.instanceForWrite(dockerID).reportModelImport.set(state)
 			writeEnvelope(w, http.StatusBadRequest, state.Message, nil, http.StatusBadRequest)
 			return
 		}
@@ -428,7 +438,7 @@ func reportModelImportHandler(store *reportStateStore) http.HandlerFunc {
 			state.Message = "平台已收到模型导入结果上报，并返回 HTTP 200"
 		}
 
-		store.set(state)
+		mgr.instanceForWrite(dockerID).reportModelImport.set(state)
 		if !state.Accepted {
 			log.Printf("reportModelImport rejected: status=%d dockerId=%q taskId=%q message=%s", state.StatusCode, state.DockerID, state.TaskID, state.Message)
 			writeEnvelope(w, state.StatusCode, state.Message, reportStateResult(state), state.StatusCode)
@@ -443,7 +453,7 @@ func reportModelImportHandler(store *reportStateStore) http.HandlerFunc {
 }
 
 // reportAuditHandler handles POST /v1/taa/reportAudit — TAA 上报模型代码安全审计结果
-func reportAuditHandler(store *reportStateStore) http.HandlerFunc {
+func reportAuditHandler(mgr *instanceManager) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		setCORS(w)
 		if r.Method == http.MethodOptions {
@@ -461,11 +471,11 @@ func reportAuditHandler(store *reportStateStore) http.HandlerFunc {
 			ReceivedAt: time.Now().Format(time.RFC3339),
 		}
 
-		bodyBytes, err := openTAARequestBody(r)
+		bodyBytes, dockerID, err := openTAARequestBody(r)
 		if err != nil {
 			state.StatusCode = http.StatusUnauthorized
 			state.Message = err.Error()
-			store.set(state)
+			mgr.instanceForWrite(dockerID).reportAudit.set(state)
 			writeEnvelope(w, http.StatusUnauthorized, state.Message, nil, http.StatusUnauthorized)
 			return
 		}
@@ -476,7 +486,7 @@ func reportAuditHandler(store *reportStateStore) http.HandlerFunc {
 		if err := json.Unmarshal(bodyBytes, &req); err != nil {
 			state.StatusCode = http.StatusBadRequest
 			state.Message = "解析 JSON 失败: " + err.Error()
-			store.set(state)
+			mgr.instanceForWrite(dockerID).reportAudit.set(state)
 			writeEnvelope(w, http.StatusBadRequest, state.Message, nil, http.StatusBadRequest)
 			return
 		}
@@ -506,7 +516,7 @@ func reportAuditHandler(store *reportStateStore) http.HandlerFunc {
 			state.Message = "平台已收到代码审计结果上报，并返回 HTTP 200"
 		}
 
-		store.set(state)
+		mgr.instanceForWrite(dockerID).reportAudit.set(state)
 		if !state.Accepted {
 			log.Printf("reportAudit rejected: status=%d dockerId=%q taskId=%q message=%s", state.StatusCode, state.DockerID, state.TaskID, state.Message)
 			writeEnvelope(w, state.StatusCode, state.Message, reportStateResult(state), state.StatusCode)
@@ -528,7 +538,7 @@ func parseProgressTimestamp(ts string) (time.Time, error) {
 	return utils.ParseISO8601(ts)
 }
 
-func reportProgressHandler(store *progressStateStore) http.HandlerFunc {
+func reportProgressHandler(mgr *instanceManager) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		setCORS(w)
 		if r.Method == http.MethodOptions {
@@ -546,7 +556,7 @@ func reportProgressHandler(store *progressStateStore) http.HandlerFunc {
 			return
 		}
 
-		bodyBytes, err := openTAARequestBody(r)
+		bodyBytes, dockerID, err := openTAARequestBody(r)
 		if err != nil {
 			writeEnvelope(w, http.StatusUnauthorized, err.Error(), nil, http.StatusUnauthorized)
 			return
@@ -578,7 +588,7 @@ func reportProgressHandler(store *progressStateStore) http.HandlerFunc {
 		}
 
 		// 防逆序检查：如果此前已有状态且之前的时间戳解析成功，且当前新时间戳早于之前时间戳，则不更新状态，直接返回 200
-		currState := store.get()
+		currState := mgr.instanceForWrite(dockerID).progress.get()
 		if currState.Received && currState.Accepted && currState.Timestamp != "" {
 			if prevTime, err := parseProgressTimestamp(currState.Timestamp); err == nil {
 				if newTime.Before(prevTime) {
@@ -605,7 +615,7 @@ func reportProgressHandler(store *progressStateStore) http.HandlerFunc {
 			RawBody:    string(bodyBytes),
 		}
 
-		store.set(state)
+		mgr.instanceForWrite(dockerID).progress.set(state)
 		log.Printf("reportProgress accepted: dockerId=%s requestId=%s percent=%.2f timestamp=%s", state.DockerID, state.RequestID, state.Percent, state.Timestamp)
 		writeEnvelope(w, http.StatusOK, "success", map[string]any{
 			"received": true,
@@ -613,7 +623,7 @@ func reportProgressHandler(store *progressStateStore) http.HandlerFunc {
 	}
 }
 
-func modelLogHandler(store *modelLogStore) http.HandlerFunc {
+func modelLogHandler(mgr *instanceManager) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		setCORS(w)
 		if r.Method == http.MethodOptions {
@@ -631,7 +641,7 @@ func modelLogHandler(store *modelLogStore) http.HandlerFunc {
 			return
 		}
 
-		bodyBytes, err := openTAARequestBody(r)
+		bodyBytes, dockerID, err := openTAARequestBody(r)
 		if err != nil {
 			writeEnvelope(w, http.StatusUnauthorized, err.Error(), nil, http.StatusUnauthorized)
 			return
@@ -662,15 +672,15 @@ func modelLogHandler(store *modelLogStore) http.HandlerFunc {
 			}
 		}
 
-		added := store.addEntries(req.DockerID, req.RequestID, req.TaskID, req.Entries)
-		log.Printf("modelLog accepted: dockerId=%s requestId=%s added=%d total=%d", req.DockerID, req.RequestID, added, store.get().TotalCount)
+		added := mgr.instanceForWrite(dockerID).modelLog.addEntries(req.DockerID, req.RequestID, req.TaskID, req.Entries)
+		log.Printf("modelLog accepted: dockerId=%s requestId=%s added=%d total=%d", req.DockerID, req.RequestID, added, mgr.instanceForWrite(dockerID).modelLog.get().TotalCount)
 		writeEnvelope(w, http.StatusOK, "success", map[string]any{
 			"received": true,
 		}, 0)
 	}
 }
 
-func taaLogHandler(store *taaLogStore) http.HandlerFunc {
+func taaLogHandler(mgr *instanceManager) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		setCORS(w)
 		if r.Method == http.MethodOptions {
@@ -688,7 +698,7 @@ func taaLogHandler(store *taaLogStore) http.HandlerFunc {
 			return
 		}
 
-		bodyBytes, err := openTAARequestBody(r)
+		bodyBytes, dockerID, err := openTAARequestBody(r)
 		if err != nil {
 			writeEnvelope(w, http.StatusUnauthorized, err.Error(), nil, http.StatusUnauthorized)
 			return
@@ -719,8 +729,8 @@ func taaLogHandler(store *taaLogStore) http.HandlerFunc {
 			}
 		}
 
-		added := store.addEntries(req.DockerID, req.RequestID, req.TaskID, req.Entries)
-		log.Printf("taaLog accepted: dockerId=%s requestId=%s added=%d total=%d", req.DockerID, req.RequestID, added, store.get().TotalCount)
+		added := mgr.instanceForWrite(dockerID).taaLog.addEntries(req.DockerID, req.RequestID, req.TaskID, req.Entries)
+		log.Printf("taaLog accepted: dockerId=%s requestId=%s added=%d total=%d", req.DockerID, req.RequestID, added, mgr.instanceForWrite(dockerID).taaLog.get().TotalCount)
 		writeEnvelope(w, http.StatusOK, "success", map[string]any{
 			"received": true,
 		}, 0)

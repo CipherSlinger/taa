@@ -108,6 +108,8 @@ func NewServer(cfg Config) *Server {
 	modelLogStore := newModelLogStore(cfg.StateDir, 2000)
 	taaLogStore := newTaaLogStore(cfg.StateDir, 2000)
 
+	mgr := newInstanceManager(cfg.StateDir, cfg)
+
 	uploadDir := cfg.UploadDir
 	if abs, err := filepath.Abs(uploadDir); err == nil {
 		uploadDir = abs
@@ -129,14 +131,14 @@ func NewServer(cfg Config) *Server {
 	} else {
 		mux.Handle("/static/", http.StripPrefix("/static/", http.FileServer(http.FS(staticSub))))
 	}
-	mux.HandleFunc("/v1/taa/register", registerHandler(registerStore, cfg.AllowEmptyAttestation))
-	mux.HandleFunc("/v1/taa/reportResourceRes", reportResourceResHandler(reportStore))
-	mux.HandleFunc("/v1/taa/reportRes", reportResHandler(reportResStore))
-	mux.HandleFunc("/v1/taa/reportModelImport", reportModelImportHandler(reportModelImportStore))
-	mux.HandleFunc("/v1/taa/reportAudit", reportAuditHandler(reportAuditStore))
-	mux.HandleFunc("/v1/taa/reportProgress", reportProgressHandler(progressStore))
-	mux.HandleFunc("/v1/taa/modelLog", modelLogHandler(modelLogStore))
-	mux.HandleFunc("/v1/taa/taaLog", taaLogHandler(taaLogStore))
+	mux.HandleFunc("/v1/taa/register", registerHandler(mgr, cfg.AllowEmptyAttestation))
+	mux.HandleFunc("/v1/taa/reportResourceRes", reportResourceResHandler(mgr))
+	mux.HandleFunc("/v1/taa/reportRes", reportResHandler(mgr))
+	mux.HandleFunc("/v1/taa/reportModelImport", reportModelImportHandler(mgr))
+	mux.HandleFunc("/v1/taa/reportAudit", reportAuditHandler(mgr))
+	mux.HandleFunc("/v1/taa/reportProgress", reportProgressHandler(mgr))
+	mux.HandleFunc("/v1/taa/modelLog", modelLogHandler(mgr))
+	mux.HandleFunc("/v1/taa/taaLog", taaLogHandler(mgr))
 	mux.HandleFunc("/api/dashboard/status", dashboardStatusHandler(registerStore, reportModelImportStore, reportAuditStore, progressStore, taaAddr))
 	mux.HandleFunc("/api/register/status", registerStatusHandler(registerStore))
 	mux.HandleFunc("/api/register/reset", registerResetHandler(registerStore))
