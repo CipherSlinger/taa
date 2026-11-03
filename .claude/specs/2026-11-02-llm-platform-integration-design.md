@@ -223,8 +223,9 @@ LLM Pod / teellm-service
   每次尝试都带完整证明报文；LLM 侧报文小、且只在失败切换点与每第 10 次尝试记一行，不会累积。
   注册是实例在平台上"存在"的唯一途径，有界窗口会让一次长于窗口的平台故障把健康的推理服务
   永久留在平台视野之外——没有记录、心跳被注册信号阻塞、日志推不出去，只能重启 Pod 才能恢复。
-  注册成功后每 6 小时重发一次，让平台拿到当前证书对应的公钥与证明；刷新失败同样按这套阶梯
-  重试到成功，不会干等下一个周期。
+  注册成功后**没有周期性的重注册**：只有当心跳或日志上报失败、且失败原因是"连不上平台"
+  （拨号失败、DNS 失败、连接被重置、请求超时）时，才重新走一遍注册阶梯直到成功。
+  平台返回错误状态码说明它是可达的、记录还在，不触发重注册。
 - **心跳**：30 秒 ticker，注册成功后启动。失败只记本地日志，下个周期继续。
 - **日志**：内存环形缓冲，容量 2000 条。每 5 秒排空一次批量推送；推送失败把该批**放回队首**，
   下个周期重试；缓冲满时丢最旧。
@@ -275,8 +276,7 @@ LLM Pod / teellm-service
   "addr": "http://172.16.10.181:18081",
   "dockerId": "taa-teellm",
   "heartbeatSeconds": 30,
-  "logFlushSeconds": 5,
-  "registerRefreshSeconds": 21600
+  "logFlushSeconds": 5
 }
 ```
 
@@ -301,7 +301,8 @@ LLM Pod / teellm-service
 ## 10. 验证方式
 
 - `teellm/platformagent` 单测：报文序列化对齐 `internal/platform` 的字段名与 `taaLog` 结构；
-  环形缓冲在满与失败回填下的顺序正确；退避序列符合 `1s…60s`。
+  环形缓冲在满与失败回填下的顺序正确；退避序列符合 `1s…60s`；心跳/日志因连不上平台失败时
+  触发一次重新注册（用超时模拟不可达），而 HTTP 错误状态码不触发。
 - `/v1/llm/getAttestation` 的 httptest（明文 listener）：空 `requestId` 返回 400；正常返回里
   `attestation` 能被 `csvattest.ParseReport` 解析，`certificate` 能被
   `teetls.ParseCertificatePEM` 解析，且 `userdata[:32]` 等于 `certificate` 公钥的 SM3 摘要。

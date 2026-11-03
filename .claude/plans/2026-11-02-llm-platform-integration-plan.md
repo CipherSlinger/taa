@@ -886,16 +886,14 @@ import (
 
 // Defaults applied by New when a field is left at zero.
 const (
-	DefaultDockerID                 = "taa-teellm"
-	DefaultHeartbeatInterval        = 30 * time.Second
-	DefaultLogFlushInterval         = 5 * time.Second
-	DefaultRegisterRefreshInterval  = 6 * time.Hour
-	DefaultLogBufferSize            = 2000
-	DefaultHeartbeatSeconds         = 30
-	DefaultLogFlushSeconds          = 5
-	DefaultRegisterRefreshSeconds   = 21600
-	DefaultMaxLogBatchSize          = 100
-	DefaultRequestTimeout           = 10 * time.Second
+	DefaultDockerID          = "taa-teellm"
+	DefaultHeartbeatInterval = 30 * time.Second
+	DefaultLogFlushInterval  = 5 * time.Second
+	DefaultLogBufferSize     = 2000
+	DefaultHeartbeatSeconds  = 30
+	DefaultLogFlushSeconds   = 5
+	DefaultMaxLogBatchSize   = 100
+	DefaultRequestTimeout    = 10 * time.Second
 )
 
 // Register retry ladder. It mirrors the shape of TAA's register retry -- double
@@ -922,9 +920,6 @@ type Config struct {
 	HeartbeatInterval time.Duration
 	// LogFlushInterval is how often buffered logs are pushed. Default 5s.
 	LogFlushInterval time.Duration
-	// RegisterRefreshInterval re-registers periodically so the platform keeps a
-	// report bound to the certificate this process is currently presenting.
-	RegisterRefreshInterval time.Duration
 	// LogBufferSize is the ring capacity, and also the cap on the pending queue.
 	LogBufferSize int
 	// Logs is the shared buffer. When nil an internal one is created; the caller
@@ -944,9 +939,6 @@ func (c Config) withDefaults() Config {
 	}
 	if c.LogFlushInterval <= 0 {
 		c.LogFlushInterval = DefaultLogFlushInterval
-	}
-	if c.RegisterRefreshInterval <= 0 {
-		c.RegisterRefreshInterval = DefaultRegisterRefreshInterval
 	}
 	if c.LogBufferSize <= 0 {
 		c.LogBufferSize = DefaultLogBufferSize
@@ -1313,12 +1305,16 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
+	"time"
 )
 
 // logEntry is one run-log record in the shape TAA reports.
@@ -1426,7 +1422,63 @@ func (a *Agent) reportFailure(channel string, err error) {
 	if !wasFailing {
 		log.Printf("[WARN] [platform] %s reporting failed: %v", channel, err)
 		a.logs.Add(LevelWarn, "platform", "%s reporting failed: %v", channel, err)
+
+		// Losing the platform is what triggers a fresh registration. It is
+		// signalled on the transition only: during one outage both the heartbeat
+		// and the log loop would otherwise raise it on every period, and the
+		// registration loop is already retrying on its own ladder.
+		//
+		// A platform that answers with an error status is reachable and still
+		// holds a record, so an HTTP-level rejection deliberately does not
+		// trigger re-registration. Two more cases are excluded: the register
+		// channel is already retrying on its own ladder, and before the first
+		// registration there is nothing to re-register -- either would only
+		// produce a duplicate registration once the ladder succeeds.
+		if channel != "register" && a.hasRegistered() && isConnectivityError(err) {
+			select {
+			case a.reregister <- struct{}{}:
+			default: // a signal is already pending; one re-registration covers it
+			}
+		}
 	}
+}
+
+// hasRegistered reports whether the first registration has completed. Before
+// that, the registration loop is already retrying on its own ladder and a
+// wake-up signal would only cause a duplicate registration.
+func (a *Agent) hasRegistered() bool {
+	select {
+	case <-a.registered:
+		return true
+	default:
+		return false
+	}
+}
+
+// isConnectivityError reports whether err means the platform could not be
+// reached at all, as opposed to reached and rejected.
+func isConnectivityError(err error) bool {
+	if err == nil {
+		return false
+	}
+	// http.Client wraps every transport failure in *url.Error.
+	var urlErr *url.Error
+	if errors.As(err, &urlErr) {
+		return isConnectivityError(urlErr.Err)
+	}
+	var dnsErr *net.DNSError
+	if errors.As(err, &dnsErr) {
+		return true
+	}
+	// Dial failures (refused, host unreachable, network unreachable) and resets
+	// in the middle of a request surface as *net.OpError.
+	var opErr *net.OpError
+	if errors.As(err, &opErr) {
+		return true
+	}
+	// Client.Timeout surfaces as an unexported net.Error, not as *net.OpError.
+	var netErr net.Error
+	return errors.As(err, &netErr) && netErr.Timeout()
 }
 
 // reportSuccess records the recovery transition, so the platform sees both ends
@@ -1502,7 +1554,7 @@ func (a *Agent) flushLogs(ctx context.Context) {
 
 Run: `cd /home/hjy/taa/teellm && go test ./platformagent/ -count=1 -v`
 
-Expected: PASS，9 条测试。
+Expected: PASS，11 条测试。
 
 - [ ] **Step 8: 提交**
 
@@ -1655,9 +1707,119 @@ func TestStopDoesNotBlockWhenPlatformIsDown(t *testing.T) {
 		t.Fatal("Stop blocked while the platform was unreachable")
 	}
 }
+
+func TestReregistersWhenPlatformBecomesUnreachable(t *testing.T) {
+	var (
+		mu        sync.Mutex
+		registers int
+		unreach   bool
+	)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		if r.URL.Path == "/v1/llm/register" {
+			registers++
+		}
+		down := unreach
+		mu.Unlock()
+
+		if down {
+			// Hold past the client's deadline: a probe then fails the way it
+			// does against a platform that is gone, without depending on which
+			// kernel-level error a closed port happens to produce.
+			time.Sleep(200 * time.Millisecond)
+			return
+		}
+		_, _ = w.Write([]byte(`{"msg":"success","result":{},"error":0}`))
+	}))
+	defer server.Close()
+
+	agent, err := New(Config{
+		PlatformAddr:      server.URL,
+		DockerID:          "taa-teellm",
+		HeartbeatInterval: 30 * time.Millisecond,
+		LogFlushInterval:  30 * time.Millisecond,
+		HTTPClient:        &http.Client{Timeout: 80 * time.Millisecond},
+		Snapshot: func(context.Context) (*teellm.AttestationSnapshot, error) {
+			return fakeSnapshot(), nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("New failed: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	agent.Start(ctx)
+	defer func() {
+		cancel()
+		agent.Stop()
+	}()
+
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		mu.Lock()
+		first := registers >= 1
+		mu.Unlock()
+		if first {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("no registration happened")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	mu.Lock()
+	unreach = true
+	mu.Unlock()
+
+	for {
+		mu.Lock()
+		n := registers
+		mu.Unlock()
+		if n >= 2 {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("register calls = %d, want a second registration once the platform stopped answering", n)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+func TestIsConnectivityError(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{
+			name: "dial refused",
+			err:  &url.Error{Op: "Post", URL: "http://p", Err: &net.OpError{Op: "dial", Net: "tcp", Err: errors.New("connection refused")}},
+			want: true,
+		},
+		{
+			name: "dns failure",
+			err:  &url.Error{Op: "Post", URL: "http://p", Err: &net.DNSError{Err: "no such host", Name: "p"}},
+			want: true,
+		},
+		{
+			name: "http status is not a connectivity failure",
+			err:  errors.New("/v1/llm/heartbeat returned status 500: boom"),
+			want: false,
+		},
+		{name: "nil", err: nil, want: false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := isConnectivityError(tc.err); got != tc.want {
+				t.Fatalf("isConnectivityError(%v) = %v, want %v", tc.err, got, tc.want)
+			}
+		})
+	}
+}
 ```
 
-需要在测试文件 import 中补 `"sync"` 与 `"sync/atomic"`。
+需要在测试文件 import 中补 `"sync"`、`"sync/atomic"`、`"errors"`、`"net"`、`"net/url"`。
 
 - [ ] **Step 2: 运行测试确认失败**
 
@@ -1674,13 +1836,18 @@ Expected: 编译失败 —— `agent.Start undefined`、`agent.Stop undefined`�
 	// loop waits on it so it never reports liveness for an instance the platform
 	// does not know.
 	registered chan struct{}
+	// reregister carries "the platform became unreachable" from the probes to the
+	// registration loop. Buffered with capacity 1: the signal means "register
+	// again", so while one is already pending or being acted on, more of them add
+	// nothing.
+	reregister chan struct{}
 	cancel     context.CancelFunc
 	wg         sync.WaitGroup
 	startOnce  sync.Once
 	stopOnce   sync.Once
 ```
 
-`New` 的返回值追加 `registered: make(chan struct{})`。
+`New` 的返回值追加 `registered: make(chan struct{})` 与 `reregister: make(chan struct{}, 1)`。
 
 追加以下方法：
 
@@ -1722,9 +1889,8 @@ func (a *Agent) Stop() {
 	})
 }
 
-// registerLoop registers, retrying for as long as it takes, and then refreshes
-// periodically so the platform keeps a report bound to the certificate this
-// process is currently presenting.
+// registerLoop registers, retrying for as long as it takes, and then registers
+// again whenever a probe reports that the platform became unreachable.
 func (a *Agent) registerLoop(ctx context.Context) {
 	defer a.wg.Done()
 
@@ -1734,19 +1900,20 @@ func (a *Agent) registerLoop(ctx context.Context) {
 	a.logs.Add(LevelInfo, "platform", "registered with %s as %s", a.cfg.PlatformAddr, a.cfg.DockerID)
 	close(a.registered)
 
-	ticker := time.NewTicker(a.cfg.RegisterRefreshInterval)
-	defer ticker.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case <-ticker.C:
-			// A failed refresh goes back onto the same ladder. Waiting a full
-			// period would leave the platform holding a record for a certificate
-			// the process has already rotated away from.
+		case <-a.reregister:
+			// A reachability failure means the platform may have restarted or
+			// lost the record, and the certificate this process presents may have
+			// rotated since the last registration. Register again; the ladder
+			// keeps trying until it sticks.
+			a.logs.Add(LevelInfo, "platform", "platform became unreachable, registering again")
 			if err := a.registerUntilSuccess(ctx); err != nil {
 				return
 			}
+			a.logs.Add(LevelInfo, "platform", "re-registered with %s as %s", a.cfg.PlatformAddr, a.cfg.DockerID)
 		}
 	}
 }
@@ -1882,11 +2049,10 @@ type ServerConfigSection struct {
 ```go
 // PlatformConfigSection defines the outbound platform reporting configuration.
 type PlatformConfigSection struct {
-	Addr                   string `json:"addr"`
-	DockerID               string `json:"dockerId"`
-	HeartbeatSeconds       int    `json:"heartbeatSeconds"`
-	LogFlushSeconds        int    `json:"logFlushSeconds"`
-	RegisterRefreshSeconds int    `json:"registerRefreshSeconds"`
+	Addr             string `json:"addr"`
+	DockerID         string `json:"dockerId"`
+	HeartbeatSeconds int    `json:"heartbeatSeconds"`
+	LogFlushSeconds  int    `json:"logFlushSeconds"`
 }
 ```
 
@@ -1913,10 +2079,9 @@ type ServiceConfigFile struct {
 
 ```go
 		Platform: PlatformConfigSection{
-			DockerID:               "taa-teellm",
-			HeartbeatSeconds:       platformagent.DefaultHeartbeatSeconds,
-			LogFlushSeconds:        platformagent.DefaultLogFlushSeconds,
-			RegisterRefreshSeconds: platformagent.DefaultRegisterRefreshSeconds,
+			DockerID:         "taa-teellm",
+			HeartbeatSeconds: platformagent.DefaultHeartbeatSeconds,
+			LogFlushSeconds:  platformagent.DefaultLogFlushSeconds,
 		},
 ```
 
@@ -1930,12 +2095,11 @@ type ServiceConfigFile struct {
 	logs := platformagent.NewLogBuffer(platformagent.DefaultLogBufferSize)
 
 	agent, err := platformagent.New(platformagent.Config{
-		PlatformAddr:            cfg.Platform.Addr,
-		DockerID:                cfg.Platform.DockerID,
-		HeartbeatInterval:       time.Duration(cfg.Platform.HeartbeatSeconds) * time.Second,
-		LogFlushInterval:        time.Duration(cfg.Platform.LogFlushSeconds) * time.Second,
-		RegisterRefreshInterval: time.Duration(cfg.Platform.RegisterRefreshSeconds) * time.Second,
-		Logs:                    logs,
+		PlatformAddr:      cfg.Platform.Addr,
+		DockerID:          cfg.Platform.DockerID,
+		HeartbeatInterval: time.Duration(cfg.Platform.HeartbeatSeconds) * time.Second,
+		LogFlushInterval:  time.Duration(cfg.Platform.LogFlushSeconds) * time.Second,
+		Logs:              logs,
 		Snapshot: func(ctx context.Context) (*teellm.AttestationSnapshot, error) {
 			return teellm.BuildAttestationSnapshot(ctx, teeTLSConfig)
 		},
@@ -2053,8 +2217,7 @@ Expected: 无输出，退出码 0。若报 `declared and not used`，检查 `log
     "addr": "",
     "dockerId": "taa-teellm",
     "heartbeatSeconds": 30,
-    "logFlushSeconds": 5,
-    "registerRefreshSeconds": 21600
+    "logFlushSeconds": 5
   }
 }
 ```
@@ -2705,19 +2868,19 @@ appear in any Service, NodePort or Ingress.
 
 Set `platform.addr` to enable outbound plaintext JSON reporting to the control
 platform. The instance registers once at startup (retrying with backoff until it
-succeeds -- it never gives up), refreshes its registration every
-`registerRefreshSeconds`, sends a liveness heartbeat every `heartbeatSeconds`,
-and pushes buffered logs every `logFlushSeconds`. An empty `platform.addr`
-disables all three; the attestation listener is controlled separately by
-`server.attestationAddr`.
+succeeds -- it never gives up), sends a liveness heartbeat every
+`heartbeatSeconds`, and pushes buffered logs every `logFlushSeconds`. If a
+heartbeat or a log push fails because the platform cannot be reached at all, the
+instance registers again; there is no periodic re-registration. An empty
+`platform.addr` disables all three; the attestation listener is controlled
+separately by `server.attestationAddr`.
 
 ```json
 "platform": {
   "addr": "http://172.16.10.181:18081",
   "dockerId": "taa-teellm",
   "heartbeatSeconds": 30,
-  "logFlushSeconds": 5,
-  "registerRefreshSeconds": 21600
+  "logFlushSeconds": 5
 }
 ```
 ```
