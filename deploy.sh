@@ -153,6 +153,12 @@ SEMGREP_PAYLOAD_BUNDLE="${SEMGREP_PAYLOAD_BUNDLE:-$PROJECT_DIR/deploy/guest-buil
 CONTAINER_SEMGREP_DIR="${CONTAINER_SEMGREP_DIR:-/opt/taa/semgrep}"
 SEMGREP_VERSION="${SEMGREP_VERSION:-1.177.0}"
 
+# Whether the paths above provision the engine the config template selects. "auto" honors the
+# template. "skip" leaves the image or pod untouched even when the template names semgrep: the
+# data-analysis role keeps production's codeAudit block verbatim, and its loader turns the whole
+# audit off at startup anyway, so installing the payload there would only bloat the image.
+TAA_SCAN_ENGINE_PROVISION="${TAA_SCAN_ENGINE_PROVISION:-auto}"
+
 # 远程 SSH 密码：通过 TARGET_PASSWORD 覆盖；置空时启动脚本会交互式询问。
 PASSWORD="${TARGET_PASSWORD:-Osrd@2026}"
 
@@ -841,6 +847,9 @@ Environment overrides:
       镜像内 semgrep 的安装根目录（pylib 与规则所在位置）。
   SEMGREP_VERSION=$SEMGREP_VERSION
       期望的 semgrep 版本；与 payload 包内 MANIFEST 记录的版本不一致时报错。
+  TAA_SCAN_ENGINE_PROVISION=${TAA_SCAN_ENGINE_PROVISION}
+      扫描引擎注入模式：auto（默认，按模板选择注入）或 skip（不注入，供运行时按角色关掉
+      审计的场景使用，例如数据分析）。
   READY_TIMEOUT=${READY_TIMEOUT}
       等待服务就绪的最长时间（秒）。
   READY_INTERVAL=${READY_INTERVAL}
@@ -1255,6 +1264,11 @@ provision_remote_scan_engine() {
   local engine="" rules_path=""
   read -r engine rules_path <<<"$(taa_scan_engine_requirements "$template")"
 
+  if [[ "$TAA_SCAN_ENGINE_PROVISION" == "skip" ]]; then
+    info "code scan engine provisioning skipped (TAA_SCAN_ENGINE_PROVISION=skip)"
+    return 0
+  fi
+
   if [[ "$engine" != "semgrep" ]]; then
     info "code scan engine '${engine:-unset}' needs no semgrep payload"
     return 0
@@ -1342,6 +1356,11 @@ provision_local_scan_engine() {
   local template="$2"
   local engine="" rules_path=""
   read -r engine rules_path <<<"$(taa_scan_engine_requirements "$template")"
+
+  if [[ "$TAA_SCAN_ENGINE_PROVISION" == "skip" ]]; then
+    info "code scan engine provisioning skipped (TAA_SCAN_ENGINE_PROVISION=skip)"
+    return 0
+  fi
 
   if [[ "$engine" != "semgrep" ]]; then
     info "code scan engine '${engine:-unset}' needs no semgrep payload"

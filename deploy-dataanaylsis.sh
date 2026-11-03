@@ -8,14 +8,18 @@
 # data-analysis tasks need: the jupyter base image, and a data landing directory
 # inside that image's home.
 #
-# Two things follow from the base image and are rendered into a copy of the
-# shared configs/taa-production.json:
-#   - the data lands under /home/jovyan/systemAuthData, where the jupyter
-#     runtime reads it, instead of the shared template's /root/taa/data;
-#   - the audit switches are written off and the engine to regex, because
-#     deploy.sh packages semgrep from the template text. The role would disable
-#     the audit at startup anyway, but an unrendered template would still make
-#     the packaging path ship a payload this image cannot use.
+# One thing follows from the base image and is rendered into a copy of the
+# shared configs/taa-production.json: the data lands under
+# /home/jovyan/systemAuthData, where the jupyter runtime reads it, instead of
+# the shared template's /root/taa/data.
+#
+# The code audit block is left exactly as the shared template has it. The role
+# (server.type=data-anaylsis, or CONTRACT_TYPE=3) disables the whole audit at
+# startup - switches, LLM and a rule-carrying engine - so the template's semgrep
+# selection never reaches a scan on this instance. What must not happen is the
+# packaging path reading that text at face value and installing a semgrep
+# payload this image has no use for, so engine provisioning is skipped
+# explicitly below.
 #
 # The state sealing key source is not rendered: TAA detects /dev/csv-guest at
 # startup and uses the CSV hardware key inside a guest, the SM2 derivation
@@ -49,13 +53,6 @@ with open(src, encoding="utf-8") as f:
 cfg.setdefault("server", {})["type"] = "data-anaylsis"
 cfg.setdefault("storage", {})["data"] = "/home/jovyan/systemAuthData"
 
-audit = cfg.setdefault("codeAudit", {})
-audit["enabled"] = False
-audit["codeScan"] = {"engine": "regex"}
-audit["resultCheck"] = {"enabled": False}
-audit["binaryAudit"] = {"enabled": False}
-audit.setdefault("llm", {})["enabled"] = False
-
 with open(dst, "w", encoding="utf-8") as f:
     json.dump(cfg, f, ensure_ascii=False, indent=2)
     f.write("\n")
@@ -68,6 +65,10 @@ export BASE_DOCKER_IMAGE_ARCHIVE="$BASE_ARCHIVE"
 export LOCAL_DOCKER_IMAGE="$BASE_IMAGE"
 export LOCAL_DOCKER_IMAGE_ARCHIVE="$BASE_ARCHIVE"
 export LOCAL_DOCKER_CONTAINER="$LOCAL_CONTAINER"
+# The rendered template still selects semgrep, so deploy.sh would otherwise install the payload
+# into the image (save) or the pod (remote). The role disables the engine at startup, and this
+# base image ships neither the payload nor a use for it.
+export TAA_SCAN_ENGINE_PROVISION=skip
 # No gateway is deployed behind this instance, and the role disables the LLM; an
 # endpoint injected by the environment would only be a leftover from the audit
 # flavour.

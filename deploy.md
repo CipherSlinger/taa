@@ -240,10 +240,12 @@ nvidia-container-toolkit 提供，镜像自带的只有上面那两个 CUDA 用�
 dpkg 437 个包，解压 7.55 GB，ENTRYPOINT `tini -g --`，USER `jovyan`(1000)，
 HOME/WORKDIR = `/home/jovyan`，EXPOSE 8888。
 
-配置不再有自己的模板：脚本把 `configs/taa-production.json` 渲染成副本，写入
-`server.type=data-anaylsis`、`storage.data=/home/jovyan/systemAuthData`（jupyter 运行时读取的位置），
-并把 `codeAudit` 三项与 LLM 关掉、引擎落到 `regex`。即使不渲染，加载器也会按角色关闭审计；
-渲染是为了让 `deploy.sh save` 的打包前检查不再去装这个镜像用不了的 semgrep payload。
+配置不再有自己的模板：脚本把 `configs/taa-production.json` 渲染成副本，只写入
+`server.type=data-anaylsis` 与 `storage.data=/home/jovyan/systemAuthData`（jupyter 运行时读取的
+位置），`codeAudit` 块与生产模板逐字一致。加载器按角色在启动时关闭整个审计（开关、LLM、
+带规则的引擎），所以模板里的 semgrep 选择到不了扫描。真正需要处理的是打包路径：`deploy.sh`
+按模板文本决定是否注入 semgrep payload，脚本因此导出 `TAA_SCAN_ENGINE_PROVISION=skip`，
+让 `save`/`remote` 两条路都不再装这个镜像用不上的 payload。
 密封密钥来源不需要渲染：TAA 启动时按 `/dev/csv-guest` 是否存在自动选择硬件密钥或 SM2 派生，
 docker 与远端两种路径行为一致。
 
@@ -269,8 +271,9 @@ docker 与远端两种路径行为一致。
 
 与审计镜像相同的 TAA 载荷（`taa` 静态二进制、两份证书、`taa-supervisor.sh`、
 渲染后的 `taa-config.json`、空目录 `/root/taa/{models,data,results,keys}` 与
-`/opt/taa/{input,output}`）。**不装 semgrep、不装 teellm**（渲染后的配置 `codeScan.engine=regex`、
-`codeAudit` 与 LLM 全关）。
+`/opt/taa/{input,output}`）。**不装 semgrep、不装 teellm**：配置里的 `codeAudit` 与生产模板
+一致（含 `codeScan.engine=semgrep`），但运行时按角色关掉审计，打包时由
+`TAA_SCAN_ENGINE_PROVISION=skip` 跳过 payload 注入。
 
 ## 4. TEE 推理网关 — `build-teellm-image.sh`（由 `deploy-llm.sh` 部署）
 
