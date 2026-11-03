@@ -102,7 +102,7 @@ LLM Pod / teellm-service
     └── 明文 HTTP POST → 平台
         ├── /v1/llm/register
         ├── /v1/llm/heartbeat
-        └── /v1/llm/taaLog
+        └── /v1/llm/log
 ```
 
 **为什么不用独立进程。** 去掉外层信封后，出方向只剩 `net/http` + `encoding/json`，入方向只剩
@@ -160,9 +160,9 @@ LLM Pod / teellm-service
 
 30 秒一次，只报存活。平台若连续 3 个周期（90 秒）未收到，判离线。不携带健康、模型或度量信息。
 
-### 5.3 `POST /v1/llm/taaLog`（LLM → 平台，明文 JSON）
+### 5.3 `POST /v1/llm/log`（LLM → 平台，明文 JSON）
 
-结构与 TAA 的 `taaLog` 逐字段相同：
+路径不再沿用 TAA 的 `taaLog` 命名：它是 LLM 自己的运行日志通道，只是**报文字段**与 TAA 对齐。
 
 ```json
 {

@@ -30,7 +30,7 @@
 | `teellm/README.md` | 接口表路径与 `:8444` 说明、配置段说明 |
 | `build-teellm-image.sh` | `EXPOSE 8443` → `EXPOSE 8443 8444` |
 | `deploy-llm.sh` | 新增 `TEELLM_ATTESTATION_PORT`、`TEELLM_PLATFORM_ADDR`；`prepare_config` 注入两段 |
-| `tools/platform-mock/internal/handlers_llm.go`（新增） | `/v1/llm/register`、`/v1/llm/heartbeat`、`/v1/llm/taaLog` 明文处理 |
+| `tools/platform-mock/internal/handlers_llm.go`（新增） | `/v1/llm/register`、`/v1/llm/heartbeat`、`/v1/llm/log` 明文处理 |
 | `tools/platform-mock/internal/llm_state.go`（新增） | LLM 侧注册/心跳状态存储与 status 端点 |
 | `tools/platform-mock/internal/server.go` | 挂载上述路由 |
 | `teellm/teellm_test.go`、`teellm/resilience_test.go`、`internal/codeaudit/llm_test.go`、`internal/app/taa/app_test.go` | 路径字符串同步改名 |
@@ -1123,11 +1123,11 @@ func TestHeartbeatPayload(t *testing.T) {
 	}
 }
 
-func TestTaaLogPayloadShape(t *testing.T) {
+func TestLogPayloadShape(t *testing.T) {
 	var got map[string]any
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/v1/llm/taaLog" {
-			t.Errorf("path = %q, want /v1/llm/taaLog", r.URL.Path)
+		if r.URL.Path != "/v1/llm/log" {
+			t.Errorf("path = %q, want /v1/llm/log", r.URL.Path)
 		}
 		raw, _ := io.ReadAll(r.Body)
 		_ = json.Unmarshal(raw, &got)
@@ -1241,8 +1241,8 @@ const (
 	RegisterEndpoint = "/v1/llm/register"
 	// HeartbeatEndpoint receives the plaintext liveness ping.
 	HeartbeatEndpoint = "/v1/llm/heartbeat"
-	// TaaLogEndpoint receives batched run logs.
-	TaaLogEndpoint = "/v1/llm/taaLog"
+	// LogEndpoint receives batched run logs.
+	LogEndpoint = "/v1/llm/log"
 )
 
 // registerRequest mirrors taa/internal/platform.registerRequest field for
@@ -1321,21 +1321,23 @@ import (
 	"sync"
 )
 
-// taaLogEntry is one run-log record in the shape TAA reports.
-type taaLogEntry struct {
+// logEntry is one run-log record in the shape TAA reports.
+type logEntry struct {
 	Seq     uint64 `json:"seq"`
 	Message string `json:"message"`
 }
 
-// taaLogRequest mirrors taa/internal/controller.taaLogRequest. requestId is
-// always "system" and taskId stays empty: the LLM has no task concept, which is
-// exactly the shape TAA reports while idle.
-type taaLogRequest struct {
-	DockerID  string        `json:"dockerId"`
-	RequestID string        `json:"requestId"`
-	TaskID    string        `json:"taskId,omitempty"`
-	SeqStart  uint64        `json:"seqStart"`
-	Entries   []taaLogEntry `json:"entries"`
+// logRequest mirrors taa/internal/controller.taaLogRequest field for field,
+// which is why the payload parses with the platform's existing decoder. The
+// path is not TAA's: this is the LLM's own log channel.
+// requestId is always "system" and taskId stays empty: the LLM has no task
+// concept, which is exactly the shape TAA reports while idle.
+type logRequest struct {
+	DockerID  string     `json:"dockerId"`
+	RequestID string     `json:"requestId"`
+	TaskID    string     `json:"taskId,omitempty"`
+	SeqStart  uint64     `json:"seqStart"`
+	Entries   []logEntry `json:"entries"`
 }
 
 // Agent owns the three outbound reporting channels.
@@ -1345,7 +1347,7 @@ type Agent struct {
 	client *http.Client
 
 	mu      sync.Mutex
-	pending []taaLogEntry
+	pending []logEntry
 	failing map[string]bool
 }
 
@@ -1451,12 +1453,12 @@ func (a *Agent) pendingCount() int {
 func (a *Agent) flushLogs(ctx context.Context) {
 	a.mu.Lock()
 	for _, entry := range a.logs.Drain() {
-		a.pending = append(a.pending, taaLogEntry{Seq: entry.Seq, Message: entry.FormatMessage()})
+		a.pending = append(a.pending, logEntry{Seq: entry.Seq, Message: entry.FormatMessage()})
 	}
 	// Cap the queue as well as the ring: with the platform down for a long time
 	// the ring alone would not bound what is waiting to be sent.
 	if over := len(a.pending) - a.cfg.LogBufferSize; over > 0 {
-		a.pending = append([]taaLogEntry(nil), a.pending[over:]...)
+		a.pending = append([]logEntry(nil), a.pending[over:]...)
 	}
 	a.mu.Unlock()
 
@@ -1470,24 +1472,24 @@ func (a *Agent) flushLogs(ctx context.Context) {
 		if size > DefaultMaxLogBatchSize {
 			size = DefaultMaxLogBatchSize
 		}
-		batch := append([]taaLogEntry(nil), a.pending[:size]...)
+		batch := append([]logEntry(nil), a.pending[:size]...)
 		a.mu.Unlock()
 
-		err := a.postJSON(ctx, TaaLogEndpoint, taaLogRequest{
+		err := a.postJSON(ctx, LogEndpoint, logRequest{
 			DockerID:  a.cfg.DockerID,
 			RequestID: "system",
 			SeqStart:  batch[0].Seq,
 			Entries:   batch,
 		})
 		if err != nil {
-			a.reportFailure("taaLog", err)
+			a.reportFailure("log", err)
 			return
 		}
-		a.reportSuccess("taaLog")
+		a.reportSuccess("log")
 
 		a.mu.Lock()
 		if len(a.pending) >= size {
-			a.pending = append([]taaLogEntry(nil), a.pending[size:]...)
+			a.pending = append([]logEntry(nil), a.pending[size:]...)
 		}
 		a.mu.Unlock()
 	}
@@ -1504,7 +1506,7 @@ Expected: PASS，9 条测试。
 
 ```bash
 cd /home/hjy/taa && git add teellm/platformagent/
-git commit -m "feat(platformagent): add plaintext register, heartbeat and taaLog payloads"
+git commit -m "feat(platformagent): add plaintext register, heartbeat and log payloads"
 ```
 
 ---
@@ -1534,7 +1536,7 @@ func TestStartRegistersThenHeartbeatsAndFlushesLogs(t *testing.T) {
 			register++
 		case "/v1/llm/heartbeat":
 			beat++
-		case "/v1/llm/taaLog":
+		case "/v1/llm/log":
 			logs++
 		}
 		mu.Unlock()
@@ -1574,7 +1576,7 @@ func TestStartRegistersThenHeartbeatsAndFlushesLogs(t *testing.T) {
 		t.Errorf("heartbeat calls = %d, want at least 1", beat)
 	}
 	if logs < 1 {
-		t.Errorf("taaLog calls = %d, want at least 1", logs)
+		t.Errorf("log calls = %d, want at least 1", logs)
 	}
 }
 
@@ -2255,12 +2257,12 @@ func TestLLMHeartbeatRecordsLiveness(t *testing.T) {
 	}
 }
 
-func TestLLMTaaLogAcceptsPlaintextEntries(t *testing.T) {
-	logStore := newTaaLogStoreAt(t.TempDir()+"/llm-taaLog-state.json", 2000)
-	handler := llmTaaLogHandler(logStore)
+func TestLLMLogAcceptsPlaintextEntries(t *testing.T) {
+	logStore := newTaaLogStoreAt(t.TempDir()+"/llm-log-state.json", 2000)
+	handler := llmLogHandler(logStore)
 
 	body := `{"dockerId":"taa-teellm","requestId":"system","seqStart":1,"entries":[{"seq":1,"message":"[2026-11-02 10:00:00] [INFO] [teellm] ready"}]}`
-	req := httptest.NewRequest(http.MethodPost, "/v1/llm/taaLog", strings.NewReader(body))
+	req := httptest.NewRequest(http.MethodPost, "/v1/llm/log", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 	handler(rec, req)
@@ -2565,8 +2567,8 @@ func llmHeartbeatHandler(store *llmStateStore) http.HandlerFunc {
 	}
 }
 
-// llmTaaLogHandler accepts batched run logs in plaintext.
-func llmTaaLogHandler(store *taaLogStore) http.HandlerFunc {
+// llmLogHandler accepts batched run logs in plaintext.
+func llmLogHandler(store *taaLogStore) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		setCORS(w)
 		if r.Method == http.MethodOptions {
@@ -2633,7 +2635,7 @@ func llmResetHandler(state *llmStateStore) http.HandlerFunc {
 
 ```go
 	llmState := newLLMStateStore(cfg.StateDir)
-	llmLogStore := newTaaLogStoreAt(defaultStateFile(cfg.StateDir, "llm-taaLog-state.json"), 2000)
+	llmLogStore := newTaaLogStoreAt(defaultStateFile(cfg.StateDir, "llm-log-state.json"), 2000)
 ```
 
 在 `/v1/taa/taaLog` 路由之后追加：
@@ -2641,7 +2643,7 @@ func llmResetHandler(state *llmStateStore) http.HandlerFunc {
 ```go
 	mux.HandleFunc("/v1/llm/register", llmRegisterHandler(llmState))
 	mux.HandleFunc("/v1/llm/heartbeat", llmHeartbeatHandler(llmState))
-	mux.HandleFunc("/v1/llm/taaLog", llmTaaLogHandler(llmLogStore))
+	mux.HandleFunc("/v1/llm/log", llmLogHandler(llmLogStore))
 	mux.HandleFunc("/api/llm/status", llmStatusHandler(llmState, llmLogStore))
 	mux.HandleFunc("/api/llm/reset", llmResetHandler(llmState))
 ```
@@ -2731,7 +2733,7 @@ git commit -m "docs(teellm): document the /v1/llm surface and platform reporting
 | --- | --- |
 | §3.1 明文 `:8444` | Task 2 |
 | §3.2 路径改名 | Task 1 |
-| §5.0–5.4 报文 | Task 4（register/heartbeat/taaLog）、Task 2（getAttestation） |
+| §5.0–5.4 报文 | Task 4（register/heartbeat/log）、Task 2（getAttestation） |
 | §6 上报器行为 | Task 5 |
 | §7 显式埋点 | Task 6 Step 4 |
 | §8 代码落点 | Task 2–8 |
@@ -2742,7 +2744,7 @@ git commit -m "docs(teellm): document the /v1/llm surface and platform reporting
 
 - 平台地址默认值来自 §8 的配置示例（`http://172.16.10.181:18081`），由 `TEELLM_PLATFORM_ADDR` 覆盖。
 - `tools/platform-mock` 只新增了 `/api/llm/status` 与 `/api/llm/reset` 两个只读状态端点；内嵌看板页面本身不在本计划范围内，端到端验证改用这两个端点（Task 9 Step 2 之后的 curl 检查）。
-- `taaLog` 的 `taskId` 沿用 TAA 的 `omitempty`，因此报文里不出现该字段——与 TAA 空闲期报文一致。
+- 日志通道的 **报文字段**沿用 TAA 的 `taaLog` 结构（平台解析代码零改动），但**路径是 `/v1/llm/log`**，不沿用 TAA 的命名。
 
 **3. 类型一致性**
 

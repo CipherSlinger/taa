@@ -41,7 +41,7 @@
   - [7.2 LLM → 平台](#72-llm--平台)
     - [7.2.1 LLM 启动注册（/v1/llm/register）](#721-llm-启动注册v1llmregister)
     - [7.2.2 LLM 上报心跳（/v1/llm/heartbeat）](#722-llm-上报心跳v1llmheartbeat)
-    - [7.2.3 LLM 上报运行日志（/v1/llm/taaLog）](#723-llm-上报运行日志v1llmtaalog)
+    - [7.2.3 LLM 上报运行日志（/v1/llm/log）](#723-llm-上报运行日志v1llmlog)
   - [7.3 平台 → LLM](#73-平台--llm)
     - [7.3.1 获取远程证明报告（/v1/llm/getAttestation，明文 :8444）](#731-获取远程证明报告v1llmgetattestation明文-8444)
     - [7.3.2 代码审计判定（/v1/llm/verify，TEE-TLS :8443）](#732-代码审计判定v1llmverifytee-tls-8443)
@@ -1852,13 +1852,13 @@ curl -X POST "http://${PLATFORM_ADDR}/v1/llm/register" \
 | --- | --- | --- |
 | `received` | `bool` | 平台是否成功接收本次心跳 |
 
-#### 7.2.3 LLM 上报运行日志（/v1/llm/taaLog）
+#### 7.2.3 LLM 上报运行日志（/v1/llm/log）
 
-**请求**：`POST http://{platform.addr}/v1/llm/taaLog`
+**请求**：`POST http://{platform.addr}/v1/llm/log`
 
 **请求内容类型**：`application/json`
 
-结构与 [3.6 TAA 上报运行日志](#36-taa-上报运行日志v1taataalog)逐字段相同，只有两个取值固定：
+接口路径是 LLM 自己的命名，**不沿用 TAA 的 `/v1/taa/taaLog`**；只有报文结构与 [3.6 TAA 上报运行日志](#36-taa-上报运行日志v1taataalog)逐字段相同，且只有两个取值固定：
 
 **参数**：
 
