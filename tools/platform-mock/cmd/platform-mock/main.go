@@ -18,7 +18,7 @@ func main() {
 	flag.StringVar(&cfg.TAATarget, "taa-target", cfg.TAATarget, "TAA reverse proxy target")
 	flag.StringVar(&cfg.TAAPod, "taa-pod", cfg.TAAPod, "TAA pod name for discovery")
 	flag.StringVar(&cfg.TAANS, "taa-ns", cfg.TAANS, "TAA pod namespace")
-	flag.StringVar(&cfg.TAAPort, "taa-port", cfg.TAAPort, "TAA port for discovery")
+	flag.StringVar(&cfg.TAAPort, "taa-port", cfg.TAAPort, "TAA port for discovery and per-instance target derivation")
 	flag.BoolVar(&cfg.AllowEmptyAttestation, "allow-empty-attestation", false, "skip attestation check")
 	flag.StringVar(&cfg.SM2ID, "sm2-id", cfg.SM2ID, "SM2 signature identity, must match TAA's PLATFORM_SM2_ID (empty = protocol default)")
 	flag.StringVar(&cfg.PlatformKeyFile, "platform-key-file", cfg.PlatformKeyFile, "platform SM2 key file (default: <state-dir>/platform-key.json)")

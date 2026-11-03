@@ -30,7 +30,8 @@ type Config struct {
 	TAAPod string
 	// TAANS is the Kubernetes namespace for TAAPod (empty = default namespace).
 	TAANS string
-	// TAAPort is the TAA service port used for auto-discovery fallback.
+	// TAAPort is the TAA service port used for auto-discovery fallback and to
+	// derive each instance's target from its registration's source IP.
 	TAAPort string
 	// AllowEmptyAttestation allows registration without an attestation
 	// report, for local testing without TEE hardware.

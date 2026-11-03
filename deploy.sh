@@ -1887,10 +1887,18 @@ deploy_platform_mock() {
     --ready-timeout "$READY_TIMEOUT"
     --ready-interval "$READY_INTERVAL"
   )
-  if [[ "$MULTI_INSTANCE" != "1" ]]; then
+  if [[ "$MULTI_INSTANCE" == "1" ]]; then
+    # The port must be explicit: without --taa-target the mock derives each
+    # instance's target from its registration but otherwise falls back to its
+    # compiled default (6001), which would miss an overridden LOCAL_TAA_PORT.
+    mock_args+=(--taa-port "$LOCAL_TAA_PORT")
+    # Neutralize exported fixed targets so an inherited LOCAL_TAA_URL or
+    # PLATFORM_MOCK_TAA_TARGET cannot pin a single address again.
+    env LOCAL_TAA_URL= PLATFORM_MOCK_TAA_TARGET= "$PROJECT_DIR/deploy-platform-mock.sh" "${mock_args[@]}"
+  else
     mock_args+=(--taa-target "$LOCAL_TAA_URL")
+    "$PROJECT_DIR/deploy-platform-mock.sh" "${mock_args[@]}"
   fi
-  "$PROJECT_DIR/deploy-platform-mock.sh" "${mock_args[@]}"
 }
 
 deploy_docker_taa() {
@@ -2042,6 +2050,10 @@ if [[ "$DEPLOY_PLATFORM_MOCK" == true ]]; then
   if [[ "$MULTI_INSTANCE" == "1" ]]; then
     echo "  MULTI_INSTANCE=1: skipping single-Pod discovery; targets come from each registration"
     MOCK_ARGS+=(--taa-port "$CON_PORT")
+    # Neutralize exported fixed targets so an inherited LOCAL_TAA_URL or
+    # PLATFORM_MOCK_TAA_TARGET cannot pin a single address again.
+    step "deploying remote $PLATFORM_LABEL on ${PLATFORM_ADDR}"
+    env LOCAL_TAA_URL= PLATFORM_MOCK_TAA_TARGET= "$PROJECT_DIR/deploy-platform-mock.sh" "${MOCK_ARGS[@]}"
   else
     TAA_POD_IP=$(remote_ssh "kubectl $K_NS get pod '$TARGET_POD' -o jsonpath='{.status.podIP}' 2>/dev/null" || echo "")
     if [[ -n "$TAA_POD_IP" ]]; then
@@ -2051,10 +2063,9 @@ if [[ "$DEPLOY_PLATFORM_MOCK" == true ]]; then
       echo "  warning: could not discover TAA Pod IP, falling back to -taa-pod auto-discovery"
       MOCK_ARGS+=(--taa-pod "$TARGET_POD" --taa-ns "$TARGET_NAMESPACE" --taa-port "$CON_PORT")
     fi
+    step "deploying remote $PLATFORM_LABEL on ${PLATFORM_ADDR}"
+    "$PROJECT_DIR/deploy-platform-mock.sh" "${MOCK_ARGS[@]}"
   fi
-
-  step "deploying remote $PLATFORM_LABEL on ${PLATFORM_ADDR}"
-  "$PROJECT_DIR/deploy-platform-mock.sh" "${MOCK_ARGS[@]}"
 fi
 
 if [[ "$DEPLOY_TAA" == true ]]; then

@@ -44,6 +44,7 @@ TAA_IMAGE=taa-fhe:20261019 ./deploy-fhe.sh taa
 
 ```bash
 TARGET_POD=taa-env-slim-v2-20261016-7104e03003ae0072-f7fbbf8f5-kkdb2 ./deploy.sh taa 
+./deploy.sh taa
 ./deploy.sh docker save
 ```
 
@@ -110,16 +111,20 @@ platform-mock 的构建、启动、停止和就绪检查统一由仓库根目录
 - 远程启动使用 `nohup` 脱离 SSH，二进制上传到 `--remote-binary`（默认
   `--remote-dir/platform-mock`）。
 
-**多实例（默认）**
+**多实例模式（deploy.sh 需显式开启）**
 
-- 不传 `--taa-target` 即进入多实例模式：一个 platform-mock 进程同时服务多个 TAA 实例，
+- platform-mock 二进制默认多实例：不传 `--taa-target` 时，一个进程同时服务多个 TAA 实例，
   实例身份取注册请求里的 `dockerId`，每个实例在注册时按请求源 IP 推导自己的地址
   （`http://<源 IP>:<--taa-port>`，默认端口 6001）。
-- `deploy.sh` 通过 `MULTI_INSTANCE=1` 开启该模式，`docker` 与 `remote` 两种模式都支持：
+- `deploy.sh` 默认关闭（`MULTI_INSTANCE=0`），设置 `MULTI_INSTANCE=1` 才开启该模式，
+  `docker` 与 `remote` 两种模式都支持：
   ```bash
   MULTI_INSTANCE=1 ./deploy.sh docker
   MULTI_INSTANCE=1 ./deploy.sh remote
   ```
+- 两种模式都会显式传入端口（`docker` 用 `LOCAL_TAA_PORT`，`remote` 用 `CON_PORT`），
+  否则 mock 会退回内置默认 6001，与覆盖后的 TAA 端口不一致；多实例调用还会清空
+  `LOCAL_TAA_URL` / `PLATFORM_MOCK_TAA_TARGET`，避免外部环境变量重新固定单个目标。
 - 直接调用 `deploy-platform-mock.sh` 时省略 `--taa-target` 即可：
   ```bash
   ./deploy-platform-mock.sh local start --taa-port 6001
@@ -129,14 +134,16 @@ platform-mock 的构建、启动、停止和就绪检查统一由仓库根目录
 - 限制：反向代理或端口转发会丢失请求源 IP，此时无法按注册推导地址，应退回
   `--taa-target` 指定固定地址。
 
-**调用方差异（保持不变）**
+**调用方差异**
 
 - `deploy.sh remote` 不传 state/upload/allow-empty 参数，沿用二进制自身默认值。
 - `deploy-fhe.sh` 显式传 state/upload 目录、`--allow-empty-attestation`、`--static`，
   并使用 `--reuse --reset-register`。
-- `deploy.sh` 默认用 kubectl 发现 TAA Pod IP 后通过 `--taa-target` 传入；发现失败时
-  退回 `--taa-pod/--taa-ns/--taa-port`。设置 `MULTI_INSTANCE=1` 时跳过发现，直接传
-  `--taa-port`，由每个注册推导各自的目标地址。
+- `deploy.sh` 非多实例时：`docker` 传 `--taa-target $LOCAL_TAA_URL`；`remote` 用 kubectl
+  发现 TAA Pod IP 后传 `--taa-target`，发现失败退回 `--taa-pod/--taa-ns/--taa-port`。
+  设置 `MULTI_INSTANCE=1` 时，`docker` 不再传 `--taa-target`、`remote` 跳过发现，两者
+  都改为传 `--taa-port`（`docker` 用 `LOCAL_TAA_PORT`，`remote` 用 `CON_PORT`），由每个
+  注册推导各自的目标地址。
 
 
 # taa-teellm 部署命令

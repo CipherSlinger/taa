@@ -12,7 +12,9 @@
 #
 # Local mode runs the binary on this host. Remote mode uploads it over SSH and
 # starts it detached there. TAA-specific coupling stays in the caller: deploy.sh
-# still discovers the TAA Pod IP and passes it as --taa-target.
+# discovers the TAA Pod IP and passes it as --taa-target, unless MULTI_INSTANCE=1,
+# in which case it passes --taa-port and each instance derives its own target
+# from its registration.
 set -Eeuo pipefail
 
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

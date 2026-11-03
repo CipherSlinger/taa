@@ -66,10 +66,10 @@ list.
 | Flag | Default | Description |
 |------|---------|-------------|
 | `-addr` | `:8080` | Mock platform HTTP listen address. |
-| `-state-dir` | `/root/taa` (or `$STATE_DIR`) | Directory used to persist registration and execution state files (`register.json`, `report.json`). |
+| `-state-dir` | `/root/taa` (or `$STATE_DIR`) | Directory used to persist registration and execution state files (`register-state.json`, `report*-state.json`, `modelLog-state.json`, `taaLog-state.json`). |
 | `-upload-dir` | `.local/upload` (or `$UPLOAD_DIR`) | Directory used to store uploaded model files, served at `/files/`. |
 | `-taa-target` | `""` | Single-instance fixed TAA URL for reverse proxying (e.g. `http://127.0.0.1:6001`). When omitted, each instance's address is derived from its own registration. |
-| `-taa-pod` | `simple-busybox` (or `$TAA_POD`) | Target Kubernetes pod name used for auto-discovering the TAA IP address via `kubectl` when `-taa-target` is empty. |
+| `-taa-pod` | `simple-busybox` (or `$TAA_POD`) | Kubernetes pod name for discovering a fallback TAA address via `kubectl`; used when the per-instance address cannot be derived and `-taa-target` is not set. |
 | `-taa-ns` | `""` (or `$TAA_NS`) | Target Kubernetes namespace for `-taa-pod` (empty string indicates default namespace). |
 | `-taa-port` | `6001` (or `$TAA_PORT`) | Port on the target pod where TAA listens; also the port used to derive each instance's address from its registration. |
 | `-allow-empty-attestation` | `false` | When set to `true`, permits node registration without a valid Hygon CSV attestation report (useful for simulated non-TEE environments). |
@@ -119,9 +119,10 @@ flag: instance identity is the registration's `dockerId`.
   (a single fixed address) there.
 - **Selecting an instance**: instance-scoped console endpoints (`/api/dashboard/status`, the
   register/report/progress/modelLog/taaLog `*/status` and `*/reset` routes, `/api/taa/*`,
-  `/api/upload`) accept `?dockerId=`; absent means the most recently accepted registration.
-  Global endpoints (`/api/instances`, `/api/uploads*`, `/api/crypto/*`, `/api/request-logs/*`)
-  ignore it. `GET /api/instances` returns the instance list and `defaultDockerId`.
+  `/api/upload`, `/api/taa-target`, `/api/fhe/submit`) accept `?dockerId=`; absent means the
+  most recently accepted registration. Global endpoints (`/api/instances`, `/api/uploads*`,
+  `/api/crypto/*`, `/api/request-logs/*`) ignore it. `GET /api/instances` returns the instance
+  list and `defaultDockerId`.
 - **Proxying**: `/taa/*` proxies to the selected instance and strips `dockerId` before
   forwarding.
 
