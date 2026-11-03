@@ -44,6 +44,27 @@ func TestRetryRegisterStopsAtTheWindow(t *testing.T) {
 	}
 }
 
+// TestRetryRegisterWithoutAWindowRetriesUntilCancelled pins the production
+// window: zero means no window, so an unreachable platform keeps the loop alive
+// until shutdown instead of giving up after minutes.
+func TestRetryRegisterWithoutAWindowRetriesUntilCancelled(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	attempts := 0
+	err := retryRegister(ctx, time.Millisecond, 2*time.Millisecond, 0, func(context.Context) error {
+		attempts++
+		if attempts == 4 {
+			cancel()
+		}
+		return errors.New("connection refused")
+	})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected context.Canceled, got %v", err)
+	}
+	if attempts != 4 {
+		t.Fatalf("expected the loop to keep retrying until cancellation, got %d attempts", attempts)
+	}
+}
+
 // TestRetryRegisterHonoursContextCancellation checks that shutdown does not leave a
 // retry sleeping until the next delay elapses.
 func TestRetryRegisterHonoursContextCancellation(t *testing.T) {
