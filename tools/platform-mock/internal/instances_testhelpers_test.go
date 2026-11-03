@@ -40,6 +40,14 @@ func testManagerWith(t *testing.T, dockerID string, configure func(*instanceStor
 // the manager, the keystore and the derived target all take the production path.
 func registerInstanceForTest(t *testing.T, mgr *instanceManager, dockerID string, priv *crypto.SM2PrivateKey) {
 	t.Helper()
+	registerInstanceFromForTest(t, mgr, dockerID, priv, "")
+}
+
+// registerInstanceFromForTest is registerInstanceForTest with an explicit
+// RemoteAddr, so a test can pin the address each instance registers from. An
+// empty remoteAddr keeps the httptest default (192.0.2.1:1234).
+func registerInstanceFromForTest(t *testing.T, mgr *instanceManager, dockerID string, priv *crypto.SM2PrivateKey, remoteAddr string) {
+	t.Helper()
 	ks := currentPlatformKeys()
 	hexKey, err := crypto.MarshalSM2PublicKeyHex(&priv.PublicKey)
 	if err != nil {
@@ -59,6 +67,9 @@ func registerInstanceForTest(t *testing.T, mgr *instanceManager, dockerID string
 	}
 	req := httptest.NewRequest(http.MethodPost, "/v1/taa/register", bytes.NewReader(sealed))
 	req.Header.Set("Content-Type", "application/json")
+	if remoteAddr != "" {
+		req.RemoteAddr = remoteAddr
+	}
 	w := httptest.NewRecorder()
 	registerHandler(mgr, true).ServeHTTP(w, req)
 	if w.Code != http.StatusOK {

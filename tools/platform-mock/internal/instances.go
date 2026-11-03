@@ -149,7 +149,8 @@ func (b *instanceStores) saveMeta(meta instanceMeta) {
 type instanceManager struct {
 	mu   sync.RWMutex
 	root string
-	// cfg is reserved for test construction and later tasks.
+	// cfg is kept so handlers can derive an instance's target with the
+	// configured TAA port.
 	cfg  Config
 	byID map[string]*instanceStores
 	// scanned records that the initial on-disk scan ran; reserved for later

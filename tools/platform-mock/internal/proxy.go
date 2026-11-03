@@ -162,10 +162,11 @@ func deriveTAATarget(remoteAddr, port string) string {
 	}
 	host = strings.TrimSpace(strings.Trim(host, "[]"))
 	if net.ParseIP(host) == nil {
-		log.Printf("cannot derive the TAA target from RemoteAddr %q: %v", remoteAddr, err)
+		log.Printf("cannot derive the TAA target from RemoteAddr %q: %q is not an IP address", remoteAddr, host)
 		return ""
 	}
-	if strings.TrimSpace(port) == "" {
+	port = strings.TrimSpace(port)
+	if port == "" {
 		port = defaultTAAPort
 	}
 	return "http://" + net.JoinHostPort(host, port)

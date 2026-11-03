@@ -79,6 +79,7 @@ func TestDeriveTAATarget(t *testing.T) {
 	}{
 		{"ipv4", "10.244.0.7:54321", "6001", "http://10.244.0.7:6001"},
 		{"ipv6", "[fd00::7]:54321", "6001", "http://[fd00::7]:6001"},
+		{"bracketed ipv6 no port", "[fd00::7]", "6001", "http://[fd00::7]:6001"},
 		{"bare ip", "10.244.0.7", "6001", "http://10.244.0.7:6001"},
 		{"default port", "10.244.0.7:1234", "", "http://10.244.0.7:6001"},
 		{"empty", "", "6001", ""},
@@ -111,17 +112,25 @@ func TestRegistrationDerivesAndKeepsItsOwnTargetAndKey(t *testing.T) {
 	if err != nil {
 		t.Fatalf("generate key B: %v", err)
 	}
-	registerInstanceForTest(t, mgr, "docker-a", keyA)
-	registerInstanceForTest(t, mgr, "docker-b", keyB)
+	registerInstanceFromForTest(t, mgr, "docker-a", keyA, "192.0.2.1:1234")
+	registerInstanceFromForTest(t, mgr, "docker-b", keyB, "192.0.2.5:1234")
 
-	for _, id := range []string{"docker-a", "docker-b"} {
+	wantTargets := map[string]string{
+		"docker-a": "http://192.0.2.1:6001",
+		"docker-b": "http://192.0.2.5:6001",
+	}
+	for id, want := range wantTargets {
 		b := mgr.lookup(id)
 		if b == nil {
 			t.Fatalf("%s bundle missing", id)
 		}
-		// httptest.NewRequest uses 192.0.2.1:1234 as RemoteAddr.
-		if got := b.target(); got != "http://192.0.2.1:6001" {
-			t.Fatalf("%s target = %q, want http://192.0.2.1:6001", id, got)
+		if got := b.target(); got != want {
+			t.Fatalf("%s target = %q, want %q", id, got, want)
+		}
+		// The register card must carry the derived target too, not only the
+		// instance metadata.
+		if got := b.register.get().TaaTarget; got != want {
+			t.Fatalf("%s register card target = %q, want %q", id, got, want)
 		}
 		if ks.taaPublicFor(id) == nil {
 			t.Fatalf("%s key was not adopted", id)
@@ -129,6 +138,15 @@ func TestRegistrationDerivesAndKeepsItsOwnTargetAndKey(t *testing.T) {
 	}
 	if ks.taaPublicFor("docker-a") == ks.taaPublicFor("docker-b") {
 		t.Fatal("both instances share one key")
+	}
+
+	// A re-registration moves only its own instance's target.
+	registerInstanceFromForTest(t, mgr, "docker-a", keyA, "192.0.2.9:1234")
+	if got := mgr.lookup("docker-a").target(); got != "http://192.0.2.9:6001" {
+		t.Fatalf("docker-a target after re-registration = %q, want http://192.0.2.9:6001", got)
+	}
+	if got := mgr.lookup("docker-b").target(); got != "http://192.0.2.5:6001" {
+		t.Fatalf("docker-b target changed by docker-a re-registration: %q, want http://192.0.2.5:6001", got)
 	}
 }
 
