@@ -59,6 +59,20 @@ func TestInstancesEndpointListsEveryInstanceAndMarksTheDefault(t *testing.T) {
 	if !foundTarget {
 		t.Fatal("the registered target is missing from the instance summary")
 	}
+	defaultCount := 0
+	defaultItem := instanceSummary{}
+	for _, item := range payload.Result.Instances {
+		if item.Default {
+			defaultCount++
+			defaultItem = item
+		}
+	}
+	if defaultCount != 1 {
+		t.Fatalf("instances marked default = %d, want exactly 1", defaultCount)
+	}
+	if defaultItem.DockerID != payload.Result.Default {
+		t.Fatalf("default instance dockerId = %q, defaultDockerId = %q", defaultItem.DockerID, payload.Result.Default)
+	}
 }
 
 func TestRegisterStatusAnswersBeforeAnyRegistration(t *testing.T) {

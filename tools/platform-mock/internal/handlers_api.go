@@ -77,6 +77,15 @@ func instanceListPayload(mgr *instanceManager) ([]instanceSummary, string) {
 func instancesHandler(mgr *instanceManager) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		setCORS(w)
+		if r.Method == http.MethodOptions {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		if r.Method != http.MethodGet {
+			w.Header().Set("Allow", http.MethodGet)
+			writeEnvelope(w, http.StatusMethodNotAllowed, "仅支持 GET 方法", nil, http.StatusMethodNotAllowed)
+			return
+		}
 		items, defaultID := instanceListPayload(mgr)
 		writeEnvelope(w, http.StatusOK, "success", map[string]any{
 			"instances":       items,
@@ -179,7 +188,7 @@ func instanceResetHandler(mgr *instanceManager, apply func(*instanceStores)) htt
 		if id := requestedDockerID(r); id != "" {
 			b := mgr.lookup(id)
 			if b == nil {
-				writeEnvelope(w, http.StatusNotFound, "指定的 dockerId 不存在", nil, http.StatusNotFound)
+				writeInstanceError(w, errInstanceNotFound)
 				return
 			}
 			apply(b)

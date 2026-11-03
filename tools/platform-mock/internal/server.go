@@ -60,7 +60,6 @@ func init() {
 // Server is the platform mock HTTP server.
 type Server struct {
 	cfg        Config
-	uploadDir  string
 	httpServer *http.Server
 }
 
@@ -165,8 +164,7 @@ func NewServer(cfg Config) *Server {
 	mux.Handle("/taa/", loggingReverseProxyHandler(http.StripPrefix("/taa", dynamicTAAProxyHandler(mgr, newProxyPool()))))
 
 	return &Server{
-		cfg:       cfg,
-		uploadDir: uploadDir,
+		cfg: cfg,
 		httpServer: &http.Server{
 			Addr:              cfg.Addr,
 			Handler:           mux,
