@@ -6,6 +6,23 @@ let currentLogFilter = 'ALL';
 let currentSearchKeyword = '';
 let autoScrollLocked = true;
 
+// Unpause both panels after an instance switch: a paused fetch returns early,
+// which would leave the previous instance's log lines on screen.
+function resetLogPauseForInstanceChange() {
+  modelLogPaused = false;
+  taaLogPaused = false;
+  const modelBtn = document.getElementById('modelLogPauseBtn');
+  if (modelBtn) {
+    modelBtn.textContent = '暂停';
+    modelBtn.className = 'secondary';
+  }
+  const taaBtn = document.getElementById('taaLogPauseBtn');
+  if (taaBtn) {
+    taaBtn.textContent = '暂停';
+    taaBtn.className = 'secondary';
+  }
+}
+
 // TAA log lines arrive pre-formatted by the daemon: the level lives inside the
 // text as "[YYYY-MM-DD HH:MM:SS] [LEVEL] [component] message", and /v1/taa/taaLog
 // carries no separate level field. This pattern recovers that token.

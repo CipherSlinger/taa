@@ -2771,12 +2771,20 @@ func TestConsoleModePanelsAreTaggedAndHidden(t *testing.T) {
 func TestFrontendInstanceSelector(t *testing.T) {
 	for _, want := range []string{
 		`id="instanceSelect"`,
+		`id="instanceSelectLabel"`,
 		"function currentDockerId()",
 		"function withDockerId(url)",
 		"function mockFetch(url, opts)",
 		"function loadInstances()",
+		"function initInstanceSelector()",
+		"initInstanceSelector();",
 		"fetch('/api/instances'",
+		"sel.addEventListener('change'",
+		"target.endsWith('/taa')",
 		"instanceSelect').style.display",
+		"list.length > 1",
+		"encodeURIComponent(id)",
+		"withDockerId('/api/upload')",
 		"dockerId=",
 	} {
 		if !strings.Contains(frontendBundle, want) {
@@ -2791,9 +2799,19 @@ func TestFrontendInstanceSelector(t *testing.T) {
 		"mockFetch('/api/modelLog/status'",
 		"mockFetch('/api/taaLog/status'",
 		"mockFetch('/api/dashboard/status'",
+		"mockFetch('/api/dashboard/status', { cache: 'no-store' })",
+		"mockFetch('/api/upload/delete'",
 	} {
 		if !strings.Contains(frontendBundle, want) {
 			t.Fatalf("frontendBundle missing instance-aware call %q", want)
 		}
+	}
+	// Both the fast-tier poller (api.js) and the explicit refresh (app.js) must
+	// be instance-aware; one of them left on plain fetch shows default data.
+	if got := strings.Count(frontendBundle, "mockFetch('/api/dashboard/status'"); got != 2 {
+		t.Fatalf("expected 2 instance-aware dashboard calls, got %d", got)
+	}
+	if strings.Contains(frontendBundle, "fetch('/api/register/status'") {
+		t.Fatal("a register status call still bypasses mockFetch")
 	}
 }

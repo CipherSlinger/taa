@@ -427,6 +427,8 @@ async function deleteUploadedFile(filename) {
   if (!confirm(`确认删除文件 ${filename} 吗？`)) return;
 
   try {
+    // The delete routes share the legacy upload family and are global for now,
+    // so the extra dockerId is accepted but ignored by the server.
     const res = await mockFetch('/api/upload/delete', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },

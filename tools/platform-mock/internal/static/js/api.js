@@ -26,40 +26,58 @@ function mockFetch(url, opts) {
   return fetch(withDockerId(url), opts);
 }
 
-function applyInstanceList(list, defaultId) {
-  const sel = document.getElementById('instanceSelect');
-  const label = document.getElementById('instanceSelectLabel');
-  if (!sel) return;
-  const previous = sel.value || currentInstanceDockerId;
-  sel.innerHTML = '';
-  list.forEach((item) => {
-    const opt = document.createElement('option');
-    opt.value = item.dockerId || '';
-    const name = item.dockerId || '(legacy)';
-    opt.textContent = item.accepted ? name : name + ' (未注册)';
-    sel.appendChild(opt);
-  });
-  if (previous && list.some((item) => (item.dockerId || '') === previous)) {
-    sel.value = previous;
-  } else {
-    sel.value = defaultId || '';
-  }
-  currentInstanceDockerId = sel.value;
-  const show = list.length > 1;
+let instanceListSignature = null;
+
+function setInstanceSelectorVisibility(show) {
   document.getElementById('instanceSelect').style.display = show ? '' : 'none';
+  const label = document.getElementById('instanceSelectLabel');
   if (label) label.style.display = show ? '' : 'none';
 }
 
+function applyInstanceList(list, defaultId) {
+  const sel = document.getElementById('instanceSelect');
+  if (!sel) return;
+  // Rebuilding identical options closes an open dropdown, so only touch the DOM
+  // when the instance set or the default actually changed.
+  const signature = list.map((item) => (item.dockerId || '') + '|' + (item.accepted ? '1' : '0')).join(',') + '#' + (defaultId || '');
+  if (signature !== instanceListSignature) {
+    instanceListSignature = signature;
+    const previous = sel.value || currentInstanceDockerId;
+    sel.innerHTML = '';
+    list.forEach((item) => {
+      const opt = document.createElement('option');
+      opt.value = item.dockerId || '';
+      const name = item.dockerId || '(legacy)';
+      opt.textContent = item.accepted ? name : name + ' (未注册)';
+      sel.appendChild(opt);
+    });
+    if (previous && list.some((item) => (item.dockerId || '') === previous)) {
+      sel.value = previous;
+    } else {
+      sel.value = defaultId || '';
+    }
+  } else if (!sel.value) {
+    sel.value = defaultId || '';
+  }
+  currentInstanceDockerId = sel.value;
+  setInstanceSelectorVisibility(list.length > 1);
+}
+
+let instancesInFlight = false;
+
 async function loadInstances() {
-  let payload = null;
+  if (instancesInFlight || document.hidden) return;
+  instancesInFlight = true;
   try {
     const res = await fetch('/api/instances', { cache: 'no-store' });
-    payload = await res.json();
+    const payload = await res.json();
+    const result = (payload && payload.result) || {};
+    applyInstanceList(result.instances || [], result.defaultDockerId || '');
   } catch (_) {
-    return;
+    // Ignore transient errors; the next poll retries.
+  } finally {
+    instancesInFlight = false;
   }
-  const result = (payload && payload.result) || {};
-  applyInstanceList(result.instances || [], result.defaultDockerId || '');
 }
 
 function initInstanceSelector() {
@@ -67,6 +85,8 @@ function initInstanceSelector() {
   if (sel) {
     sel.addEventListener('change', () => {
       currentInstanceDockerId = sel.value;
+      // A paused panel skips its fetch, so clear the flags before refreshing.
+      if (typeof resetLogPauseForInstanceChange === 'function') resetLogPauseForInstanceChange();
       if (typeof refreshStatus === 'function') refreshStatus();
       if (typeof refreshReportResStatus === 'function') refreshReportResStatus();
       if (typeof refreshReportModelImportStatus === 'function') refreshReportModelImportStatus();
@@ -75,6 +95,12 @@ function initInstanceSelector() {
       if (typeof refreshDashboardStatus === 'function') refreshDashboardStatus();
       if (typeof fetchModelLogs === 'function') fetchModelLogs();
       if (typeof fetchTaaLogs === 'function') fetchTaaLogs();
+      // Refresh the proxy badge only when the address still auto-detected; a
+      // manually typed address must survive an instance switch.
+      const addr = document.getElementById('taaAddr');
+      if (addr && addr.value === location.origin + '/taa' && typeof detectTAAProxy === 'function') {
+        detectTAAProxy();
+      }
     });
   }
   loadInstances();
