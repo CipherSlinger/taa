@@ -1368,10 +1368,11 @@ func openTAARequestBody(r *http.Request) ([]byte, string, error) {
 		bundle := mgr.instanceForRegistration(state.DockerID, state.Accepted)
 ```
 
-把原来 `if err := currentPlatformKeys().setTaaPublicKey(registeredPub); err != nil {` 改为（本任务先沿用单钥包装，Task 4 改成按 id）：
+把原来 `if err := currentPlatformKeys().setTaaPublicKey(registeredPub); err != nil {` 改为按 id 采纳
+（两个实例的入站测试要求如此：共用单钥时后注册的实例会覆盖前者的钥）：
 
 ```go
-		if err := currentPlatformKeys().setTaaPublicKey(registeredPub); err != nil {
+		if err := currentPlatformKeys().setTaaPublicKeyFor(state.DockerID, registeredPub); err != nil {
 ```
 
 其余 7 个 handler 的机械改动：
@@ -1604,7 +1605,8 @@ func deriveTAATarget(remoteAddr, port string) string {
 		}
 ```
 
-把密钥采纳改为：
+把密钥采纳改为（Task 3 已提前完成这一步：两个实例的入站测试要求注册时按 id 存钥，
+否则后注册的实例会覆盖前者的钥）：
 
 ```go
 		if err := currentPlatformKeys().setTaaPublicKeyFor(state.DockerID, registeredPub); err != nil {
