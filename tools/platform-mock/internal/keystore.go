@@ -194,6 +194,8 @@ func (s *keystore) platformPublicHex() string {
 // taaPubForLocked returns the key registered for dockerID. Callers must hold mu.
 // An empty identity, or an id with no key of its own, falls back to the legacy
 // single key so a state directory written before multi-instance keeps working.
+// The legacy fallback is an unauthenticated migration aid: it is offered for any
+// unknown id until that id registers a key of its own.
 func (s *keystore) taaPubForLocked(dockerID string) *teecrypto.SM2PublicKey {
 	if dockerID != "" {
 		if pub, ok := s.taaPubs[dockerID]; ok {
@@ -213,7 +215,8 @@ func (s *keystore) taaPublic() *teecrypto.SM2PublicKey {
 	return s.taaPublicFor("")
 }
 
-// hasTaaPublicKey reports whether an outbound request can be sealed at all.
+// hasTaaPublicKey reports whether the legacy single key is registered, which is
+// the key the wrapper methods use; it says nothing about per-instance keys.
 func (s *keystore) hasTaaPublicKey() bool {
 	return s.taaPublic() != nil
 }
@@ -221,6 +224,9 @@ func (s *keystore) hasTaaPublicKey() bool {
 // setTaaPublicKeyFor records one instance's key. Re-registering the same
 // dockerId is a key rotation and replaces only that instance's entry.
 func (s *keystore) setTaaPublicKeyFor(dockerID string, pub *teecrypto.SM2PublicKey) error {
+	if pub == nil {
+		return fmt.Errorf("SM2 public key for %q is nil", dockerID)
+	}
 	s.mu.Lock()
 	if dockerID == "" {
 		s.legacyTaaPub = pub
@@ -286,6 +292,11 @@ func (s *keystore) sealForTAA(plaintext []byte) ([]byte, error) {
 // signature is verified with the hinted instance's key (or the legacy key), and
 // only then is the plaintext dockerId read. Both non-empty and different means
 // the envelope was built for one instance and claims another, which is refused.
+//
+// An empty hint verifies with the legacy key and returns an empty identity: only
+// the legacy key can have signed such an envelope, its owner is the legacy
+// instance, and the plaintext dockerId was not authenticated by any instance
+// key, so it must not select another instance's store.
 func (s *keystore) openBodyWithID(body []byte) ([]byte, string, error) {
 	env, err := envelope.Parse(body)
 	if err != nil {
@@ -296,16 +307,18 @@ func (s *keystore) openBodyWithID(body []byte) ([]byte, string, error) {
 	if err != nil {
 		return nil, "", err
 	}
+	if hint == "" {
+		// Only the legacy key can have verified this. Its owner is the legacy
+		// instance, so the plaintext dockerId - which nothing authenticated -
+		// must not select another instance's store.
+		return plaintext, "", nil
+	}
 	var probe struct {
 		DockerID string `json:"dockerId"`
 	}
 	_ = json.Unmarshal(plaintext, &probe)
-	plainID := strings.TrimSpace(probe.DockerID)
-	if hint != "" && plainID != "" && hint != plainID {
+	if plainID := strings.TrimSpace(probe.DockerID); plainID != "" && plainID != hint {
 		return nil, "", fmt.Errorf("envelope dockerId %q does not match the plaintext dockerId %q", hint, plainID)
-	}
-	if plainID != "" {
-		return plaintext, plainID, nil
 	}
 	return plaintext, hint, nil
 }
@@ -369,7 +382,7 @@ func (s *keystore) openRegister(body []byte) ([]byte, *teecrypto.SM2PublicKey, e
 		return nil, nil, fmt.Errorf("parse register taaPublicKey: %w", err)
 	}
 
-	if _, err := envelope.OpenFromPlatform(priv, pub, s.userID, env); err != nil {
+	if _, err := envelope.OpenFromPlatform(priv, pub, s.userIDBytes(), env); err != nil {
 		return nil, nil, fmt.Errorf("verify the registration self-signature: %w", err)
 	}
 	return plaintext, pub, nil

@@ -193,8 +193,14 @@ func TestKeystoreKeepsOneKeyPerInstance(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create the keystore: %v", err)
 	}
-	keyA, _ := crypto.GenerateSM2KeyPair()
-	keyB, _ := crypto.GenerateSM2KeyPair()
+	keyA, err := crypto.GenerateSM2KeyPair()
+	if err != nil {
+		t.Fatalf("generate key A: %v", err)
+	}
+	keyB, err := crypto.GenerateSM2KeyPair()
+	if err != nil {
+		t.Fatalf("generate key B: %v", err)
+	}
 	if err := ks.setTaaPublicKeyFor("docker-a", &keyA.PublicKey); err != nil {
 		t.Fatalf("register key A: %v", err)
 	}
@@ -207,7 +213,10 @@ func TestKeystoreKeepsOneKeyPerInstance(t *testing.T) {
 		if err != nil {
 			t.Fatalf("encode key for %s: %v", id, err)
 		}
-		expected, _ := crypto.MarshalSM2PublicKeyHex(&want.PublicKey)
+		expected, err := crypto.MarshalSM2PublicKeyHex(&want.PublicKey)
+		if err != nil {
+			t.Fatalf("encode the expected key for %s: %v", id, err)
+		}
 		if got != expected {
 			t.Fatalf("key for %s = %s, want %s", id, got, expected)
 		}
@@ -223,8 +232,14 @@ func TestKeystorePersistsOneKeyPerInstance(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create the keystore: %v", err)
 	}
-	keyA, _ := crypto.GenerateSM2KeyPair()
-	keyB, _ := crypto.GenerateSM2KeyPair()
+	keyA, err := crypto.GenerateSM2KeyPair()
+	if err != nil {
+		t.Fatalf("generate key A: %v", err)
+	}
+	keyB, err := crypto.GenerateSM2KeyPair()
+	if err != nil {
+		t.Fatalf("generate key B: %v", err)
+	}
 	if err := ks.setTaaPublicKeyFor("docker-a", &keyA.PublicKey); err != nil {
 		t.Fatalf("register key A: %v", err)
 	}
@@ -236,11 +251,67 @@ func TestKeystorePersistsOneKeyPerInstance(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reopen the keystore: %v", err)
 	}
-	for _, id := range []string{"docker-a", "docker-b"} {
-		if reopened.taaPublicFor(id) == nil {
-			t.Fatalf("key for %s did not survive a restart", id)
+	want := map[string]*crypto.SM2PrivateKey{"docker-a": keyA, "docker-b": keyB}
+	for id, key := range want {
+		got, err := crypto.MarshalSM2PublicKeyHex(reopened.taaPublicFor(id))
+		if err != nil {
+			t.Fatalf("decode the persisted key for %s: %v", id, err)
+		}
+		expected, err := crypto.MarshalSM2PublicKeyHex(&key.PublicKey)
+		if err != nil {
+			t.Fatalf("encode the expected key for %s: %v", id, err)
+		}
+		if got != expected {
+			t.Fatalf("persisted key for %s = %s, want %s", id, got, expected)
 		}
 	}
+}
+
+// Re-registering one dockerId is a rotation of that key only; the other
+// instance must stay on the key it registered.
+func TestKeystoreRotatesOnlyTheRegisteredInstance(t *testing.T) {
+	ks, err := newMemoryKeystore(nil)
+	if err != nil {
+		t.Fatalf("create the keystore: %v", err)
+	}
+	keyA, err := crypto.GenerateSM2KeyPair()
+	if err != nil {
+		t.Fatalf("generate key A: %v", err)
+	}
+	keyB, err := crypto.GenerateSM2KeyPair()
+	if err != nil {
+		t.Fatalf("generate key B: %v", err)
+	}
+	rotatedA, err := crypto.GenerateSM2KeyPair()
+	if err != nil {
+		t.Fatalf("generate the rotated key A: %v", err)
+	}
+	if err := ks.setTaaPublicKeyFor("docker-a", &keyA.PublicKey); err != nil {
+		t.Fatalf("register key A: %v", err)
+	}
+	if err := ks.setTaaPublicKeyFor("docker-b", &keyB.PublicKey); err != nil {
+		t.Fatalf("register key B: %v", err)
+	}
+	if err := ks.setTaaPublicKeyFor("docker-a", &rotatedA.PublicKey); err != nil {
+		t.Fatalf("rotate key A: %v", err)
+	}
+
+	assertTaaKey := func(dockerID string, want *crypto.SM2PrivateKey) {
+		t.Helper()
+		got, err := crypto.MarshalSM2PublicKeyHex(ks.taaPublicFor(dockerID))
+		if err != nil {
+			t.Fatalf("encode the key for %s: %v", dockerID, err)
+		}
+		expected, err := crypto.MarshalSM2PublicKeyHex(&want.PublicKey)
+		if err != nil {
+			t.Fatalf("encode the expected key for %s: %v", dockerID, err)
+		}
+		if got != expected {
+			t.Fatalf("key for %s = %s, want %s", dockerID, got, expected)
+		}
+	}
+	assertTaaKey("docker-a", rotatedA)
+	assertTaaKey("docker-b", keyB)
 }
 
 func TestKeystoreFallsBackToTheLegacySingleKey(t *testing.T) {
@@ -248,7 +319,10 @@ func TestKeystoreFallsBackToTheLegacySingleKey(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create the keystore: %v", err)
 	}
-	legacy, _ := crypto.GenerateSM2KeyPair()
+	legacy, err := crypto.GenerateSM2KeyPair()
+	if err != nil {
+		t.Fatalf("generate the legacy key: %v", err)
+	}
 	if err := ks.setTaaPublicKey(&legacy.PublicKey); err != nil {
 		t.Fatalf("register the legacy key: %v", err)
 	}
@@ -262,7 +336,10 @@ func TestKeystoreRejectsAPlaintextDockerIDMismatch(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create the keystore: %v", err)
 	}
-	keyA, _ := crypto.GenerateSM2KeyPair()
+	keyA, err := crypto.GenerateSM2KeyPair()
+	if err != nil {
+		t.Fatalf("generate key A: %v", err)
+	}
 	if err := ks.setTaaPublicKeyFor("docker-a", &keyA.PublicKey); err != nil {
 		t.Fatalf("register key A: %v", err)
 	}
@@ -287,10 +364,20 @@ func TestKeystoreOpensWithTheHintedInstanceKey(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create the keystore: %v", err)
 	}
-	keyA, _ := crypto.GenerateSM2KeyPair()
-	keyB, _ := crypto.GenerateSM2KeyPair()
-	_ = ks.setTaaPublicKeyFor("docker-a", &keyA.PublicKey)
-	_ = ks.setTaaPublicKeyFor("docker-b", &keyB.PublicKey)
+	keyA, err := crypto.GenerateSM2KeyPair()
+	if err != nil {
+		t.Fatalf("generate key A: %v", err)
+	}
+	keyB, err := crypto.GenerateSM2KeyPair()
+	if err != nil {
+		t.Fatalf("generate key B: %v", err)
+	}
+	if err := ks.setTaaPublicKeyFor("docker-a", &keyA.PublicKey); err != nil {
+		t.Fatalf("register key A: %v", err)
+	}
+	if err := ks.setTaaPublicKeyFor("docker-b", &keyB.PublicKey); err != nil {
+		t.Fatalf("register key B: %v", err)
+	}
 
 	platformPriv := ks.platformPrivate()
 	keys, err := envelope.NewKeys(&platformPriv.PublicKey, keyA, ks.userIDBytes())
@@ -310,5 +397,37 @@ func TestKeystoreOpensWithTheHintedInstanceKey(t *testing.T) {
 	}
 	if string(plaintext) != `{"dockerId":"docker-a"}` {
 		t.Fatalf("plaintext = %s", plaintext)
+	}
+}
+
+// A legacy-key holder must not be able to name another instance: without a hint
+// the plaintext dockerId is unauthenticated and cannot select a store.
+func TestKeystoreDoesNotTrustAPlaintextIDWithoutAHint(t *testing.T) {
+	ks, err := newMemoryKeystore(nil)
+	if err != nil {
+		t.Fatalf("create the keystore: %v", err)
+	}
+	legacy, err := crypto.GenerateSM2KeyPair()
+	if err != nil {
+		t.Fatalf("generate the legacy key: %v", err)
+	}
+	if err := ks.setTaaPublicKeyFor("", &legacy.PublicKey); err != nil {
+		t.Fatalf("register the legacy key: %v", err)
+	}
+	platformPriv := ks.platformPrivate()
+	keys, err := envelope.NewKeys(&platformPriv.PublicKey, legacy, ks.userIDBytes())
+	if err != nil {
+		t.Fatalf("build the TAA envelope keys: %v", err)
+	}
+	// No hint: only the legacy key can verify this, so the plaintext id is
+	// unauthenticated and must not name an instance.
+	sealed, err := keys.Seal([]byte(`{"dockerId":"docker-b"}`), "")
+	if err != nil {
+		t.Fatalf("seal without a hint: %v", err)
+	}
+	if _, id, err := ks.openBodyWithID(sealed); err != nil {
+		t.Fatalf("open without a hint: %v", err)
+	} else if id != "" {
+		t.Fatalf("identity = %q, want the empty legacy id", id)
 	}
 }
