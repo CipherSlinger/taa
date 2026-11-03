@@ -33,18 +33,25 @@
 **关键兼容规则（贯穿所有任务）：** 写路径永远不为陌生 `dockerId` 创建目录。
 
 ```go
-// instanceForWrite picks the bundle an inbound callback writes to.
-// New instances are created only by registration; a callback from an id the
-// mock has never registered falls back to the legacy bundle instead of
-// creating a directory per spoofed id.
-func (m *instanceManager) instanceForWrite(dockerID string, accepted bool) *instanceStores {
-	if accepted && dockerID != "" {
-		return m.getOrCreate(dockerID)
-	}
+// instanceForWrite picks the bundle an inbound callback writes to. Writing
+// never creates an instance: only registration does. An id the mock has never
+// registered falls back to the legacy bundle, so a signed callback cannot make
+// the state directory grow.
+func (m *instanceManager) instanceForWrite(dockerID string) *instanceStores {
 	if b := m.lookup(dockerID); b != nil {
 		return b
 	}
 	return m.getOrCreate("")
+}
+
+// instanceForRegistration creates the bundle only for an accepted registration
+// with a non-empty dockerId; a rejected one is recorded on an existing or the
+// legacy bundle.
+func (m *instanceManager) instanceForRegistration(dockerID string, accepted bool) *instanceStores {
+	if accepted && dockerID != "" {
+		return m.getOrCreate(dockerID)
+	}
+	return m.instanceForWrite(dockerID)
 }
 ```
 
@@ -194,17 +201,28 @@ func TestInstanceManagerResolveRejectsUnknownDockerID(t *testing.T) {
 
 func TestInstanceForWriteNeverCreatesDirectoriesForUnknownIDs(t *testing.T) {
 	mgr := newInstanceManager(t.TempDir(), Config{})
-	got := mgr.instanceForWrite("never-registered", true)
+	got := mgr.instanceForWrite("never-registered")
 	if got.dockerID != "" {
-		t.Fatalf("instanceForWrite created bundle for %q, want the legacy bundle", got.dockerID)
+		t.Fatalf("instanceForWrite returned bundle %q, want the legacy bundle", got.dockerID)
 	}
 	if mgr.lookup("never-registered") != nil {
 		t.Fatal("instanceForWrite created a directory for an unknown dockerId")
 	}
 
-	created := mgr.instanceForWrite("registered", true)
+	created := mgr.instanceForRegistration("registered", true)
 	if created == nil || created.dockerID != "registered" {
-		t.Fatal("instanceForWrite did not create the accepted instance")
+		t.Fatal("instanceForRegistration did not create the accepted instance")
+	}
+	if mgr.lookup("registered") == nil {
+		t.Fatal("the accepted instance was not registered in the manager")
+	}
+
+	rejected := mgr.instanceForRegistration("rejected", false)
+	if rejected.dockerID != "" {
+		t.Fatalf("a rejected registration created bundle %q", rejected.dockerID)
+	}
+	if mgr.lookup("rejected") != nil {
+		t.Fatal("a rejected registration created a directory")
 	}
 }
 ```
@@ -537,18 +555,25 @@ func (m *instanceManager) defaultID() string {
 	return ""
 }
 
-// instanceForWrite picks the bundle an inbound callback writes to. New
-// instances are created only by registration; a callback from an id the mock
-// has never registered falls back to the legacy bundle instead of creating a
-// directory per spoofed id.
-func (m *instanceManager) instanceForWrite(dockerID string, accepted bool) *instanceStores {
-	if accepted && dockerID != "" {
-		return m.getOrCreate(dockerID)
-	}
+// instanceForWrite picks the bundle an inbound callback writes to. Writing
+// never creates an instance: only registration does. An id the mock has never
+// registered falls back to the legacy bundle, so a signed callback cannot make
+// the state directory grow.
+func (m *instanceManager) instanceForWrite(dockerID string) *instanceStores {
 	if b := m.lookup(dockerID); b != nil {
 		return b
 	}
 	return m.getOrCreate("")
+}
+
+// instanceForRegistration creates the bundle only for an accepted registration
+// with a non-empty dockerId; a rejected one is recorded on an existing or the
+// legacy bundle.
+func (m *instanceManager) instanceForRegistration(dockerID string, accepted bool) *instanceStores {
+	if accepted && dockerID != "" {
+		return m.getOrCreate(dockerID)
+	}
+	return m.instanceForWrite(dockerID)
 }
 
 func requestedDockerID(r *http.Request) string {
@@ -1218,7 +1243,7 @@ func openTAARequestBody(r *http.Request) ([]byte, string, error) {
 		if err != nil {
 			state.StatusCode = http.StatusBadRequest
 			state.Message = "读取请求体失败: " + err.Error()
-			mgr.instanceForWrite("", false).register.set(state)
+			mgr.instanceForWrite("").register.set(state)
 			writeEnvelope(w, http.StatusBadRequest, state.Message, nil, http.StatusBadRequest)
 			return
 		}
@@ -1227,7 +1252,7 @@ func openTAARequestBody(r *http.Request) ([]byte, string, error) {
 		if err != nil {
 			state.StatusCode = http.StatusUnauthorized
 			state.Message = "报文解密或验签失败: " + err.Error()
-			mgr.instanceForWrite("", false).register.set(state)
+			mgr.instanceForWrite("").register.set(state)
 			writeEnvelope(w, http.StatusUnauthorized, state.Message, nil, http.StatusUnauthorized)
 			return
 		}
@@ -1236,7 +1261,7 @@ func openTAARequestBody(r *http.Request) ([]byte, string, error) {
 		if err := json.Unmarshal(plaintext, &req); err != nil {
 			state.StatusCode = http.StatusBadRequest
 			state.Message = "解析 application/json 失败: " + err.Error()
-			mgr.instanceForWrite("", false).register.set(state)
+			mgr.instanceForWrite("").register.set(state)
 			writeEnvelope(w, http.StatusBadRequest, state.Message, nil, http.StatusBadRequest)
 			return
 		}
@@ -1249,16 +1274,6 @@ func openTAARequestBody(r *http.Request) ([]byte, string, error) {
 		// already known under this id (or the legacy bundle): a rejected
 		// registration must not create a directory for a stranger.
 		bundle := mgr.instanceForRegistration(state.DockerID, state.Accepted)
-```
-
-`instanceForRegistration` 在 `instances.go` 追加：
-
-```go
-// instanceForRegistration creates the bundle only for an accepted
-// registration. A rejected one is recorded on an existing or legacy bundle.
-func (m *instanceManager) instanceForRegistration(dockerID string, accepted bool) *instanceStores {
-	return m.instanceForWrite(dockerID, accepted)
-}
 ```
 
 把原来 `if err := currentPlatformKeys().setTaaPublicKey(registeredPub); err != nil {` 改为（本任务先沿用单钥包装，Task 4 改成按 id）：
@@ -1275,16 +1290,16 @@ func (m *instanceManager) instanceForRegistration(dockerID string, accepted bool
 		if err != nil {
 			state.StatusCode = http.StatusUnauthorized
 			state.Message = err.Error()
-			mgr.instanceForWrite(dockerID, false).reportResourceRes.set(state)
+			mgr.instanceForWrite(dockerID).reportResourceRes.set(state)
 			writeEnvelope(w, http.StatusUnauthorized, state.Message, nil, http.StatusUnauthorized)
 			return
 		}
 		...
-		mgr.instanceForWrite(dockerID, state.Accepted).reportResourceRes.set(state)
+		mgr.instanceForWrite(dockerID).reportResourceRes.set(state)
 ```
 
 每个 handler 把全部 `store.set(state)` 替换为
-`mgr.instanceForWrite(dockerID, state.Accepted).<字段>.set(state)`，
+`mgr.instanceForWrite(dockerID).<字段>.set(state)`，
 把状态/重置读取处的 `store.get()` 保持不变（该 handler 只写）。
 
 log handler（`modelLogHandler`、`taaLogHandler`）把：
@@ -1299,10 +1314,10 @@ log handler（`modelLogHandler`、`taaLogHandler`）把：
 并把 `store.addEntries(...)` 改为：
 
 ```go
-		added := mgr.instanceForWrite(dockerID, true).modelLog.addEntries(dockerID, req.RequestID, req.TaskID, req.Entries)
+		added := mgr.instanceForWrite(dockerID).modelLog.addEntries(dockerID, req.RequestID, req.TaskID, req.Entries)
 ```
 （`taaLogHandler` 用 `.taaLog`）。拒绝分支里的 `store.set(state)` 同理换成
-`mgr.instanceForWrite(dockerID, false).<字段>.set(state)`。
+`mgr.instanceForWrite(dockerID).<字段>.set(state)`。
 
 `reportProgressHandler` 的字段是 `progress`。
 
