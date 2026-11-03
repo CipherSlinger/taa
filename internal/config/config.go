@@ -160,11 +160,11 @@ type LLMConfig struct {
 	FailClosed              bool
 	Dir                     string
 
-	// Temperature overrides the sampling temperature the audit requests
-	// from the inference service. nil means "not configured": the service
-	// applies its own default, which is 0 (deterministic decoding). A non-nil
-	// value is sent as-is and re-enables sampling, so identical findings may
-	// then yield different verdicts.
+	// Temperature overrides the sampling temperature the audit sends with
+	// each generate request. nil means "not configured": the audit sends 0
+	// itself (deterministic decoding). A non-nil value is sent as-is and
+	// re-enables sampling, so identical findings may then yield different
+	// verdicts.
 	Temperature *float32
 }
 
