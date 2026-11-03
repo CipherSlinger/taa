@@ -518,7 +518,7 @@ An instance whose `server.type` is `fhe` exposes the same API surface as a `tee`
 
 ## Deployment & Operation (`deploy.sh`)
 
-`deploy.sh` provides unified, multi-mode lifecycle management and image packaging for TAA and platform-mock:
+`deploy.sh` provides unified, multi-mode lifecycle management and image packaging for TAA and platform-mock. The platform-mock build, start, stop and readiness checks themselves live in the dedicated `deploy-platform-mock.sh` (see [Local Platform Mock & Web Console](#local-platform-mock--web-console)); `deploy.sh` only discovers the TAA target and delegates to it.
 
 ### 1. Two Mutually Exclusive Running Modes
 
@@ -740,15 +740,27 @@ TAA includes a full-featured management platform emulator with an embedded Web G
 - **Web Console**: `http://127.0.0.1:18080`
 
 ```bash
-# Build standalone platform mock binary
-go build -o bin/platform-mock ./tools/platform-mock/cmd/platform-mock
+# Start locally (builds bin/platform-mock, then runs it detached)
+./deploy-platform-mock.sh local start --taa-target http://127.0.0.1:6001 --allow-empty-attestation
 
-# Run in foreground
-./bin/platform-mock -addr 0.0.0.0:18080 -taa-target http://127.0.0.1:6001
+# Inspect or stop the local instance
+./deploy-platform-mock.sh local status
+./deploy-platform-mock.sh local stop
 
-# Run in background via deploy.sh
-./deploy.sh docker platform-mock
+# Same lifecycle on a remote host over SSH
+./deploy-platform-mock.sh remote start \
+  --host 172.16.10.178 --user root --password '...' \
+  --remote-dir /root/taa --taa-target http://127.0.0.1:6001
+./deploy-platform-mock.sh remote status --host 172.16.10.178
+
+# Run in the foreground without the lifecycle wrapper
+go run ./tools/platform-mock/cmd/platform-mock -addr 0.0.0.0:18080 -taa-target http://127.0.0.1:6001
 ```
+
+`deploy-platform-mock.sh` is the single owner of the mock lifecycle: `deploy.sh` and
+`deploy-fhe.sh` call it instead of carrying their own build/start logic. `start` rebuilds
+unless `--skip-build` is given, `restart` stops then starts, and `status` exits non-zero when
+the instance is neither running nor answering `/api/register/status`.
 
 ### Web Console Capabilities
 

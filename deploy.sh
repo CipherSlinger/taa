@@ -1793,8 +1793,10 @@ if [[ "$ACTION" == "stop" ]]; then
   if [[ "$DEPLOY_DOCKER" == true ]]; then
     step "stopping docker services"
     if [[ "$DEPLOY_PLATFORM_MOCK" == true ]]; then
-      stop_pidfile "platform-mock" "$LOCAL_RUN_DIR/platform-mock.pid"
-      pkill -f "$MOCK_BINARY_PATH" >/dev/null 2>&1 || true
+      "$PROJECT_DIR/deploy-platform-mock.sh" local stop \
+        --binary "$MOCK_BINARY_PATH" \
+        --binary-name "$MOCK_BINARY_NAME" \
+        --pid-file "$LOCAL_RUN_DIR/platform-mock.pid"
     fi
     if command -v docker >/dev/null 2>&1 && docker ps --format '{{.Names}}' | grep -Eq "^${LOCAL_DOCKER_CONTAINER}\$"; then
       if [[ "$DEPLOY_TAA" == true ]]; then
@@ -1804,7 +1806,14 @@ if [[ "$ACTION" == "stop" ]]; then
   else
     step "stopping remote processes"
     if [[ "$DEPLOY_PLATFORM_MOCK" == true ]]; then
-      remote_ssh "pkill -x '$MOCK_BINARY_NAME' >/dev/null 2>&1 || true"
+      ensure_remote_ssh
+      "$PROJECT_DIR/deploy-platform-mock.sh" remote stop \
+        --host "$REMOTE_HOST" \
+        --user "$REMOTE_USER" \
+        --password "$PASSWORD" \
+        --remote-dir "$REMOTE_DIR" \
+        --binary-name "$MOCK_BINARY_NAME" \
+        --pid-file "$REMOTE_DIR/platform-mock.pid"
     fi
     if [[ "$DEPLOY_TAA" == true ]]; then
       remote_ssh "$(container_exec) sh -lc 'touch \"$TAA_CONTAINER_WORKDIR/manual\" && pkill -x taa >/dev/null 2>&1 || true; killall taa >/dev/null 2>&1 || true'"
@@ -1848,22 +1857,12 @@ fi
 TARGET_MODEL="$(resolve_target_model)"
 banner "Deploying: ${DEPLOY_COMPONENTS}→ ${DEPLOY_TARGET_DESC}" "Target model: ${TARGET_MODEL}"
 
-if [[ "$DEPLOY_PLATFORM_MOCK" == true ]]; then
-  ensure_go_compiler
-  ensure_parent_dir "$MOCK_BINARY_PATH"
-  spin_task "building platform-mock from ./tools/platform-mock/cmd/platform-mock" go build -o "$MOCK_BINARY_PATH" ./tools/platform-mock/cmd/platform-mock
-fi
-
 if [[ "$DEPLOY_TAA" == true ]]; then
   ensure_go_compiler
   ensure_parent_dir "$TAA_BINARY_PATH"
   spin_task "building taa daemon from ./cmd/taa" env CGO_ENABLED=0 GOOS=linux go build -o "$TAA_BINARY_PATH" ./cmd/taa
 fi
 
-if [[ "$DEPLOY_PLATFORM_MOCK" == true && ! -f "$MOCK_BINARY_PATH" ]]; then
-  err "build failed: $MOCK_BINARY_PATH not found"
-  exit 1
-fi
 if [[ "$DEPLOY_TAA" == true ]]; then
   require_file "build verification failed (taa binary missing)" "$TAA_BINARY_PATH"
   require_file "taa supervisor script missing" "$PROJECT_DIR/deploy/taa-supervisor.sh"
@@ -1873,24 +1872,19 @@ fi
 
 
 deploy_platform_mock() {
-  step "preparing local platform-mock runtime directory"
-  mkdir -p "$LOCAL_PLATFORM_STATE_DIR" "$LOCAL_PLATFORM_UPLOAD_DIR" "$LOCAL_RUN_DIR"
-  info "runtime directories ready: $LOCAL_PLATFORM_STATE_DIR"
-
-  step "stopping previous local platform-mock"
-  stop_pidfile "platform-mock" "$LOCAL_RUN_DIR/platform-mock.pid"
-  pkill -f "$MOCK_BINARY_PATH" >/dev/null 2>&1 || true
-  for _ in {1..30}; do
-    if ! pgrep -f "$MOCK_BINARY_PATH" >/dev/null 2>&1; then
-      break
-    fi
-    sleep 0.1
-  done
-
-  step "starting local platform-mock on ${LOCAL_PLATFORM_BIND}"
-  start_local_background "platform-mock" "$LOCAL_RUN_DIR/platform-mock.pid" "$LOCAL_PLATFORM_LOG_FILE" \
-    "$MOCK_BINARY_PATH" -addr "$LOCAL_PLATFORM_BIND" -state-dir "$LOCAL_PLATFORM_STATE_DIR" -upload-dir "$LOCAL_PLATFORM_UPLOAD_DIR" -taa-target "$LOCAL_TAA_URL" -allow-empty-attestation
-  wait_for_http_ready "platform-mock" GET "$LOCAL_PLATFORM_URL/api/register/status" "$READY_TIMEOUT" "$READY_INTERVAL" "$LOCAL_PLATFORM_LOG_FILE"
+  step "deploying local platform-mock on ${LOCAL_PLATFORM_BIND}"
+  "$PROJECT_DIR/deploy-platform-mock.sh" local start \
+    --binary "$MOCK_BINARY_PATH" \
+    --binary-name "$MOCK_BINARY_NAME" \
+    --addr "$LOCAL_PLATFORM_BIND" \
+    --state-dir "$LOCAL_PLATFORM_STATE_DIR" \
+    --upload-dir "$LOCAL_PLATFORM_UPLOAD_DIR" \
+    --log-file "$LOCAL_PLATFORM_LOG_FILE" \
+    --pid-file "$LOCAL_RUN_DIR/platform-mock.pid" \
+    --taa-target "$LOCAL_TAA_URL" \
+    --allow-empty-attestation \
+    --ready-timeout "$READY_TIMEOUT" \
+    --ready-interval "$READY_INTERVAL"
 }
 
 deploy_docker_taa() {
@@ -2026,35 +2020,32 @@ if [[ "$DEPLOY_TAA" == true ]]; then
 fi
 
 if [[ "$DEPLOY_PLATFORM_MOCK" == true ]]; then
-  step "stopping old remote $PLATFORM_LABEL"
-  remote_ssh "mkdir -p '$REMOTE_DIR'; pkill -x '$MOCK_BINARY_NAME' >/dev/null 2>&1 || true"
-
-  step "uploading $PLATFORM_LABEL to remote host"
-  sshpass -p "$PASSWORD" scp "${SSH_OPTS[@]}" "$MOCK_BINARY_PATH" "${REMOTE_USER}@${REMOTE_HOST}:$REMOTE_DIR/$MOCK_BINARY_NAME.new"
-
-  step "replacing remote $PLATFORM_LABEL"
-  remote_ssh "mv '$REMOTE_DIR/$MOCK_BINARY_NAME.new' '$REMOTE_DIR/$MOCK_BINARY_NAME' && chmod +x '$REMOTE_DIR/$MOCK_BINARY_NAME'"
-
-  # 在远程主机上获取 TAA Pod IP，直接传给平台（避免平台运行时 kubectl 失败）
+  # Pod IP discovery stays here: deploy-platform-mock.sh knows nothing about kubectl.
   TAA_POD_IP=$(remote_ssh "kubectl $K_NS get pod '$TARGET_POD' -o jsonpath='{.status.podIP}' 2>/dev/null" || echo "")
-  TAA_TARGET_ARG=""
+  MOCK_ARGS=(
+    remote start
+    --host "$REMOTE_HOST"
+    --user "$REMOTE_USER"
+    --password "$PASSWORD"
+    --remote-dir "$REMOTE_DIR"
+    --binary "$MOCK_BINARY_PATH"
+    --binary-name "$MOCK_BINARY_NAME"
+    --addr "$PLATFORM_ADDR"
+    --log-file "$REMOTE_DIR/platform-mock.log"
+    --pid-file "$REMOTE_DIR/platform-mock.pid"
+    --ready-timeout "$READY_TIMEOUT"
+    --ready-interval "$READY_INTERVAL"
+  )
   if [[ -n "$TAA_POD_IP" ]]; then
-    TAA_TARGET_ARG="-taa-target http://${TAA_POD_IP}:${CON_PORT}"
+    MOCK_ARGS+=(--taa-target "http://${TAA_POD_IP}:${CON_PORT}")
     echo "  discovered TAA Pod IP: $TAA_POD_IP"
   else
     echo "  warning: could not discover TAA Pod IP, falling back to -taa-pod auto-discovery"
-    TAA_TARGET_ARG="-taa-pod '$TARGET_POD' -taa-ns '$TARGET_NAMESPACE' -taa-port '$CON_PORT'"
+    MOCK_ARGS+=(--taa-pod "$TARGET_POD" --taa-ns "$TARGET_NAMESPACE" --taa-port "$CON_PORT")
   fi
 
-  step "starting remote $PLATFORM_LABEL on ${PLATFORM_ADDR}"
-  remote_ssh "nohup '$REMOTE_DIR/$MOCK_BINARY_NAME' -addr '$PLATFORM_ADDR' $TAA_TARGET_ARG > '$REMOTE_DIR/platform-mock.log' 2>&1 < /dev/null &"
-
-  sleep 1
-
-  step "checking remote $PLATFORM_LABEL status"
-  remote_ssh "ss -ltnp | grep ':${PLATFORM_PORT}' || true"
-  remote_ssh "tail -n 10 '$REMOTE_DIR/platform-mock.log' || true"
-  remote_ssh "curl -fsS 'http://127.0.0.1:${PLATFORM_PORT}/api/register/status' >/dev/null && echo '$PLATFORM_LABEL status endpoint is ready'"
+  step "deploying remote $PLATFORM_LABEL on ${PLATFORM_ADDR}"
+  "$PROJECT_DIR/deploy-platform-mock.sh" "${MOCK_ARGS[@]}"
 fi
 
 if [[ "$DEPLOY_TAA" == true ]]; then

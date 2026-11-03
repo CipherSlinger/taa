@@ -35,11 +35,31 @@ On first start the mock creates and persists a platform SM2 key pair and logs th
 `PLATFORM_PUBLIC_KEY` value to give TAA (see [SM2 Envelope](#sm2-envelope)). Set the same
 `PLATFORM_SM2_ID` for both processes if you override the default identity.
 
-Or run via the repository deployment script (starts in Docker or host mode):
+### Lifecycle (local or remote)
+
+`deploy-platform-mock.sh` at the repository root owns build, start, stop, restart and status.
+`deploy.sh` and `deploy-fhe.sh` delegate to it, so the flags and readiness probe are defined
+in one place.
 
 ```bash
-./deploy.sh docker platform-mock
+# Local: builds bin/platform-mock, then runs it detached
+./deploy-platform-mock.sh local start --taa-target http://127.0.0.1:6001 --allow-empty-attestation
+./deploy-platform-mock.sh local status
+./deploy-platform-mock.sh local restart
+./deploy-platform-mock.sh local stop
+
+# Remote: builds linux/static, uploads over SSH and starts it detached
+./deploy-platform-mock.sh remote start --host 172.16.10.178 --user root --password '...' \
+  --remote-dir /root/taa --taa-target http://127.0.0.1:6001
+./deploy-platform-mock.sh remote status --host 172.16.10.178
+./deploy-platform-mock.sh remote stop --host 172.16.10.178
 ```
+
+Useful options: `--state-dir` / `--upload-dir` (omitted when empty, which keeps the binary's
+own defaults), `--reuse` (start only if nothing already answers), `--reset-register` (POST
+`/api/register/reset` after the instance is ready), `--skip-build`, `--dry-run`, and
+`--ready-timeout` / `--ready-interval`. Run `./deploy-platform-mock.sh --help` for the full
+list.
 
 ## Command-Line Flags
 

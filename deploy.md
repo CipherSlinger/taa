@@ -48,6 +48,34 @@ TARGET_POD=taa-env-slim-v2-20261016-7104e03003ae0072-f7fbbf8f5-kkdb2 ./deploy.sh
 ```
 
 
+# platform-mock 部署命令
+
+platform-mock 的构建、启动、停止和就绪检查统一由 `deploy-platform-mock.sh` 负责；
+`deploy.sh` 与 `deploy-fhe.sh` 只负责发现 TAA 目标并调用它。
+
+```bash
+# 本地：构建 bin/platform-mock 并后台启动
+./deploy-platform-mock.sh local start --taa-target http://127.0.0.1:6001 --allow-empty-attestation
+./deploy-platform-mock.sh local status
+./deploy-platform-mock.sh local restart
+./deploy-platform-mock.sh local stop
+
+# 远端：静态构建后经 SSH 上传并后台启动
+./deploy-platform-mock.sh remote start \
+  --host 172.16.10.178 --user root --password 'Osrd@2026' \
+  --remote-dir /root/taa --taa-target http://127.0.0.1:6001
+./deploy-platform-mock.sh remote status --host 172.16.10.178
+./deploy-platform-mock.sh remote stop --host 172.16.10.178
+```
+
+- `start` 默认先构建，`--skip-build` 复用现有二进制；`--reuse` 表示已有实例应答时不再启动；
+  `--reset-register` 在就绪后清空注册状态。
+- `--state-dir` / `--upload-dir` 为空时不传对应参数，沿用二进制自身的默认目录。
+- 两处调用方的差异保持不变：`deploy.sh remote` 不传 state/upload/allow-empty 参数（沿用原有
+  远端行为），`deploy-fhe.sh` 显式传 state/upload 目录、`--allow-empty-attestation`
+  并使用 `--reuse --reset-register`。
+
+
 # taa-teellm 部署命令
 
 ```bash

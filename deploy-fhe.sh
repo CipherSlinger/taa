@@ -362,25 +362,6 @@ build_binary() {
   [ -f "$out" ] || die "go build reported success but $out is not there"
 }
 
-host_detach() {
-  local logfile="$1" pidfile="$2"
-  shift 2
-  if is_dry_run; then
-    printf '[deploy-fhe] would start on %s: %s > %s 2>&1 & (detached)\n' \
-      "${REMOTE_TARGET:-this host}" "$(shell_quote "$@")" "$logfile"
-    return 0
-  fi
-  if [ -z "$REMOTE_TARGET" ]; then
-    nohup "$@" >"$logfile" 2>&1 </dev/null &
-    printf '%s\n' "$!" >"$pidfile"
-  else
-    "${REMOTE_SSH[@]}" "$REMOTE_TARGET" \
-      "nohup $(shell_quote "$@") > $(shell_quote "$logfile") 2>&1 < /dev/null & echo \$! > $(shell_quote "$pidfile")" >/dev/null \
-      || die "failed to start $(shell_quote "$@") on $REMOTE_TARGET"
-  fi
-  log "started '$1' on ${REMOTE_TARGET:-this host} (log $logfile)"
-}
-
 upload_file() {
   local src="$1" dest="$2" mode="${3:-}"
   [ -n "$REMOTE_TARGET" ] || return 0
@@ -979,17 +960,6 @@ platform_register_state() {
   host_capture "curl -fsS 'http://127.0.0.1:${PLATFORM_PORT}/api/register/status'" 2>/dev/null || true
 }
 
-wait_for_platform_mock() {
-  local deadline=$((SECONDS + PLATFORM_READY_TIMEOUT))
-  while [ "$SECONDS" -lt "$deadline" ]; do
-    if host_sh "curl -fsS -o /dev/null 'http://127.0.0.1:${PLATFORM_PORT}/api/register/status'" 2>/dev/null; then
-      return 0
-    fi
-    sleep "$TAA_READY_INTERVAL"
-  done
-  return 1
-}
-
 # ── The unified container ────────────────────────────────────────────────────
 CONTAINER_STATE=""
 
@@ -1523,25 +1493,15 @@ if [ "$DEPLOY_TAA" = 1 ] && [ "$POD_MODE" = 0 ]; then
 fi
 
 # ── Build ────────────────────────────────────────────────────────────────────
-if [ "$DEPLOY_TAA" = 1 ] || { [ "$DEPLOY_MOCK" = 1 ] && [ "$DEPLOY_PLATFORM_MOCK" = 1 ]; }; then
+if [ "$DEPLOY_TAA" = 1 ]; then
 step "building the binaries this run deploys"
 if [ "$BUILD_BINARIES" != 1 ]; then
   log "--skip-build: using the binaries already at the paths this run deploys"
   if ! is_dry_run; then
-    if [ "$DEPLOY_TAA" = 1 ]; then
-      [ -f "$TAA_BINARY_PATH" ] || die "--skip-build was given but $TAA_BINARY_PATH does not exist"
-    fi
-    if [ "$DEPLOY_MOCK" = 1 ] && [ "$DEPLOY_PLATFORM_MOCK" = 1 ]; then
-      [ -f "$PLATFORM_MOCK_BINARY_PATH" ] || die "--skip-build was given but $PLATFORM_MOCK_BINARY_PATH does not exist"
-    fi
+    [ -f "$TAA_BINARY_PATH" ] || die "--skip-build was given but $TAA_BINARY_PATH does not exist"
   fi
 else
-  if [ "$DEPLOY_TAA" = 1 ]; then
-    build_binary "$TAA_BINARY_PATH" ./cmd/taa
-  fi
-  if [ "$DEPLOY_MOCK" = 1 ] && [ "$DEPLOY_PLATFORM_MOCK" = 1 ]; then
-    build_binary "$PLATFORM_MOCK_BINARY_PATH" ./tools/platform-mock/cmd/platform-mock
-  fi
+  build_binary "$TAA_BINARY_PATH" ./cmd/taa
 fi
 fi
 
@@ -1553,17 +1513,12 @@ if [ "$POD_MODE" = 1 ]; then
 fi
 
 # ── Upload ───────────────────────────────────────────────────────────────────
-if [ "$DEPLOY_TAA" = 1 ] || { [ "$DEPLOY_MOCK" = 1 ] && [ "$DEPLOY_PLATFORM_MOCK" = 1 ]; }; then
-step "uploading this run's inputs to ${REMOTE_TARGET:-this host}"
 if [ "$DEPLOY_TAA" = 1 ]; then
+step "uploading this run's inputs to ${REMOTE_TARGET:-this host}"
   upload_models "$FHE_MODELS_SRC" "$STAGED_MODELS_DIR"
   upload_file "$PROJECT_DIR/deploy/taa-supervisor.sh" "$HOST_START_SH" 755
   upload_file "$TAA_BINARY_PATH" "$HOST_TAA_BINARY_PATH" 755
   upload_file "$TAA_ENTRYPOINT_SOURCE" "$HOST_ENTRYPOINT_PATH" 755
-fi
-if [ "$DEPLOY_MOCK" = 1 ] && [ "$DEPLOY_PLATFORM_MOCK" = 1 ]; then
-  upload_file "$PLATFORM_MOCK_BINARY_PATH" "$HOST_PLATFORM_MOCK_BINARY_PATH" 755
-fi
 fi
 
 # ── Image ────────────────────────────────────────────────────────────────────
@@ -1640,26 +1595,38 @@ step "starting platform-mock on $PLATFORM_ADDR"
 if [ "$DEPLOY_PLATFORM_MOCK" != 1 ]; then
   log "--no-platform-mock: nothing started here; TAA registers with PLATFORM_IP=${PLATFORM_IP:-<unset>}"
 else
-  if is_dry_run; then
-    log "would probe http://127.0.0.1:$PLATFORM_PORT/api/register/status, start $HOST_PLATFORM_MOCK_BINARY_PATH if nothing answers, clear its register state, and give TAA PLATFORM_IP=${PLATFORM_IP:-<unset>}"
+  MOCK_ARGS=(
+    start
+    --binary "$PLATFORM_MOCK_BINARY_PATH"
+    --binary-name "$PLATFORM_MOCK_BINARY_NAME"
+    --addr "$PLATFORM_ADDR"
+    --state-dir "$PLATFORM_MOCK_STATE_DIR"
+    --upload-dir "$PLATFORM_MOCK_UPLOAD_DIR"
+    --log-file "$REMOTE_DIR/platform-mock.log"
+    --pid-file "$REMOTE_DIR/platform-mock.pid"
+    --taa-target "http://${TAA_PROBE_HOST}:${TAA_PORT}"
+    --allow-empty-attestation
+    --static
+    --reuse
+    --reset-register
+    --ready-timeout "$PLATFORM_READY_TIMEOUT"
+    --ready-interval "$TAA_READY_INTERVAL"
+  )
+  if [ -n "$REMOTE_TARGET" ]; then
+    MOCK_TARGET=remote
+    MOCK_ARGS+=(
+      --host "$REMOTE_HOST"
+      --user "$REMOTE_USER"
+      --remote-dir "$REMOTE_DIR"
+      --remote-binary "$HOST_PLATFORM_MOCK_BINARY_PATH"
+    )
+    [ -n "$PASSWORD" ] && MOCK_ARGS+=(--password "$PASSWORD")
   else
-    if host_sh "curl -fsS -o /dev/null 'http://127.0.0.1:${PLATFORM_PORT}/api/register/status'"; then
-      warn "something already answers on 127.0.0.1:$PLATFORM_PORT; reusing it instead of starting a second platform-mock. This run cannot confirm it was started with -allow-empty-attestation, and clearing its register state below affects whatever else is using it."
-    else
-      host_detach "$REMOTE_DIR/platform-mock.log" "$REMOTE_DIR/platform-mock.pid" \
-        "$HOST_PLATFORM_MOCK_BINARY_PATH" \
-        -addr "$PLATFORM_ADDR" \
-        -state-dir "$PLATFORM_MOCK_STATE_DIR" \
-        -upload-dir "$PLATFORM_MOCK_UPLOAD_DIR" \
-        -taa-target "http://${TAA_PROBE_HOST}:${TAA_PORT}" \
-        -allow-empty-attestation
-      wait_for_platform_mock \
-        || die "platform-mock did not answer on 127.0.0.1:$PLATFORM_PORT within ${PLATFORM_READY_TIMEOUT}s (log $REMOTE_DIR/platform-mock.log)"
-      log "platform-mock is answering on 127.0.0.1:$PLATFORM_PORT (state $PLATFORM_MOCK_STATE_DIR)"
-    fi
-    host_sh "curl -fsS -o /dev/null -X POST 'http://127.0.0.1:${PLATFORM_PORT}/api/register/reset'" \
-      || die "could not clear the register state on http://127.0.0.1:${PLATFORM_PORT}"
+    MOCK_TARGET=local
   fi
+  [ "$BUILD_BINARIES" = 1 ] || MOCK_ARGS+=(--skip-build)
+  is_dry_run && MOCK_ARGS+=(--dry-run)
+  "$PROJECT_DIR/deploy-platform-mock.sh" "$MOCK_TARGET" "${MOCK_ARGS[@]}"
 fi
 fi
 
