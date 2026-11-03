@@ -87,7 +87,12 @@ TARGET_POD=taa-teellm ./deploy-llm.sh taa
 停在 ImagePullBackOff。显式给了 `TEELLM_POD_IMAGE` 就原样使用；查询失败（401、不可达）
 则退回当天日期并告警。
 
-## 1. TEE 训练 / 推理 / 数据分析 — `deploy.sh`
+## 1. TEE 训练 / 推理 — `deploy.sh`
+
+`tee` 训练与 `tee` 推理共用这一条链路和同一个镜像：平台在启动时注入 `CONTRACT_TYPE`
+（`1` 训练 / `2` 推理），两者都落到普通 `tee` 角色，差别由平台下发的请求决定。
+`data-anaylsis` 也复用 `configs/taa-production.json` 这个模板，但保留自己的 jupyter
+基座镜像，见第 3 节。
 
 基础镜像 `taa-env:slim-v2`：Ubuntu 24.04.4，glibc 2.39，dpkg 130 个包，解压 1.84 GB，`/opt` 为空。
 
