@@ -44,7 +44,6 @@ TAA_IMAGE=taa-fhe:20261019 ./deploy-fhe.sh taa
 
 ```bash
 TARGET_POD=taa-env-slim-v2-20261016-7104e03003ae0072-f7fbbf8f5-kkdb2 ./deploy.sh taa 
-./deploy.sh taa
 ./deploy.sh docker save
 ```
 
