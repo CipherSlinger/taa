@@ -19,7 +19,6 @@ type llmRegisterState struct {
 	VerifiedPass      bool   `json:"verifiedPass"`
 	AttestationSize   int    `json:"attestationSize"`
 	AttestationBase64 string `json:"attestationBase64"`
-	Certificate       string `json:"certificate"`
 }
 
 // llmHeartbeatState records the most recent liveness ping.

@@ -17,8 +17,8 @@ func writeLLMResponse(w http.ResponseWriter, status int, msg string, result any,
 
 // llmRegisterHandler accepts the plaintext registration an LLM instance sends.
 // There is no envelope here on purpose: the LLM's proof of identity is the
-// attestation report plus the certificate whose key it binds, and the mock
-// records both verbatim so they can be compared by hand.
+// attestation report it carries, and the certificate that report is bound to is
+// fetched separately through getAttestation rather than sent at registration.
 func llmRegisterHandler(store *llmStateStore) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		setCORS(w)
@@ -45,7 +45,6 @@ func llmRegisterHandler(store *llmStateStore) http.HandlerFunc {
 			Timestamp         string `json:"timestamp"`
 			VerifiedPass      bool   `json:"verifiedPass"`
 			Attestation       string `json:"attestation"`
-			Certificate       string `json:"certificate"`
 		}
 		if err := json.Unmarshal(body, &req); err != nil {
 			writeLLMResponse(w, http.StatusBadRequest, "解析 application/json 失败: "+err.Error(), nil, http.StatusBadRequest)
@@ -65,7 +64,6 @@ func llmRegisterHandler(store *llmStateStore) http.HandlerFunc {
 			Timestamp:         req.Timestamp,
 			VerifiedPass:      req.VerifiedPass,
 			AttestationBase64: req.Attestation,
-			Certificate:       req.Certificate,
 		}
 		if req.Attestation != "" {
 			attBytes, decodeErr := base64.StdEncoding.DecodeString(req.Attestation)
