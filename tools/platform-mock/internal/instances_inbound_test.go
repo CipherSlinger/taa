@@ -70,6 +70,68 @@ func TestTwoInstancesKeepSeparateReportState(t *testing.T) {
 	}
 }
 
+func TestDeriveTAATarget(t *testing.T) {
+	cases := []struct {
+		name       string
+		remoteAddr string
+		port       string
+		want       string
+	}{
+		{"ipv4", "10.244.0.7:54321", "6001", "http://10.244.0.7:6001"},
+		{"ipv6", "[fd00::7]:54321", "6001", "http://[fd00::7]:6001"},
+		{"bare ip", "10.244.0.7", "6001", "http://10.244.0.7:6001"},
+		{"default port", "10.244.0.7:1234", "", "http://10.244.0.7:6001"},
+		{"empty", "", "6001", ""},
+		{"garbage", "not-an-address", "6001", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := deriveTAATarget(tc.remoteAddr, tc.port); got != tc.want {
+				t.Fatalf("deriveTAATarget(%q, %q) = %q, want %q", tc.remoteAddr, tc.port, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestRegistrationDerivesAndKeepsItsOwnTargetAndKey(t *testing.T) {
+	ks, err := newMemoryKeystore(nil)
+	if err != nil {
+		t.Fatalf("create the keystore: %v", err)
+	}
+	prev := currentPlatformKeys()
+	setPlatformKeys(ks)
+	defer setPlatformKeys(prev)
+
+	mgr := newInstanceManager(t.TempDir(), Config{TAAPort: "6001"})
+	keyA, err := crypto.GenerateSM2KeyPair()
+	if err != nil {
+		t.Fatalf("generate key A: %v", err)
+	}
+	keyB, err := crypto.GenerateSM2KeyPair()
+	if err != nil {
+		t.Fatalf("generate key B: %v", err)
+	}
+	registerInstanceForTest(t, mgr, "docker-a", keyA)
+	registerInstanceForTest(t, mgr, "docker-b", keyB)
+
+	for _, id := range []string{"docker-a", "docker-b"} {
+		b := mgr.lookup(id)
+		if b == nil {
+			t.Fatalf("%s bundle missing", id)
+		}
+		// httptest.NewRequest uses 192.0.2.1:1234 as RemoteAddr.
+		if got := b.target(); got != "http://192.0.2.1:6001" {
+			t.Fatalf("%s target = %q, want http://192.0.2.1:6001", id, got)
+		}
+		if ks.taaPublicFor(id) == nil {
+			t.Fatalf("%s key was not adopted", id)
+		}
+	}
+	if ks.taaPublicFor("docker-a") == ks.taaPublicFor("docker-b") {
+		t.Fatal("both instances share one key")
+	}
+}
+
 func TestReportWithAnotherInstancesKeyIsRefused(t *testing.T) {
 	ks, err := newMemoryKeystore(nil)
 	if err != nil {

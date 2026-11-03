@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"os/exec"
 	"strconv"
@@ -143,6 +144,31 @@ func loggingReverseProxyHandler(next http.Handler) http.Handler {
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+// deriveTAATarget builds the TAA base URL from the address the registration
+// came from. The port is the configured TAA port, not the source port: the
+// source port is ephemeral. A RemoteAddr that yields no usable host returns ""
+// and leaves the instance without a derived target; registration still
+// succeeds, and outbound calls report the missing address explicitly.
+func deriveTAATarget(remoteAddr, port string) string {
+	remoteAddr = strings.TrimSpace(remoteAddr)
+	if remoteAddr == "" {
+		return ""
+	}
+	host, _, err := net.SplitHostPort(remoteAddr)
+	if err != nil {
+		host = remoteAddr
+	}
+	host = strings.TrimSpace(strings.Trim(host, "[]"))
+	if net.ParseIP(host) == nil {
+		log.Printf("cannot derive the TAA target from RemoteAddr %q: %v", remoteAddr, err)
+		return ""
+	}
+	if strings.TrimSpace(port) == "" {
+		port = defaultTAAPort
+	}
+	return "http://" + net.JoinHostPort(host, port)
 }
 
 func discoverTAAAddr(kubectlPod, kubectlNS, port string) string {

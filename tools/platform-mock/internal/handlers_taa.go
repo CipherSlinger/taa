@@ -154,6 +154,12 @@ func registerHandler(mgr *instanceManager, allowEmptyAttestation bool) http.Hand
 		// already known under this id (or the legacy bundle): a rejected
 		// registration must not create a directory for a stranger.
 		bundle := mgr.instanceForRegistration(state.DockerID, state.Accepted)
+		if state.Accepted {
+			if target := deriveTAATarget(r.RemoteAddr, mgr.cfg.TAAPort); target != "" {
+				bundle.setTarget(target)
+			}
+			state.TaaTarget = bundle.target()
+		}
 		bundle.register.set(state)
 		if !state.Accepted {
 			log.Printf("register rejected: status=%d dockerId=%q message=%s", state.StatusCode, state.DockerID, state.Message)

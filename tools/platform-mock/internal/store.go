@@ -20,6 +20,7 @@ type registerState struct {
 	Accepted           bool   `json:"accepted"`
 	ReceivedAt         string `json:"receivedAt"`
 	DockerID           string `json:"dockerId"`
+	TaaTarget          string `json:"taaTarget,omitempty"`
 	AuthInfo           string `json:"authInfo"`
 	TaaPublicKey       string `json:"taaPublicKey"`
 	TaaSecretKey       string `json:"taaSecretKey,omitempty"`
