@@ -3,7 +3,6 @@ module taa
 go 1.22
 
 require (
-	github.com/CipherSlinger/teellm v0.1.0
 	github.com/CipherSlinger/teetls v0.1.0
 	github.com/fraugster/parquet-go v0.12.0
 	github.com/google/uuid v1.6.0
@@ -11,8 +10,6 @@ require (
 	github.com/xuri/excelize/v2 v2.8.1
 	modernc.org/sqlite v1.30.1
 )
-
-replace github.com/CipherSlinger/teellm => ./teellm
 
 replace github.com/CipherSlinger/teetls => ./teellm/teetls
 

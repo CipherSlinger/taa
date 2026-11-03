@@ -16,13 +16,12 @@ import (
 	"unicode/utf8"
 
 	"taa/internal/codeaudit"
+	"taa/internal/llmclient"
 	"taa/internal/resource"
 	"taa/internal/runtime"
 	teecrypto "taa/pkg/crypto"
 	pkgerrors "taa/pkg/errors"
 	"taa/pkg/utils"
-
-	"github.com/CipherSlinger/teellm"
 )
 
 func (s *TAAState) processImportedResource(req importRequest, phase int, isModel bool, ciphertextPath string, dataKey []byte) {
@@ -876,7 +875,7 @@ func newLLMClient(cfg codeaudit.LLMConfig) codeaudit.LLMClient {
 // model before answering /healthz. Cutting the probe off mid-load does not just
 // fail the attempt, it cancels the load, so a short budget makes the gate
 // unwinnable on a cold start rather than merely slow.
-const auditLLMHealthCheckTimeout = teellm.DefaultHealthCheckTimeout
+const auditLLMHealthCheckTimeout = llmclient.DefaultHealthCheckTimeout
 
 // isLLMServiceAvailable probes whether the inference service is healthy and reachable.
 // It prioritizes standard TEE-LLM client health checking (/healthz over TEE-TLS),

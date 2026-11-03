@@ -16,10 +16,10 @@ import (
 	"reflect"
 	"sort"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
-	"github.com/CipherSlinger/teellm"
 	"github.com/CipherSlinger/teetls"
 	"taa/internal/codeaudit"
 	"taa/internal/llmclient"
@@ -257,55 +257,44 @@ func TestIsLLMServiceAvailable_TimeoutAndErrorLog(t *testing.T) {
 	}
 }
 
-type mockControllerLLMBackend struct {
-	healthy bool
-}
-
-func (m *mockControllerLLMBackend) HandleVerifyFinding(ctx context.Context, req *teellm.RequestEnvelope) (*teellm.ResponseEnvelope, error) {
-	return &teellm.ResponseEnvelope{
-		ProtocolVersion: teellm.CurrentProtocolVersion,
-		RequestID:       req.RequestID,
-		Status:          teellm.StatusSuccess,
-		Decision: &teellm.DecisionResult{
-			Verdict: teellm.VerdictBenign,
-		},
-	}, nil
-}
-
-func (m *mockControllerLLMBackend) HandleHealthCheck(ctx context.Context) error {
-	if !m.healthy {
-		return errors.New("backend unhealthy")
+// startHealthzServer starts a minimal TEE-TLS server that only answers
+// /v1/llm/healthz. The controller test needs a real TLS peer to exercise the
+// health probe; it does not need the inference service itself.
+func startHealthzServer(t *testing.T, healthy *atomic.Bool) (string, func()) {
+	t.Helper()
+	tlsCfg := &teetls.Config{
+		Mode:             teetls.ModePermissive,
+		EvidenceProvider: teetls.NewMockEvidenceProvider(),
 	}
-	return nil
+	listener, err := teetls.Listen("tcp", "127.0.0.1:0", tlsCfg)
+	if err != nil {
+		t.Fatalf("failed to start TEE-TLS listener: %v", err)
+	}
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/v1/llm/healthz", func(w http.ResponseWriter, r *http.Request) {
+		if !healthy.Load() {
+			http.Error(w, "backend unhealthy", http.StatusServiceUnavailable)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	})
+
+	srv := &http.Server{Handler: mux}
+	go func() { _ = srv.Serve(listener) }()
+	return listener.Addr().String(), func() { _ = srv.Close() }
 }
 
 func TestIsLLMServiceAvailable_TEETLS(t *testing.T) {
-	mockProv := teetls.NewMockEvidenceProvider()
-	tlsCfg := &teetls.Config{
-		Mode:             teetls.ModePermissive,
-		EvidenceProvider: mockProv,
-	}
-
-	backend := &mockControllerLLMBackend{healthy: true}
-	server, err := teellm.NewServer(teellm.ServerConfig{
-		Addr:    "127.0.0.1:0",
-		TEETLS:  tlsCfg,
-		Backend: backend,
-	})
-	if err != nil {
-		t.Fatalf("failed to create teellm server: %v", err)
-	}
-	defer server.Close()
-
-	go func() {
-		_ = server.Start()
-	}()
-	time.Sleep(50 * time.Millisecond)
+	var healthy atomic.Bool
+	healthy.Store(true)
+	addr, stop := startHealthzServer(t, &healthy)
+	defer stop()
 
 	cfg := codeaudit.LLMConfig{
 		Enabled:            true,
 		AttestationEnabled: true,
-		Endpoint:           "https://" + server.Addr(),
+		Endpoint:           "https://" + addr,
 		Model:              "qwen2.5-coder:3b",
 		InsecureSkipVerify: true,
 	}
@@ -319,8 +308,8 @@ func TestIsLLMServiceAvailable_TEETLS(t *testing.T) {
 		t.Fatal("expected isLLMServiceAvailable = true for healthy TEE-TLS server")
 	}
 
-	// Now make backend unhealthy
-	backend.healthy = false
+	// Now make the backend unhealthy.
+	healthy.Store(false)
 	if isLLMServiceAvailable(context.Background(), client, cfg.Endpoint, cfg.Model) {
 		t.Fatal("expected isLLMServiceAvailable = false for unhealthy backend")
 	}

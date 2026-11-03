@@ -12,13 +12,12 @@ import (
 	"strings"
 	"time"
 
-	"github.com/CipherSlinger/teellm"
-
 	"taa/internal/attestation"
 	"taa/internal/codeaudit"
 	"taa/internal/config"
 	"taa/internal/controller"
 	"taa/internal/fhe"
+	"taa/internal/llmclient"
 	"taa/internal/platform"
 	"taa/internal/store"
 	teecrypto "taa/pkg/crypto"
@@ -332,7 +331,7 @@ func probeInferenceService(ctx context.Context, cfg config.StartupConfig) error 
 	// probe must then wait out the health check's own budget, which is what a
 	// cold, model-loading gateway needs.
 	timeout := time.Duration(cfg.LLM.TimeoutMs) * time.Millisecond
-	probeTimeout := teellm.DefaultHealthCheckTimeout
+	probeTimeout := llmclient.DefaultHealthCheckTimeout
 	if cfg.LLM.TimeoutMs > 0 {
 		probeTimeout = timeout
 	}
