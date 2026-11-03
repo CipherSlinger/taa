@@ -208,12 +208,13 @@ func reportResourceResHandler(mgr *instanceManager) http.HandlerFunc {
 			writeEnvelope(w, http.StatusUnauthorized, state.Message, nil, http.StatusUnauthorized)
 			return
 		}
+		bundle := mgr.instanceForWrite(dockerID)
 		state.RawBody = string(bodyBytes)
 		state.ContentType = r.Header.Get("Content-Type")
 		if !strings.Contains(state.ContentType, "application/json") {
 			state.StatusCode = http.StatusBadRequest
 			state.Message = "Content-Type 应为 application/json"
-			mgr.instanceForWrite(dockerID).reportResourceRes.set(state)
+			bundle.reportResourceRes.set(state)
 			writeEnvelope(w, http.StatusBadRequest, state.Message, nil, http.StatusBadRequest)
 			return
 		}
@@ -222,7 +223,7 @@ func reportResourceResHandler(mgr *instanceManager) http.HandlerFunc {
 		if err := json.Unmarshal(bodyBytes, &req); err != nil {
 			state.StatusCode = http.StatusBadRequest
 			state.Message = "解析 JSON 失败: " + err.Error()
-			mgr.instanceForWrite(dockerID).reportResourceRes.set(state)
+			bundle.reportResourceRes.set(state)
 			writeEnvelope(w, http.StatusBadRequest, state.Message, nil, http.StatusBadRequest)
 			return
 		}
@@ -248,7 +249,7 @@ func reportResourceResHandler(mgr *instanceManager) http.HandlerFunc {
 			state.Message = "平台已收到资源下载结果上报，并返回 HTTP 200"
 		}
 
-		mgr.instanceForWrite(dockerID).reportResourceRes.set(state)
+		bundle.reportResourceRes.set(state)
 		if !state.Accepted {
 			log.Printf("report rejected: status=%d dockerId=%q requestId=%q message=%s", state.StatusCode, state.DockerID, state.RequestID, state.Message)
 			writeEnvelope(w, state.StatusCode, state.Message, reportStateResult(state), state.StatusCode)
@@ -646,6 +647,7 @@ func modelLogHandler(mgr *instanceManager) http.HandlerFunc {
 			writeEnvelope(w, http.StatusUnauthorized, err.Error(), nil, http.StatusUnauthorized)
 			return
 		}
+		bundle := mgr.instanceForWrite(dockerID)
 
 		var req modelLogRequest
 		if err := json.Unmarshal(bodyBytes, &req); err != nil {
@@ -672,8 +674,8 @@ func modelLogHandler(mgr *instanceManager) http.HandlerFunc {
 			}
 		}
 
-		added := mgr.instanceForWrite(dockerID).modelLog.addEntries(req.DockerID, req.RequestID, req.TaskID, req.Entries)
-		log.Printf("modelLog accepted: dockerId=%s requestId=%s added=%d total=%d", req.DockerID, req.RequestID, added, mgr.instanceForWrite(dockerID).modelLog.get().TotalCount)
+		added := bundle.modelLog.addEntries(req.DockerID, req.RequestID, req.TaskID, req.Entries)
+		log.Printf("modelLog accepted: dockerId=%s requestId=%s added=%d total=%d", req.DockerID, req.RequestID, added, bundle.modelLog.get().TotalCount)
 		writeEnvelope(w, http.StatusOK, "success", map[string]any{
 			"received": true,
 		}, 0)
@@ -703,6 +705,7 @@ func taaLogHandler(mgr *instanceManager) http.HandlerFunc {
 			writeEnvelope(w, http.StatusUnauthorized, err.Error(), nil, http.StatusUnauthorized)
 			return
 		}
+		bundle := mgr.instanceForWrite(dockerID)
 
 		var req taaLogRequest
 		if err := json.Unmarshal(bodyBytes, &req); err != nil {
@@ -729,8 +732,8 @@ func taaLogHandler(mgr *instanceManager) http.HandlerFunc {
 			}
 		}
 
-		added := mgr.instanceForWrite(dockerID).taaLog.addEntries(req.DockerID, req.RequestID, req.TaskID, req.Entries)
-		log.Printf("taaLog accepted: dockerId=%s requestId=%s added=%d total=%d", req.DockerID, req.RequestID, added, mgr.instanceForWrite(dockerID).taaLog.get().TotalCount)
+		added := bundle.taaLog.addEntries(req.DockerID, req.RequestID, req.TaskID, req.Entries)
+		log.Printf("taaLog accepted: dockerId=%s requestId=%s added=%d total=%d", req.DockerID, req.RequestID, added, bundle.taaLog.get().TotalCount)
 		writeEnvelope(w, http.StatusOK, "success", map[string]any{
 			"received": true,
 		}, 0)

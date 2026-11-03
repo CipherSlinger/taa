@@ -15,12 +15,19 @@ func TestTwoInstancesKeepSeparateReportState(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create the keystore: %v", err)
 	}
+	prev := currentPlatformKeys()
 	setPlatformKeys(ks)
-	defer setPlatformKeys(platformKeyStore())
+	defer setPlatformKeys(prev)
 
 	mgr := newInstanceManager(t.TempDir(), Config{})
-	keyA, _ := crypto.GenerateSM2KeyPair()
-	keyB, _ := crypto.GenerateSM2KeyPair()
+	keyA, err := crypto.GenerateSM2KeyPair()
+	if err != nil {
+		t.Fatalf("generate instance A's key pair: %v", err)
+	}
+	keyB, err := crypto.GenerateSM2KeyPair()
+	if err != nil {
+		t.Fatalf("generate instance B's key pair: %v", err)
+	}
 	registerInstanceForTest(t, mgr, "docker-a", keyA)
 	registerInstanceForTest(t, mgr, "docker-b", keyB)
 
@@ -48,13 +55,17 @@ func TestTwoInstancesKeepSeparateReportState(t *testing.T) {
 		t.Fatalf("report from B: status = %d, body = %s", w.Code, w.Body.String())
 	}
 
-	if got := mgr.lookup("docker-a").reportRes.get().DockerID; got != "docker-a" {
+	a, b := mgr.lookup("docker-a"), mgr.lookup("docker-b")
+	if a == nil || b == nil {
+		t.Fatalf("instance bundles missing after registration: a=%v b=%v", a, b)
+	}
+	if got := a.reportRes.get().DockerID; got != "docker-a" {
 		t.Fatalf("instance A report dockerId = %q, want docker-a", got)
 	}
-	if got := mgr.lookup("docker-b").reportRes.get().DockerID; got != "docker-b" {
+	if got := b.reportRes.get().DockerID; got != "docker-b" {
 		t.Fatalf("instance B report dockerId = %q, want docker-b", got)
 	}
-	if mgr.lookup("docker-a").reportRes.get().ReceivedAt == mgr.lookup("docker-b").reportRes.get().ReceivedAt {
+	if a.reportRes.get().ReceivedAt == b.reportRes.get().ReceivedAt {
 		t.Log("both received at the same second; separation is asserted by dockerId above")
 	}
 }
@@ -64,12 +75,19 @@ func TestReportWithAnotherInstancesKeyIsRefused(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create the keystore: %v", err)
 	}
+	prev := currentPlatformKeys()
 	setPlatformKeys(ks)
-	defer setPlatformKeys(platformKeyStore())
+	defer setPlatformKeys(prev)
 
 	mgr := newInstanceManager(t.TempDir(), Config{})
-	keyA, _ := crypto.GenerateSM2KeyPair()
-	keyB, _ := crypto.GenerateSM2KeyPair()
+	keyA, err := crypto.GenerateSM2KeyPair()
+	if err != nil {
+		t.Fatalf("generate instance A's key pair: %v", err)
+	}
+	keyB, err := crypto.GenerateSM2KeyPair()
+	if err != nil {
+		t.Fatalf("generate instance B's key pair: %v", err)
+	}
 	registerInstanceForTest(t, mgr, "docker-a", keyA)
 	registerInstanceForTest(t, mgr, "docker-b", keyB)
 

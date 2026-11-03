@@ -99,6 +99,8 @@ func NewServer(cfg Config) *Server {
 		setPlatformKeys(keys)
 	}
 
+	// Transitional: inbound callbacks write through mgr; these root-path stores
+	// still feed the console routes until the console is rewired to the manager.
 	registerStore := newRegisterStateStore(cfg.StateDir)
 	reportStore := newReportStateStore(cfg.StateDir)
 	reportResStore := newReportStateStore(cfg.StateDir, "reportRes-state.json")
