@@ -105,8 +105,8 @@ func TestInstanceManagerDefaultPrefersAcceptedThenNewest(t *testing.T) {
 	c := mgr.getOrCreate("docker-c")
 	c.register.set(registerState{Received: true, Accepted: false, ReceivedAt: "2026-03-01T00:00:00Z"})
 
-	if got := mgr.defaultID(); got != "docker-b" {
-		t.Fatalf("defaultID() = %q, want docker-b", got)
+	if got := mgr.defaultBundle(); got == nil || got.dockerID != "docker-b" {
+		t.Fatalf("defaultBundle() = %v, want docker-b", got)
 	}
 
 	resolved, err := mgr.resolve(httptest.NewRequest("GET", "/api/register/status", nil))

@@ -29,10 +29,9 @@ func testManagerWith(t *testing.T, dockerID string, configure func(*instanceStor
 		configure(b)
 	}
 	return &instanceManager{
-		root:    root,
-		cfg:     Config{},
-		byID:    map[string]*instanceStores{dockerID: b},
-		scanned: true,
+		root: root,
+		cfg:  Config{},
+		byID: map[string]*instanceStores{dockerID: b},
 	}
 }
 

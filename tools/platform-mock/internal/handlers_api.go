@@ -22,6 +22,22 @@ func writeInstanceError(w http.ResponseWriter, err error) bool {
 	return false
 }
 
+// requireMethod applies the console's method guard: it answers a CORS preflight
+// itself and rejects any method other than the one the route serves. It reports
+// whether the request may continue.
+func requireMethod(w http.ResponseWriter, r *http.Request, method string) bool {
+	if r.Method == http.MethodOptions {
+		w.WriteHeader(http.StatusNoContent)
+		return false
+	}
+	if r.Method != method {
+		w.Header().Set("Allow", method)
+		writeEnvelope(w, http.StatusMethodNotAllowed, "仅支持 "+method+" 方法", nil, http.StatusMethodNotAllowed)
+		return false
+	}
+	return true
+}
+
 // instanceSummary is the console's one-line view of a registered instance.
 type instanceSummary struct {
 	DockerID      string `json:"dockerId"`
@@ -38,21 +54,21 @@ type instanceSummary struct {
 func lastReportAt(b *instanceStores) string {
 	latest := ""
 	for _, store := range []*reportStateStore{b.reportResourceRes, b.reportRes, b.reportModelImport, b.reportAudit} {
-		if at := store.get().ReceivedAt; at > latest {
+		if at := store.get().ReceivedAt; compareTimestamps(at, latest) > 0 {
 			latest = at
 		}
 	}
 	return latest
 }
 
-func summarizeInstance(b *instanceStores) instanceSummary {
+func summarizeInstance(mgr *instanceManager, b *instanceStores) instanceSummary {
 	reg := b.register.get()
 	return instanceSummary{
 		DockerID:      b.dockerID,
 		Accepted:      reg.Accepted,
 		Received:      reg.Received,
 		ReceivedAt:    reg.ReceivedAt,
-		TaaTarget:     b.target(),
+		TaaTarget:     targetForDisplay(mgr, b.dockerID),
 		LastReportAt:  lastReportAt(b),
 		ModelLogCount: b.modelLog.get().TotalCount,
 		TaaLogCount:   b.taaLog.get().TotalCount,
@@ -60,30 +76,29 @@ func summarizeInstance(b *instanceStores) instanceSummary {
 }
 
 func instanceListPayload(mgr *instanceManager) ([]instanceSummary, string) {
-	defaultBundle := mgr.defaultBundle()
-	defaultID := ""
-	if defaultBundle != nil {
-		defaultID = defaultBundle.dockerID
-	}
 	items := make([]instanceSummary, 0)
 	for _, b := range mgr.list() {
-		item := summarizeInstance(b)
-		item.Default = defaultBundle != nil && b.dockerID == defaultBundle.dockerID
-		items = append(items, item)
+		// The empty-id legacy bundle is a write fallback, not an instance: the
+		// console cannot address it, so listing it would offer a phantom entry
+		// whose selection snaps back on the next poll.
+		if b.dockerID == "" {
+			continue
+		}
+		items = append(items, summarizeInstance(mgr, b))
 	}
-	return items, defaultID
+	if len(items) == 0 {
+		return items, ""
+	}
+	// list() is already in default order and defaultBundle() picks its first
+	// non-empty bundle, so the first item is the default.
+	items[0].Default = true
+	return items, items[0].DockerID
 }
 
 func instancesHandler(mgr *instanceManager) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		setCORS(w)
-		if r.Method == http.MethodOptions {
-			w.WriteHeader(http.StatusNoContent)
-			return
-		}
-		if r.Method != http.MethodGet {
-			w.Header().Set("Allow", http.MethodGet)
-			writeEnvelope(w, http.StatusMethodNotAllowed, "仅支持 GET 方法", nil, http.StatusMethodNotAllowed)
+		if !requireMethod(w, r, http.MethodGet) {
 			return
 		}
 		items, defaultID := instanceListPayload(mgr)
@@ -105,13 +120,7 @@ func targetForDisplay(mgr *instanceManager, dockerID string) string {
 func dashboardStatusHandler(mgr *instanceManager) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		setCORS(w)
-		if r.Method == http.MethodOptions {
-			w.WriteHeader(http.StatusNoContent)
-			return
-		}
-		if r.Method != http.MethodGet {
-			w.Header().Set("Allow", http.MethodGet)
-			writeEnvelope(w, http.StatusMethodNotAllowed, "仅支持 GET 方法", nil, http.StatusMethodNotAllowed)
+		if !requireMethod(w, r, http.MethodGet) {
 			return
 		}
 		b, err := mgr.resolveLenient(r)
@@ -139,6 +148,9 @@ func dashboardStatusHandler(mgr *instanceManager) http.HandlerFunc {
 func registerStatusHandler(mgr *instanceManager) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		setCORS(w)
+		if !requireMethod(w, r, http.MethodGet) {
+			return
+		}
 		b, err := mgr.resolve(r)
 		if errors.Is(err, errNoInstance) {
 			writeEnvelope(w, http.StatusOK, "", registerState{}, 0)
@@ -176,13 +188,7 @@ func registerResetHandler(mgr *instanceManager) http.HandlerFunc {
 func instanceResetHandler(mgr *instanceManager, apply func(*instanceStores)) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		setCORS(w)
-		if r.Method == http.MethodOptions {
-			w.WriteHeader(http.StatusNoContent)
-			return
-		}
-		if r.Method != http.MethodPost {
-			w.Header().Set("Allow", http.MethodPost)
-			writeEnvelope(w, http.StatusMethodNotAllowed, "仅支持 POST 方法", nil, http.StatusMethodNotAllowed)
+		if !requireMethod(w, r, http.MethodPost) {
 			return
 		}
 		if id := requestedDockerID(r); id != "" {
@@ -250,6 +256,9 @@ func reportStateEnvelope(state reportState) (string, int) {
 func reportStatusHandler(mgr *instanceManager, pick func(*instanceStores) *reportStateStore) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		setCORS(w)
+		if !requireMethod(w, r, http.MethodGet) {
+			return
+		}
 		b, err := mgr.resolve(r)
 		if writeInstanceError(w, err) {
 			return
@@ -270,6 +279,9 @@ func reportResetHandler(mgr *instanceManager, pick func(*instanceStores) *report
 func progressStatusHandler(mgr *instanceManager) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		setCORS(w)
+		if !requireMethod(w, r, http.MethodGet) {
+			return
+		}
 		b, err := mgr.resolve(r)
 		if writeInstanceError(w, err) {
 			return
@@ -294,6 +306,9 @@ func progressResetHandler(mgr *instanceManager) http.HandlerFunc {
 func modelLogStatusHandler(mgr *instanceManager) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		setCORS(w)
+		if !requireMethod(w, r, http.MethodGet) {
+			return
+		}
 		b, err := mgr.resolve(r)
 		if writeInstanceError(w, err) {
 			return
@@ -313,6 +328,9 @@ func modelLogResetHandler(mgr *instanceManager) http.HandlerFunc {
 func taaLogStatusHandler(mgr *instanceManager) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		setCORS(w)
+		if !requireMethod(w, r, http.MethodGet) {
+			return
+		}
 		b, err := mgr.resolve(r)
 		if writeInstanceError(w, err) {
 			return
@@ -332,6 +350,9 @@ func taaLogResetHandler(mgr *instanceManager) http.HandlerFunc {
 func taaTargetHandler(mgr *instanceManager) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		setCORS(w)
+		if !requireMethod(w, r, http.MethodGet) {
+			return
+		}
 		b, err := mgr.resolveLenient(r)
 		if writeInstanceError(w, err) {
 			return

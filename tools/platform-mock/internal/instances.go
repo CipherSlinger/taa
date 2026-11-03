@@ -153,9 +153,6 @@ type instanceManager struct {
 	// configured TAA port.
 	cfg  Config
 	byID map[string]*instanceStores
-	// scanned records that the initial on-disk scan ran; reserved for later
-	// tasks that need to distinguish a scan from a live lookup.
-	scanned bool
 
 	staticTarget     string
 	discoveredTarget string
@@ -270,7 +267,6 @@ func (m *instanceManager) scan() {
 		if !os.IsNotExist(err) {
 			log.Printf("scan instances failed: %v", err)
 		}
-		m.scanned = true
 		return
 	}
 	for _, entry := range entries {
@@ -292,7 +288,6 @@ func (m *instanceManager) scan() {
 		b := loadInstanceStores(dir, meta.DockerID)
 		m.byID[b.dockerID] = b
 	}
-	m.scanned = true
 }
 
 func (m *instanceManager) getOrCreate(dockerID string) *instanceStores {
@@ -330,6 +325,19 @@ func (m *instanceManager) list() []*instanceStores {
 	return bundles
 }
 
+// compareTimestamps orders two RFC3339 strings by instant. RFC3339 allows the
+// same instant to carry different offsets, so a plain string comparison would
+// misorder values written across a timezone change. Values that do not parse
+// fall back to the string comparison, which sorts empty values lowest.
+func compareTimestamps(a, b string) int {
+	ta, errA := time.Parse(time.RFC3339, a)
+	tb, errB := time.Parse(time.RFC3339, b)
+	if errA != nil || errB != nil {
+		return strings.Compare(a, b)
+	}
+	return ta.Compare(tb)
+}
+
 func instanceLess(a, b *instanceStores) bool {
 	sa, sb := a.register.get(), b.register.get()
 	if sa.Accepted != sb.Accepted {
@@ -338,8 +346,8 @@ func instanceLess(a, b *instanceStores) bool {
 	if sa.Received != sb.Received {
 		return sa.Received
 	}
-	if sa.ReceivedAt != sb.ReceivedAt {
-		return sa.ReceivedAt > sb.ReceivedAt
+	if cmp := compareTimestamps(sa.ReceivedAt, sb.ReceivedAt); cmp != 0 {
+		return cmp > 0
 	}
 	return a.dockerID < b.dockerID
 }
@@ -358,13 +366,6 @@ func (m *instanceManager) defaultBundle() *instanceStores {
 		return bundles[0]
 	}
 	return nil
-}
-
-func (m *instanceManager) defaultID() string {
-	if b := m.defaultBundle(); b != nil {
-		return b.dockerID
-	}
-	return ""
 }
 
 // instanceForWrite picks the bundle an inbound callback writes to. Writing

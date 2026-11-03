@@ -64,10 +64,9 @@ type Server struct {
 }
 
 // NewServer builds a Server from cfg: it prepares the state/upload directories,
-// builds the per-instance manager, and registers all HTTP routes. The console's
-// default TAA address is resolved for the status endpoints; the /taa/* proxy
-// selects each instance's target per request. It does not start listening; call
-// Start (or Run) for that.
+// builds the per-instance manager, and registers all HTTP routes. The console
+// endpoints and the /taa/* proxy resolve the selected instance's target per
+// request. It does not start listening; call Start (or Run) for that.
 func NewServer(cfg Config) *Server {
 	cfg = cfg.withDefaults()
 

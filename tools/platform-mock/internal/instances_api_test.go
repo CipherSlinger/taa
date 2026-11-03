@@ -19,8 +19,14 @@ func TestInstancesEndpointListsEveryInstanceAndMarksTheDefault(t *testing.T) {
 	defer setPlatformKeys(prev)
 
 	mgr := newInstanceManager(t.TempDir(), Config{})
-	keyA, _ := crypto.GenerateSM2KeyPair()
-	keyB, _ := crypto.GenerateSM2KeyPair()
+	keyA, err := crypto.GenerateSM2KeyPair()
+	if err != nil {
+		t.Fatalf("generate docker-a's key: %v", err)
+	}
+	keyB, err := crypto.GenerateSM2KeyPair()
+	if err != nil {
+		t.Fatalf("generate docker-b's key: %v", err)
+	}
 	registerInstanceForTest(t, mgr, "docker-a", keyA)
 	registerInstanceForTest(t, mgr, "docker-b", keyB)
 	mgr.lookup("docker-a").reportRes.set(reportState{DockerID: "docker-a", Received: true, ReceivedAt: "2026-05-01T00:00:00Z"})
@@ -102,13 +108,21 @@ func TestRegisterResetAllAndOne(t *testing.T) {
 	defer setPlatformKeys(prev)
 
 	mgr := newInstanceManager(t.TempDir(), Config{})
-	keyA, _ := crypto.GenerateSM2KeyPair()
-	keyB, _ := crypto.GenerateSM2KeyPair()
+	keyA, err := crypto.GenerateSM2KeyPair()
+	if err != nil {
+		t.Fatalf("generate docker-a's key: %v", err)
+	}
+	keyB, err := crypto.GenerateSM2KeyPair()
+	if err != nil {
+		t.Fatalf("generate docker-b's key: %v", err)
+	}
 	registerInstanceForTest(t, mgr, "docker-a", keyA)
 	registerInstanceForTest(t, mgr, "docker-b", keyB)
 
 	reset := registerResetHandler(mgr)
-	reset.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/api/register/reset?dockerId=docker-a", nil))
+	wResetA := httptest.NewRecorder()
+	reset.ServeHTTP(wResetA, httptest.NewRequest(http.MethodPost, "/api/register/reset?dockerId=docker-a", nil))
+	assertResetResponse(t, wResetA)
 	if mgr.lookup("docker-a").register.get().Received {
 		t.Fatal("docker-a was not reset")
 	}
@@ -116,7 +130,9 @@ func TestRegisterResetAllAndOne(t *testing.T) {
 		t.Fatal("resetting docker-a also reset docker-b")
 	}
 
-	reset.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/api/register/reset", nil))
+	wResetAll := httptest.NewRecorder()
+	reset.ServeHTTP(wResetAll, httptest.NewRequest(http.MethodPost, "/api/register/reset", nil))
+	assertResetResponse(t, wResetAll)
 	if mgr.lookup("docker-b").register.get().Received {
 		t.Fatal("reset-all did not clear docker-b")
 	}
@@ -138,7 +154,10 @@ func TestDashboardIncludesTheInstanceList(t *testing.T) {
 	defer setPlatformKeys(prev)
 
 	mgr := newInstanceManager(t.TempDir(), Config{TAATarget: "http://10.0.0.9:6001"})
-	keyA, _ := crypto.GenerateSM2KeyPair()
+	keyA, err := crypto.GenerateSM2KeyPair()
+	if err != nil {
+		t.Fatalf("generate docker-a's key: %v", err)
+	}
 	registerInstanceForTest(t, mgr, "docker-a", keyA)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/dashboard/status?dockerId=docker-a", nil)
@@ -165,6 +184,93 @@ func TestDashboardIncludesTheInstanceList(t *testing.T) {
 	}
 	if len(payload.Result.Items) != 1 {
 		t.Fatalf("instances = %d, want 1", len(payload.Result.Items))
+	}
+	if payload.Result.Items[0].TaaTarget != payload.Result.Target {
+		t.Fatalf("item taaTarget = %q, dashboard taaTarget = %q", payload.Result.Items[0].TaaTarget, payload.Result.Target)
+	}
+}
+
+func assertResetResponse(t *testing.T, w *httptest.ResponseRecorder) {
+	t.Helper()
+	if w.Code != http.StatusOK {
+		t.Fatalf("reset status = %d, body = %s", w.Code, w.Body.String())
+	}
+	var payload apiResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode reset response: %v", err)
+	}
+	if payload.Error != 0 || payload.Msg != "reset" {
+		t.Fatalf("reset envelope = error:%d msg:%q, want error 0 and msg reset", payload.Error, payload.Msg)
+	}
+}
+
+// TestInstanceListHidesTheLegacyBundle pins that the empty-id bundle a lenient
+// console call creates is a write fallback only: it must not surface as an
+// addressable instance or become the default.
+func TestInstanceListHidesTheLegacyBundle(t *testing.T) {
+	mgr := newInstanceManager(t.TempDir(), Config{})
+
+	wDashboard := httptest.NewRecorder()
+	dashboardStatusHandler(mgr).ServeHTTP(wDashboard, httptest.NewRequest(http.MethodGet, "/api/dashboard/status", nil))
+	if wDashboard.Code != http.StatusOK {
+		t.Fatalf("dashboard status = %d, body = %s", wDashboard.Code, wDashboard.Body.String())
+	}
+	if mgr.lookup("") == nil {
+		t.Fatal("the dashboard did not create the legacy bundle")
+	}
+
+	w := httptest.NewRecorder()
+	instancesHandler(mgr).ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/api/instances", nil))
+	if w.Code != http.StatusOK {
+		t.Fatalf("instances status = %d, body = %s", w.Code, w.Body.String())
+	}
+	var payload struct {
+		Result struct {
+			Instances []instanceSummary `json:"instances"`
+			Default   string            `json:"defaultDockerId"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode instances: %v", err)
+	}
+	if len(payload.Result.Instances) != 0 {
+		t.Fatalf("instances = %d, want 0 while only the legacy bundle exists", len(payload.Result.Instances))
+	}
+	if payload.Result.Default != "" {
+		t.Fatalf("defaultDockerId = %q, want empty", payload.Result.Default)
+	}
+}
+
+func TestConsoleStatusRejectsUnknownDockerID(t *testing.T) {
+	mgr := newInstanceManager(t.TempDir(), Config{})
+	w := httptest.NewRecorder()
+	taaLogStatusHandler(mgr).ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/api/taaLog/status?dockerId=missing", nil))
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404 for an unknown dockerId; body = %s", w.Code, w.Body.String())
+	}
+}
+
+func TestConsoleStatusRejectsWrongMethod(t *testing.T) {
+	mgr := newInstanceManager(t.TempDir(), Config{})
+
+	w := httptest.NewRecorder()
+	instancesHandler(mgr).ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/api/instances", nil))
+	if w.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("status = %d, want 405 for POST; body = %s", w.Code, w.Body.String())
+	}
+	if allow := w.Header().Get("Allow"); allow != http.MethodGet {
+		t.Fatalf("Allow = %q, want GET", allow)
+	}
+
+	// A preflight must be answered by the method guard, before the handler
+	// resolves an instance: resolving would create the legacy bundle.
+	w = httptest.NewRecorder()
+	taaLogStatusHandler(mgr).ServeHTTP(w, httptest.NewRequest(http.MethodOptions, "/api/taaLog/status", nil))
+	if w.Code != http.StatusNoContent {
+		t.Fatalf("preflight status = %d, want 204; body = %s", w.Code, w.Body.String())
+	}
+	if mgr.lookup("") != nil {
+		t.Fatal("a CORS preflight created the legacy bundle")
 	}
 }
 
