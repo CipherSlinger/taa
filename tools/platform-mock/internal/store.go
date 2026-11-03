@@ -485,11 +485,17 @@ type taaLogStore struct {
 }
 
 func newTaaLogStore(stateDir string, capacity int) *taaLogStore {
+	return newTaaLogStoreAt(defaultStateFile(stateDir, "taaLog-state.json"), capacity)
+}
+
+// newTaaLogStoreAt builds a store backed by an explicit file, so TAA and LLM
+// logs can be kept apart while sharing one implementation.
+func newTaaLogStoreAt(path string, capacity int) *taaLogStore {
 	if capacity <= 0 {
 		capacity = 2000
 	}
 	store := &taaLogStore{
-		path:     defaultStateFile(stateDir, "taaLog-state.json"),
+		path:     path,
 		capacity: capacity,
 		seen:     make(map[string]struct{}),
 	}

@@ -121,6 +121,15 @@ func NewServer(cfg Config) *Server {
 	mux.HandleFunc("/v1/taa/reportProgress", reportProgressHandler(mgr))
 	mux.HandleFunc("/v1/taa/modelLog", modelLogHandler(mgr))
 	mux.HandleFunc("/v1/taa/taaLog", taaLogHandler(mgr))
+	// The LLM reports in plaintext on its own prefix and is not attached to any
+	// TAA instance, so these routes keep their own state and log store.
+	llmState := newLLMStateStore(cfg.StateDir)
+	llmLogStore := newTaaLogStoreAt(defaultStateFile(cfg.StateDir, "llm-log-state.json"), 2000)
+	mux.HandleFunc("/v1/llm/register", llmRegisterHandler(llmState))
+	mux.HandleFunc("/v1/llm/heartbeat", llmHeartbeatHandler(llmState))
+	mux.HandleFunc("/v1/llm/log", llmLogHandler(llmLogStore))
+	mux.HandleFunc("/api/llm/status", llmStatusHandler(llmState, llmLogStore))
+	mux.HandleFunc("/api/llm/reset", llmResetHandler(llmState))
 	mux.HandleFunc("/api/instances", instancesHandler(mgr))
 	mux.HandleFunc("/api/dashboard/status", dashboardStatusHandler(mgr))
 	mux.HandleFunc("/api/register/status", registerStatusHandler(mgr))
