@@ -73,7 +73,8 @@ type llmSource struct {
 }
 ```
 
-其余字段保持现状，响应仍走既有的 `{msg, result, error}` 信封。
+其余字段保持现状。该端点与改造前一样直接返回顶层 JSON 对象（不走 `/v1/taa/*` 那套
+`{msg, result, error}` 信封），因此新增 `sources` 对既有调用方无影响。
 
 ## 前端
 
