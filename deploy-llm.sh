@@ -237,6 +237,9 @@ CONTAINER_LEGACY_OLLAMA_DIR="${CONTAINER_LEGACY_OLLAMA_DIR:-$CON_WORKDIR/ollama-
 
 # TEE-LLM and Ollama ports & endpoints
 TEELLM_PORT="${TEELLM_PORT:-8443}"
+# Platform the instance registers with, heartbeats to and pushes logs to. Empty
+# disables all outbound reporting.
+TEELLM_PLATFORM_ADDR="${TEELLM_PLATFORM_ADDR:-http://172.16.10.181:18081}"
 TEELLM_LOG_FILE="${TEELLM_LOG_FILE:-$CON_WORKDIR/teellm-service.log}"
 OLLAMA_HOST="${OLLAMA_HOST:-127.0.0.1:11434}"
 # The supervisor starts ollama and redirects its output here; the readiness failure below dumps it.
@@ -868,14 +871,15 @@ prepare_config() {
   local output_file="$2"
   local model="$3"
   local port="$4"
+  local platform_addr="${5:-}"
 
   require_file "teellm config template" "$template"
   require_command python3
 
-  python3 - "$template" "$output_file" "$model" "$port" <<'PY'
+  python3 - "$template" "$output_file" "$model" "$port" "$platform_addr" <<'PY'
 import json, sys
 
-template_path, output_path, model, port = sys.argv[1:5]
+template_path, output_path, model, port, platform_addr = sys.argv[1:6]
 with open(template_path, "r", encoding="utf-8") as f:
     cfg = json.load(f)
 
@@ -883,6 +887,8 @@ if model:
     cfg.setdefault("backend", {})["defaultModel"] = model
 if port:
     cfg.setdefault("server", {})["addr"] = f":{port}"
+if platform_addr:
+    cfg.setdefault("platform", {})["addr"] = platform_addr
 
 with open(output_path, "w", encoding="utf-8") as f:
     json.dump(cfg, f, indent=2, ensure_ascii=False)
@@ -1572,6 +1578,8 @@ Options:
 Environment overrides:
   TEELLM_PORT=${TEELLM_PORT}
       TEE-LLM service listening port.
+  TEELLM_PLATFORM_ADDR=${TEELLM_PLATFORM_ADDR}
+      Platform this instance registers with. Empty disables reporting.
   OLLAMA_LOCAL_DIR=${OLLAMA_LOCAL_DIR:-}
       Path to offline Ollama and model weights bundle.
   OLLAMA_MODEL=${OLLAMA_MODEL:-}
@@ -2056,7 +2064,7 @@ deploy_teellm() {
   local tmp_cfg
   tmp_cfg="$(mktemp /tmp/teellm_cfg.XXXXXX)"
   TEMP_CONFIG_FILE="$tmp_cfg"
-  prepare_config "$cfg_template" "$tmp_cfg" "$OLLAMA_MODEL" "$TEELLM_PORT"
+  prepare_config "$cfg_template" "$tmp_cfg" "$OLLAMA_MODEL" "$TEELLM_PORT" "$TEELLM_PLATFORM_ADDR"
 
   remote_ssh "mkdir -p '$REMOTE_DIR/configs'"
   sshpass -p "$PASSWORD" scp "${SSH_OPTS[@]}" "$TEELLM_DIR/bin/teellm-service" "${REMOTE_USER}@${REMOTE_HOST}:$REMOTE_DIR/teellm-service.new"
