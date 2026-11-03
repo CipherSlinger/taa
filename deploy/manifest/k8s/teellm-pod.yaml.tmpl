@@ -12,6 +12,7 @@
 #    NAMESPACE        metadata.namespace     (TARGET_NAMESPACE, default osr)
 #    NODE_NAME        spec.nodeName          (TEELLM_POD_NODE)
 #    IMAGE            containers[0].image    (TEELLM_POD_IMAGE)
+#    PULL_POLICY      imagePullPolicy        (TEELLM_POD_PULL_POLICY; Always after a build)
 #    RUNTIME_CLASS    runtimeClassName       (TEELLM_POD_RUNTIME_CLASS)
 #    CPU, MEMORY      container resources    (TEELLM_POD_CPU, TEELLM_POD_MEMORY)
 #    MODEL            env TEELLM_MODEL       (the model selected for the deployment)
@@ -41,18 +42,25 @@ metadata:
   labels:
     app: taa-teellm
   annotations:
+    # The three annotations below are the set every kata-qemu-csv2 Pod on this host carries, and
+    # they are not interchangeable. An earlier revision of this template deliberately dropped the
+    # first two; running the image without them proved that wrong for a multi-GB image.
+    #
+    # runtime-handler: containerd picks the handler from this key. It is set to the same value as
+    # runtimeClassName on purpose -- this is the shape the platform's own CoCo Pods have, and the
+    # point of writing it is that the two cannot drift apart.
+    io.containerd.cri.runtime-handler: __RUNTIME_CLASS__
+    # kernel_params: the value is APPENDED to the parameters the runtime configuration already
+    # carries, so a non-empty value is additive and cannot erase the rdinit= that boots the guest.
+    # (An empty value is the hazard, which is why this one is never templated from a variable.)
+    # These two timeouts are what make the in-guest pull work: the CDH -- not the host kubelet --
+    # pulls this image inside the guest, and the defaults time out long before a multi-GB image
+    # arrives, leaving the Pod in ContainerCreating for half an hour and then failing it.
+    io.katacontainers.config.hypervisor.kernel_params: "agent.cdh_api_timeout=1200 agent.image_pull_timeout=3600"
     # Required. The guest pulls the image through its own CDH, and the host's
     # trust in the local registry's self-signed certificate does not carry into
     # the guest. Without this annotation the Pod stops in StartError.
-    io.katacontainers.config.runtime.cc_init_data: __CC_INIT_DATA__
-    # Deliberately not copied over from tools/csv2-vm/dcu-tee-pod.yaml, for the
-    # same reasons recorded in deploy-taa-vm.sh:
-    #   io.containerd.cri.runtime-handler
-    #       hijacks the runtime selection away from runtimeClassName.
-    #   io.katacontainers.config.hypervisor.kernel_params
-    #       a hypervisor parameter value is appended to the config file's own
-    #       parameters, so an empty value erases the rdinit= that boots TAA's
-    #       guest. Set a parameter only by editing the kata config.
+    io.katacontainers.config.runtime.cc_init_data: "__CC_INIT_DATA__"
 spec:
   # The RuntimeClass that boots a CSV2 guest, which is what makes the csv-guest
   # kernel driver -- and so a real attestation -- possible at all. Necessary but
@@ -61,13 +69,23 @@ spec:
   # mock evidence and every TAA handshake fails.
   runtimeClassName: __RUNTIME_CLASS__
   nodeName: __NODE_NAME__
+  # Belt and braces next to nodeName: on this single-node cluster the two select the same host, and
+  # the selector is the form the platform's Pods use. nodeName is kept because TEELLM_POD_NODE pins
+  # the deployment to a known machine, which is what makes the memory the host has to have knowable.
+  nodeSelector:
+    katacontainers.io/kata-runtime: "true"
   # Always rather than Never: the container has to come back in place if it
   # exits, and the Pod IP that TAA's llm.endpoint points at has to survive.
   restartPolicy: Always
+  # Matches the reference create script. A kata guest needs a moment to shut down, and a delete
+  # that gives up earlier leaves a sandbox and its qemu behind.
+  terminationGracePeriodSeconds: 30
   containers:
     - name: teellm
       image: __IMAGE__
-      imagePullPolicy: IfNotPresent
+      # Always when this deployment built the image: the tag is the build date, so a rebuilt image
+      # replaces a previous one under the same name and a cached copy would defeat the rebuild.
+      imagePullPolicy: __PULL_POLICY__
       # The supervisor's own defaults match these paths; naming them here keeps the Pod's runtime
       # contract in one place. TEELLM_MODEL is the fallback when .teellm-model is absent -- an
       # image that does not bake the model, or a Pod before the deployment has written the file
@@ -132,10 +150,14 @@ spec:
           done
       resources:
         # Kata sizes the VM from the limits: guest RAM = the kata default_memory
-        # (23552M in this host's configuration-qemu-csv2.toml) + limits.memory,
+        # (2048M in this host's configuration-qemu-csv2.toml) + limits.memory,
         # and guest vCPUs = default_vcpus (1) + limits.cpu. Requests equal the
         # limits because CSV2 encrypted memory is resident from boot: it is a
-        # permanent cost on the host, not a burstable request.
+        # permanent cost on the host, not a burstable request. The deployment
+        # checks both halves before it creates anything: the guest's overlayfs
+        # lives on a tmpfs capped at half the guest's visible memory, so the
+        # image has to fit there, and the VM has to fit in the host's free
+        # memory, which is never reclaimed while the Pod exists.
         #
         # The memory figure has to hold the model, not just teellm-service. An
         # earlier default of 8Gi -- copied from the TAA Pod, which serves the

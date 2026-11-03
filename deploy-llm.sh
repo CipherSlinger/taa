@@ -307,9 +307,33 @@ TEELLM_POD_CPU="${TEELLM_POD_CPU:-8}"
 # inference, so its own ollama was never asked to load anything. Sizing has to cover the model,
 # not just the service.
 TEELLM_POD_MEMORY="${TEELLM_POD_MEMORY:-16Gi}"
-# 600s rather than the 180s a plain Pod needs: a fresh CSV2 Pod boots its guest first and pulls
-# this image inside it, through the in-guest CDH.
-TEELLM_POD_READY_TIMEOUT="${TEELLM_POD_READY_TIMEOUT:-600}"
+# 1800s rather than the 180s a plain Pod needs: a fresh CSV2 Pod boots its guest first and pulls
+# this image inside it, through the in-guest CDH. The image is several GB, and the guest pull has
+# been measured at 5 to 20 minutes on this host, so a shorter window turns a healthy first creation
+# into a timeout.
+TEELLM_POD_READY_TIMEOUT="${TEELLM_POD_READY_TIMEOUT:-1800}"
+# Whether a Pod that has to be created is first built from this working tree. On, the deployment
+# recompiles teellm-service, bakes it plus the ollama runtime and the model into an image, pushes
+# that image and creates the Pod from it, so a Pod never runs a binary older than the tree being
+# deployed. Off, it falls back to the previous behaviour of picking the newest date tag the
+# registry already lists. An explicitly named TEELLM_POD_IMAGE skips the build either way: an
+# operator who names an image is making a decision, not guessing one.
+TEELLM_BUILD_POD_IMAGE="${TEELLM_BUILD_POD_IMAGE:-true}"
+TEELLM_POD_PULL_POLICY="${TEELLM_POD_PULL_POLICY:-IfNotPresent}"
+# Uncompressed size of the Pod image, in GiB. Empty probes the image locally, then on the remote
+# host, and warns before falling back to a measured constant. Only the memory guard reads it.
+TEELLM_POD_IMAGE_SIZE_GIB="${TEELLM_POD_IMAGE_SIZE_GIB:-}"
+# Escape hatch for the memory guard, matching --force in the reference create script. Two gates
+# read it: the guest-overlay budget and the host's available memory.
+TEELLM_POD_FORCE_MEMORY="${TEELLM_POD_FORCE_MEMORY:-false}"
+# Whether pod-down counts the host's kata sandboxes after deleting. A leaked qemu keeps its whole
+# -m resident, and encrypted memory is not reclaimable, so the count is the only thing that shows it.
+TEELLM_POD_ORPHAN_CHECK="${TEELLM_POD_ORPHAN_CHECK:-true}"
+# Interactive confirmation before a creation, which is a confidential VM of host-resident memory.
+# Non-interactive runs proceed without it: --create-pod is already the deliberate act.
+TEELLM_POD_ASSUME_YES="${TEELLM_POD_ASSUME_YES:-false}"
+# Reads the kata default_memory that sizes the guest on top of limits.memory.
+KATA_TOML="${KATA_TOML:-/opt/kata/share/defaults/kata-containers/configuration-qemu-csv2.toml}"
 TEELLM_POD_TEMPLATE="${TEELLM_POD_TEMPLATE:-$PROJECT_DIR/deploy/manifest/k8s/teellm-pod.yaml.tmpl}"
 # The script that becomes the Pod's PID 1 and owns teellm-service and ollama. It is installed into
 # the Pod by the deployment, so it is versioned here rather than baked into the image.
@@ -324,6 +348,10 @@ TEELLM_POD_CC_INIT_DATA="${TEELLM_POD_CC_INIT_DATA:-}"
 TEELLM_POD_IP=""
 CREATE_POD=false
 TEMP_POD_MANIFEST=""
+# Set once the local teellm-service binary has been rebuilt in this run. Creating a Pod builds the
+# binary to bake into the image, and the deployment installs the same file into the Pod afterwards;
+# without this flag that would be a second `go build` of identical sources.
+LOCAL_BINARY_BUILT=false
 
 SSH_OPTS=(
   -q
@@ -446,12 +474,170 @@ resolve_teellm_pod_image() {
 
 # ── Dedicated TEE-LLM Pod lifecycle ───────────────────────────
 
+# Converts a Kubernetes memory quantity to MiB. Returns 1 for a form this script does not parse, so
+# the caller can tell "zero" from "unreadable".
+quantity_to_mib() {
+  local v="$1"
+  case "$v" in
+    *Ki) echo $(( ${v%Ki} / 1024 )) ;;
+    *Mi) echo $(( ${v%Mi} )) ;;
+    *Gi) echo $(( ${v%Gi} * 1024 )) ;;
+    *Ti) echo $(( ${v%Ti} * 1024 * 1024 )) ;;
+    *K)  echo $(( ${v%K} / 1024 )) ;;
+    *M)  echo $(( ${v%M} * 1000000 / 1048576 )) ;;
+    *G)  echo $(( ${v%G} * 1000000000 / 1048576 )) ;;
+    ''|*[!0-9]*) return 1 ;;
+    *)   echo $(( v / 1048576 )) ;;
+  esac
+}
+
+# The memory the kata runtime adds to limits.memory to size the guest. Read from the runtime's own
+# configuration; 2048 is the shipped default and is what this host's configuration-qemu-csv2.toml
+# carries, so an unreadable file does not change the arithmetic.
+kata_default_memory_mib() {
+  local v
+  v="$(remote_ssh "sed -n 's/^default_memory *= *//p' '$KATA_TOML' 2>/dev/null | head -1" || true)"
+  v="${v//$'\r'/}"
+  v="${v//$'\n'/}"
+  if [[ ! "$v" =~ ^[0-9]+$ ]]; then
+    v=2048
+  fi
+  printf '%s' "$v"
+}
+
+# Builds the image the new Pod will run from this working tree and pushes it to the registry the
+# guest pulls from. Without this the creation path only names an existing tag, so a Pod runs
+# whatever was pushed last -- silently older than the tree being deployed, and there is nothing in
+# the Pod to show it.
+#
+# The tag is the build date, so a rebuild replaces the same name. The pull policy is therefore set
+# to Always on this path: on a fresh guest there is no cache to consult, but saying Always removes
+# the question, where IfNotPresent leaves the guest free to take a copy of an image that was
+# replaced underneath its name.
+build_teellm_pod_image() {
+  local date_tag registry_image builder
+  date_tag="$(date +%Y%m%d)"
+  registry_image="$TEELLM_IMAGE_REGISTRY/$TEELLM_IMAGE_REPO:$date_tag"
+  builder="$PROJECT_DIR/build-teellm-image.sh"
+  require_file "TEE-LLM image builder" "$builder"
+
+  # First, and unconditionally: build-teellm-image.sh compiles teellm-service only when the binary
+  # is missing (line 98), so an existing file says nothing about whether it matches these sources.
+  build_local_binary
+
+  step "building the TEE-LLM Pod image from this working tree ($registry_image)"
+  detail "the ollama runtime and the model are streamed into the image and pushed; this takes tens of minutes"
+  DATE_TAG="$date_tag" \
+  TARGET_IMAGE="$TEELLM_IMAGE_REPO:$date_tag" \
+  REGISTRY_IMAGE="$registry_image" \
+  OLLAMA_MODEL="$OLLAMA_MODEL" \
+  OLLAMA_LOCAL_DIR="$OLLAMA_LOCAL_DIR" \
+  TEELLM_DIR="$TEELLM_DIR" \
+  REMOTE_HOST="$REMOTE_HOST" \
+  REMOTE_USER="$REMOTE_USER" \
+  TARGET_PASSWORD="$PASSWORD" \
+    "$builder" --push || {
+      err "failed to build or push the TEE-LLM Pod image ($registry_image)"
+      exit 1
+    }
+
+  TEELLM_POD_IMAGE="$registry_image"
+  TEELLM_POD_PULL_POLICY="Always"
+  info "TEE-LLM Pod image built and pushed: $TEELLM_POD_IMAGE"
+}
+
+# Sizes the guest before anything is created. A kata CSV2 guest gets default_memory + limits.memory
+# of encrypted memory that is resident on the host from boot and cannot be reclaimed, and the
+# container's / is an overlayfs whose layers live on a tmpfs capped at half the guest's visible
+# memory. An image bigger than that cap dies with ENOSPC after the VM has already been booted; a
+# VM bigger than the host's free memory takes the host down with it. Both are arithmetic, so both
+# are checked here rather than discovered from an event twenty minutes later.
+check_pod_memory_budget() {
+  local mem_mib
+  mem_mib="$(quantity_to_mib "$TEELLM_POD_MEMORY")" || {
+    err "cannot read TEELLM_POD_MEMORY='$TEELLM_POD_MEMORY' as a Kubernetes memory quantity"
+    exit 1
+  }
+
+  local image_mib=""
+  if [[ -n "$TEELLM_POD_IMAGE_SIZE_GIB" ]]; then
+    image_mib="$(awk -v g="$TEELLM_POD_IMAGE_SIZE_GIB" 'BEGIN { printf "%d", g * 1024 }')"
+    info "Pod image size: ${TEELLM_POD_IMAGE_SIZE_GIB}GiB (TEELLM_POD_IMAGE_SIZE_GIB)"
+  elif docker image inspect "$TEELLM_POD_IMAGE" >/dev/null 2>&1; then
+    image_mib=$(( $(docker image inspect -f '{{.Size}}' "$TEELLM_POD_IMAGE") / 1048576 ))
+    info "Pod image size: ${image_mib}MiB uncompressed (local docker)"
+  elif remote_ssh "docker image inspect '$TEELLM_POD_IMAGE' >/dev/null 2>&1" >/dev/null 2>&1; then
+    image_mib="$(remote_ssh "docker image inspect -f '{{.Size}}' '$TEELLM_POD_IMAGE'" 2>/dev/null | awk '{ printf "%d", $1 / 1048576 }')"
+    info "Pod image size: ${image_mib}MiB uncompressed (remote docker)"
+  else
+    image_mib=6247
+    warn "could not measure $TEELLM_POD_IMAGE; assuming 6.10GiB, the size teellm images measure"
+    detail "Set TEELLM_POD_IMAGE_SIZE_GIB to size the Pod against the real figure."
+  fi
+
+  local default_mib unpacked_mib vm_mib visible_mib run_mib need_mib bare_gib min_gib
+  default_mib="$(kata_default_memory_mib)"
+  # Measured on this host: the container rootfs occupies about 1.04x the image's uncompressed size.
+  unpacked_mib=$(( image_mib * 104 / 100 ))
+  vm_mib=$(( default_mib + mem_mib ))
+  # About 1500MiB is lost to the guest kernel and ACPI tables, so this is what the guest sees.
+  visible_mib=$(( vm_mib - 1500 ))
+  run_mib=$(( visible_mib / 2 ))
+  need_mib=$(( unpacked_mib * 115 / 100 + 256 ))
+  bare_gib=$(( (unpacked_mib * 2 + 1500 - default_mib + 1023) / 1024 ))
+  min_gib=$(( (need_mib * 2 + 1500 - default_mib + 1023) / 1024 ))
+
+  step "sizing the TEE-LLM Pod (kata confidential VM)"
+  detail "container limits.memory: ${mem_mib}MiB ($TEELLM_POD_MEMORY)"
+  detail "kata default_memory: ${default_mib}MiB ($KATA_TOML)"
+  detail "guest VM memory: ${vm_mib}MiB, resident on the host and not reclaimable"
+  detail "guest visible memory: ${visible_mib}MiB; the rootfs overlay is capped at half of it: ${run_mib}MiB"
+  detail "image unpacked: ${unpacked_mib}MiB; with a 15% writable margin: ${need_mib}MiB"
+
+  if [[ "$run_mib" -lt "$unpacked_mib" ]]; then
+    err "the Pod cannot start: the guest overlay cap is ${run_mib}MiB and the image alone needs ${unpacked_mib}MiB"
+    detail "The guest fills its tmpfs and the container dies with ENOSPC after the VM has booted."
+    detail "Raise TEELLM_POD_MEMORY to at least ${bare_gib}Gi (floor), preferably ${min_gib}Gi or more."
+    exit 1
+  fi
+  if [[ "$run_mib" -lt "$need_mib" ]]; then
+    if [[ "$TEELLM_POD_FORCE_MEMORY" != true ]]; then
+      err "the Pod's memory is too tight: only $(( run_mib - unpacked_mib ))MiB would be left for the writable layer"
+      detail "Raise TEELLM_POD_MEMORY to at least ${min_gib}Gi, or set TEELLM_POD_FORCE_MEMORY=true to proceed."
+      exit 1
+    fi
+    warn "proceeding with a tight overlay budget ($(( run_mib - unpacked_mib ))MiB writable), forced"
+  fi
+
+  local avail_mib
+  avail_mib="$(remote_ssh "free -m" 2>/dev/null | awk 'NR==2 { print $7 }' || true)"
+  avail_mib="${avail_mib//$'\r'/}"
+  avail_mib="${avail_mib//$'\n'/}"
+  if [[ ! "$avail_mib" =~ ^[0-9]+$ ]] || [[ "$avail_mib" -eq 0 ]]; then
+    warn "could not read the host's available memory; skipping the host memory check"
+    return 0
+  fi
+  if [[ "$vm_mib" -gt "$avail_mib" ]]; then
+    if [[ "$TEELLM_POD_FORCE_MEMORY" != true ]]; then
+      err "the host has ${avail_mib}MiB available and this confidential VM needs ${vm_mib}MiB"
+      detail "CSV2 memory is resident from boot and is not reclaimed, so starting it would exhaust the host."
+      detail "Free a kata environment, or set TEELLM_POD_FORCE_MEMORY=true to accept the risk."
+      exit 1
+    fi
+    warn "VM ${vm_mib}MiB exceeds the host's ${avail_mib}MiB available; continuing because TEELLM_POD_FORCE_MEMORY=true"
+  elif [[ "$vm_mib" -gt $(( avail_mib * 8 / 10 )) ]]; then
+    warn "the VM takes $(( vm_mib * 100 / avail_mib ))% of the host's ${avail_mib}MiB available"
+  else
+    info "host memory fits: VM ${vm_mib}MiB of ${avail_mib}MiB available"
+  fi
+}
+
 # Reads the cc_init_data annotation off a CoCo Pod that already runs on the remote host. The
 # guest's CDH needs it to trust the local registry's self-signed certificate when it pulls the
 # image -- the host's own trust does not carry into the guest -- and a Pod without it stops in
-# StartError. Only that one annotation is ever copied: the runtime-handler key would hijack the
-# runtime, and an empty hypervisor kernel_params value would erase the rdinit= that boots TAA's
-# guest. Prints the bare value; the caller substitutes it into the manifest.
+# StartError. Only this value is borrowed from another Pod; the other two annotations the manifest
+# carries are fixed strings the template sets itself (see teellm-pod.yaml.tmpl). Prints the bare
+# value; the caller substitutes it into the manifest.
 derive_cc_init_data() {
   if [[ -n "$TEELLM_POD_CC_INIT_DATA" ]]; then
     printf '%s' "$TEELLM_POD_CC_INIT_DATA"
@@ -487,6 +673,124 @@ teellm_pod_ip() {
   printf '%s' "$ip"
 }
 
+# A creation is a whole confidential VM of host-resident encrypted memory, so it is confirmed when
+# someone is there to answer. A non-interactive run -- deploy.sh, a CI job -- proceeds: --create-pod
+# is already the deliberate act, and a prompt with no one at stdin would block forever.
+confirm_pod_creation() {
+  if [[ "$TEELLM_POD_ASSUME_YES" == true ]] || [[ ! -t 0 ]]; then
+    return 0
+  fi
+  echo ""
+  echo "    About to create: ${TARGET_NAMESPACE}/${TARGET_POD}"
+  echo "      image    $TEELLM_POD_IMAGE"
+  echo "      cpu      $TEELLM_POD_CPU"
+  echo "      memory   $TEELLM_POD_MEMORY (the VM is larger and resident on the host)"
+  echo ""
+  local answer=""
+  read -r -p "    Continue? [y/N] " answer || true
+  if [[ ! "$answer" =~ ^[Yy]$ ]]; then
+    info "cancelled; nothing was created"
+    exit 0
+  fi
+}
+
+# Waits for a freshly created Pod to become Ready, polling the way the reference create script does
+# rather than through `kubectl wait`. `kubectl wait` cannot stop early: an ImagePullBackOff or a
+# CrashLoopBackOff is already decided, but it keeps the whole timeout and then reports only that it
+# timed out. Polling shows the phase transitions and names the reason the Pod stopped.
+wait_for_teellm_pod() {
+  local deadline last="" phase ready reason
+  deadline=$(( $(date +%s) + TEELLM_POD_READY_TIMEOUT ))
+  while [[ "$(date +%s)" -lt "$deadline" ]]; do
+    phase="$(remote_ssh "kubectl $K_NS get pod '$TARGET_POD' -o jsonpath='{.status.phase}' 2>/dev/null" || true)"
+    ready="$(remote_ssh "kubectl $K_NS get pod '$TARGET_POD' -o jsonpath='{.status.containerStatuses[0].ready}' 2>/dev/null" || true)"
+    phase="${phase//$'\r'/}"
+    phase="${phase//$'\n'/}"
+    ready="${ready//$'\r'/}"
+    ready="${ready//$'\n'/}"
+    if [[ "$phase/$ready" != "$last" ]]; then
+      printf "     %s  %s%s\n" "$(date '+%H:%M:%S')" "${phase:-?}" "${ready:+  ready=$ready}"
+      last="$phase/$ready"
+    fi
+    if [[ "$ready" == "true" ]]; then
+      return 0
+    fi
+    if [[ "$phase" == "Failed" ]]; then
+      return 1
+    fi
+    reason="$(remote_ssh "kubectl $K_NS get pod '$TARGET_POD' -o jsonpath='{.status.containerStatuses[0].state.waiting.reason}' 2>/dev/null" || true)"
+    reason="${reason//$'\r'/}"
+    reason="${reason//$'\n'/}"
+    case "$reason" in
+      ErrImagePull|ImagePullBackOff|InvalidImageName|CreateContainerConfigError|CrashLoopBackOff)
+        err "the container is stuck in $reason"
+        return 1
+        ;;
+    esac
+    sleep 5
+  done
+  return 1
+}
+
+# The host-resident size of the Pod's confidential VM: kata adds its default_memory to the
+# container's limit. Prints nothing when the Pod or its limit cannot be read.
+pod_vm_memory_mib() {
+  local limits default_mib limits_mib
+  limits="$(remote_ssh "kubectl $K_NS get pod '$TARGET_POD' -o jsonpath='{.spec.containers[0].resources.limits.memory}' 2>/dev/null" || true)"
+  limits="${limits//$'\r'/}"
+  limits="${limits//$'\n'/}"
+  [[ -n "$limits" ]] || return 1
+  limits_mib="$(quantity_to_mib "$limits")" || return 1
+  default_mib="$(kata_default_memory_mib)"
+  echo $(( limits_mib + default_mib ))
+}
+
+# Counts the host's kata sandboxes after a delete. Removing a Pod normally takes its sandbox and
+# its qemu with it, but this host has leaked both -- containerd restarted inside a VM's boot window,
+# and a RunPodSandbox retry left its qemu behind -- and a leaked qemu keeps its whole -m resident.
+# Three counts have to agree: the kata Pods the cluster knows, the sandbox directories, the qemus.
+check_kata_orphans() {
+  if [[ "$TEELLM_POD_ORPHAN_CHECK" != true ]]; then
+    return 0
+  fi
+  step "checking for leftover kata sandboxes (three counts must agree)"
+  local report kata_pods sbs qemus
+  report="$(remote_ssh 'bash -s' <<'REMOTE_ORPHANS'
+set -u
+kata_pods=$(kubectl get pods -A -o jsonpath='{range .items[*]}{.spec.runtimeClassName}{"\n"}{end}' 2>/dev/null | grep -c '^kata' || true)
+sbs=$(ls -1 /run/vc/sbs 2>/dev/null | grep -c . || true)
+qemus=$(pgrep -c -f '[q]emu-system' 2>/dev/null || true)
+printf 'kata_pods=%s\nsbs=%s\nqemus=%s\n' "${kata_pods:-0}" "${sbs:-0}" "${qemus:-0}"
+if [ "${kata_pods:-0}" != "${sbs:-0}" ] || [ "${sbs:-0}" != "${qemus:-0}" ]; then
+  echo "ORPHANS"
+  pgrep -a -f '[q]emu-system' 2>/dev/null | while read -r pid rest; do
+    rss=$(awk '/VmRSS/{printf "%.1f GiB", $2/1048576}' "/proc/$pid/status" 2>/dev/null)
+    m=$(tr '\0' ' ' <"/proc/$pid/cmdline" 2>/dev/null | grep -o '\-m [0-9]*' | head -1)
+    echo "  pid=$pid  RSS=${rss:-?}  ${m}  $(echo "$rest" | cut -c1-60)"
+  done
+fi
+REMOTE_ORPHANS
+)"
+  report="${report//$'\r'/}"
+  kata_pods="$(sed -n 's/^kata_pods=//p' <<<"$report")"
+  sbs="$(sed -n 's/^sbs=//p' <<<"$report")"
+  qemus="$(sed -n 's/^qemus=//p' <<<"$report")"
+  detail "kata Pods: ${kata_pods:-?}   /run/vc/sbs: ${sbs:-?}   qemu-system: ${qemus:-?}"
+  if grep -q '^ORPHANS$' <<<"$report"; then
+    warn "the counts disagree: a sandbox outlived its Pod and its memory has not come back"
+    while IFS= read -r line; do
+      detail "$line"
+    done < <(sed -n '/^ORPHANS$/,$p' <<<"$report" | tail -n +2)
+    detail "Do not kill qemu directly: the sandbox directory and the shim record would survive it."
+    detail "  1) sudo crictl pods | grep -i <sandbox prefix>   # confirm nothing still needs it"
+    detail "  2) sudo crictl stopsandbox <sandbox-id>"
+    detail "  3) sudo crictl rmp <sandbox-id>"
+    detail "  4) re-run $(basename "$0") pod-down to recheck"
+  else
+    info "no leftover sandboxes"
+  fi
+}
+
 # Makes sure the dedicated TEE-LLM Pod exists, is Ready and can really produce a CSV attestation,
 # then records its IP in TEELLM_POD_IP.
 pod_up() {
@@ -508,9 +812,20 @@ pod_up() {
     fi
     info "reusing the running TEE-LLM Pod (nothing applied)"
   else
-    # Resolved only on the creating path: an existing Pod's image cannot change, so asking the
-    # registry there would be a request whose answer nothing acts on.
-    resolve_teellm_pod_image
+    # The image is chosen only on this path: an existing Pod's image cannot change, so building or
+    # resolving one there would be work whose result nothing acts on.
+    if [[ -n "$TEELLM_POD_IMAGE_WAS_SET" ]]; then
+      info "TEE-LLM image: $TEELLM_POD_IMAGE (named explicitly; nothing built or resolved)"
+    elif [[ "$TEELLM_BUILD_POD_IMAGE" == true ]]; then
+      build_teellm_pod_image
+    else
+      resolve_teellm_pod_image
+    fi
+
+    # Before the manifest is rendered and long before anything is applied: both a guest that cannot
+    # hold its own rootfs and a VM larger than the host can hold are known here, not from an event.
+    check_pod_memory_budget
+
     local cc_init_data
     cc_init_data="$(derive_cc_init_data)"
     TEMP_POD_MANIFEST="$(mktemp /tmp/teellm-pod.XXXXXX.yaml)"
@@ -521,22 +836,25 @@ pod_up() {
         -e "s|__NAMESPACE__|$TARGET_NAMESPACE|g" \
         -e "s|__NODE_NAME__|$TEELLM_POD_NODE|g" \
         -e "s|__IMAGE__|$TEELLM_POD_IMAGE|g" \
+        -e "s|__PULL_POLICY__|$TEELLM_POD_PULL_POLICY|g" \
         -e "s|__RUNTIME_CLASS__|$TEELLM_POD_RUNTIME_CLASS|g" \
         -e "s|__CPU__|$TEELLM_POD_CPU|g" \
         -e "s|__MEMORY__|$TEELLM_POD_MEMORY|g" \
         -e "s|__MODEL__|$OLLAMA_MODEL|g" \
         -e "s|__CC_INIT_DATA__|$cc_init_data|g" \
         "$TEELLM_POD_TEMPLATE" > "$TEMP_POD_MANIFEST"
+    confirm_pod_creation
     step "creating the TEE-LLM Pod (runtimeClassName: $TEELLM_POD_RUNTIME_CLASS, node: $TEELLM_POD_NODE)"
     remote_ssh "kubectl $K_NS apply -f -" < "$TEMP_POD_MANIFEST"
     rm -f "$TEMP_POD_MANIFEST"
     TEMP_POD_MANIFEST=""
-    # Long, because the guest boots before it can pull the image. Dumping the events first keeps a
-    # timeout diagnosable, which a bare "timed out" is not.
-    if ! remote_ssh "kubectl $K_NS wait --for=condition=Ready --timeout=${TEELLM_POD_READY_TIMEOUT}s pod/'$TARGET_POD'"; then
+    info "submitted; the guest boots before it can pull the image, so a first creation takes minutes"
+    if ! wait_for_teellm_pod; then
       err "TEE-LLM Pod '$TARGET_POD' did not become Ready within ${TEELLM_POD_READY_TIMEOUT}s"
-      remote_ssh "kubectl $K_NS describe pod '$TARGET_POD' | tail -n 40" || true
+      remote_ssh "kubectl $K_NS describe pod '$TARGET_POD' | sed -n '/Events:/,\$p' | tail -n 20" || true
       detail "The Pod is left in place for inspection: kubectl $K_NS describe pod '$TARGET_POD'"
+      detail "Container logs: kubectl $K_NS logs '$TARGET_POD'"
+      detail "Delete and recreate: $(basename "$0") pod-down"
       exit 1
     fi
     info "TEE-LLM Pod created and Ready"
@@ -569,20 +887,48 @@ pod_down() {
   step "deleting the TEE-LLM Pod ($TARGET_POD in $TARGET_NAMESPACE)"
   if ! remote_ssh "kubectl $K_NS get pod '$TARGET_POD' >/dev/null 2>&1"; then
     info "TEE-LLM Pod '$TARGET_POD' does not exist"
+    # Still checked: a sandbox can outlive its Pod, and then nothing else would ever report it.
+    check_kata_orphans
     return 0
   fi
-  remote_ssh "kubectl $K_NS delete pod '$TARGET_POD' --ignore-not-found --wait=true --timeout=90s" || true
+
+  local vm_mib=""
+  vm_mib="$(pod_vm_memory_mib 2>/dev/null || true)"
+
+  # A grace period rather than --wait: the deletion is polled below so the wait and the fallback
+  # measure the same thing, and a guest that ignores the signal is visible rather than hidden.
+  remote_ssh "kubectl $K_NS delete pod '$TARGET_POD' --grace-period=30 --ignore-not-found --wait=false" || true
+  local gone=false
+  local _i
+  for _i in $(seq 1 36); do
+    if ! remote_ssh "kubectl $K_NS get pod '$TARGET_POD' >/dev/null 2>&1"; then
+      gone=true
+      break
+    fi
+    sleep 5
+  done
   # A VM-backed Pod whose guest is wedged will not answer a graceful delete; fall back to force so
   # a broken Pod cannot block the teardown. Its memory is host-resident, so leaving it costs GiB.
-  if remote_ssh "kubectl $K_NS get pod '$TARGET_POD' >/dev/null 2>&1"; then
-    warn "Pod '$TARGET_POD' did not exit within 90s; forcing deletion"
+  if [[ "$gone" != true ]]; then
+    warn "Pod '$TARGET_POD' did not exit within 180s; forcing deletion"
     remote_ssh "kubectl $K_NS delete pod '$TARGET_POD' --force --grace-period=0" || true
+    for _i in $(seq 1 12); do
+      if ! remote_ssh "kubectl $K_NS get pod '$TARGET_POD' >/dev/null 2>&1"; then
+        gone=true
+        break
+      fi
+      sleep 5
+    done
   fi
-  if remote_ssh "kubectl $K_NS get pod '$TARGET_POD' >/dev/null 2>&1"; then
+  if [[ "$gone" != true ]]; then
     err "Pod '$TARGET_POD' is still present after a forced delete"
     exit 1
   fi
   info "TEE-LLM Pod '$TARGET_POD' deleted"
+  if [[ "$vm_mib" =~ ^[0-9]+$ ]] && [[ "$vm_mib" -gt 0 ]]; then
+    info "about $(( vm_mib / 1024 ))GiB of host memory comes back once the sandbox is collected"
+  fi
+  check_kata_orphans
 }
 
 # The Pod supervisor owns teellm-service and ollama, so the deployment cannot simply kill them:
@@ -1550,7 +1896,8 @@ Actions:
                supervisor, and verify (default).
   stop         Pause the Pod supervisor and stop its services (teellm-service, ollama, llama-server).
   probe        Probe the TEE-LLM HTTPS endpoint for RFC 8998 TEE-TLS 1.3 readiness.
-  pod-down     Delete the dedicated TEE-LLM Pod (see --create-pod).
+  pod-down     Delete the dedicated TEE-LLM Pod (see --create-pod), then check the host for
+               kata sandboxes left behind by it.
 
 Options:
   --model <name> (or --model=<name>)
@@ -1561,8 +1908,11 @@ Options:
       Deploy into a dedicated Kata CSV2 Pod named by TEELLM_POD_NAME, creating it if it is absent,
       instead of into TARGET_POD. The Pod exists to give teellm-service a real /dev/csv-guest:
       without that device it serves mock evidence, and TAA cannot tell that evidence apart from
-      hardware at the handshake. An existing Pod is reused and never re-created -- a second Pod
-      would be a second confidential VM.
+      hardware at the handshake. Creating the Pod builds teellm-service from this working tree,
+      bakes it plus the ollama runtime and model into an image, pushes that image and runs the Pod
+      from it, so the Pod never runs a binary older than the tree being deployed. That build takes
+      tens of minutes. An existing Pod is reused and never re-created -- a second Pod would be a
+      second confidential VM, and the image cannot change under a running one.
       If TARGET_POD is set explicitly it must equal TEELLM_POD_NAME, or the run is refused.
   --port <port> (or --port=<port>)
       Specify TEE-LLM service listening port (default: $TEELLM_PORT).
@@ -1595,12 +1945,18 @@ Environment overrides:
   TEELLM_POD_NAME=${TEELLM_POD_NAME}
       Name of the dedicated TEE-LLM Pod (--create-pod, pod-down).
   TEELLM_POD_IMAGE=${TEELLM_POD_IMAGE}
-      Image for the dedicated TEE-LLM Pod; it must carry ollama, tar/curl and python3.
-      Left unset, it is today's date tag, replaced on --create-pod by the newest date tag the
-      registry lists ($TEELLM_IMAGE_REGISTRY/$TEELLM_IMAGE_REPO). Set explicitly, it is used
-      as given.
+      Image for the dedicated TEE-LLM Pod. Set explicitly, it is used as given and nothing is
+      built or resolved. Left unset with TEELLM_BUILD_POD_IMAGE=true (the default), the Pod image
+      is built from this working tree, pushed as
+      $TEELLM_IMAGE_REGISTRY/$TEELLM_IMAGE_REPO:<today> and used. Left unset with the build
+      disabled, it is today's date tag replaced by the newest date tag the registry lists.
+  TEELLM_BUILD_POD_IMAGE=${TEELLM_BUILD_POD_IMAGE}
+      Whether a Pod that has to be created is built from this working tree first (see above).
+  TEELLM_POD_PULL_POLICY=${TEELLM_POD_PULL_POLICY}
+      imagePullPolicy for the Pod; forced to Always when this run built the image, because the
+      tag is a same-day one that a rebuild replaces in place.
   TEELLM_IMAGE_REGISTRY / TEELLM_IMAGE_REPO
-      Registry queried for the newest TEE-LLM tag, and the repository looked up in it.
+      Registry the built image is pushed to, and the repository name inside it.
   TEELLM_POD_NODE=${TEELLM_POD_NODE}
       Node the dedicated TEE-LLM Pod is pinned to.
   TEELLM_POD_RUNTIME_CLASS=${TEELLM_POD_RUNTIME_CLASS}
@@ -1612,14 +1968,26 @@ Environment overrides:
       TEELLM_POD_CPU) and CSV2 encrypted memory is resident from boot, so the memory figure is a
       permanent cost on the host rather than a ceiling. It has to fit the served model as well as
       teellm-service: 8Gi OOM-killed llama-server while it loaded a 7B model.
+  TEELLM_POD_IMAGE_SIZE_GIB / TEELLM_POD_FORCE_MEMORY
+      Size the Pod is checked against, and the escape hatch for that check. Before creating
+      anything the deployment verifies that the image fits the guest's overlayfs (whose cap is
+      half the guest's visible memory) and that the whole VM fits the host's free memory; it
+      stops instead of booting a VM that will die with ENOSPC or exhaust the host.
   TEELLM_POD_READY_TIMEOUT=${TEELLM_POD_READY_TIMEOUT}
       Seconds to wait for a freshly created TEE-LLM Pod to become Ready. Long by default: the
       guest boots before it can pull the image, through its own CDH.
+  TEELLM_POD_ASSUME_YES=${TEELLM_POD_ASSUME_YES}
+      Skip the interactive confirmation before creating the Pod (also skipped when stdin is not
+      a terminal, so scripted runs never block).
+  TEELLM_POD_ORPHAN_CHECK=${TEELLM_POD_ORPHAN_CHECK}
+      After pod-down, compare the host's kata Pod count, its /run/vc/sbs directories and its
+      qemu-system processes. Any disagreement means a sandbox outlived its Pod and its memory
+      has not been returned.
   TEELLM_POD_CC_INIT_DATA=<base64>
       cc_init_data annotation for the new Pod. Left empty it is read from a CoCo Pod that already
-      runs on the remote host; without it the guest cannot pull the image. Exactly this one
-      annotation is ever copied -- the runtime-handler key would hijack the runtime, and an empty
-      hypervisor kernel_params value would erase the rdinit= that boots the guest.
+      runs on the remote host; without it the guest cannot pull the image. Only this value is
+      borrowed from another Pod: the runtime-handler and kernel_params annotations the manifest
+      carries are fixed in the template.
   REMOTE_HOST=${REMOTE_HOST}
       Remote SSH host IP or hostname.
   REMOTE_USER=${REMOTE_USER}
@@ -1867,6 +2235,12 @@ model_mb="$(python3 -c 'import sys, json; print(json.loads(sys.argv[1])["weight_
 
 # Build teellm-service locally
 build_local_binary() {
+  # Once per run: a Pod creation builds the binary to bake into the image, and the deployment then
+  # installs that same file into the Pod. Compiling again would only re-derive identical bytes.
+  if [[ "$LOCAL_BINARY_BUILT" == true ]]; then
+    info "teellm-service was already rebuilt in this run: $TEELLM_DIR/bin/teellm-service"
+    return 0
+  fi
   step "building teellm-service from ./teellm/cmd/teellm-service"
   ensure_go_compiler
   require_file "teellm supervisor script missing" "$TEELLM_DIR/deploy/start.sh"
@@ -1875,6 +2249,7 @@ build_local_binary() {
   # path resolves from the repository root exactly like ./tools/platform-mock does in deploy.sh.
   spin_task "compiling teellm-service binary" go build -o "$TEELLM_DIR/bin/teellm-service" ./teellm/cmd/teellm-service
   require_file "build verification failed (teellm-service binary missing)" "$TEELLM_DIR/bin/teellm-service"
+  LOCAL_BINARY_BUILT=true
   info "teellm-service binary built: $TEELLM_DIR/bin/teellm-service"
 }
 

@@ -124,6 +124,17 @@ case "$verb" in
   get)
     if [[ "$*" == *"-A"* ]]; then echo "DERIVED_CC_INIT_DATA"; exit 0; fi
     if [[ "$*" == *"status.podIP"* ]]; then printf '%s' "$MOCK_POD_IP"; exit 0; fi
+    # The creation path polls the phase and the container's readiness rather than using
+    # `kubectl wait`, and the teardown reads the memory limit to report what the host gets back.
+    if [[ "$*" == *".status.phase"* ]]; then
+      [[ -f "$MOCK_STATE_DIR/pod" ]] && { printf 'Running'; exit 0; } || exit 1
+    fi
+    if [[ "$*" == *"containerStatuses[0].ready"* ]]; then
+      [[ -f "$MOCK_STATE_DIR/pod" ]] && { printf 'true'; exit 0; } || exit 1
+    fi
+    if [[ "$*" == *"limits.memory"* ]]; then
+      [[ -f "$MOCK_STATE_DIR/pod" ]] && { printf '16Gi'; exit 0; } || exit 1
+    fi
     [[ -f "$MOCK_STATE_DIR/pod" ]] && exit 0 || exit 1
     ;;
   wait)
@@ -158,6 +169,15 @@ case "$verb" in
 esac
 MOCK
 
+# free, standing in for the remote host's memory. The ssh mock runs commands locally, so this is
+# what the deployment's host-memory guard reads. MOCK_FREE_AVAIL_MIB sets the available column.
+cat > "$MOCK_BIN/free" <<'MOCK'
+#!/usr/bin/env bash
+avail="${MOCK_FREE_AVAIL_MIB:-65536}"
+printf '               total        used        free      shared  buff/cache   available\n'
+printf 'Mem:           %d        %d        %d           0        %d        %s\n' 131072 32768 65536 32768 "$avail"
+MOCK
+
 chmod +x "$MOCK_BIN"/*
 
 # ── Throwaway repository root ────────────────────────────────────────────────
@@ -177,6 +197,32 @@ cp "$ROOT_DIR/deploy-llm.sh" "$REPO/deploy-llm.sh"
 cp "$ROOT_DIR/deploy/manifest/k8s/teellm-pod.yaml.tmpl" "$REPO/deploy/manifest/k8s/"
 cp "$ROOT_DIR/deploy/teellm-supervisor.sh" "$REPO/deploy/teellm-supervisor.sh"
 chmod +x "$REPO/deploy/teellm-supervisor.sh"
+
+# The image builder the deployment drives. The real one needs a docker daemon and several GB of
+# ollama payload, so this stands in for it and records what it was asked to build. What is tested
+# here is the contract around it -- that the binary is rebuilt first, that the tag is today's, that
+# --push is passed -- not the image's contents.
+cat > "$REPO/build-teellm-image.sh" <<'STUB'
+#!/usr/bin/env bash
+{
+  echo "BUILD argv=$*"
+  echo "BUILD REGISTRY_IMAGE=${REGISTRY_IMAGE:-}"
+  echo "BUILD TARGET_IMAGE=${TARGET_IMAGE:-}"
+  echo "BUILD DATE_TAG=${DATE_TAG:-}"
+  echo "BUILD OLLAMA_MODEL=${OLLAMA_MODEL:-}"
+  if [ -s "${TEELLM_DIR:-}/bin/teellm-service" ]; then
+    echo "BUILD BINARY_PRESENT=yes"
+  else
+    echo "BUILD BINARY_PRESENT=no"
+  fi
+} >> "$MOCK_LOG"
+exit 0
+STUB
+chmod +x "$REPO/build-teellm-image.sh"
+
+# The kata runtime configuration the memory guard reads default_memory from.
+KATA_TOML_FILE="$TMP_DIR/kata-qemu-csv2.toml"
+printf 'default_memory = 2048\ndefault_vcpus = 1\n' > "$KATA_TOML_FILE"
 
 # The teellm module the deployment builds from. A stub keeps the test independent of the
 # submodule, which the deploy script otherwise expects to be checked out next to itself.
@@ -224,14 +270,22 @@ status=0
 # must not already be exported: an exported variable is inherited by every run, so the caller of
 # this test setting CURL_FAILS would leak it into the cases that expect a working registry.
 RUN_ENV=()
+# Applied to every run, in front of RUN_ENV so a case can override any of them. The image size is
+# pinned so the memory guard is arithmetic against a known figure rather than against whatever
+# docker happens to have locally.
+DEFAULT_ENV=(
+  OLLAMA_READY_TIMEOUT=2
+  OLLAMA_READY_INTERVAL=1
+  TEELLM_POD_READY_TIMEOUT=5
+  TEELLM_SUPERVISOR_START_WAIT=1
+  TEELLM_POD_ASSUME_YES=true
+  TEELLM_POD_IMAGE_SIZE_GIB=6.10
+  KATA_TOML="$KATA_TOML_FILE"
+)
 run_deploy() {
   set +e
-  output="$(PATH="$MOCK_BIN:$PATH" env "${RUN_ENV[@]}" \
+  output="$(PATH="$MOCK_BIN:$PATH" env "${DEFAULT_ENV[@]}" "${RUN_ENV[@]}" \
     OLLAMA_LOCAL_DIR="${RUN_OLLAMA_DIR:-$OLLAMA_DIR}" \
-    OLLAMA_READY_TIMEOUT=2 \
-    OLLAMA_READY_INTERVAL=1 \
-    TEELLM_POD_READY_TIMEOUT=5 \
-    TEELLM_SUPERVISOR_START_WAIT=1 \
     timeout 300 "$REPO/deploy-llm.sh" "$@" 2>&1)"
   status=$?
   set -e
@@ -256,6 +310,22 @@ run_deploy --create-pod start --model qwen2.5-coder:0.5b
 [[ "$(cat "$MOCK_STATE_DIR/apply-count" 2>/dev/null || echo 0)" == "1" ]] \
   || fail "the Pod was applied $(cat "$MOCK_STATE_DIR/apply-count" 2>/dev/null || echo 0) times, expected exactly one"
 
+# The Pod has to run an image built from this tree, not whatever tag was last pushed. The builder
+# stands in for the real one, so these assertions are about the wiring: it was called once, with
+# --push, under today's tag, and only after the service binary had been rebuilt -- the real builder
+# compiles only a missing binary, so a stale file would otherwise be baked in silently.
+TODAY_TAG="$(date +%Y%m%d)"
+build_calls="$(grep -c '^BUILD argv=' "$MOCK_LOG" || true)"
+[[ "$build_calls" == "1" ]] || fail "the image was built $build_calls times, expected exactly one"
+grep -q '^BUILD argv=--push$' "$MOCK_LOG" || fail "the image was built without --push"
+grep -q "^BUILD REGISTRY_IMAGE=172.16.10.178:31313/teellm:$TODAY_TAG$" "$MOCK_LOG" \
+  || fail "the image was not tagged with the current build date"
+grep -q "^BUILD TARGET_IMAGE=teellm:$TODAY_TAG$" "$MOCK_LOG" || fail "the local image tag is wrong"
+grep -q '^BUILD OLLAMA_MODEL=qwen2.5-coder:0.5b$' "$MOCK_LOG" \
+  || fail "the image was built for a different model than the deployment targets"
+grep -q '^BUILD BINARY_PRESENT=yes$' "$MOCK_LOG" \
+  || fail "teellm-service was not rebuilt before the image was built"
+
 APPLIED="$MOCK_STATE_DIR/applied.yaml"
 [[ -f "$APPLIED" ]] || fail "no manifest was submitted"
 grep -q "^  name: $COPY_POD_NAME$" "$APPLIED" || fail "the manifest does not name the TEE-LLM Pod"
@@ -263,9 +333,13 @@ grep -q "^  namespace: osr$" "$APPLIED" || fail "the manifest does not set the n
 grep -q "^  runtimeClassName: kata-qemu-csv2$" "$APPLIED" \
   || fail "the manifest does not use the CSV2 RuntimeClass that creates /dev/csv-guest"
 grep -q "^  nodeName: hygon-master$" "$APPLIED" || fail "the manifest is not pinned to the node"
+grep -q "^    katacontainers.io/kata-runtime: \"true\"$" "$APPLIED" \
+  || fail "the manifest does not select a kata-capable node"
 grep -q "^  restartPolicy: Always$" "$APPLIED" \
   || fail "the manifest does not keep the Pod restartable in place"
-grep -q 'cc_init_data: DERIVED_CC_INIT_DATA$' "$APPLIED" \
+grep -q "^  terminationGracePeriodSeconds: 30$" "$APPLIED" \
+  || fail "the manifest does not give the guest time to shut down"
+grep -q 'cc_init_data: "DERIVED_CC_INIT_DATA"$' "$APPLIED" \
   || fail "the cc_init_data annotation was not derived and injected"
 # The memory limit has to fit the model, not just teellm-service. 8Gi -- the figure the TAA Pod
 # gets away with -- let the container cgroup OOM-kill llama-server while it loaded a 7B model, so
@@ -277,13 +351,18 @@ memory_gi="$(grep -oE '^          memory: "[0-9]+Gi"' "$APPLIED" | grep -oE '[0-
 [[ "$memory_gi" == "16" ]] \
   || fail "the TEE-LLM Pod memory default is $memory_gi Gi; a 7B model needs 16 (see the OOM note in deploy-llm.sh)"
 
-# Exactly one annotation key, and it is the CoCo one. The runtime-handler key would hijack the
-# runtime away from runtimeClassName, and an empty hypervisor kernel_params value would erase the
-# rdinit= that boots TAA's guest.
+# Three annotation keys, the set every kata-qemu-csv2 Pod on this host carries. runtime-handler has
+# to name the same runtime class; kernel_params has to be non-empty and carry the two pull timeouts
+# -- the image is pulled inside the guest by the CDH, where the defaults expire long before a
+# multi-GB image arrives (the Pod sits in ContainerCreating and is then failed).
 annotation_keys="$(grep -cE '^    io\.' "$APPLIED")"
-[[ "$annotation_keys" == "1" ]] || fail "expected exactly 1 annotation key, found $annotation_keys"
-grep -qE '^    io\.katacontainers\.config\.runtime\.cc_init_data:' "$APPLIED" \
-  || fail "the single annotation is not cc_init_data"
+[[ "$annotation_keys" == "3" ]] || fail "expected exactly 3 annotation keys, found $annotation_keys"
+grep -qE '^    io\.containerd\.cri\.runtime-handler: kata-qemu-csv2$' "$APPLIED" \
+  || fail "the runtime-handler annotation does not name the CSV2 runtime class"
+grep -qE '^    io\.katacontainers\.config\.hypervisor\.kernel_params: "agent\.cdh_api_timeout=1200 agent\.image_pull_timeout=3600"$' "$APPLIED" \
+  || fail "the kernel_params annotation is missing or not the measured pull timeouts"
+grep -qE '^    io\.katacontainers\.config\.runtime\.cc_init_data: "[^"]+"$' "$APPLIED" \
+  || fail "cc_init_data is missing or empty"
 
 # The device node is created inside the container, not by the guest. A first version of this
 # template assumed the RuntimeClass alone was enough, and the Pod came up Ready with an empty
@@ -344,25 +423,48 @@ grep -q "service is serving Hygon hardware evidence" <<<"$output" \
 grep -q "LLM_IP=https://$MOCK_POD_IP:8443" <<<"$output" \
   || fail "the summary does not hand over LLM_IP"
 
-# The image tag is a build date, so today's date only names a real image on the day it was built.
-# Left as a guess, a deployment the next day applies a Pod whose guest cannot pull, and the
-# failure lands in ImagePullBackOff after a confidential VM has already booted. The registry's
-# newest date tag has to win.
+# The Pod pulls the image this run just pushed, and it pulls it unconditionally: the tag is a
+# build date, so a rebuild replaces it in place and a cached copy would defeat the build.
+grep -q "^      image: 172.16.10.178:31313/teellm:$TODAY_TAG$" "$APPLIED" \
+  || fail "the Pod image is not the one this run built"
+grep -q "^      imagePullPolicy: Always$" "$APPLIED" \
+  || fail "a freshly built image is not pulled unconditionally"
+
+# ── 1b. With the build disabled, the newest registry tag is used ─────────────
+# The tag is a build date, so today's date only names a real image on the day it was built. Left
+# as a guess, a deployment the next day applies a Pod whose guest cannot pull, and the failure
+# lands in ImagePullBackOff after a confidential VM has already booted. The registry's newest date
+# tag has to win -- on the path that does not build one for itself.
+
+rm -f "$MOCK_STATE_DIR/pod"
+build_before="$(grep -c '^BUILD argv=' "$MOCK_LOG" || true)"
+RUN_ENV=(TEELLM_BUILD_POD_IMAGE=false)
+run_deploy --create-pod start --model qwen2.5-coder:0.5b
+RUN_ENV=()
+[[ $status -eq 0 ]] || fail "TEELLM_BUILD_POD_IMAGE=false exited $status"
+[[ "$(grep -c '^BUILD argv=' "$MOCK_LOG" || true)" == "$build_before" ]] \
+  || fail "an image was built even though TEELLM_BUILD_POD_IMAGE=false"
 grep -q "^      image: 172.16.10.178:31313/teellm:20261026$" "$APPLIED" \
   || fail "the Pod image is not the newest tag the registry lists"
-if grep -q "teellm:$(date +%Y%m%d)$" "$APPLIED"; then
+if grep -q "teellm:$TODAY_TAG$" "$APPLIED"; then
   fail "the Pod image is still today's date tag, which the registry does not list"
 fi
+grep -q "^      imagePullPolicy: IfNotPresent$" "$APPLIED" \
+  || fail "a pre-existing registry tag should not be forced to pull"
 
 # ── 2. Second run, with no action keyword: the Pod exists and is Ready ───────
 # With the target keyword gone there is nothing left to name a target with, so the bare form has to
 # reach the same Pod lifecycle as the explicit one rather than falling through to a no-op. Case 1
 # already covered --create-pod start, so the reuse half is pinned down here in its bare form.
 
+apply_before="$(cat "$MOCK_STATE_DIR/apply-count")"
+build_before="$(grep -c '^BUILD argv=' "$MOCK_LOG" || true)"
 run_deploy --create-pod --model qwen2.5-coder:0.5b
 [[ $status -eq 0 ]] || fail "the bare invocation (no action keyword) exited $status"
-[[ "$(cat "$MOCK_STATE_DIR/apply-count")" == "1" ]] \
+[[ "$(cat "$MOCK_STATE_DIR/apply-count")" == "$apply_before" ]] \
   || fail "the bare invocation applied the manifest again instead of reusing the Pod"
+[[ "$(grep -c '^BUILD argv=' "$MOCK_LOG" || true)" == "$build_before" ]] \
+  || fail "reusing the Pod rebuilt the image; an existing Pod's image cannot change"
 grep -q "reusing the running TEE-LLM Pod" <<<"$output" || fail "the bare invocation did not reuse the Pod"
 
 # ── 2b. A bare TARGET_POD run re-execs the supervisor it just installed ──────
@@ -387,16 +489,22 @@ grep -q "/dev/csv-guest" <<<"$output" || fail "the missing device was not named 
 touch "$MOCK_STATE_DIR/csv_device"
 
 # ── 3b. An explicit image is never second-guessed ────────────────────────────
-# Resolution exists to fix a guess, not to overrule an operator. A tag the listing does not show
-# (a mirror, a manually pushed name) has to reach the manifest unchanged.
+# Resolution and building exist to pick an image, not to overrule an operator. A tag the listing
+# does not show (a mirror, a manually pushed name) has to reach the manifest unchanged, and the
+# deployment must not spend tens of minutes building an image nobody asked for.
 
 rm -f "$MOCK_STATE_DIR/pod"
+build_before="$(grep -c '^BUILD argv=' "$MOCK_LOG" || true)"
 RUN_ENV=(TEELLM_POD_IMAGE="172.16.10.178:31313/teellm:pinned")
 run_deploy --create-pod start --model qwen2.5-coder:0.5b
 RUN_ENV=()
 [[ $status -eq 0 ]] || fail "an explicit TEELLM_POD_IMAGE exited $status"
 grep -q "^      image: 172.16.10.178:31313/teellm:pinned$" "$APPLIED" \
   || fail "an explicit TEELLM_POD_IMAGE was replaced by a registry tag"
+[[ "$(grep -c '^BUILD argv=' "$MOCK_LOG" || true)" == "$build_before" ]] \
+  || fail "an image was built despite an explicit TEELLM_POD_IMAGE"
+grep -q "^      imagePullPolicy: IfNotPresent$" "$APPLIED" \
+  || fail "an explicit image was overridden to pull unconditionally"
 
 # ── 3c. An unreadable registry listing falls back to the guessed tag ─────────
 # The listing is a convenience on top of the guess. A registry that cannot be queried from the
@@ -404,13 +512,48 @@ grep -q "^      image: 172.16.10.178:31313/teellm:pinned$" "$APPLIED" \
 # pull the tag, so the deployment proceeds and warns instead of failing.
 
 rm -f "$MOCK_STATE_DIR/pod"
-RUN_ENV=(CURL_FAILS=true)
+RUN_ENV=(CURL_FAILS=true TEELLM_BUILD_POD_IMAGE=false)
 run_deploy --create-pod start --model qwen2.5-coder:0.5b
 RUN_ENV=()
 [[ $status -eq 0 ]] || fail "an unreadable tag listing failed the deployment"
 grep -q "^      image: 172.16.10.178:31313/teellm:$(date +%Y%m%d)$" "$APPLIED" \
   || fail "the guessed tag was not kept when the listing failed"
 grep -q "could not list tags of" <<<"$output" || fail "the fallback was not reported"
+
+# ── 3d. Negative control: the guest cannot hold the image ────────────────────
+# A kata guest's rootfs is an overlayfs on a tmpfs capped at half of the guest's visible memory,
+# so an image larger than that cap fails with ENOSPC -- after the confidential VM has been booted
+# and its memory taken. The arithmetic is done before anything is applied.
+
+rm -f "$MOCK_STATE_DIR/pod"
+apply_before="$(cat "$MOCK_STATE_DIR/apply-count")"
+RUN_ENV=(TEELLM_POD_MEMORY=8Gi)
+run_deploy --create-pod start --model qwen2.5-coder:0.5b
+RUN_ENV=()
+[[ $status -ne 0 ]] || fail "an 8Gi Pod was accepted although its overlay cannot hold the image"
+grep -q "cannot start" <<<"$output" || fail "the memory refusal does not explain itself"
+grep -qE "at least 1[0-9]Gi" <<<"$output" || fail "the refusal does not name the minimum memory"
+[[ "$(cat "$MOCK_STATE_DIR/apply-count")" == "$apply_before" ]] \
+  || fail "the Pod was applied despite failing the memory check"
+
+# ── 3e. Negative control: the host cannot hold the VM ────────────────────────
+# CSV2 memory is resident from boot and is never reclaimed, so a VM bigger than the host's free
+# memory does not degrade gracefully -- it takes the host's other workloads with it.
+
+rm -f "$MOCK_STATE_DIR/pod"
+apply_before="$(cat "$MOCK_STATE_DIR/apply-count")"
+RUN_ENV=(MOCK_FREE_AVAIL_MIB=4096)
+run_deploy --create-pod start --model qwen2.5-coder:0.5b
+RUN_ENV=()
+[[ $status -ne 0 ]] || fail "a VM larger than the host's available memory was accepted"
+grep -q "available and this confidential VM needs" <<<"$output" \
+  || fail "the host memory refusal does not explain itself"
+[[ "$(cat "$MOCK_STATE_DIR/apply-count")" == "$apply_before" ]] \
+  || fail "the Pod was applied despite failing the host memory check"
+
+# Put a Pod back for the cases below: the two refusals above removed it to reach the creation path,
+# and stop/pod-down need something to act on.
+touch "$MOCK_STATE_DIR/pod"
 
 # ── 4. Negative control: --create-pod with a different explicit TARGET_POD ───
 
@@ -461,6 +604,7 @@ stop_kill_line="$(grep -n "teellm-service" "$stop_log" | grep -v supervisor-paus
 # Pointed at a bundle that does not exist: a teardown must not depend on the machine that deployed
 # the bundle still having it, so this also pins down where the action is handled.
 RUN_OLLAMA_DIR="$TMP_DIR/no-such-bundle"
+before="$(wc -l < "$MOCK_LOG")"
 run_deploy pod-down
 [[ $status -eq 0 ]] || fail "pod-down exited $status"
 [[ -f "$MOCK_STATE_DIR/pod" ]] && fail "the TEE-LLM Pod survived pod-down"
@@ -468,5 +612,30 @@ grep -q "TEE-LLM Pod '$COPY_POD_NAME' deleted" <<<"$output" || fail "pod-down di
 if grep -q "$DEFAULT_POD_NAME" "$MOCK_LOG"; then
   fail "pod-down was aimed at the default TARGET_POD ($DEFAULT_POD_NAME)"
 fi
+pod_down_log="$TMP_DIR/pod-down.log"
+tail -n +"$((before + 1))" "$MOCK_LOG" > "$pod_down_log"
+# The delete is submitted without waiting and then polled, the way the reference delete script does
+# it: a kata guest needs its grace period, and a blocking kubectl wait would hide a guest that
+# ignores the signal instead of letting the forced-delete fallback see it.
+grep -q "delete pod $COPY_POD_NAME --grace-period=30 --ignore-not-found --wait=false" "$pod_down_log" \
+  || fail "pod-down did not submit a grace-period delete that it then polls"
+if grep -q "delete pod $COPY_POD_NAME .*--wait=true" "$pod_down_log"; then
+  fail "pod-down still blocks inside kubectl wait instead of polling"
+fi
+# A sandbox can outlive its Pod and keep the whole VM resident, so the deletion is not the end of
+# the teardown: the three counts are read on the remote host afterwards.
+grep -q "checking for leftover kata sandboxes" <<<"$output" \
+  || fail "pod-down did not check for leftover kata sandboxes"
+grep -qE "kata Pods: [0-9?]+ +/run/vc/sbs: [0-9?]+ +qemu-system: [0-9?]+" <<<"$output" \
+  || fail "the sandbox counts were not reported"
+
+# Running it again is a no-op, not an error: the second run is also the only way to re-check the
+# sandbox counts once someone has cleaned an orphan by hand.
+run_deploy pod-down
+[[ $status -eq 0 ]] || fail "pod-down on a Pod that is already gone exited $status"
+grep -q "TEE-LLM Pod '$COPY_POD_NAME' does not exist" <<<"$output" \
+  || fail "pod-down did not say the Pod was already gone"
+grep -q "checking for leftover kata sandboxes" <<<"$output" \
+  || fail "the already-gone path skipped the sandbox check"
 
 echo "PASS: the dedicated TEE-LLM Pod is created once, reused, gated on its CSV device, and is what the bare invocation deploys into"

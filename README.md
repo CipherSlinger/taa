@@ -560,11 +560,18 @@ Inside Docker containers, TAA runs under the supervision of `deploy/taa-supervis
 ./deploy.sh remote stop                       # Stop remote services
 
 # Decoupled TEE-LLM Service (Kata CSV2 Pod on the remote host)
-./deploy-llm.sh --create-pod start            # Create the dedicated TEE-LLM Pod and deploy into it
+./deploy-llm.sh --create-pod start            # Build the Pod image from this tree, create the Pod, deploy
 ./deploy-llm.sh start                         # Redeploy into the existing Pod
 ./deploy-llm.sh probe                         # Probe the TEE-TLS endpoint inside the Pod
 ./deploy-llm.sh pod-down                      # Delete the dedicated TEE-LLM Pod
 ```
+
+> **The first `--create-pod start` builds an image.** `teellm-service` is recompiled from the
+> working tree, baked into an image together with the ollama runtime and the model, and pushed
+> to `TEELLM_IMAGE_REGISTRY` before the Pod is created — tens of minutes, because the model is
+> streamed into the layers. The Pod therefore never runs a binary older than the tree being
+> deployed. Set `TEELLM_POD_IMAGE` to use an existing tag instead, or
+> `TEELLM_BUILD_POD_IMAGE=false` to fall back to the newest date tag the registry lists.
 
 > **Remote mode can create its own Pod.** When `TARGET_POD` is unset, `deploy.sh` creates a
 > dedicated Kata CSV2 Pod on the remote host (`TAA_POD_NAME`, default `taa-deploy`), waits for it
