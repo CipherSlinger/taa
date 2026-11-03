@@ -140,11 +140,17 @@ type LLMConfig struct {
 	// inference service's attestation report. Empty skips the measurement
 	// check and logs a warning; the trust chain and key binding are still
 	// verified.
-	AttestationMeasurement  string
-	HRKCertPath             string
-	HSKCekCertPath          string
-	RequireMutualAttest     bool
-	InsecureSkipVerify      bool
+	AttestationMeasurement string
+	HRKCertPath            string
+	HSKCekCertPath         string
+	RequireMutualAttest    bool
+	InsecureSkipVerify     bool
+	// SkipChainVerify accepts the gateway's report on its embedded PEK
+	// signature alone, without proving that certificate descends from the
+	// HRK -> HSK/CEK chain. It is for deployments that cannot supply the
+	// vendor certificates; the key binding and measurement checks still run.
+	// InsecureSkipVerify is the stronger switch and also skips those.
+	SkipChainVerify         bool
 	AuthToken               string
 	TimeoutMs               int64
 	AllowedHosts            []string
@@ -416,6 +422,9 @@ type startupLLMAttestationConfigFile struct {
 	// Measurement is the expected measurement digest. Empty or absent skips
 	// the measurement check and logs a warning at client construction.
 	Measurement string `json:"measurement"`
+	// SkipChainVerify keeps the report's PEK signature check and drops the
+	// HRK -> HSK/CEK chain behind it. Absent keeps the chain required.
+	SkipChainVerify *bool `json:"skipChainVerify"`
 }
 
 type startupLLMConfigFile struct {
@@ -1140,6 +1149,9 @@ func applyStartupConfigFile(cfg *StartupConfig, fileCfg startupConfigFile) {
 				}
 				if trimmed := strings.TrimSpace(llm.Attestation.Measurement); trimmed != "" {
 					cfg.LLM.AttestationMeasurement = trimmed
+				}
+				if llm.Attestation.SkipChainVerify != nil {
+					cfg.LLM.SkipChainVerify = *llm.Attestation.SkipChainVerify
 				}
 			}
 			if llm.Endpoint != "" {

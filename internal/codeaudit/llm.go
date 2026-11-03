@@ -58,6 +58,10 @@ type LLMConfig struct {
 	HSKCekCertPath         string
 	RequireMutualAttest    bool
 	InsecureSkipVerify     bool
+	// SkipChainVerify accepts the gateway's report on its embedded PEK
+	// signature alone, without anchoring that certificate to the vendor
+	// HRK -> HSK/CEK chain.
+	SkipChainVerify bool
 }
 
 // DefaultLLMConfig returns safe default configuration.
@@ -116,8 +120,12 @@ func buildTEETLSConfig(cfg LLMConfig) *teetls.Config {
 	teeTLSConfig := &teetls.Config{
 		Mode:                          mode,
 		InsecureSkipAttestationVerify: cfg.InsecureSkipVerify,
+		SkipChainVerify:               cfg.SkipChainVerify,
 		ExpectedMeasurements:          expected,
 		VerifyMutualAttestation:       cfg.RequireMutualAttest,
+	}
+	if cfg.SkipChainVerify && !cfg.InsecureSkipVerify {
+		log.Printf("[WARN] [codeaudit] certificate chain verification disabled (attestation.skipChainVerify); only the report's embedded PEK signature is checked")
 	}
 	if cfg.HRKCertPath != "" || cfg.HSKCekCertPath != "" {
 		teeTLSConfig.EvidenceProvider = teetls.NewHygonHardwareProvider("", cfg.HRKCertPath, cfg.HSKCekCertPath)

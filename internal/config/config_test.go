@@ -419,6 +419,9 @@ func TestLoadStartupConfigAppliesDefaults(t *testing.T) {
 	if !cfg.LLM.FailClosed {
 		t.Fatalf("LLM.FailClosed = false, want default true")
 	}
+	if cfg.LLM.SkipChainVerify {
+		t.Fatalf("LLM.SkipChainVerify = true, want the chain required by default")
+	}
 }
 
 // TestLoadStartupConfigLLMEnabledRequiresTheBlock pins where the audit's
@@ -927,7 +930,8 @@ func TestStartupConfig_InferenceOptions(t *testing.T) {
 				"enabled": true,
 				"attestation": {
 					"enabled": true,
-					"measurement": "deadbeef01234567"
+					"measurement": "deadbeef01234567",
+					"skipChainVerify": true
 				},
 				"endpoint": "https://127.0.0.1:8443",
 				"hrkCertPath": "/custom/hrk.cert",
@@ -959,6 +963,9 @@ func TestStartupConfig_InferenceOptions(t *testing.T) {
 	}
 	if cfg.LLM.AttestationMeasurement != "deadbeef01234567" {
 		t.Errorf("got attestation measurement %q, want 'deadbeef01234567'", cfg.LLM.AttestationMeasurement)
+	}
+	if !cfg.LLM.SkipChainVerify {
+		t.Errorf("got attestation.skipChainVerify false, want true")
 	}
 	if cfg.LLM.HRKCertPath != "/custom/hrk.cert" {
 		t.Errorf("got hrkCertPath %q, want '/custom/hrk.cert'", cfg.LLM.HRKCertPath)
