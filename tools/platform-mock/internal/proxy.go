@@ -8,9 +8,12 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"net/http/httputil"
+	"net/url"
 	"os/exec"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"taa/internal/platform/envelope"
@@ -194,19 +197,36 @@ func discoverTAAAddr(kubectlPod, kubectlNS, port string) string {
 	return fmt.Sprintf("http://%s:%s", ip, port)
 }
 
+// dockerIDContextKey carries the instance identity a proxied request belongs
+// to. The reverse proxy is cached per target URL, so the identity cannot live in
+// the proxy itself: it travels with the request that needs it.
+type dockerIDContextKey struct{}
+
+func dockerIDFromContext(ctx context.Context) string {
+	if ctx == nil {
+		return ""
+	}
+	if id, ok := ctx.Value(dockerIDContextKey{}).(string); ok {
+		return id
+	}
+	return ""
+}
+
 // proxyJSONToTAA sends a platform request to TAA. body is the business JSON:
 // it is sealed here, once, so every caller keeps writing plain bodies and none
-// can accidentally send plaintext to a TAA that now refuses it.
+// can accidentally send plaintext to a TAA that now refuses it. dockerID picks
+// both the address the caller resolved and the key the body is sealed to, so a
+// request cannot be addressed to one instance and sealed for another.
 //
 // The response is unsealed when it is an envelope, because TAA seals every JSON
 // response. Anything that does not parse as an envelope is returned unchanged:
 // that covers a non-envelope TAA build, a plain error page and the endpoints
 // whose response is binary.
-func proxyJSONToTAA(ctx context.Context, taaAddr, endpoint string, body []byte) (int, []byte, error) {
+func proxyJSONToTAA(ctx context.Context, dockerID, taaAddr, endpoint string, body []byte) (int, []byte, error) {
 	component := requestComponentFromPath(endpoint)
 	targetURL := strings.TrimRight(taaAddr, "/") + endpoint
 
-	sealed, err := currentPlatformKeys().sealForTAA(body)
+	sealed, err := currentPlatformKeys().sealForTAAFor(dockerID, body)
 	if err != nil {
 		logRequest(requestLogs, "out", component, http.MethodPost, endpoint, http.StatusInternalServerError, "封装请求失败: "+err.Error(), body)
 		return 0, nil, err
@@ -241,7 +261,7 @@ func proxyJSONToTAA(ctx context.Context, taaAddr, endpoint string, body []byte) 
 	if !strings.Contains(endpoint, "/status") {
 		logRequest(requestLogs, "out", component, http.MethodPost, endpoint, resp.StatusCode, fmt.Sprintf("TAA HTTP %d (%s)", resp.StatusCode, time.Since(start).Round(time.Millisecond)), body)
 	}
-	return resp.StatusCode, openTAAResponse(respBody), nil
+	return resp.StatusCode, openTAAResponse(dockerID, respBody), nil
 }
 
 // openTAAResponse returns the plaintext of a sealed TAA response, or the body
@@ -249,12 +269,12 @@ func proxyJSONToTAA(ctx context.Context, taaAddr, endpoint string, body []byte) 
 // plain error, or a TAA that did not seal). A sealed body whose signature does
 // not verify is left sealed rather than decoded: the caller then shows the
 // envelope, which is honest, instead of business data taken on trust.
-func openTAAResponse(body []byte) []byte {
+func openTAAResponse(dockerID string, body []byte) []byte {
 	env, err := envelope.Parse(body)
 	if err != nil {
 		return body
 	}
-	plaintext, err := currentPlatformKeys().openFromTAAResponse(env)
+	plaintext, err := currentPlatformKeys().openFromTAAResponseFor(dockerID, env)
 	if err != nil {
 		log.Printf("could not open a TAA response envelope: %v", err)
 		return body
@@ -279,7 +299,7 @@ func sealProxyRequestBody(next http.Handler) http.Handler {
 			writeEnvelope(w, http.StatusBadRequest, "读取请求体失败: "+err.Error(), nil, http.StatusBadRequest)
 			return
 		}
-		sealed, err := currentPlatformKeys().sealForTAA(body)
+		sealed, err := currentPlatformKeys().sealForTAAFor(dockerIDFromContext(r.Context()), body)
 		if err != nil {
 			log.Printf("TAA proxy: cannot seal %s: %v", r.URL.Path, err)
 			writeEnvelope(w, http.StatusBadGateway, "TAA 请求封装失败: "+err.Error(), nil, http.StatusBadGateway)
@@ -302,9 +322,69 @@ func openProxyResponse(resp *http.Response) error {
 		return err
 	}
 	_ = resp.Body.Close()
-	plaintext := openTAAResponse(data)
+	plaintext := openTAAResponse(dockerIDFromContext(resp.Request.Context()), data)
 	resp.Body = io.NopCloser(bytes.NewReader(plaintext))
 	resp.ContentLength = int64(len(plaintext))
 	resp.Header.Set("Content-Length", strconv.Itoa(len(plaintext)))
 	return nil
+}
+
+// proxyPool caches one reverse proxy per target URL. The per-request instance
+// identity travels in the request context, so a cached proxy is still correct
+// for every instance that shares a target.
+type proxyPool struct {
+	mu      sync.Mutex
+	proxies map[string]*httputil.ReverseProxy
+}
+
+func newProxyPool() *proxyPool {
+	return &proxyPool{proxies: make(map[string]*httputil.ReverseProxy)}
+}
+
+func (p *proxyPool) forTarget(target string) (*httputil.ReverseProxy, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if proxy, ok := p.proxies[target]; ok {
+		return proxy, nil
+	}
+	u, err := url.Parse(target)
+	if err != nil || u.Scheme == "" || u.Host == "" {
+		return nil, fmt.Errorf("invalid TAA target %q: %v", target, err)
+	}
+	proxy := httputil.NewSingleHostReverseProxy(u)
+	proxy.ErrorHandler = func(w http.ResponseWriter, r *http.Request, err error) {
+		log.Printf("TAA proxy error: %s %s → %v", r.Method, r.URL.Path, err)
+		writeEnvelope(w, http.StatusBadGateway, "TAA proxy error: "+err.Error(), nil, http.StatusBadGateway)
+	}
+	proxy.ModifyResponse = openProxyResponse
+	p.proxies[target] = proxy
+	return proxy, nil
+}
+
+// dynamicTAAProxyHandler selects the target per request, from ?dockerId= or the
+// default instance. The query parameter is removed before forwarding: the
+// identity is the mock's own addressing, not part of TAA's protocol.
+func dynamicTAAProxyHandler(mgr *instanceManager, pool *proxyPool) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		id, target, err := mgr.targetFor(requestedDockerID(r))
+		if err != nil {
+			writeEnvelope(w, http.StatusBadGateway, "TAA 代理不可用: "+err.Error(), nil, http.StatusBadGateway)
+			return
+		}
+		proxy, err := pool.forTarget(target)
+		if err != nil {
+			writeEnvelope(w, http.StatusBadGateway, "TAA 代理不可用: "+err.Error(), nil, http.StatusBadGateway)
+			return
+		}
+		ctx := context.WithValue(r.Context(), dockerIDContextKey{}, id)
+		r = r.Clone(ctx)
+		if r.URL != nil {
+			q := r.URL.Query()
+			if _, ok := q["dockerId"]; ok {
+				q.Del("dockerId")
+				r.URL.RawQuery = q.Encode()
+			}
+		}
+		sealProxyRequestBody(proxy).ServeHTTP(w, r)
+	})
 }

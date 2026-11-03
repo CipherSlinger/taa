@@ -203,7 +203,7 @@ func TestTAAGetResourceInfoProxy(t *testing.T) {
 	taa.Start()
 	defer taa.Close()
 
-	handler := taaGetResourceInfoHandler(taa.URL)
+	handler := taaGetResourceInfoHandler(testManagerWith(t, "", func(b *instanceStores) { b.setTarget(taa.URL) }))
 	req := httptest.NewRequest(http.MethodPost, "/api/taa/getResourceInfo", strings.NewReader(`{"resourceUrl":"http://example.com/sample.tar.gz"}`))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
@@ -1761,7 +1761,7 @@ func TestTAAStopTrainingProxyAndLogging(t *testing.T) {
 
 	requestLogs.reset()
 
-	handler := taaStopTrainingHandler(taaServer.URL)
+	handler := taaStopTrainingHandler(testManagerWith(t, "", func(b *instanceStores) { b.setTarget(taaServer.URL) }))
 
 	// 非 POST 方法返回 405 Method Not Allowed
 	reqGet := httptest.NewRequest(http.MethodGet, "/api/taa/stopTraining", nil)
@@ -1809,7 +1809,7 @@ func TestTAAStopTrainingProxyAndLogging(t *testing.T) {
 	}
 
 	// 测试当未配置 TAA 地址（taaAddr 为空）时，返回 502 Bad Gateway
-	emptyHandler := taaStopTrainingHandler("")
+	emptyHandler := taaStopTrainingHandler(testManagerWith(t, "", nil))
 	reqEmpty := httptest.NewRequest(http.MethodPost, "/api/taa/stopTraining", strings.NewReader(`{}`))
 	reqEmpty.Header.Set("Content-Type", "application/json")
 	wEmpty := httptest.NewRecorder()

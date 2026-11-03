@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
-	"strings"
 )
 
 func dashboardStatusHandler(registerStore *registerStateStore, modelImportStore, auditStore *reportStateStore, progressStore *progressStateStore, taaAddr string) http.HandlerFunc {
@@ -201,15 +200,16 @@ func requestLogsResetHandler(w http.ResponseWriter, r *http.Request) {
 	resetHandler(requestLogs.reset)(w, r)
 }
 
-func taaStatusHandler(taaAddr string) http.HandlerFunc {
+func taaStatusHandler(mgr *instanceManager) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		setCORS(w)
-		if taaAddr == "" {
-			writeEnvelope(w, http.StatusServiceUnavailable, "TAA 地址未配置", nil, http.StatusServiceUnavailable)
+		id, target, err := mgr.targetFor(requestedDockerID(r))
+		if err != nil {
+			writeEnvelope(w, http.StatusServiceUnavailable, "TAA 地址未配置: "+err.Error(), nil, http.StatusServiceUnavailable)
 			return
 		}
 
-		status, respBody, err := proxyJSONToTAA(r.Context(), taaAddr, "/v1/taa/status", []byte("{}"))
+		status, respBody, err := proxyJSONToTAA(r.Context(), id, target, "/v1/taa/status", []byte("{}"))
 		if err != nil {
 			if status == 0 {
 				status = http.StatusBadGateway
@@ -225,11 +225,12 @@ func taaStatusHandler(taaAddr string) http.HandlerFunc {
 }
 
 // taaGetResourceInfoHandler proxies resource info requests to TAA's /v1/taa/getResourceInfo endpoint.
-func taaGetResourceInfoHandler(taaAddr string) http.HandlerFunc {
+func taaGetResourceInfoHandler(mgr *instanceManager) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		setCORS(w)
-		if taaAddr == "" {
-			writeEnvelope(w, http.StatusServiceUnavailable, "TAA 地址未配置", nil, http.StatusServiceUnavailable)
+		id, target, err := mgr.targetFor(requestedDockerID(r))
+		if err != nil {
+			writeEnvelope(w, http.StatusServiceUnavailable, "TAA 地址未配置: "+err.Error(), nil, http.StatusServiceUnavailable)
 			return
 		}
 
@@ -239,7 +240,7 @@ func taaGetResourceInfoHandler(taaAddr string) http.HandlerFunc {
 			return
 		}
 
-		status, respBody, err := proxyJSONToTAA(r.Context(), taaAddr, "/v1/taa/getResourceInfo", body)
+		status, respBody, err := proxyJSONToTAA(r.Context(), id, target, "/v1/taa/getResourceInfo", body)
 		if err != nil {
 			if status == 0 {
 				status = http.StatusBadGateway
@@ -255,7 +256,7 @@ func taaGetResourceInfoHandler(taaAddr string) http.HandlerFunc {
 }
 
 // taaStopTrainingHandler proxies stop training requests to TAA's /v1/taa/stopTraining endpoint.
-func taaStopTrainingHandler(taaAddr string) http.HandlerFunc {
+func taaStopTrainingHandler(mgr *instanceManager) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		setCORS(w)
 		if r.Method == http.MethodOptions {
@@ -267,12 +268,13 @@ func taaStopTrainingHandler(taaAddr string) http.HandlerFunc {
 			writeEnvelope(w, http.StatusMethodNotAllowed, "仅支持 POST 方法", nil, http.StatusMethodNotAllowed)
 			return
 		}
-		if strings.TrimSpace(taaAddr) == "" {
+		id, target, err := mgr.targetFor(requestedDockerID(r))
+		if err != nil {
 			writeEnvelope(w, http.StatusBadGateway, "未配置 TAA 目标地址（-taa-target 或 TAA_POD）", nil, http.StatusBadGateway)
 			return
 		}
 
-		status, respBody, err := proxyJSONToTAA(r.Context(), taaAddr, "/v1/taa/stopTraining", []byte("{}"))
+		status, respBody, err := proxyJSONToTAA(r.Context(), id, target, "/v1/taa/stopTraining", []byte("{}"))
 		if err != nil {
 			if status == 0 {
 				status = http.StatusBadGateway

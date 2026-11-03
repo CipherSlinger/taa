@@ -13,8 +13,6 @@ import (
 	"log"
 	"net"
 	"net/http"
-	"net/http/httputil"
-	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -111,6 +109,11 @@ func NewServer(cfg Config) *Server {
 	taaLogStore := newTaaLogStore(cfg.StateDir, 2000)
 
 	mgr := newInstanceManager(cfg.StateDir, cfg)
+	if mgr.staticTarget != "" {
+		log.Printf("TAA reverse proxy: static target %s", mgr.staticTarget)
+	} else {
+		log.Printf("TAA reverse proxy: per-instance targets from registration (discovered fallback %q)", mgr.discoveredTarget)
+	}
 
 	uploadDir := cfg.UploadDir
 	if abs, err := filepath.Abs(uploadDir); err == nil {
@@ -163,38 +166,23 @@ func NewServer(cfg Config) *Server {
 	registerUploadDeleteRoutes(mux, uploadDir)
 	mux.HandleFunc("/api/uploads", uploadListHandler(cfg.Addr, uploadDir))
 	mux.HandleFunc("/api/uploads/reset", uploadResetHandler(uploadDir))
-	mux.HandleFunc("/api/fhe/submit", fheSubmitHandler(cfg, taaAddr))
+	mux.HandleFunc("/api/fhe/submit", fheSubmitHandler(cfg, mgr))
 	mux.HandleFunc("/api/crypto/generate-key", cryptoGenerateKeyHandler)
 	mux.HandleFunc("/api/crypto/decrypt", cryptoDecryptHandler)
 	mux.HandleFunc("/api/request-logs/status", requestLogsStatusHandler)
 	mux.HandleFunc("/api/request-logs/reset", requestLogsResetHandler)
-	mux.HandleFunc("/api/taa/status", taaStatusHandler(taaAddr))
-	mux.HandleFunc("/api/taa/getResourceInfo", taaGetResourceInfoHandler(taaAddr))
-	mux.HandleFunc("/api/taa/stopTraining", taaStopTrainingHandler(taaAddr))
+	mux.HandleFunc("/api/taa/status", taaStatusHandler(mgr))
+	mux.HandleFunc("/api/taa/getResourceInfo", taaGetResourceInfoHandler(mgr))
+	mux.HandleFunc("/api/taa/stopTraining", taaStopTrainingHandler(mgr))
 
 	// Serve uploaded files
 	mux.Handle("/files/", http.StripPrefix("/files/", http.FileServer(http.Dir(uploadDir))))
 
-	// TAA reverse proxy: /taa/* → TAA pod
-	if taaAddr != "" {
-		target, err := url.Parse(taaAddr)
-		if err != nil {
-			log.Printf("invalid TAA target %q: %v", taaAddr, err)
-		} else {
-			proxy := httputil.NewSingleHostReverseProxy(target)
-			proxy.ErrorHandler = func(w http.ResponseWriter, r *http.Request, err error) {
-				log.Printf("TAA proxy error: %s %s → %v", r.Method, r.URL.Path, err)
-				writeEnvelope(w, http.StatusBadGateway, "TAA proxy error: "+err.Error(), nil, http.StatusBadGateway)
-			}
-			// The console posts plaintext to this proxy; TAA only accepts
-			// envelopes, so the body is sealed on the way out and the JSON
-			// response is opened on the way back.
-			proxy.ModifyResponse = openProxyResponse
-			// Logging wraps sealing so the request log keeps the console's
-			// plaintext body rather than the ciphertext that goes on the wire.
-			mux.Handle("/taa/", loggingReverseProxyHandler(sealProxyRequestBody(http.StripPrefix("/taa", proxy))))
-		}
-	}
+	// TAA reverse proxy: /taa/* → the selected instance's TAA target. The target
+	// is resolved per request, so this mount stays unconditional: a console call
+	// made before any instance registered gets an explained 502 instead of a
+	// route that does not exist.
+	mux.Handle("/taa/", loggingReverseProxyHandler(http.StripPrefix("/taa", dynamicTAAProxyHandler(mgr, newProxyPool()))))
 
 	return &Server{
 		cfg:       cfg,

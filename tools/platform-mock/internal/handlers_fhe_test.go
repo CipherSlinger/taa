@@ -95,7 +95,7 @@ func TestFHESubmitForwardsAbsoluteURLsAndKeyHash(t *testing.T) {
 
 	taa := newRecordingTAA(t)
 	cfg := Config{Addr: ":8080", UploadDir: uploadDir}
-	handler := fheSubmitHandler(cfg, taa.URL)
+	handler := fheSubmitHandler(cfg, testManagerWith(t, "", func(b *instanceStores) { b.setTarget(taa.URL) }))
 
 	w := postFHESubmit(handler, fheSubmitBody(t, testEvalKeyName, testInputZip))
 	if w.Code != http.StatusOK {
@@ -159,7 +159,7 @@ func TestFHESubmitHashTracksFileContents(t *testing.T) {
 	writeFHEUpload(t, uploadDir, testInputZip, []byte("zip"))
 
 	taa := newRecordingTAA(t)
-	handler := fheSubmitHandler(Config{Addr: ":8080", UploadDir: uploadDir}, taa.URL)
+	handler := fheSubmitHandler(Config{Addr: ":8080", UploadDir: uploadDir}, testManagerWith(t, "", func(b *instanceStores) { b.setTarget(taa.URL) }))
 
 	if w := postFHESubmit(handler, fheSubmitBody(t, testEvalKeyName, testInputZip)); w.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200; body=%s", w.Code, w.Body.String())
@@ -215,7 +215,7 @@ func TestFHESubmitRejectsNamesThatEscapeTheUploadDir(t *testing.T) {
 	}
 
 	taa := newRecordingTAA(t)
-	handler := fheSubmitHandler(Config{Addr: ":8080", UploadDir: uploadDir}, taa.URL)
+	handler := fheSubmitHandler(Config{Addr: ":8080", UploadDir: uploadDir}, testManagerWith(t, "", func(b *instanceStores) { b.setTarget(taa.URL) }))
 
 	for _, name := range bad {
 		t.Run(fmt.Sprintf("evalKeyFile=%q", name), func(t *testing.T) {
@@ -242,7 +242,7 @@ func TestFHESubmitRejectsMissingFile(t *testing.T) {
 	writeFHEUpload(t, uploadDir, testInputZip, []byte("zip"))
 
 	taa := newRecordingTAA(t)
-	handler := fheSubmitHandler(Config{Addr: ":8080", UploadDir: uploadDir}, taa.URL)
+	handler := fheSubmitHandler(Config{Addr: ":8080", UploadDir: uploadDir}, testManagerWith(t, "", func(b *instanceStores) { b.setTarget(taa.URL) }))
 
 	w := postFHESubmit(handler, fheSubmitBody(t, "1700000000000000000_absent.bin", testInputZip))
 	if w.Code != http.StatusBadRequest {
@@ -259,7 +259,7 @@ func TestFHESubmitGuardsMethodTargetAndBody(t *testing.T) {
 	writeFHEUpload(t, uploadDir, testInputZip, []byte("zip"))
 	taa := newRecordingTAA(t)
 
-	handler := fheSubmitHandler(Config{Addr: ":8080", UploadDir: uploadDir}, taa.URL)
+	handler := fheSubmitHandler(Config{Addr: ":8080", UploadDir: uploadDir}, testManagerWith(t, "", func(b *instanceStores) { b.setTarget(taa.URL) }))
 
 	getReq := httptest.NewRequest(http.MethodGet, "/api/fhe/submit", nil)
 	getW := httptest.NewRecorder()
@@ -276,7 +276,7 @@ func TestFHESubmitGuardsMethodTargetAndBody(t *testing.T) {
 		t.Errorf("body without ids status = %d, want 400; body=%s", w.Code, w.Body.String())
 	}
 
-	noTAA := fheSubmitHandler(Config{Addr: ":8080", UploadDir: uploadDir}, "  ")
+	noTAA := fheSubmitHandler(Config{Addr: ":8080", UploadDir: uploadDir}, testManagerWith(t, "", nil))
 	if w := postFHESubmit(noTAA, fheSubmitBody(t, testEvalKeyName, testInputZip)); w.Code != http.StatusServiceUnavailable {
 		t.Errorf("missing TAA target status = %d, want 503; body=%s", w.Code, w.Body.String())
 	}
@@ -297,7 +297,7 @@ func TestFHESubmitMirrorsTAAFailure(t *testing.T) {
 	taa.status = http.StatusBadGateway
 	taa.response = `{"msg":"import rejected","error":4}`
 
-	handler := fheSubmitHandler(Config{Addr: ":8080", UploadDir: uploadDir}, taa.URL)
+	handler := fheSubmitHandler(Config{Addr: ":8080", UploadDir: uploadDir}, testManagerWith(t, "", func(b *instanceStores) { b.setTarget(taa.URL) }))
 	w := postFHESubmit(handler, fheSubmitBody(t, testEvalKeyName, testInputZip))
 	if w.Code != http.StatusBadGateway {
 		t.Fatalf("status = %d, want 502; body=%s", w.Code, w.Body.String())
@@ -358,7 +358,7 @@ func TestFHESubmitResolvesTheHostPerRequest(t *testing.T) {
 	t.Cleanup(func() { platformIPForRequest = prev })
 
 	taa := newRecordingTAA(t)
-	handler := fheSubmitHandler(Config{Addr: ":8080", UploadDir: uploadDir}, taa.URL)
+	handler := fheSubmitHandler(Config{Addr: ":8080", UploadDir: uploadDir}, testManagerWith(t, "", func(b *instanceStores) { b.setTarget(taa.URL) }))
 
 	if calls != 0 {
 		t.Fatalf("building the handler resolved the host %d times, want 0: the host must not be fixed before the request", calls)
@@ -385,7 +385,7 @@ func TestFHESubmitRejectsAnEncryptedEvalKey(t *testing.T) {
 	writeFHEUpload(t, uploadDir, testInputZip, []byte("zip"))
 
 	taa := newRecordingTAA(t)
-	handler := fheSubmitHandler(Config{Addr: ":8080", UploadDir: uploadDir}, taa.URL)
+	handler := fheSubmitHandler(Config{Addr: ":8080", UploadDir: uploadDir}, testManagerWith(t, "", func(b *instanceStores) { b.setTarget(taa.URL) }))
 
 	// encryptMode=envelope appends ".enc", encryptMode=urlkey appends ".sm4".
 	for _, name := range []string{

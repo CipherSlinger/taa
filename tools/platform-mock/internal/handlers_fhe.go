@@ -37,7 +37,7 @@ var platformIPForRequest = platformIP
 // The key and the input are uploaded first through the existing /api/upload
 // endpoint and referenced here by name, which is what makes this a full-chain
 // exercise: the mock never touches the shared directory itself.
-func fheSubmitHandler(cfg Config, taaAddr string) http.HandlerFunc {
+func fheSubmitHandler(cfg Config, mgr *instanceManager) http.HandlerFunc {
 	uploadDir := cfg.UploadDir
 	if abs, err := filepath.Abs(uploadDir); err == nil {
 		uploadDir = abs
@@ -54,8 +54,9 @@ func fheSubmitHandler(cfg Config, taaAddr string) http.HandlerFunc {
 			writeEnvelope(w, http.StatusMethodNotAllowed, "仅支持 POST 方法", nil, http.StatusMethodNotAllowed)
 			return
 		}
-		if strings.TrimSpace(taaAddr) == "" {
-			writeEnvelope(w, http.StatusServiceUnavailable, "TAA 地址未配置", nil, http.StatusServiceUnavailable)
+		id, target, err := mgr.targetFor(requestedDockerID(r))
+		if err != nil {
+			writeEnvelope(w, http.StatusServiceUnavailable, "TAA 地址未配置: "+err.Error(), nil, http.StatusServiceUnavailable)
 			return
 		}
 
@@ -128,7 +129,7 @@ func fheSubmitHandler(cfg Config, taaAddr string) http.HandlerFunc {
 
 		log.Printf("fhe submit: taskId=%s requestId=%s evalKeyHash=%s", req.TaskID, req.RequestID, keyHash)
 
-		status, respBody, err := proxyJSONToTAA(r.Context(), taaAddr, "/v1/taa/import", body)
+		status, respBody, err := proxyJSONToTAA(r.Context(), id, target, "/v1/taa/import", body)
 		if err != nil {
 			if status == 0 {
 				status = http.StatusBadGateway
