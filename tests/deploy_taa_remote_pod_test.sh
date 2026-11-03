@@ -171,7 +171,10 @@ status=0
 RUN_ENV=()
 run_deploy() {
   set +e
+  # TAA_POD_IMAGE is pinned so the lifecycle cases do not build and push a production image;
+  # the auto-build path is exercised against the real registry, not by this mock harness.
   output="$(PATH="$MOCK_BIN:$PATH" env -u TARGET_POD -u TAA_POD_NAME -u TAA_POD_IMAGE \
+    TAA_POD_IMAGE="$DEFAULT_IMAGE" \
     "${RUN_ENV[@]}" \
     READY_TIMEOUT=2 \
     READY_INTERVAL=1 \
@@ -212,6 +215,9 @@ grep -q "^  restartPolicy: Always$" "$APPLIED" \
   || fail "the manifest does not keep the Pod restartable in place"
 grep -q "^      image: $DEFAULT_IMAGE$" "$APPLIED" \
   || fail "the manifest does not use the default TAA image"
+# An explicitly pinned image is not rebuilt, so it keeps the cheaper IfNotPresent policy.
+grep -q "^      imagePullPolicy: IfNotPresent$" "$APPLIED" \
+  || fail "a pinned image does not keep IfNotPresent"
 # cc_init_data is required for the guest's CDH to pull the image; kernel_params must be non-empty
 # so it is appended rather than erasing the guest's rdinit=; the runtime-handler key is never
 # copied because it hijacks runtime selection away from runtimeClassName.

@@ -108,9 +108,22 @@ REMOTE_DIR="${REMOTE_DIR:-/root/taa}"
 
 # Parameters of the Pod created when TARGET_POD was not set. The defaults mirror the production
 # TAA Pod on the host (kata-qemu-csv2, 3 CPU, 98Gi), because CSV2 encrypted memory is sized from
-# the limits and is resident from boot. The image is the registry's mutable slim-v2 tag; pin a
-# date tag through TAA_POD_IMAGE when the deployment has to be reproducible.
-TAA_POD_IMAGE="${TAA_POD_IMAGE:-172.16.10.178:31313/taa-env:slim-v2}"
+# the limits and is resident from boot.
+#
+# The image is built from this tree and pushed to the registry on every Pod creation, so a new
+# Pod never starts from a stale binary. Setting TAA_POD_IMAGE explicitly pins an image and skips
+# the build entirely (the operator then owns the tag's contents).
+TAA_POD_IMAGE_WAS_SET="${TAA_POD_IMAGE:+set}"
+TAA_POD_IMAGE="${TAA_POD_IMAGE:-${REMOTE_HOST}:31313/taa-env:slim-v2}"
+# Registry and repository the auto-built image is pushed to. The date tag follows the repository's
+# packaging rule (<repo>:<YYYYMMDD>, see DEFAULT_SAVE_IMAGE).
+TAA_POD_REGISTRY="${TAA_POD_REGISTRY:-${REMOTE_HOST}:31313}"
+TAA_POD_IMAGE_REPO="${TAA_POD_IMAGE_REPO:-taa-train-infer}"
+# Pull policy written into a Pod this deployment creates. The auto-built image is a mutable
+# same-day tag, so a Pod must not accept a cached copy of it; a pinned TAA_POD_IMAGE keeps the
+# cheaper IfNotPresent.
+TAA_POD_PULL_POLICY_WAS_SET="${TAA_POD_PULL_POLICY:+set}"
+TAA_POD_PULL_POLICY="${TAA_POD_PULL_POLICY:-IfNotPresent}"
 TAA_POD_NODE="${TAA_POD_NODE:-hygon-master}"
 TAA_POD_RUNTIME_CLASS="${TAA_POD_RUNTIME_CLASS:-kata-qemu-csv2}"
 TAA_POD_CPU="${TAA_POD_CPU:-3}"
@@ -489,11 +502,111 @@ pause_remote_taa() {
   remote_ssh "$(container_exec) sh -lc 'touch \"$TAA_CONTAINER_WORKDIR/manual\" && pkill -x taa >/dev/null 2>&1 || true; killall taa >/dev/null 2>&1 || true'"
 }
 
+# Builds the production TAA image from this tree, uploads it to the registry, and points the new
+# Pod at it. The tag carries today's date and is therefore mutable: when the registry already
+# holds a different build under that tag, its manifest is deleted and the tag repushed; when the
+# content is identical the push is skipped. Sets TAA_POD_IMAGE and TAA_POD_PULL_POLICY.
+#
+# Reuses save_local_docker_image so the image a Pod runs is assembled by the same code path as a
+# packaged production image (base archive, supervisor, scan engine, static binary, config).
+build_and_push_taa_pod_image() {
+  require_command docker
+  if ! docker info >/dev/null 2>&1; then
+    err "the docker daemon is not reachable, so the Pod image cannot be built"
+    detail "Set TAA_POD_IMAGE explicitly to deploy a prebuilt image instead."
+    exit 1
+  fi
+
+  local tag="$SAVE_DATE_TAG"
+  local local_image="$TAA_POD_IMAGE_REPO:$tag"
+  local registry_image="$TAA_POD_REGISTRY/$TAA_POD_IMAGE_REPO:$tag"
+  local archive="$PROJECT_DIR/deploy/out/taa-pod-$tag.tar.gz"
+
+  step "building the TAA image for the new Pod ($local_image)"
+  local saved_image="$CUSTOM_SAVE_IMAGE" saved_archive="$CUSTOM_SAVE_ARCHIVE"
+  CUSTOM_SAVE_IMAGE="$local_image"
+  CUSTOM_SAVE_ARCHIVE="$archive"
+  save_local_docker_image
+  CUSTOM_SAVE_IMAGE="$saved_image"
+  CUSTOM_SAVE_ARCHIVE="$saved_archive"
+
+  local local_id
+  local_id="$(docker image inspect --format '{{.Id}}' "$local_image" 2>/dev/null || true)"
+  if [[ -z "$local_id" ]]; then
+    err "the built image '$local_image' is missing"
+    exit 1
+  fi
+
+  local remote_archive="/tmp/taa-pod-$tag.$$.tar.gz"
+  step "uploading the image to ${REMOTE_USER}@${REMOTE_HOST} and updating ${registry_image}"
+  sshpass -p "$PASSWORD" scp "${SSH_OPTS[@]}" "$archive" "${REMOTE_USER}@${REMOTE_HOST}:$remote_archive"
+
+  local result
+  if ! result="$(remote_ssh bash -s -- "$remote_archive" "$local_image" "$registry_image" "$local_id" "$TAA_POD_REGISTRY" "$TAA_POD_IMAGE_REPO" "$tag" <<'REMOTE_PUSH'
+set -euo pipefail
+archive="$1"; local_image="$2"; registry_image="$3"; local_id="$4"
+registry="$5"; repo="$6"; tag="$7"
+trap 'rm -f "$archive"' EXIT
+
+docker load -i "$archive" >/dev/null
+docker tag "$local_image" "$registry_image"
+
+manifest_url="https://$registry/v2/$repo/manifests/$tag"
+accept="Accept: application/vnd.docker.distribution.manifest.v2+json"
+# The config digest in a schema2 manifest is the image ID Docker reports locally, so comparing
+# the two answers "does the registry already hold exactly this build?".
+remote_config="$(curl -sk --max-time 10 -H "$accept" "$manifest_url" 2>/dev/null |
+  grep -o 'sha256:[0-9a-f]\{64\}' | head -n 1 || true)"
+if [[ -n "$remote_config" && "$remote_config" == "$local_id" ]]; then
+  echo "UNCHANGED"
+  exit 0
+fi
+
+old_digest="$(curl -skI --max-time 10 -H "$accept" "$manifest_url" 2>/dev/null |
+  awk 'tolower($1) == "docker-content-digest:" {print $2}' | tr -d '\r' | tail -n 1 || true)"
+if [[ -n "$old_digest" ]]; then
+  # Best effort: a registry with deletion disabled answers 405, and the push below still
+  # replaces the tag atomically.
+  curl -sk -X DELETE --max-time 15 "$registry/v2/$repo/manifests/$old_digest" >/dev/null 2>&1 || true
+fi
+docker push "$registry_image" >/dev/null
+echo "PUSHED"
+REMOTE_PUSH
+)"; then
+    err "failed to upload or push the TAA image to ${registry_image}"
+    detail "Check that ${REMOTE_HOST} can push to ${TAA_POD_REGISTRY}, or set TAA_POD_IMAGE to a prebuilt image."
+    exit 1
+  fi
+
+  case "$result" in
+    *PUSHED*)    info "image pushed: $registry_image" ;;
+    *UNCHANGED*) info "the registry already holds this build; tag kept: $registry_image" ;;
+    *)
+      err "unexpected result while updating $registry_image"
+      detail "$result"
+      exit 1
+      ;;
+  esac
+
+  TAA_POD_IMAGE="$registry_image"
+  # A same-day tag is mutable: the Pod must fetch the manifest instead of trusting a cached copy.
+  # An explicit TAA_POD_PULL_POLICY stays the operator's choice.
+  if [[ -z "$TAA_POD_PULL_POLICY_WAS_SET" ]]; then
+    TAA_POD_PULL_POLICY="Always"
+  fi
+  rm -f "$archive"
+}
+
 # Creates the deployment-owned TAA Pod. Reached only when TARGET_POD was not set and no Pod with
 # that name exists, so an immutable-Pod rewrite cannot happen here. The rendered manifest uses |
 # as the delimiter because the injected base64 value contains / and + but never |.
 create_taa_pod() {
   require_file "TAA Pod template" "$TAA_POD_TEMPLATE"
+  # An image named explicitly is the operator's decision and is used as given. Otherwise the Pod
+  # runs a fresh build of this tree, pushed before the Pod exists so it never starts stale.
+  if [[ -z "$TAA_POD_IMAGE_WAS_SET" ]]; then
+    build_and_push_taa_pod_image
+  fi
   local cc_init_data docker_id pod_namespace
   # An empty namespace in the manifest is not the same as "the context's namespace", so resolve
   # what kubectl itself would use. The common case (TARGET_NAMESPACE=osr) never gets here.
@@ -513,6 +626,7 @@ create_taa_pod() {
       -e "s|__NODE_NAME__|$(sed_escape "$TAA_POD_NODE")|g" \
       -e "s|__IMAGE__|$(sed_escape "$TAA_POD_IMAGE")|g" \
       -e "s|__RUNTIME_CLASS__|$(sed_escape "$TAA_POD_RUNTIME_CLASS")|g" \
+      -e "s|__PULL_POLICY__|$(sed_escape "$TAA_POD_PULL_POLICY")|g" \
       -e "s|__CPU__|$(sed_escape "$TAA_POD_CPU")|g" \
       -e "s|__MEMORY__|$(sed_escape "$TAA_POD_MEMORY")|g" \
       -e "s|__CC_INIT_DATA__|$(sed_escape "$cc_init_data")|g" \
@@ -941,9 +1055,14 @@ Remote Pod lifecycle:
   TARGET_POD names the Pod to deploy into. When it is unset, remote mode creates a dedicated Kata
   CSV2 Pod (default name: TAA_POD_NAME, i.e. taa-deploy) on the remote host, reuses it on later
   runs, and deletes it on stop. A Pod named explicitly through TARGET_POD is never created and
-  never deleted by this script. The Pod's LLM endpoint comes from taa-config.json, which is
-  rewritten on every deploy; pin TAA_POD_IMAGE to an immutable tag if the Pod must be
-  reproducible.
+  never deleted by this script.
+  Before a new Pod is created, the production image is built from the current tree, uploaded to
+  the registry and pushed as TAA_POD_REGISTRY/TAA_POD_IMAGE_REPO:<today>. If the registry already
+  holds a different build under that same-day tag, its manifest is deleted and the tag repushed;
+  an identical build is left alone. An existing Pod is reused as is and is never recreated, so a
+  new image needs `TARGET_POD= ./deploy.sh taa stop` first (that deletes the Pod and its guest
+  writable layer). Set TAA_POD_IMAGE explicitly to skip the build and pin an image.
+  The Pod's LLM endpoint comes from taa-config.json, which is rewritten on every deploy.
 
 Examples:
   # Docker mode (local Docker container)
@@ -985,7 +1104,14 @@ Environment overrides:
   TAA_POD_NAME=${TAA_POD_NAME}
       TARGET_POD 未设置时创建/复用的 Pod 名称（默认 taa-deploy）。
   TAA_POD_IMAGE=${TAA_POD_IMAGE}
-      新建 Pod 使用的镜像（默认 172.16.10.178:31313/taa-env:slim-v2）。
+      新建 Pod 使用的镜像。未设置时，每次新建 Pod 前都会用当前源码构建生产镜像并推送到
+      registry（见 TAA_POD_REGISTRY / TAA_POD_IMAGE_REPO）；显式设置则跳过构建，原样使用。
+  TAA_POD_REGISTRY=${TAA_POD_REGISTRY}
+      自动构建镜像推送到的 registry（默认 <REMOTE_HOST>:31313）。
+  TAA_POD_IMAGE_REPO=${TAA_POD_IMAGE_REPO}
+      自动构建镜像的仓库名（默认 taa-train-infer，tag 为当天日期 YYYYMMDD）。
+  TAA_POD_PULL_POLICY=${TAA_POD_PULL_POLICY}
+      新建 Pod 的 imagePullPolicy；自动构建的当天 tag 会强制 Always，显式设置则尊重原值。
   TAA_POD_NODE=${TAA_POD_NODE}
       新建 Pod 绑定的节点（默认 hygon-master）。
   TAA_POD_RUNTIME_CLASS=${TAA_POD_RUNTIME_CLASS}

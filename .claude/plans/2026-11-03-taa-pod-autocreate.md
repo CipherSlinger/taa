@@ -40,3 +40,16 @@
 - `bash tests/deploy_taa_remote_pod_test.sh`
 - `bash tests/deploy_scan_engine_test.sh`
 - 真机（须先确认，创建 Pod 的成本是一台常驻加密内存的机密 VM）：未设置 `TARGET_POD` 启动→创建；再跑→复用；`stop`→删除；显式 Pod→行为不变。
+
+## 追加：新建 Pod 前自动构建并推送镜像
+
+初版把 `TAA_POD_IMAGE` 默认成 registry 上的可变 tag `taa-env:slim-v2`，于是新建的 Pod 可能跑着一份比当前源码更旧的二进制。改为：**未显式设置 `TAA_POD_IMAGE` 时，每次新建 Pod 前都用当前源码构建生产镜像并推送**。
+
+- 复用 `save_local_docker_image`（覆盖 `CUSTOM_SAVE_IMAGE`/`CUSTOM_SAVE_ARCHIVE`），与 `docker save` 同一条打包链路，Pod 跑的就是同一份生产镜像。
+- tag 为当天日期 `TAA_POD_REGISTRY/TAA_POD_IMAGE_REPO:<YYYYMMDD>`（默认 `172.16.10.178:31313/taa-train-infer:<today>`）。
+- 推送前先做内容判定：registry manifest 的 config digest 与本地 `docker image inspect .Id` 比较。相同 → 跳过推送；不同 → 尽力删除旧 manifest 再 push（删除被禁用的 registry 返回 405 也不影响 tag 被覆盖）。
+- 自动构建的当天 tag 可变，故 Pod 使用 `imagePullPolicy: Always`；显式 `TAA_POD_PULL_POLICY` 尊重原值。
+- 显式 `TAA_POD_IMAGE` 完全跳过构建，保持 `IfNotPresent`。
+- 已有 Pod 仍然只复用不重建：新镜像只在 `./deploy.sh taa stop`（删除 Pod 及其 guest 可写层）之后的下一次启动生效。
+
+验证：`bash -n`、两个 deploy 测试全部通过（测试固定 `TAA_POD_IMAGE` 以绕开构建）；真实构建/推送链路未在真机执行。

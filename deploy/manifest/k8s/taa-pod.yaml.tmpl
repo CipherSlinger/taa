@@ -9,7 +9,8 @@
 #
 #    POD_NAME         metadata.name          (TARGET_POD, default taa-deploy)
 #    NAMESPACE        metadata.namespace     (TARGET_NAMESPACE, default osr)
-#    IMAGE            containers[0].image    (TAA_POD_IMAGE)
+#    IMAGE            containers[0].image    (TAA_POD_IMAGE; when unset, built and pushed)
+#    PULL_POLICY      imagePullPolicy        (TAA_POD_PULL_POLICY; Always for an auto-built image)
 #    NODE_NAME        spec.nodeName          (TAA_POD_NODE)
 #    RUNTIME_CLASS    runtimeClassName       (TAA_POD_RUNTIME_CLASS)
 #    CPU, MEMORY      container resources    (TAA_POD_CPU, TAA_POD_MEMORY)
@@ -66,7 +67,10 @@ spec:
   containers:
     - name: taa
       image: __IMAGE__
-      imagePullPolicy: IfNotPresent
+      # The auto-built image carries today's date and is mutable, so the deployment sets
+      # Always for it: the guest must fetch the manifest rather than accept a cached copy of an
+      # image that was rebuilt under the same tag. A pinned TAA_POD_IMAGE keeps IfNotPresent.
+      imagePullPolicy: __PULL_POLICY__
       env:
         # The remote config path writes a template without a `platform` block,
         # so these are the only source of the registration identity; deploy.sh

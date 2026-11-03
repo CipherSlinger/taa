@@ -574,14 +574,23 @@ Inside Docker containers, TAA runs under the supervision of `deploy/taa-supervis
 > to become Ready, and reuses it on later runs; `stop` deletes that Pod, taking its guest writable
 > layer (data, keys, models) with it. When `TARGET_POD` is set, the deployment only targets that
 > Pod and fails if it does not exist — it never creates or deletes it. Pod creation knobs:
-> `TAA_POD_IMAGE` (default `172.16.10.178:31313/taa-env:slim-v2`), `TAA_POD_NODE`,
-> `TAA_POD_RUNTIME_CLASS`, `TAA_POD_CPU`, `TAA_POD_MEMORY`, `TAA_POD_READY_TIMEOUT`,
-> `TAA_POD_CC_INIT_DATA` and `TAA_POD_DOCKER_ID`. The template lives at
-> `deploy/manifest/k8s/taa-pod.yaml.tmpl`. Pin `TAA_POD_IMAGE` to an immutable tag for a
-> reproducible Pod: the default is a mutable tag and the Pod is pulled with `IfNotPresent`, so a
-> tag that moves under the same name is only picked up by a fresh Pod. The LLM endpoint is not an
-> env var on the Pod — it is written into `taa-config.json` on every deploy, so a later `LLM_IP`
-> takes effect without recreating the Pod.
+> `TAA_POD_IMAGE`, `TAA_POD_NODE`, `TAA_POD_RUNTIME_CLASS`, `TAA_POD_CPU`, `TAA_POD_MEMORY`,
+> `TAA_POD_READY_TIMEOUT`, `TAA_POD_CC_INIT_DATA` and `TAA_POD_DOCKER_ID`. The template lives at
+> `deploy/manifest/k8s/taa-pod.yaml.tmpl`.
+>
+> Unless `TAA_POD_IMAGE` is set, every Pod creation is preceded by an image build from the current
+> tree: the production image is assembled by the same code path as `docker save`, uploaded to the
+> remote host, and pushed as `TAA_POD_REGISTRY/TAA_POD_IMAGE_REPO:<YYYYMMDD>` (default
+> `172.16.10.178:31313/taa-train-infer:<today>`). If the registry already holds a *different*
+> build under that same-day tag, its manifest is deleted and the tag repushed; an identical build
+> is left in place. Because the tag is mutable, an auto-built Pod pulls with `Always`. Setting
+> `TAA_POD_IMAGE` pins an image, skips the build, and keeps `IfNotPresent`. The image choices are
+> also read from `TAA_POD_REGISTRY`, `TAA_POD_IMAGE_REPO` and `TAA_POD_PULL_POLICY`.
+>
+> An existing Pod is reused as is and never recreated, so a new image only reaches the Pod after
+> `TARGET_POD= ./deploy.sh taa stop` (which deletes the Pod and its guest writable layer) followed
+> by a start. The LLM endpoint is not an env var on the Pod — it is written into `taa-config.json`
+> on every deploy, so a later `LLM_IP` takes effect without recreating the Pod.
 
 > **Remote deploys provision the code scan engine.** When the config selects the semgrep engine
 > (`codeAudit.codeScan.engine`), `deploy.sh remote` makes sure the container has both the CLI and the

@@ -45,13 +45,25 @@ TAA_IMAGE=taa-fhe:20261019 ./deploy-fhe.sh taa
 ```bash
 # 将 taa 更新到目标 pod 中
 TARGET_POD=taa-env-slim-v2-20261016-7104e03003ae0072-f7fbbf8f5-kkdb2 ./deploy.sh taa 
-./deploy.sh docker save
+
+./deploy.sh taa
+./deploy.sh taa stop    # 删除对应的 pod
+./deploy.sh docker save # 保存镜像
 ```
 
 不指定 `TARGET_POD` 时，`./deploy.sh taa` 会在远端创建并接管一个 Kata CSV2 Pod
 （默认名 `taa-deploy`），后续部署复用它，`./deploy.sh taa stop` 停止并删除该 Pod
 （连带 guest 可写层里的数据、密钥和模型）。显式给出 `TARGET_POD` 时脚本只部署进该 Pod，
 既不会创建也不会删除它。
+
+新建 Pod 之前，脚本会先用当前源码构建生产镜像、上传到远端并推送到 registry，tag 为当天日期
+（默认 `172.16.10.178:31313/taa-train-infer:<YYYYMMDD>`）。若 registry 上同名当天 tag 已经是
+另一份构建，则先删除旧 manifest 再推送；内容完全相同则跳过推送。该 tag 当天可变，因此自动
+构建的 Pod 使用 `imagePullPolicy: Always`。给出 `TAA_POD_IMAGE` 会跳过构建并固定镜像
+（此时保留 `IfNotPresent`）；仓库名、registry 和拉取策略分别由 `TAA_POD_IMAGE_REPO`、
+`TAA_POD_REGISTRY`、`TAA_POD_PULL_POLICY` 覆盖。
+
+已存在的 Pod 不会被重建，新镜像需要在 `./deploy.sh taa stop` 删除 Pod 之后的下一次启动才会用到。
 
 
 # platform-mock 部署命令
