@@ -109,17 +109,19 @@ flag: instance identity is the registration's `dockerId`.
 
 - **State layout**: each instance keeps its own state under
   `<state-dir>/instances/i-<sha256(dockerId)[:16]>/`, with per-instance `register-state.json`,
-  `report*-state.json`, logs and `instance.json`. SM2 keys and reports are isolated the same
-  way.
+  `report*-state.json`, logs and `instance.json`. Per-instance SM2 public keys are isolated by
+  `dockerId` in the `taaPublicKeys` map of `<state-dir>/platform-key.json`.
 - **Migration**: legacy single-instance state files are migrated at startup into one instance
   directory. When `instances/` already exists, nothing is migrated.
 - **Derived address**: with no `-taa-target`, an instance's outbound address is derived from
   the registration request's source IP as `http://<RemoteAddr IP>:<taa-port>` (default port
   6001). Behind a reverse proxy or port forward the source IP is lost, so use `-taa-target`
   (a single fixed address) there.
-- **Selecting an instance**: every console `/api/*` endpoint accepts `?dockerId=`; when it is
-  absent the most recently accepted registration is used. `GET /api/instances` returns the
-  instance list and `defaultDockerId`.
+- **Selecting an instance**: instance-scoped console endpoints (`/api/dashboard/status`, the
+  `*/status` and `*/reset` routes, `/api/taa/*`, `/api/upload`) accept `?dockerId=`; absent
+  means the most recently accepted registration. Global endpoints (`/api/instances`,
+  `/api/uploads*`, `/api/crypto/*`, `/api/request-logs/*`) ignore it. `GET /api/instances`
+  returns the instance list and `defaultDockerId`.
 - **Proxying**: `/taa/*` proxies to the selected instance and strips `dockerId` before
   forwarding.
 

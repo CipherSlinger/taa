@@ -124,8 +124,8 @@ platform-mock 的构建、启动、停止和就绪检查统一由仓库根目录
   ```bash
   ./deploy-platform-mock.sh local start --taa-port 6001
   ```
-- 仍需要固定单实例地址时继续使用 `--taa-target http://<ip>:6001`（它同时也是发现失败时
-  的回退路径）。
+- 仍需要固定单实例地址时继续使用 `--taa-target http://<ip>:6001`（未按注册推导出地址时
+  作为后备）。
 - 限制：反向代理或端口转发会丢失请求源 IP，此时无法按注册推导地址，应退回
   `--taa-target` 指定固定地址。
 
