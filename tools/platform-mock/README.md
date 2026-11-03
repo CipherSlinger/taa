@@ -68,10 +68,10 @@ list.
 | `-addr` | `:8080` | Mock platform HTTP listen address. |
 | `-state-dir` | `/root/taa` (or `$STATE_DIR`) | Directory used to persist registration and execution state files (`register.json`, `report.json`). |
 | `-upload-dir` | `.local/upload` (or `$UPLOAD_DIR`) | Directory used to store uploaded model files, served at `/files/`. |
-| `-taa-target` | `""` | Direct URL of the TAA instance for reverse proxying (e.g. `http://127.0.0.1:6001`). When omitted, auto-discovers via Kubernetes Pod. |
+| `-taa-target` | `""` | Single-instance fixed TAA URL for reverse proxying (e.g. `http://127.0.0.1:6001`). When omitted, each instance's address is derived from its own registration. |
 | `-taa-pod` | `simple-busybox` (or `$TAA_POD`) | Target Kubernetes pod name used for auto-discovering the TAA IP address via `kubectl` when `-taa-target` is empty. |
 | `-taa-ns` | `""` (or `$TAA_NS`) | Target Kubernetes namespace for `-taa-pod` (empty string indicates default namespace). |
-| `-taa-port` | `6001` (or `$TAA_PORT`) | Port on the target pod where TAA listens. |
+| `-taa-port` | `6001` (or `$TAA_PORT`) | Port on the target pod where TAA listens; also the port used to derive each instance's address from its registration. |
 | `-allow-empty-attestation` | `false` | When set to `true`, permits node registration without a valid Hygon CSV attestation report (useful for simulated non-TEE environments). |
 | `-sm2-id` | `""` = `1234567812345678` (or `$PLATFORM_SM2_ID`) | SM2 signature identity (`ID_A`). Must be byte-identical to the `PLATFORM_SM2_ID` TAA was started with, or signatures will not verify. The effective value is logged at startup. |
 | `-platform-key-file` | `<state-dir>/platform-key.json` (or `$PLATFORM_KEY_FILE`) | Where the platform SM2 key pair (and the last registered TAA public key) is persisted. Generated on first use; a restart reuses the same pair. |
@@ -101,6 +101,27 @@ The platform mock provides an embedded single-page Web console accessible by ope
 - **Model Ingress & Audit**: Upload model packages, inspect static AST rule violations, and observe Ollama LLM semantic verification outcomes.
 - **Real-Time Progress & Logs**: Displays real-time progress bars, streamed terminal logs (`modelLog`), and TAA daemon operational logs (`taaLog`).
 - **Execution Control**: Send graceful stop commands (`/v1/taa/stopTraining`) to interrupt running workloads.
+
+## Multiple Instances
+
+A single mock process serves several TAA instances at once. This is the default and needs no
+flag: instance identity is the registration's `dockerId`.
+
+- **State layout**: each instance keeps its own state under
+  `<state-dir>/instances/i-<sha256(dockerId)[:16]>/`, with per-instance `register-state.json`,
+  `report*-state.json`, logs and `instance.json`. SM2 keys and reports are isolated the same
+  way.
+- **Migration**: legacy single-instance state files are migrated at startup into one instance
+  directory. When `instances/` already exists, nothing is migrated.
+- **Derived address**: with no `-taa-target`, an instance's outbound address is derived from
+  the registration request's source IP as `http://<RemoteAddr IP>:<taa-port>` (default port
+  6001). Behind a reverse proxy or port forward the source IP is lost, so use `-taa-target`
+  (a single fixed address) there.
+- **Selecting an instance**: every console `/api/*` endpoint accepts `?dockerId=`; when it is
+  absent the most recently accepted registration is used. `GET /api/instances` returns the
+  instance list and `defaultDockerId`.
+- **Proxying**: `/taa/*` proxies to the selected instance and strips `dockerId` before
+  forwarding.
 
 ## Directory Structure
 

@@ -85,10 +85,11 @@ Common options:
   --upload-dir DIR           Uploaded-files directory (empty = omit the flag)
   --log-file PATH            Log file (local default: .local/logs/platform-mock.log)
   --pid-file PATH            PID file (local default: .local/run/platform-mock.pid)
-  --taa-target URL           Direct TAA base URL for the reverse proxy
+  --taa-target URL           Single-instance fixed TAA address; omit to derive
+                             each instance's address from its registration
   --taa-pod NAME             TAA Pod for kubectl auto-discovery
   --taa-ns NS                Namespace for --taa-pod
-  --taa-port PORT            Port for --taa-pod discovery
+  --taa-port PORT            Port used for discovery and for per-instance target derivation
   --sm2-id ID                SM2 ID_A passed to the mock
   --platform-key-file PATH   Platform SM2 key file passed to the mock
   --allow-empty-attestation  Skip attestation validation (non-TEE testing)

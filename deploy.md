@@ -88,7 +88,8 @@ platform-mock 的构建、启动、停止和就绪检查统一由仓库根目录
 | `--addr ADDR` / `--port N` | 监听地址，默认 `0.0.0.0:18080` |
 | `--state-dir DIR` / `--upload-dir DIR` | 为空时不传对应参数，沿用二进制自身默认目录 |
 | `--log-file PATH` / `--pid-file PATH` | 默认分别在 `.local/logs/`、`.local/run/`（远端在 `--remote-dir` 下） |
-| `--taa-target URL` | 直接指定 TAA 地址；未指定时透传 `--taa-pod` / `--taa-ns` / `--taa-port` |
+| `--taa-target URL` | 固定到单个 TAA 地址；不传时按注册信息推导每个实例的地址 |
+| `--taa-pod` / `--taa-ns` / `--taa-port` | `--taa-target` 为空时的 Kubernetes 发现参数；`--taa-port` 同时用于多实例地址推导 |
 | `--allow-empty-attestation` | 非 TEE 测试环境跳过证明校验 |
 | `--reuse` | 端口已有实例应答时直接复用，不停止、不重启 |
 | `--reset-register` | 就绪后 `POST /api/register/reset` |
@@ -109,13 +110,33 @@ platform-mock 的构建、启动、停止和就绪检查统一由仓库根目录
 - 远程启动使用 `nohup` 脱离 SSH，二进制上传到 `--remote-binary`（默认
   `--remote-dir/platform-mock`）。
 
+**多实例（默认）**
+
+- 不传 `--taa-target` 即进入多实例模式：一个 platform-mock 进程同时服务多个 TAA 实例，
+  实例身份取注册请求里的 `dockerId`，每个实例在注册时按请求源 IP 推导自己的地址
+  （`http://<源 IP>:<--taa-port>`，默认端口 6001）。
+- `deploy.sh` 通过 `MULTI_INSTANCE=1` 开启该模式，`docker` 与 `remote` 两种模式都支持：
+  ```bash
+  MULTI_INSTANCE=1 ./deploy.sh docker
+  MULTI_INSTANCE=1 ./deploy.sh remote
+  ```
+- 直接调用 `deploy-platform-mock.sh` 时省略 `--taa-target` 即可：
+  ```bash
+  ./deploy-platform-mock.sh local start --taa-port 6001
+  ```
+- 仍需要固定单实例地址时继续使用 `--taa-target http://<ip>:6001`（它同时也是发现失败时
+  的回退路径）。
+- 限制：反向代理或端口转发会丢失请求源 IP，此时无法按注册推导地址，应退回
+  `--taa-target` 指定固定地址。
+
 **调用方差异（保持不变）**
 
 - `deploy.sh remote` 不传 state/upload/allow-empty 参数，沿用二进制自身默认值。
 - `deploy-fhe.sh` 显式传 state/upload 目录、`--allow-empty-attestation`、`--static`，
   并使用 `--reuse --reset-register`。
-- `deploy.sh` 自己用 kubectl 发现 TAA Pod IP 后通过 `--taa-target` 传入；发现失败时
-  退回 `--taa-pod/--taa-ns/--taa-port`。
+- `deploy.sh` 默认用 kubectl 发现 TAA Pod IP 后通过 `--taa-target` 传入；发现失败时
+  退回 `--taa-pod/--taa-ns/--taa-port`。设置 `MULTI_INSTANCE=1` 时跳过发现，直接传
+  `--taa-port`，由每个注册推导各自的目标地址。
 
 
 # taa-teellm 部署命令

@@ -183,6 +183,7 @@ detect_local_host_ip() {
 
 LOCAL_PLATFORM_STATE_DIR="${LOCAL_PLATFORM_STATE_DIR:-$PROJECT_DIR/.local/platform-mock}"
 LOCAL_PLATFORM_PORT="${LOCAL_PLATFORM_PORT:-18080}"
+MULTI_INSTANCE="${MULTI_INSTANCE:-0}"
 LOCAL_PLATFORM_BIND="${LOCAL_PLATFORM_BIND:-0.0.0.0:${LOCAL_PLATFORM_PORT}}"
 LOCAL_PLATFORM_IP="${LOCAL_PLATFORM_IP:-127.0.0.1:${LOCAL_PLATFORM_PORT}}"
 LOCAL_PLATFORM_URL="${LOCAL_PLATFORM_URL:-http://127.0.0.1:${LOCAL_PLATFORM_PORT}}"
@@ -806,6 +807,8 @@ Environment overrides:
       TAA 容器访问 Platform Mock 使用的地址。
   MOCK_BINARY_PATH=${MOCK_BINARY_PATH}
       本地 Platform Mock 二进制文件路径。
+  MULTI_INSTANCE=${MULTI_INSTANCE}
+      置为 1 时按注册信息推导每个 TAA 实例的地址，而不是传入单个 --taa-target。
 
   # TAA service / attestation
   BINARY_NAME=${BINARY_NAME}
@@ -1871,18 +1874,23 @@ fi
 
 deploy_platform_mock() {
   step "deploying local platform-mock on ${LOCAL_PLATFORM_BIND}"
-  "$PROJECT_DIR/deploy-platform-mock.sh" local start \
-    --binary "$MOCK_BINARY_PATH" \
-    --binary-name "$MOCK_BINARY_NAME" \
-    --addr "$LOCAL_PLATFORM_BIND" \
-    --state-dir "$LOCAL_PLATFORM_STATE_DIR" \
-    --upload-dir "$LOCAL_PLATFORM_UPLOAD_DIR" \
-    --log-file "$LOCAL_PLATFORM_LOG_FILE" \
-    --pid-file "$LOCAL_RUN_DIR/platform-mock.pid" \
-    --taa-target "$LOCAL_TAA_URL" \
-    --allow-empty-attestation \
-    --ready-timeout "$READY_TIMEOUT" \
+  local -a mock_args=(
+    local start
+    --binary "$MOCK_BINARY_PATH"
+    --binary-name "$MOCK_BINARY_NAME"
+    --addr "$LOCAL_PLATFORM_BIND"
+    --state-dir "$LOCAL_PLATFORM_STATE_DIR"
+    --upload-dir "$LOCAL_PLATFORM_UPLOAD_DIR"
+    --log-file "$LOCAL_PLATFORM_LOG_FILE"
+    --pid-file "$LOCAL_RUN_DIR/platform-mock.pid"
+    --allow-empty-attestation
+    --ready-timeout "$READY_TIMEOUT"
     --ready-interval "$READY_INTERVAL"
+  )
+  if [[ "$MULTI_INSTANCE" != "1" ]]; then
+    mock_args+=(--taa-target "$LOCAL_TAA_URL")
+  fi
+  "$PROJECT_DIR/deploy-platform-mock.sh" "${mock_args[@]}"
 }
 
 deploy_docker_taa() {
@@ -2016,7 +2024,7 @@ fi
 
 if [[ "$DEPLOY_PLATFORM_MOCK" == true ]]; then
   # Pod IP discovery stays here: deploy-platform-mock.sh knows nothing about kubectl.
-  TAA_POD_IP=$(remote_ssh "kubectl $K_NS get pod '$TARGET_POD' -o jsonpath='{.status.podIP}' 2>/dev/null" || echo "")
+  # In multi-instance mode every target is derived from its own registration.
   MOCK_ARGS=(
     remote start
     --host "$REMOTE_HOST"
@@ -2031,12 +2039,18 @@ if [[ "$DEPLOY_PLATFORM_MOCK" == true ]]; then
     --ready-timeout "$READY_TIMEOUT"
     --ready-interval "$READY_INTERVAL"
   )
-  if [[ -n "$TAA_POD_IP" ]]; then
-    MOCK_ARGS+=(--taa-target "http://${TAA_POD_IP}:${CON_PORT}")
-    echo "  discovered TAA Pod IP: $TAA_POD_IP"
+  if [[ "$MULTI_INSTANCE" == "1" ]]; then
+    echo "  MULTI_INSTANCE=1: skipping single-Pod discovery; targets come from each registration"
+    MOCK_ARGS+=(--taa-port "$CON_PORT")
   else
-    echo "  warning: could not discover TAA Pod IP, falling back to -taa-pod auto-discovery"
-    MOCK_ARGS+=(--taa-pod "$TARGET_POD" --taa-ns "$TARGET_NAMESPACE" --taa-port "$CON_PORT")
+    TAA_POD_IP=$(remote_ssh "kubectl $K_NS get pod '$TARGET_POD' -o jsonpath='{.status.podIP}' 2>/dev/null" || echo "")
+    if [[ -n "$TAA_POD_IP" ]]; then
+      MOCK_ARGS+=(--taa-target "http://${TAA_POD_IP}:${CON_PORT}")
+      echo "  discovered TAA Pod IP: $TAA_POD_IP"
+    else
+      echo "  warning: could not discover TAA Pod IP, falling back to -taa-pod auto-discovery"
+      MOCK_ARGS+=(--taa-pod "$TARGET_POD" --taa-ns "$TARGET_NAMESPACE" --taa-port "$CON_PORT")
+    fi
   fi
 
   step "deploying remote $PLATFORM_LABEL on ${PLATFORM_ADDR}"
