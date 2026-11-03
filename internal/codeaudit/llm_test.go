@@ -651,7 +651,7 @@ func TestBuildTEETLSConfigMeasurement(t *testing.T) {
 
 func TestOllamaClientSuccess(t *testing.T) {
 	server := newTestTEETLSServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/v1/verify" {
+		if r.URL.Path == "/v1/llm/verify" {
 			json.NewEncoder(w).Encode(teellm.ResponseEnvelope{
 				ProtocolVersion: teellm.CurrentProtocolVersion,
 				Status:          teellm.StatusSuccess,
@@ -760,7 +760,7 @@ def report_metrics(acc, loss):
 
 	// Mock server that returns BENIGN
 	server := newTestTEETLSServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/v1/verify" {
+		if r.URL.Path == "/v1/llm/verify" {
 			json.NewEncoder(w).Encode(teellm.ResponseEnvelope{
 				ProtocolVersion: teellm.CurrentProtocolVersion,
 				Status:          teellm.StatusSuccess,
