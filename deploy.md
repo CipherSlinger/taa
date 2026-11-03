@@ -156,8 +156,10 @@ platform-mock 的构建、启动、停止和就绪检查统一由仓库根目录
 # 指定模型
 ./deploy-llm.sh --create-pod start --model qwen2.5-coder:7b
 
-# 已有 Pod：复用，不重建、不构建镜像（运行中的 Pod 镜像不可变）
-./deploy-llm.sh --create-pod start
+# Pod 已存在：--create-pod 直接拒绝，先删再建
+./deploy-llm.sh pod-down && ./deploy-llm.sh --create-pod start
+
+# 只更新一个已存在的 Pod（不创建、不删除）
 ./deploy-llm.sh --pod taa-teellm start
 
 # 其余动作
@@ -182,11 +184,12 @@ platform-mock 的构建、启动、停止和就绪检查统一由仓库根目录
 `docker load` → `tag` → 推送（推送前先删同 tag 的旧 manifest，当天重建不会冲突）。
 无论有没有推送，这条路径都用 `imagePullPolicy: Always`，因为当天 tag 会被覆盖。
 
-**Pod 已存在时只等就绪**：`kubectl get pod` 成功时不构建镜像、不 apply 清单、不改注解和资源，
-只跑一次 `kubectl wait --for=condition=Ready --timeout=5s`。因为再建一个 Pod 就是第二台机密 VM
-（加密内存常驻宿主），而 guest 可写层里的 ollama 运行时与模型、以及 TAA `llm.endpoint` 指向的
-Pod IP 都绑在这个 Pod 上。它存在但 5s 内没 Ready 时报错并打印 `-o wide` 与 `describe`，
-提示用 `pod-down` 重建，而不是自行重建。
+**Pod 已存在时不复用、直接报错**：`--create-pod` 只负责创建。`kubectl get pod` 查到时脚本
+打印该 Pod 的 `-o wide`，说明"这里只创建、不复用也不替换"，然后以非 0 退出，并提示先执行
+`./deploy-llm.sh pod-down` 再重跑。既不构建镜像也不 `apply`。理由：复用一个已有 Pod 会部署进
+它当时碰巧在跑的镜像；而在同一路径里自动"删了重建"会悄悄丢掉 guest 可写层里的 ollama 运行时与
+模型，并换掉 TAA `llm.endpoint` 指向的 Pod IP —— 这两件事都必须由操作者显式决定。
+只是想更新一个已存在 Pod 时用 `--pod <名字>`，那条路径不创建也不删除 Pod。
 
 **建之前先预检**：`--create-pod start` 在**构建镜像之前**确认 API server 可达、Pod 名是合法
 DNS label（≤63 字符）、命名空间与 RuntimeClass 存在，任一不满足立即退出 —— 命名空间写错不该

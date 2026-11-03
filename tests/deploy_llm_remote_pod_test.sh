@@ -492,8 +492,8 @@ if grep -q "$DEFAULT_POD_NAME" "$MOCK_LOG"; then
 fi
 grep -q "$COPY_POD_NAME" "$MOCK_LOG" || fail "no command addressed the TEE-LLM Pod"
 
-grep -q "reusing the running TEE-LLM Pod\|TEE-LLM Pod created and Ready" <<<"$output" \
-  || fail "the Pod lifecycle steps are missing from the output"
+grep -q "TEE-LLM Pod created and Ready" <<<"$output" \
+  || fail "the Pod creation step is missing from the output"
 grep -q "service is serving Hygon hardware evidence" <<<"$output" \
   || fail "the hardware evidence provider was not confirmed"
 grep -q "LLM_IP=https://$MOCK_POD_IP:8443" <<<"$output" \
@@ -552,20 +552,22 @@ grep -q "^      image: 172.16.10.178:31313/teellm:$TODAY_TAG$" "$APPLIED" \
 grep -q "^      imagePullPolicy: Always$" "$APPLIED" \
   || fail "the freshly built tag is not pulled unconditionally"
 
-# ── 2. Second run, with no action keyword: the Pod exists and is Ready ───────
-# With the target keyword gone there is nothing left to name a target with, so the bare form has to
-# reach the same Pod lifecycle as the explicit one rather than falling through to a no-op. Case 1
-# already covered --create-pod start, so the reuse half is pinned down here in its bare form.
+# ── 2. Second run: the Pod exists, so the creation path refuses ───────────────
+# --create-pod creates. Adopting an existing Pod would deploy into whatever image it happens to run,
+# and replacing it would discard the guest's writable layer (the ollama runtime and the model) and
+# change the IP TAA's endpoint points at, without the operator ever seeing the choice. The run says
+# so and stops, before anything is built or applied.
 
 apply_before="$(cat "$MOCK_STATE_DIR/apply-count")"
 build_before="$(grep -c '^DOCKER commit ' "$MOCK_LOG" || true)"
 run_deploy --create-pod --model qwen2.5-coder:0.5b
-[[ $status -eq 0 ]] || fail "the bare invocation (no action keyword) exited $status"
+[[ $status -ne 0 ]] || fail "a second --create-pod run was accepted instead of refusing the existing Pod"
+grep -q "already exists" <<<"$output" || fail "the refusal does not say the Pod already exists"
+grep -q "pod-down" <<<"$output" || fail "the refusal does not tell the operator to delete the Pod first"
 [[ "$(cat "$MOCK_STATE_DIR/apply-count")" == "$apply_before" ]] \
-  || fail "the bare invocation applied the manifest again instead of reusing the Pod"
+  || fail "the manifest was applied even though the Pod already exists"
 [[ "$(grep -c '^DOCKER commit ' "$MOCK_LOG" || true)" == "$build_before" ]] \
-  || fail "reusing the Pod rebuilt the image; an existing Pod's image cannot change"
-grep -q "reusing the running TEE-LLM Pod" <<<"$output" || fail "the bare invocation did not reuse the Pod"
+  || fail "an image was built for a Pod that already exists"
 
 # ── 2b. A bare TARGET_POD run re-execs the supervisor it just installed ──────
 # `--create-pod` is not the only way in: a plain `TARGET_POD=... ./deploy-llm.sh` skips pod_up, so
@@ -581,8 +583,10 @@ grep -q "\.teellm-supervisor-restart" "$TMP_DIR/bare.log" \
   || fail "a bare TARGET_POD deployment did not ask the installed supervisor to re-exec"
 
 # ── 3. Negative control: a Pod without /dev/csv-guest ────────────────────────
+# A creation that goes through every earlier gate still has to be stopped by the device check,
+# which is the only thing standing between a mock report and a deployment that claims attestation.
 
-rm -f "$MOCK_STATE_DIR/csv_device"
+rm -f "$MOCK_STATE_DIR/pod" "$MOCK_STATE_DIR/csv_device"
 run_deploy --create-pod start --model qwen2.5-coder:0.5b
 [[ $status -ne 0 ]] || fail "a Pod without /dev/csv-guest was accepted"
 grep -q "/dev/csv-guest" <<<"$output" || fail "the missing device was not named in the error"
@@ -756,4 +760,4 @@ grep -q "namespace" <<<"$output" || fail "the missing namespace was not named in
 [[ "$(cat "$MOCK_STATE_DIR/apply-count")" == "$apply_before" ]] \
   || fail "the manifest was applied even though the target namespace does not exist"
 
-echo "PASS: the dedicated TEE-LLM Pod is created once, reused, gated on its CSV device, and is what the bare invocation deploys into"
+echo "PASS: the dedicated TEE-LLM Pod is created once, refused when it already exists, gated on its CSV device, and is what the bare invocation deploys into"

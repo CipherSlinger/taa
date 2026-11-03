@@ -1120,26 +1120,27 @@ check_registry_has_tag() {
   fi
 }
 
-# Makes sure the dedicated TEE-LLM Pod exists, is Ready and can really produce a CSV attestation,
-# then records its IP in TEELLM_POD_IP.
+# Creates the dedicated TEE-LLM Pod, waits for it to be Ready, checks it can really produce a CSV
+# attestation, and records its IP in TEELLM_POD_IP. A Pod that already exists is refused, not
+# adopted: see the branch below for why that is the only safe answer.
 pod_up() {
   require_file "TEE-LLM Pod template" "$TEELLM_POD_TEMPLATE"
   step "checking the dedicated TEE-LLM Pod ($TARGET_POD in $TARGET_NAMESPACE)"
 
   if remote_ssh "kubectl $K_NS get pod '$TARGET_POD' >/dev/null 2>&1"; then
-    # An existing Pod is never re-applied and never recreated. Its annotations and resource
-    # limits are immutable, so an apply fails; and "delete then apply" would build a second
-    # confidential VM, throw away the guest's writable layer (the ollama bundle and the model
-    # live there) and change the Pod IP that TAA's endpoint points at.
-    if ! remote_ssh "kubectl $K_NS wait --for=condition=Ready --timeout=5s pod/'$TARGET_POD' >/dev/null 2>&1"; then
-      err "Pod '$TARGET_POD' exists but is not Ready"
-      remote_ssh "kubectl $K_NS get pod '$TARGET_POD' -o wide" || true
-      remote_ssh "kubectl $K_NS describe pod '$TARGET_POD' | tail -n 30" || true
-      detail "Recreating it would not help: the guest's writable layer holds the ollama runtime and"
-      detail "the model, and a new Pod would also change the IP. Delete it by hand only if it is wedged."
-      exit 1
-    fi
-    info "reusing the running TEE-LLM Pod (nothing applied)"
+    # --create-pod creates; it never adopts a Pod that is already there. Reusing one silently
+    # deploys into whatever image it happens to run, and a "delete then apply" inside this path
+    # would destroy a guest's writable layer (the ollama runtime and the model live there) without
+    # the operator ever seeing the choice. Saying so and stopping is the only behaviour that makes
+    # the destruction explicit, so that is what this does.
+    err "TEE-LLM Pod '$TARGET_POD' already exists in namespace $TARGET_NAMESPACE"
+    remote_ssh "kubectl $K_NS get pod '$TARGET_POD' -o wide" || true
+    detail "This path only creates a Pod; it does not reuse or replace one."
+    detail "Delete it first, then run this command again:"
+    detail "  $(basename "$0") pod-down"
+    detail "The guest's writable layer (the ollama runtime and the model) goes with it, and the new"
+    detail "Pod gets a new IP, so TAA's llm.endpoint has to be updated afterwards."
+    exit 1
   else
     # Before the image is chosen: a build is the expensive part, and the cluster answers these in
     # a second.
@@ -2251,9 +2252,10 @@ Options:
       bakes it plus the ollama runtime and model into an image, pushes that image and runs the Pod
       from it, so the Pod never runs a binary older than the tree being deployed. That build takes
       tens of minutes. The registry is asked for the config digest currently under the tag first:
-      when it already holds this exact build, nothing is exported or uploaded. An existing Pod is
-      reused and never re-created -- a second Pod would be a second confidential VM, and the image
-      cannot change under a running one.
+      when it already holds this exact build, nothing is exported or uploaded. This path only
+      creates: when the Pod already exists the run stops and asks for 'pod-down' first, because
+      reusing it would deploy into whatever image it happens to run, and replacing it would throw
+      away the guest's writable layer unannounced.
       If TARGET_POD is set explicitly it must equal TEELLM_POD_NAME, or the run is refused.
   --port <port> (or --port=<port>)
       Specify TEE-LLM service listening port (default: $TEELLM_PORT).
