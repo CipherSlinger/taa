@@ -124,17 +124,18 @@ TAA **主动发起**的请求是另一个方向（注册与 6 类上报，见 [3
 // 平台 → TAA 的请求
 {
   "dockerId": "xxx",        // 可选，TAA 收到后忽略
-  "cipher": "base64",       // base64(SM2 加密(平台公钥, 明文 JSON 请求体))
+  "cipher": "base64",       // base64(SM2 加密(TAA 公钥, 明文 JSON 请求体))
   "sign": "base64"          // base64(DER(SM2 签名(平台私钥, 明文 JSON 请求体)))
 }
 
 // TAA → 平台的响应（只回应上面的请求，不含 dockerId）
 {
-  "cipher": "base64",       // base64(SM2 加密(TAA 公钥, 明文 JSON 响应体))
+  "cipher": "base64",       // base64(SM2 加密(平台公钥, 明文 JSON 响应体))
   "sign": "base64"          // base64(DER(SM2 签名(TAA 私钥, 明文 JSON 响应体)))
 }
 ```
 
+- **密钥归属**：TAA 与平台**各持一对 SM2 密钥**，不是共用一对。TAA 知道平台的公钥——部署时由 `PLATFORM_PUBLIC_KEY`（或配置文件 `platform.publicKey`）下发；平台知道 TAA 的公钥——由 `/v1/taa/register` 的 `taaPublicKey` 上报。所以请求加密到 **TAA 公钥**、用 **平台私钥** 签名；响应加密到 **平台公钥**、用 **TAA 私钥** 签名。
 - `dockerId` 不在签名范围内（签名只覆盖 `cipher` 解密后的明文）。平台按请求端点定位实例，所以请求方向它可以填也可以不填；响应方向 TAA 一律不填。
 - `cipher` 是 SM2 **C1C3C2 原始密文字节**的 base64，不是 hex 再 base64；`sign` 是 SM2 签名 DER 字节的 base64。
 - **签名对象是明文，不是 `cipher`**。TAA 的顺序固定为：解 base64 → SM2 解密 → 验签（对解密后的明文）→ 才交给业务处理；验签失败即拒绝，业务代码永远看不到未验签的请求体。
@@ -1740,13 +1741,15 @@ curl -X POST "http://{TAA_ADDR}/v1/taa/export" \
 | 路径前缀 | `/v1/taa/*` | `/v1/llm/*` |
 | 部署位置 | CSV 客户机内的 TAA 进程，监听 `:6001` | TEE-LLM Pod 内的 `teellm-service`，监听 `:8443`（TEE-TLS）与 `:8444`（明文） |
 | LLM → 平台 报文外层 | `{dockerId, cipher, sign}` | **无信封**，明文 JSON |
-| 平台 → LLM 报文外层 | `{cipher, sign}` | **无信封**，明文 JSON |
+| 平台 → LLM 报文外层 | `{dockerId, cipher, sign}`（`dockerId` 可省略） | **无信封**，明文 JSON |
 | 传输 | 明文 HTTP，完整性由信封承担 | 出方向明文 HTTP；入方向 `:8443` 走 TEE-TLS（RFC 8998），`:8444` 明文 |
 | `dockerId` 来源 | 容器参数 `DOCKER_ID` | 配置 `platform.dockerId`，缺省 `taa-teellm` |
 | SM2 密钥 | 长期密钥，落盘持久化，可由 `TAASECRETKEY` 恢复 | **每次启动新生成**，不持久化，不上报 `taaSecretKey` |
 | 公共返回格式 | `{msg, result, error}` | 同形状（只复用结构，不复用信封） |
 
-**为什么没有信封**：TAA 与平台共享一对 SM2 长期密钥，所以 `cipher`/`sign` 成立。LLM 与平台之间没有这种关系——平台的私钥 LLM 拿不到，LLM 的公钥在注册之前平台也不知道。于是 LLM 的身份改成由证据承担：出方向靠 TEE-TLS 握手（平台验证 LLM 出示的证书与证明），入方向靠报告自带的 `userdata ← 证书公钥` 绑定。两侧都没有可加密、可验签的共享密钥，信封加不上去。
+**为什么没有信封**：TAA 与平台**各持一对 SM2 密钥**——不是共用一对，而是各自持有自己的私钥、并且知道对方的公钥。平台的公钥由部署时下发的 `PLATFORM_PUBLIC_KEY` 交给 TAA，TAA 的公钥由 `/v1/taa/register` 上报给平台。于是两个方向都能成立：平台 → TAA 用 TAA 公钥加密、平台私钥签名；TAA → 平台用平台公钥加密、TAA 私钥签名。
+
+LLM 不具备这个前提。它的密钥就是 TEE-TLS 证书的密钥，每次启动新生成、不持久化，平台在注册之前无从知晓；而第一条注册报文本身就是明文 HTTP，公钥随报文一起到达，没有可信的前置交换可依。LLM 侧也从未被下发过平台公钥，加密和验签都无从谈起。于是 LLM 的身份改由证据承担：出方向靠 TEE-TLS 握手（平台验证 LLM 出示的证书与证明），入方向靠报告自带的 `userdata ← 证书公钥` 绑定。
 
 ### 7.2 LLM → 平台
 
