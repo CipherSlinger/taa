@@ -37,6 +37,7 @@ LAST_ERR_CMD=""
 TEMP_FILELIST=""
 TEMP_CONFIG_FILE=""
 TEMP_POD_MANIFEST=""
+TEMP_BUILDER_CONTAINER=""
 TRAP_SUPPRESS_DEPLOYMENT_BANNER=false
 STEP=0
 
@@ -48,6 +49,18 @@ handle_err() {
   LAST_ERR_CMD="${2:-unknown}"
 }
 trap 'handle_err $LINENO "$BASH_COMMAND"' ERR
+
+# Removes the image-builder container unless the operator asked to keep it. Registered here rather
+# than as a local exit trap because the deployment already owns the EXIT trap, and a second one
+# would replace the error banner.
+cleanup_builder_container() {
+  [[ -n "${TEMP_BUILDER_CONTAINER:-}" ]] || return 0
+  if [[ "${TEELLM_IMAGE_KEEP_BUILDER:-false}" == true ]]; then
+    return 0
+  fi
+  docker rm -f "$TEMP_BUILDER_CONTAINER" >/dev/null 2>&1 || true
+  TEMP_BUILDER_CONTAINER=""
+}
 
 cleanup_display() {
   local exit_code=$?
@@ -66,6 +79,7 @@ cleanup_display() {
   if [[ -n "${TEMP_POD_MANIFEST:-}" && -f "$TEMP_POD_MANIFEST" ]]; then
     rm -f "$TEMP_POD_MANIFEST" 2>/dev/null || true
   fi
+  cleanup_builder_container || true
 
   if [[ $exit_code -ne 0 && "${TRAP_SUPPRESS_DEPLOYMENT_BANNER:-false}" != "true" ]]; then
     echo "" >&2
@@ -277,8 +291,8 @@ K_NS="${TARGET_NAMESPACE:+-n $TARGET_NAMESPACE}"
 # would make every later gate pass while the service never reaches the Pod the endpoint points
 # at).
 TEELLM_POD_NAME="${TEELLM_POD_NAME:-taa-teellm}"
-# The image built by build-teellm-image.sh carries the service, the supervisor and the ollama
-# runtime, so a fresh guest serves without any host-side copy.
+# The image this script builds from the working tree carries the service, the supervisor and the
+# ollama runtime, so a fresh guest serves without any host-side copy.
 #
 # Its tag is the date it was built on, so the same-day default is only a guess: build on the 27th
 # and deploy on the 28th and today's tag names an image nobody pushed. Left alone, that guess is
@@ -287,6 +301,13 @@ TEELLM_POD_NAME="${TEELLM_POD_NAME:-taa-teellm}"
 # registry actually has, and refuses rather than falling back to a tag it cannot see.
 TEELLM_IMAGE_REGISTRY="${TEELLM_IMAGE_REGISTRY:-172.16.10.178:31313}"
 TEELLM_IMAGE_REPO="${TEELLM_IMAGE_REPO:-teellm}"
+# Source image for the Pod image and the archive it can be loaded from when it is not local. The
+# TAA payload under /root/taa is stripped before the teellm payload is added (build path below).
+TEELLM_IMAGE_BASE="${TEELLM_IMAGE_BASE:-taa-env:slim-v2}"
+TEELLM_IMAGE_BASE_ARCHIVE="${TEELLM_IMAGE_BASE_ARCHIVE:-$PROJECT_DIR/deploy/base/taa-env-slim-v2.tar.gz}"
+# Keep the builder container after the image is committed, for inspecting a payload that failed to
+# build. The container is removed on success by default.
+TEELLM_IMAGE_KEEP_BUILDER="${TEELLM_IMAGE_KEEP_BUILDER:-false}"
 # Captured before the default below, so resolution can tell "the operator named an image" from
 # "the script guessed one from today's date". Only a guess is replaced by a tag the registry
 # actually has; an explicit name is the operator's decision, and a registry whose tag listing is
@@ -435,7 +456,7 @@ check_remote_pod() {
 
 # Replaces the date-guessed TEE-LLM image with the newest one the registry actually lists.
 #
-# The image tag is the build date (build-teellm-image.sh), so "today" is a guess that is only
+# The image tag is the build date, so "today" is a guess that is only
 # right on the day of the build. Deployed a day later it names a tag nobody pushed, and the
 # failure is expensive and late: the Pod is applied, its guest boots, the in-guest CDH pulls, and
 # the Pod ends up in ImagePullBackOff after the confidential VM is already resident. Asking the
@@ -510,36 +531,271 @@ kata_default_memory_mib() {
 # whatever was pushed last -- silently older than the tree being deployed, and there is nothing in
 # the Pod to show it.
 #
+# Why the payload is baked in rather than copied at deploy time: the Pod runs on a Kata CSV2 guest
+# whose container rootfs upperdir is a tmpfs inside the guest. Anything copied in afterwards lives
+# in guest RAM and dies with the sandbox, so a host reboot would leave a confidential VM that
+# listens on nothing. Baking the service, the supervisor and the model into the image is what makes
+# a freshly booted guest serve without a host-side step.
+#
 # The tag is the build date, so a rebuild replaces the same name. The pull policy is therefore set
 # to Always on this path: on a fresh guest there is no cache to consult, but saying Always removes
 # the question, where IfNotPresent leaves the guest free to take a copy of an image that was
 # replaced underneath its name.
+#
+# The registry is asked for the tag's current config digest before anything is exported. That
+# digest is the image ID Docker reports locally, so an identical build -- the common case when a
+# deployment is retried -- skips the multi-GB archive, the upload and the push entirely.
 build_teellm_pod_image() {
-  local date_tag registry_image builder
+  local date_tag local_image registry_image archive base_image clean_base
   date_tag="$(date +%Y%m%d)"
+  local_image="$TEELLM_IMAGE_REPO:$date_tag"
   registry_image="$TEELLM_IMAGE_REGISTRY/$TEELLM_IMAGE_REPO:$date_tag"
-  builder="$PROJECT_DIR/build-teellm-image.sh"
-  require_file "TEE-LLM image builder" "$builder"
+  archive="$PROJECT_DIR/deploy/out/$TEELLM_IMAGE_REPO-$date_tag.tar.gz"
+  base_image="$TEELLM_IMAGE_BASE"
+  clean_base="teellm-base:$date_tag"
 
-  # First, and unconditionally: build-teellm-image.sh compiles teellm-service only when the binary
-  # is missing (line 98), so an existing file says nothing about whether it matches these sources.
+  step "building the TEE-LLM Pod image from this working tree ($local_image)"
+  detail "the ollama runtime and the model are streamed into the image and pushed; this takes tens of minutes"
+
+  # First, and unconditionally: the image has to carry this tree's binary, and an existing file says
+  # nothing about whether it matches these sources. The flag below keeps the deployment's own
+  # install step from compiling the identical sources a second time.
   build_local_binary
 
-  step "building the TEE-LLM Pod image from this working tree ($registry_image)"
-  detail "the ollama runtime and the model are streamed into the image and pushed; this takes tens of minutes"
-  DATE_TAG="$date_tag" \
-  TARGET_IMAGE="$TEELLM_IMAGE_REPO:$date_tag" \
-  REGISTRY_IMAGE="$registry_image" \
-  OLLAMA_MODEL="$OLLAMA_MODEL" \
-  OLLAMA_LOCAL_DIR="$OLLAMA_LOCAL_DIR" \
-  TEELLM_DIR="$TEELLM_DIR" \
-  REMOTE_HOST="$REMOTE_HOST" \
-  REMOTE_USER="$REMOTE_USER" \
-  TARGET_PASSWORD="$PASSWORD" \
-    "$builder" --push || {
-      err "failed to build or push the TEE-LLM Pod image ($registry_image)"
+  require_command docker
+  if ! docker info >/dev/null 2>&1; then
+    err "the docker daemon is not reachable, so the TEE-LLM Pod image cannot be built"
+    detail "Start docker, or set TEELLM_POD_IMAGE to a prebuilt image."
+    exit 1
+  fi
+
+  local model_repo model_tag manifest_rel
+  [[ "$OLLAMA_MODEL" == *:* ]] || {
+    err "OLLAMA_MODEL must be <family>:<tag>, got '$OLLAMA_MODEL'"
+    exit 1
+  }
+  model_repo="${OLLAMA_MODEL%%:*}"
+  model_tag="${OLLAMA_MODEL#*:}"
+  manifest_rel="models/models/manifests/registry.ollama.ai/library/$model_repo/$model_tag"
+  require_file "teellm-service binary" "$TEELLM_DIR/bin/teellm-service"
+  require_file "TEE-LLM supervisor" "$TEELLM_SUPERVISOR_SCRIPT"
+  require_file "TEE-LLM service config" "$TEELLM_DIR/configs/teellm-production.json"
+  require_file "TEE-LLM model index" "$TEELLM_DIR/configs/models.json"
+  require_file "ollama binary" "$OLLAMA_LOCAL_DIR/ollama"
+  require_file "ollama launcher" "$OLLAMA_LOCAL_DIR/start-ollama.sh"
+  require_file "ollama manifest for $OLLAMA_MODEL" "$OLLAMA_LOCAL_DIR/$manifest_rel"
+  require_dir "ollama library" "$OLLAMA_LOCAL_DIR/lib/ollama"
+
+  if ! docker image inspect "$base_image" >/dev/null 2>&1; then
+    require_file "TEE-LLM base image archive" "$TEELLM_IMAGE_BASE_ARCHIVE"
+    step "loading the base image from $(basename "$TEELLM_IMAGE_BASE_ARCHIVE")"
+    docker load -i "$TEELLM_IMAGE_BASE_ARCHIVE" >/dev/null
+    docker image inspect "$base_image" >/dev/null 2>&1 || {
+      err "base image '$base_image' is not in $TEELLM_IMAGE_BASE_ARCHIVE"
       exit 1
     }
+  fi
+  info "source image ready: $base_image"
+
+  # The TAA images carry /root/taa (the taa binary and its autostart wrapper); an inference image
+  # must contain neither. An empty build context keeps docker from packing the multi-GB archives
+  # that sit in deploy/ into the build.
+  if ! docker image inspect "$clean_base" >/dev/null 2>&1; then
+    step "building the TAA-free base image: $clean_base"
+    local clean_ctx
+    clean_ctx="$(mktemp -d /tmp/teellm-clean-base.XXXXXX)"
+    docker build -q -t "$clean_base" -f - "$clean_ctx" >/dev/null <<EOF
+FROM $base_image
+USER root
+RUN rm -rf /root/taa
+EOF
+    rm -rf "$clean_ctx"
+  fi
+  base_image="$clean_base"
+  if ! docker run --rm --entrypoint sh "$base_image" -c 'test ! -e /root/taa' >/dev/null 2>&1; then
+    err "base image '$base_image' still contains /root/taa"
+    detail "Remove the cached image (docker rmi $base_image) and re-run, or point TEELLM_IMAGE_BASE at another source image."
+    exit 1
+  fi
+  info "base image ready (no /root/taa): $base_image"
+
+  # Only what the deployed model needs: the accelerator runtimes are irrelevant on CPU and would
+  # add ~4.3GB, and every model but the selected one is dead weight in the guest's tmpfs.
+  step "resolving the ollama payload for '$OLLAMA_MODEL'"
+  local model_blobs
+  model_blobs="$(python3 - "$OLLAMA_LOCAL_DIR/$manifest_rel" <<'PY'
+import json, sys
+manifest = json.load(open(sys.argv[1]))
+for item in [manifest["config"]] + manifest["layers"]:
+    digest = item["digest"].split(":", 1)[1]
+    print("models/models/blobs/sha256-" + digest)
+PY
+)"
+  [[ -n "$model_blobs" ]] || {
+    err "could not resolve the blobs of $OLLAMA_MODEL from $OLLAMA_LOCAL_DIR/$manifest_rel"
+    exit 1
+  }
+
+  local file_list payload_bytes payload_mb
+  file_list="$(mktemp /tmp/teellm-image-files.XXXXXX)"
+  {
+    echo "ollama"
+    echo "start-ollama.sh"
+    # Files and the bundle's own symlinks, one directory level only: the accelerator runtimes
+    # (cuda_v12, cuda_v13, mlx_cuda_v13, vulkan) and the headers are directories and are skipped
+    # on purpose.
+    ( cd "$OLLAMA_LOCAL_DIR" && find lib/ollama -maxdepth 1 \( -type f -o -type l \) ! -name '*cuda*' )
+    for optional in models/cache models/id_ed25519 models/id_ed25519.pub \
+                    models/models/cache models/models/id_ed25519 models/models/id_ed25519.pub; do
+      [[ -e "$OLLAMA_LOCAL_DIR/$optional" ]] && echo "$optional"
+    done
+    echo "$manifest_rel"
+    printf '%s\n' "$model_blobs"
+  } > "$file_list"
+  payload_bytes="$(cd "$OLLAMA_LOCAL_DIR" && xargs -d '\n' -a "$file_list" stat -c %s 2>/dev/null | awk '{s+=$1} END {print s+0}')"
+  payload_mb="$(awk -v b="$payload_bytes" 'BEGIN {printf "%.0f", b/1048576}')"
+  info "payload: $(wc -l < "$file_list") files, ${payload_mb}MB"
+
+  # The builder container is removed on every exit path by cleanup_display unless the operator
+  # asked to keep it; TEELLM_IMAGE_KEEP_BUILDER is what makes a failed build inspectable.
+  local builder_container="taa-teellm-builder-$$"
+  step "starting the builder container"
+  docker rm -f "$builder_container" >/dev/null 2>&1 || true
+  docker run -d --name "$builder_container" --user root --entrypoint bash "$base_image" -c 'sleep infinity' >/dev/null
+  TEMP_BUILDER_CONTAINER="$builder_container"
+  # /opt/teellm, not $CON_WORKDIR: this is the path baked into the image, and the Pod manifest and
+  # the supervisor both name it literally.
+  docker exec -i "$builder_container" sh -c 'mkdir -p /opt/teellm/configs /opt/teellm/ollama'
+
+  step "copying teellm-service, supervisor and configs"
+  docker cp "$TEELLM_DIR/bin/teellm-service" "$builder_container:/opt/teellm/teellm-service"
+  docker cp "$TEELLM_SUPERVISOR_SCRIPT" "$builder_container:/opt/teellm/teellm-supervisor.sh"
+  docker cp "$TEELLM_DIR/configs/teellm-production.json" "$builder_container:/opt/teellm/configs/teellm-production.json"
+  docker cp "$TEELLM_DIR/configs/models.json" "$builder_container:/opt/teellm/configs/models.json"
+
+  step "streaming the ollama runtime and model into the image (${payload_mb}MB)"
+  tar -C "$OLLAMA_LOCAL_DIR" -cf - -T "$file_list" |
+    docker exec -i "$builder_container" tar -xf - -C /opt/teellm/ollama
+  rm -f "$file_list"
+
+  step "finishing the payload inside the image"
+  # llama-server links against the soname forms of its libraries and carries RUNPATH=$ORIGIN, while
+  # the bundle ships versioned files only; without these links it exits 127 and ollama answers 500.
+  docker exec -i -e MODEL="$OLLAMA_MODEL" "$builder_container" sh -c '
+set -e
+d=/opt/teellm/ollama/lib/ollama
+chmod +x /opt/teellm/teellm-service /opt/teellm/teellm-supervisor.sh \
+         /opt/teellm/ollama/ollama /opt/teellm/ollama/start-ollama.sh "$d"/llama-* 2>/dev/null || true
+n=0
+for f in "$d"/lib*.so.*; do
+  [ -e "$f" ] || continue
+  [ -L "$f" ] && continue
+  b=${f##*/}; stem=${b%%.so.*}; rest=${b#*.so.}
+  [ "$rest" = "$b" ] && continue
+  s="$stem.so.${rest%%.*}"
+  if [ ! -e "$d/$s" ]; then ln -sf "$b" "$d/$s"; n=$((n+1)); fi
+done
+echo "soname links created: $n"
+printf %s "$MODEL" > /opt/teellm/.teellm-model
+printf "model file: "; cat /opt/teellm/.teellm-model; echo
+'
+
+  step "verifying the payload inside the image"
+  docker exec -i -e MODEL="$OLLAMA_MODEL" "$builder_container" sh -c '
+set -e
+for p in /opt/teellm/teellm-service /opt/teellm/teellm-supervisor.sh \
+         /opt/teellm/configs/teellm-production.json /opt/teellm/configs/models.json \
+         /opt/teellm/ollama/ollama /opt/teellm/ollama/start-ollama.sh \
+         /opt/teellm/ollama/lib/ollama/libllama-server-impl.so \
+         /opt/teellm/ollama/lib/ollama/libllama-common.so.0 \
+         /opt/teellm/ollama/lib/ollama/libggml.so.0; do
+  test -s "$p" || { echo "missing: $p" >&2; exit 1; }
+done
+[ "$(cat /opt/teellm/.teellm-model)" = "$MODEL" ] || { echo "wrong .teellm-model" >&2; exit 1; }
+/opt/teellm/ollama/ollama --version
+du -sh /opt/teellm/ollama /opt/teellm/teellm-service
+'
+
+  step "committing the image: $local_image"
+  docker commit \
+    -c 'ENTRYPOINT ["bash", "/opt/teellm/teellm-supervisor.sh"]' \
+    -c 'CMD []' \
+    -c 'USER root' \
+    -c 'WORKDIR /opt/teellm' \
+    -c 'EXPOSE 8443' \
+    -m "TEE-LLM image: base $base_image + teellm-service + ollama $OLLAMA_MODEL at $(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    "$builder_container" "$local_image" >/dev/null
+  cleanup_builder_container
+  local image_bytes
+  image_bytes="$(docker image inspect --format '{{.Size}}' "$local_image")"
+  info "image committed: $local_image ($(awk -v b="$image_bytes" 'BEGIN {printf "%.0f", b/1048576}')MB uncompressed)"
+
+  # The memory guard downstream sizes the guest against the image, so give it the real figure
+  # rather than making it guess: the registry name is not what is local, and the operator may not
+  # have set TEELLM_POD_IMAGE_SIZE_GIB.
+  if [[ -z "$TEELLM_POD_IMAGE_SIZE_GIB" ]]; then
+    TEELLM_POD_IMAGE_SIZE_GIB="$(awk -v b="$image_bytes" 'BEGIN {printf "%.2f", b/1073741824}')"
+  fi
+
+  local local_id remote_config
+  local_id="$(docker image inspect --format '{{.Id}}' "$local_image" 2>/dev/null || true)"
+  if [[ -z "$local_id" ]]; then
+    err "the built image '$local_image' is missing"
+    exit 1
+  fi
+
+  # The config digest in a schema2 manifest is the image ID Docker reports locally, so the two
+  # together answer "does the registry already hold exactly this build?" -- the question that
+  # decides whether anything has to leave this host at all.
+  remote_config="$(remote_ssh "curl -sk --max-time 10 -H 'Accept: application/vnd.docker.distribution.manifest.v2+json' 'https://$TEELLM_IMAGE_REGISTRY/v2/$TEELLM_IMAGE_REPO/manifests/$date_tag'" 2>/dev/null |
+    grep -o 'sha256:[0-9a-f]\{64\}' | head -n 1 || true)"
+  if [[ -n "$remote_config" && "$remote_config" == "$local_id" ]]; then
+    info "the registry already holds this build; nothing uploaded: $registry_image"
+    TEELLM_POD_IMAGE="$registry_image"
+    TEELLM_POD_PULL_POLICY="Always"
+    return 0
+  fi
+
+  step "exporting the image archive: $archive"
+  mkdir -p "$(dirname "$archive")"
+  local tmp_archive="${archive}.tmp.$$"
+  if command -v pigz >/dev/null 2>&1; then
+    docker save "$local_image" | pigz -c > "$tmp_archive"
+  else
+    docker save "$local_image" | gzip -c > "$tmp_archive"
+  fi
+  mv -f "$tmp_archive" "$archive"
+  info "archive saved: $archive ($(du -h "$archive" | cut -f1))"
+
+  step "uploading the image to ${REMOTE_USER}@${REMOTE_HOST} and updating $registry_image"
+  local remote_archive="/tmp/$(basename "$archive")"
+  sshpass -p "$PASSWORD" scp "${SSH_OPTS[@]}" "$archive" "${REMOTE_USER}@${REMOTE_HOST}:$remote_archive"
+  if ! remote_ssh bash -s -- "$remote_archive" "$local_image" "$registry_image" "$TEELLM_IMAGE_REGISTRY" "$TEELLM_IMAGE_REPO" "$date_tag" <<'REMOTE_PUSH'
+set -euo pipefail
+archive="$1"; local_image="$2"; registry_image="$3"
+registry="$4"; repo="$5"; tag="$6"
+trap 'rm -f "$archive"' EXIT
+
+docker load -i "$archive" >/dev/null
+docker tag "$local_image" "$registry_image"
+
+manifest_url="https://$registry/v2/$repo/manifests/$tag"
+accept="Accept: application/vnd.docker.distribution.manifest.v2+json"
+# Best effort: a registry with deletion disabled answers 405, and the push below still replaces
+# the tag atomically.
+old_digest="$(curl -skI --max-time 10 -H "$accept" "$manifest_url" 2>/dev/null |
+  awk 'tolower($1) == "docker-content-digest:" {print $2}' | tr -d '\r' | tail -n 1 || true)"
+if [ -n "$old_digest" ]; then
+  curl -sk -X DELETE --max-time 15 "$registry/v2/$repo/manifests/$old_digest" >/dev/null 2>&1 || true
+fi
+docker push "$registry_image" >/dev/null
+REMOTE_PUSH
+  then
+    err "failed to upload or push the TEE-LLM Pod image to $registry_image"
+    detail "Check that ${REMOTE_HOST} can push to $TEELLM_IMAGE_REGISTRY, or set TEELLM_POD_IMAGE to a prebuilt image."
+    exit 1
+  fi
+  rm -f "$archive"
 
   TEELLM_POD_IMAGE="$registry_image"
   TEELLM_POD_PULL_POLICY="Always"
@@ -1911,8 +2167,10 @@ Options:
       hardware at the handshake. Creating the Pod builds teellm-service from this working tree,
       bakes it plus the ollama runtime and model into an image, pushes that image and runs the Pod
       from it, so the Pod never runs a binary older than the tree being deployed. That build takes
-      tens of minutes. An existing Pod is reused and never re-created -- a second Pod would be a
-      second confidential VM, and the image cannot change under a running one.
+      tens of minutes. The registry is asked for the config digest currently under the tag first:
+      when it already holds this exact build, nothing is exported or uploaded. An existing Pod is
+      reused and never re-created -- a second Pod would be a second confidential VM, and the image
+      cannot change under a running one.
       If TARGET_POD is set explicitly it must equal TEELLM_POD_NAME, or the run is refused.
   --port <port> (or --port=<port>)
       Specify TEE-LLM service listening port (default: $TEELLM_PORT).
@@ -1957,6 +2215,14 @@ Environment overrides:
       tag is a same-day one that a rebuild replaces in place.
   TEELLM_IMAGE_REGISTRY / TEELLM_IMAGE_REPO
       Registry the built image is pushed to, and the repository name inside it.
+  TEELLM_IMAGE_BASE=${TEELLM_IMAGE_BASE}
+  TEELLM_IMAGE_BASE_ARCHIVE=${TEELLM_IMAGE_BASE_ARCHIVE}
+      Source image for the built Pod image, and the archive it is loaded from when it is not
+      already local. The TAA payload under /root/taa is stripped before the teellm payload is
+      added.
+  TEELLM_IMAGE_KEEP_BUILDER=${TEELLM_IMAGE_KEEP_BUILDER}
+      Keep the builder container after the image is committed, for inspecting a payload that
+      failed to build. Removed on success by default.
   TEELLM_POD_NODE=${TEELLM_POD_NODE}
       Node the dedicated TEE-LLM Pod is pinned to.
   TEELLM_POD_RUNTIME_CLASS=${TEELLM_POD_RUNTIME_CLASS}
@@ -2307,7 +2573,7 @@ sync_ollama_to_remote() {
   info "ollama package verified on remote host ($REMOTE_OLLAMA_DIR)"
 }
 
-# A TEE-LLM image can carry the ollama runtime and the model (build-teellm-image.sh), which is what
+# A TEE-LLM image can carry the ollama runtime and the model (build_teellm_pod_image), which is what
 # lets a freshly booted guest serve without the deployment copying anything in. When the Pod
 # already has both, streaming several GB from the packaging host to the remote host and then into
 # the Pod is pure overhead, so the Pod is probed first and the host sync is skipped. The probes are

@@ -57,3 +57,19 @@
   `TEELLM_BUILD_POD_IMAGE=false` 两条旁路各自成例。
 - `tests/deploy_taa_remote_pod_test.sh`、`tests/deploy_scan_engine_test.sh` 无回归。
 - 真机（172.16.10.178）验证留待单独确认执行：一次创建即一台宿主实占的机密 VM。
+
+## 后续：构建脚本并入 `deploy-llm.sh`（2026-11-03）
+
+`build-teellm-image.sh` 已删除，逻辑原样搬进 `build_teellm_pod_image()`，`--create-pod start`
+不再需要先手工跑第二个脚本。原脚本的 `--push` 语义落成「提交 → 比对 → 需要才传」：
+
+1. 镜像**总是**先 `docker commit` 出来 —— 不提交就拿不到 ID，"有没有相同的"无从谈起。
+2. 读 registry 里当天 tag 的 schema2 清单，`config.digest` 与本地 `{{.Id}}` 相等即视为同一构建，
+   跳过 `docker save` / `scp` / `docker push`，直接用该 tag 创建 Pod。
+3. 不相等才导出、上传、远端 `docker load` → `tag` → 推；推送前仍删旧 tag，当天重建不会冲突。
+
+构建容器由 `TEMP_BUILDER_CONTAINER` + `cleanup_display` 清理，**不用**脚本内的 `trap EXIT` ——
+那会顶掉部署本身的错误横幅。原脚本的三个环境变量对应新名字：`TEELLM_IMAGE_BASE`、
+`TEELLM_IMAGE_BASE_ARCHIVE`、`TEELLM_IMAGE_KEEP_BUILDER`。
+测试侧删掉了 stub 脚本，改为在 `MOCK_BIN` 里放一个 `docker` 模拟器（`commit`/`cp`/`exec`/`image
+inspect`/`push`），并新增一例：`MOCK_REGISTRY_CONFIG` 等于本地 ID 时不出现 SCP 与 push。

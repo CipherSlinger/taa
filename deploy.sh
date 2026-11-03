@@ -240,8 +240,8 @@ BASE_DOCKER_IMAGE="${BASE_DOCKER_IMAGE:-$LOCAL_DOCKER_IMAGE}"
 # Packaging names follow one rule across this repository: <repo>:<YYYYMMDD>, with the archive
 # named after the image (<repo>-<YYYYMMDD>.tar.gz) under deploy/out. The tag carries only the
 # date, never the base image's tag, so the packaged image is not mistaken for the base it was
-# derived from (deploy-dataanaylsis.sh delegates save here, deploy-fhe.sh and
-# build-teellm-image.sh follow the same rule). The name is independent of BASE_DOCKER_IMAGE:
+# derived from (deploy-dataanaylsis.sh delegates save here, deploy-fhe.sh and the builder built
+# into deploy-llm.sh follow the same rule). The name is independent of BASE_DOCKER_IMAGE:
 # pointing --base at another image changes what goes in, not what comes out.
 DEFAULT_SAVE_IMAGE="taa-train-infer:${SAVE_DATE_TAG}"
 DEFAULT_SAVE_ARCHIVE="$PROJECT_DIR/deploy/out/taa-train-infer-${SAVE_DATE_TAG}.tar.gz"

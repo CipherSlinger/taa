@@ -172,7 +172,7 @@ TARGET_POD=taa-teellm ./deploy-llm.sh taa
 | `deploy.sh save` | `taa-train-infer:<YYYYMMDD>` | `deploy/out/taa-train-infer-<YYYYMMDD>.tar.gz` |
 | `deploy-fhe.sh taa save` | `taa-fhe:<YYYYMMDD>` | `deploy/out/taa-fhe-<YYYYMMDD>.tar.gz` |
 | `deploy-dataanaylsis.sh save` | `taa-dataanaylsis:<YYYYMMDD>` | `deploy/out/taa-dataanaylsis-<YYYYMMDD>.tar.gz` |
-| `build-teellm-image.sh` | `teellm:<YYYYMMDD>` | `deploy/out/teellm-<YYYYMMDD>.tar.gz` |
+| `deploy-llm.sh --create-pod`（内建构建） | `teellm:<YYYYMMDD>` | `deploy/out/teellm-<YYYYMMDD>.tar.gz` |
 
 标签只有打包当天的本地日期，不带基础镜像的标签、不带 commit、不自动打 `latest`；
 归档名与镜像名一一对应，只把 `:` 换成 `-`。推 registry 时加统一前缀
@@ -304,7 +304,7 @@ docker 与远端两种路径行为一致。
 一致（含 `codeScan.engine=semgrep`），但运行时按角色关掉审计，打包时由
 `TAA_SCAN_ENGINE_PROVISION=skip` 跳过 payload 注入。
 
-## 4. TEE 推理网关 — `build-teellm-image.sh`（由 `deploy-llm.sh` 部署）
+## 4. TEE 推理网关 — 由 `deploy-llm.sh` 构建并部署
 
 基础镜像 `teellm-base:<日期>` = `taa-env:slim-v2` 加一层 `RUN rm -rf /root/taa`，
 **所以基础依赖与第 1 节完全相同**（Ubuntu 24.04.4、glibc 2.39、Python 3.12.3、`curl`、

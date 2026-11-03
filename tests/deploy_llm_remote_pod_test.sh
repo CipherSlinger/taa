@@ -66,7 +66,9 @@ while [[ $i -lt ${#args[@]} ]]; do
   esac
 done
 host="${args[$i]}"; i=$((i+1))
-cmd="${args[$i]}"
+# ssh joins its command arguments into one remote command line; so does this mock, which matters
+# for the image push (`bash -s -- <args>`) that reads its arguments from the joined form.
+cmd="${args[*]:$i}"
 cmd="${cmd//\/root\/teellm/$MOCK_REMOTE_ROOT\/root\/teellm}"
 echo "SSH[$host] $cmd" >> "$MOCK_LOG"
 case "$cmd" in
@@ -76,12 +78,22 @@ exec sh -c "$cmd"
 MOCK
 
 # curl, standing in for the local registry's tag listing. Only the teellm repository is answered;
-# CURL_FAILS makes every request fail, which is how case 7 checks the fallback.
+# CURL_FAILS makes every request fail, which is how the deployment's fallback is checked. A
+# manifest request answers with the config digest MOCK_REGISTRY_CONFIG names, and with nothing
+# otherwise -- "this tag does not exist here" and "this tag holds a different build" are the same
+# answer to the deployment, which then uploads.
 cat > "$MOCK_BIN/curl" <<'MOCK'
 #!/usr/bin/env bash
 if [[ "${CURL_FAILS:-false}" == "true" ]]; then exit 7; fi
 case "$*" in
   *"/v2/teellm/tags/list"*) printf '{"name":"teellm","tags":["20261025","20261026","latest"]}'; exit 0 ;;
+  *"/v2/teellm/manifests/"*)
+    if [[ -n "${MOCK_REGISTRY_CONFIG:-}" ]]; then
+      printf '{"schemaVersion":2,"config":{"digest":"%s","size":1}}' "$MOCK_REGISTRY_CONFIG"
+      exit 0
+    fi
+    exit 22
+    ;;
 esac
 exit 22
 MOCK
@@ -178,6 +190,55 @@ printf '               total        used        free      shared  buff/cache   a
 printf 'Mem:           %d        %d        %d           0        %d        %s\n' 131072 32768 65536 32768 "$avail"
 MOCK
 
+# docker, standing in for the daemon the image build drives. The build itself is exercised against
+# a real daemon in production; what this pins is the wiring around it -- that the binary exists
+# before it is copied in, that the payload is committed under today's tag, that the archive is
+# shipped and pushed when the registry does not already hold the build. A `teellm-base:` image is
+# reported missing so the strip-TAA derivation runs, and every stdin-consuming step drains its
+# input: a mock that exits without reading makes the writer on the other end of the pipe die of
+# SIGPIPE, which `pipefail` turns into a failed deployment.
+cat > "$MOCK_BIN/docker" <<'MOCK'
+#!/usr/bin/env bash
+echo "DOCKER $*" >> "$MOCK_LOG"
+case "$1" in
+  info) exit 0 ;;
+  image)
+    case "$*" in
+      *teellm-base:*)
+        case "$*" in
+          *".Id"*|*".Size"*) ;;
+          *) exit 1 ;;
+        esac
+        ;;
+    esac
+    case "$*" in
+      *".Id"*) printf '%s\n' "${MOCK_IMAGE_ID:-sha256:1111111111111111111111111111111111111111111111111111111111111111}" ;;
+      *".Size"*) printf '%s\n' "${MOCK_IMAGE_SIZE:-6550000000}" ;;
+    esac
+    exit 0
+    ;;
+  build) cat >/dev/null; exit 0 ;;
+  cp)
+    for a in "$@"; do
+      case "$a" in
+        */bin/teellm-service)
+          if [ -s "$a" ]; then echo "DOCKER BINARY_PRESENT=yes" >> "$MOCK_LOG"
+          else echo "DOCKER BINARY_PRESENT=no" >> "$MOCK_LOG"; fi
+          ;;
+      esac
+    done
+    exit 0
+    ;;
+  exec)
+    case "$*" in
+      *"tar -xf -"*) cat >/dev/null ;;
+    esac
+    exit 0
+    ;;
+  *) exit 0 ;;
+esac
+MOCK
+
 chmod +x "$MOCK_BIN"/*
 
 # ── Throwaway repository root ────────────────────────────────────────────────
@@ -198,27 +259,9 @@ cp "$ROOT_DIR/deploy/manifest/k8s/teellm-pod.yaml.tmpl" "$REPO/deploy/manifest/k
 cp "$ROOT_DIR/deploy/teellm-supervisor.sh" "$REPO/deploy/teellm-supervisor.sh"
 chmod +x "$REPO/deploy/teellm-supervisor.sh"
 
-# The image builder the deployment drives. The real one needs a docker daemon and several GB of
-# ollama payload, so this stands in for it and records what it was asked to build. What is tested
-# here is the contract around it -- that the binary is rebuilt first, that the tag is today's, that
-# --push is passed -- not the image's contents.
-cat > "$REPO/build-teellm-image.sh" <<'STUB'
-#!/usr/bin/env bash
-{
-  echo "BUILD argv=$*"
-  echo "BUILD REGISTRY_IMAGE=${REGISTRY_IMAGE:-}"
-  echo "BUILD TARGET_IMAGE=${TARGET_IMAGE:-}"
-  echo "BUILD DATE_TAG=${DATE_TAG:-}"
-  echo "BUILD OLLAMA_MODEL=${OLLAMA_MODEL:-}"
-  if [ -s "${TEELLM_DIR:-}/bin/teellm-service" ]; then
-    echo "BUILD BINARY_PRESENT=yes"
-  else
-    echo "BUILD BINARY_PRESENT=no"
-  fi
-} >> "$MOCK_LOG"
-exit 0
-STUB
-chmod +x "$REPO/build-teellm-image.sh"
+# The model index the image payload step requires. The image build itself runs against the docker
+# mock: what is under test here is the wiring around it, not the image's contents.
+: > "$REPO/teellm/configs/models.json"
 
 # The kata runtime configuration the memory guard reads default_memory from.
 KATA_TOML_FILE="$TMP_DIR/kata-qemu-csv2.toml"
@@ -310,21 +353,24 @@ run_deploy --create-pod start --model qwen2.5-coder:0.5b
 [[ "$(cat "$MOCK_STATE_DIR/apply-count" 2>/dev/null || echo 0)" == "1" ]] \
   || fail "the Pod was applied $(cat "$MOCK_STATE_DIR/apply-count" 2>/dev/null || echo 0) times, expected exactly one"
 
-# The Pod has to run an image built from this tree, not whatever tag was last pushed. The builder
-# stands in for the real one, so these assertions are about the wiring: it was called once, with
-# --push, under today's tag, and only after the service binary had been rebuilt -- the real builder
-# compiles only a missing binary, so a stale file would otherwise be baked in silently.
+# The Pod has to run an image built from this tree, not whatever tag was last pushed. Docker stands
+# in for the real daemon, so these assertions are about the wiring: the image was committed once,
+# under today's tag, only after the service binary had been rebuilt, and -- because the registry
+# reported no manifest for that tag -- it was exported, shipped and pushed. The real build compiles
+# nothing here, so a stale binary would otherwise be baked in silently.
 TODAY_TAG="$(date +%Y%m%d)"
-build_calls="$(grep -c '^BUILD argv=' "$MOCK_LOG" || true)"
-[[ "$build_calls" == "1" ]] || fail "the image was built $build_calls times, expected exactly one"
-grep -q '^BUILD argv=--push$' "$MOCK_LOG" || fail "the image was built without --push"
-grep -q "^BUILD REGISTRY_IMAGE=172.16.10.178:31313/teellm:$TODAY_TAG$" "$MOCK_LOG" \
-  || fail "the image was not tagged with the current build date"
-grep -q "^BUILD TARGET_IMAGE=teellm:$TODAY_TAG$" "$MOCK_LOG" || fail "the local image tag is wrong"
-grep -q '^BUILD OLLAMA_MODEL=qwen2.5-coder:0.5b$' "$MOCK_LOG" \
+commit_calls="$(grep -c '^DOCKER commit ' "$MOCK_LOG" || true)"
+[[ "$commit_calls" == "1" ]] || fail "the image was committed $commit_calls times, expected exactly one"
+grep -qE "^DOCKER commit .* teellm:$TODAY_TAG\$" "$MOCK_LOG" \
+  || fail "the image was not committed under the current build date"
+grep -q '^DOCKER BINARY_PRESENT=yes$' "$MOCK_LOG" \
+  || fail "teellm-service was not rebuilt before the image was committed"
+grep -q 'MODEL=qwen2.5-coder:0.5b' "$MOCK_LOG" \
   || fail "the image was built for a different model than the deployment targets"
-grep -q '^BUILD BINARY_PRESENT=yes$' "$MOCK_LOG" \
-  || fail "teellm-service was not rebuilt before the image was built"
+grep -q "^SCP\[.*deploy/out/teellm-$TODAY_TAG.tar.gz -> " "$MOCK_LOG" \
+  || fail "the image archive was not shipped to the host that pushes"
+grep -q "^DOCKER push 172.16.10.178:31313/teellm:$TODAY_TAG\$" "$MOCK_LOG" \
+  || fail "the image was not pushed under the current build date"
 
 APPLIED="$MOCK_STATE_DIR/applied.yaml"
 [[ -f "$APPLIED" ]] || fail "no manifest was submitted"
@@ -401,7 +447,9 @@ if grep -qE 'nohup.*(start-ollama\.sh|teellm-service")' "$MOCK_LOG"; then
   fail "the deployment still starts daemons itself instead of leaving them to the supervisor"
 fi
 pause_line="$(grep -n "\.teellm-supervisor-pause" "$MOCK_LOG" | head -n1 | cut -d: -f1)"
-live_write_line="$(grep -nE "KUBECTL cp|tar -xf" "$MOCK_LOG" | head -n1 | cut -d: -f1)"
+# The image build also unpacks a tar, but into a throwaway builder container; only a write that
+# goes through the remote host reaches the Pod's live tree, so those are what the order is about.
+live_write_line="$(grep -nE "KUBECTL cp|SSH\[.*tar -xf" "$MOCK_LOG" | head -n1 | cut -d: -f1)"
 [[ -n "$pause_line" && -n "$live_write_line" && "$pause_line" -lt "$live_write_line" ]] \
   || fail "the supervisor was not paused before the Pod's live tree was written to"
 start_line="$(grep -nE "nohup \./teellm-supervisor\.sh" "$MOCK_LOG" | head -n1 | cut -d: -f1)"
@@ -437,12 +485,12 @@ grep -q "^      imagePullPolicy: Always$" "$APPLIED" \
 # tag has to win -- on the path that does not build one for itself.
 
 rm -f "$MOCK_STATE_DIR/pod"
-build_before="$(grep -c '^BUILD argv=' "$MOCK_LOG" || true)"
+build_before="$(grep -c '^DOCKER commit ' "$MOCK_LOG" || true)"
 RUN_ENV=(TEELLM_BUILD_POD_IMAGE=false)
 run_deploy --create-pod start --model qwen2.5-coder:0.5b
 RUN_ENV=()
 [[ $status -eq 0 ]] || fail "TEELLM_BUILD_POD_IMAGE=false exited $status"
-[[ "$(grep -c '^BUILD argv=' "$MOCK_LOG" || true)" == "$build_before" ]] \
+[[ "$(grep -c '^DOCKER commit ' "$MOCK_LOG" || true)" == "$build_before" ]] \
   || fail "an image was built even though TEELLM_BUILD_POD_IMAGE=false"
 grep -q "^      image: 172.16.10.178:31313/teellm:20261026$" "$APPLIED" \
   || fail "the Pod image is not the newest tag the registry lists"
@@ -452,18 +500,42 @@ fi
 grep -q "^      imagePullPolicy: IfNotPresent$" "$APPLIED" \
   || fail "a pre-existing registry tag should not be forced to pull"
 
+# ── 1c. The registry already holds this exact build ─────────────────────────
+# Committing the image is how its ID is learned, so a build always happens; what must not happen is
+# exporting several gigabytes, copying them to the host and pushing them again when the registry's
+# manifest already points at those bytes. The mock answers the manifest query with the same digest
+# Docker reports for the local image, and the archive/ship/push chain has to stay silent.
+
+rm -f "$MOCK_STATE_DIR/pod"
+scp_before="$(grep -c "^SCP\[.*teellm-$TODAY_TAG.tar.gz" "$MOCK_LOG" || true)"
+push_before="$(grep -c '^DOCKER push ' "$MOCK_LOG" || true)"
+RUN_ENV=(MOCK_REGISTRY_CONFIG=sha256:1111111111111111111111111111111111111111111111111111111111111111)
+run_deploy --create-pod start --model qwen2.5-coder:0.5b
+RUN_ENV=()
+[[ $status -eq 0 ]] || fail "the identical-build path exited $status"
+grep -q "the registry already holds this build; nothing uploaded" <<<"$output" \
+  || fail "the deployment did not notice the registry already holds this build"
+[[ "$(grep -c "^SCP\[.*teellm-$TODAY_TAG.tar.gz" "$MOCK_LOG" || true)" == "$scp_before" ]] \
+  || fail "the image archive was shipped even though the registry already holds this build"
+[[ "$(grep -c '^DOCKER push ' "$MOCK_LOG" || true)" == "$push_before" ]] \
+  || fail "the image was pushed even though the registry already holds this build"
+grep -q "^      image: 172.16.10.178:31313/teellm:$TODAY_TAG$" "$APPLIED" \
+  || fail "the Pod does not run the registry image the build produced"
+grep -q "^      imagePullPolicy: Always$" "$APPLIED" \
+  || fail "the freshly built tag is not pulled unconditionally"
+
 # ── 2. Second run, with no action keyword: the Pod exists and is Ready ───────
 # With the target keyword gone there is nothing left to name a target with, so the bare form has to
 # reach the same Pod lifecycle as the explicit one rather than falling through to a no-op. Case 1
 # already covered --create-pod start, so the reuse half is pinned down here in its bare form.
 
 apply_before="$(cat "$MOCK_STATE_DIR/apply-count")"
-build_before="$(grep -c '^BUILD argv=' "$MOCK_LOG" || true)"
+build_before="$(grep -c '^DOCKER commit ' "$MOCK_LOG" || true)"
 run_deploy --create-pod --model qwen2.5-coder:0.5b
 [[ $status -eq 0 ]] || fail "the bare invocation (no action keyword) exited $status"
 [[ "$(cat "$MOCK_STATE_DIR/apply-count")" == "$apply_before" ]] \
   || fail "the bare invocation applied the manifest again instead of reusing the Pod"
-[[ "$(grep -c '^BUILD argv=' "$MOCK_LOG" || true)" == "$build_before" ]] \
+[[ "$(grep -c '^DOCKER commit ' "$MOCK_LOG" || true)" == "$build_before" ]] \
   || fail "reusing the Pod rebuilt the image; an existing Pod's image cannot change"
 grep -q "reusing the running TEE-LLM Pod" <<<"$output" || fail "the bare invocation did not reuse the Pod"
 
@@ -494,14 +566,14 @@ touch "$MOCK_STATE_DIR/csv_device"
 # deployment must not spend tens of minutes building an image nobody asked for.
 
 rm -f "$MOCK_STATE_DIR/pod"
-build_before="$(grep -c '^BUILD argv=' "$MOCK_LOG" || true)"
+build_before="$(grep -c '^DOCKER commit ' "$MOCK_LOG" || true)"
 RUN_ENV=(TEELLM_POD_IMAGE="172.16.10.178:31313/teellm:pinned")
 run_deploy --create-pod start --model qwen2.5-coder:0.5b
 RUN_ENV=()
 [[ $status -eq 0 ]] || fail "an explicit TEELLM_POD_IMAGE exited $status"
 grep -q "^      image: 172.16.10.178:31313/teellm:pinned$" "$APPLIED" \
   || fail "an explicit TEELLM_POD_IMAGE was replaced by a registry tag"
-[[ "$(grep -c '^BUILD argv=' "$MOCK_LOG" || true)" == "$build_before" ]] \
+[[ "$(grep -c '^DOCKER commit ' "$MOCK_LOG" || true)" == "$build_before" ]] \
   || fail "an image was built despite an explicit TEELLM_POD_IMAGE"
 grep -q "^      imagePullPolicy: IfNotPresent$" "$APPLIED" \
   || fail "an explicit image was overridden to pull unconditionally"

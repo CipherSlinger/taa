@@ -613,7 +613,7 @@ USERDATA = taaPublicKey.X || taaPublicKey.Y
 | `deploy.sh` | TEE 训练 / TEE 推理（同一镜像，角色由 `CONTRACT_TYPE` 选择） | `taa-env:slim-v2` | `taa-train-infer:<YYYYMMDD>` / `deploy/out/taa-train-infer-<YYYYMMDD>.tar.gz` |
 | `deploy-fhe.sh` | FHE 实例（与 FHE 服务同容器） | `latti/latti-server-node:latest` | `taa-fhe:<YYYYMMDD>` / `deploy/out/taa-fhe-<YYYYMMDD>.tar.gz` |
 | `deploy-dataanaylsis.sh` | 数据分析实例（共享模板按角色渲染） | `jupyter-nologin-full:v2.2` | `taa-dataanaylsis:<YYYYMMDD>` / `deploy/out/taa-dataanaylsis-<YYYYMMDD>.tar.gz` |
-| `build-teellm-image.sh`（构建）+ `deploy-llm.sh`（部署） | TEE-LLM 网关 | `taa-env:slim-v2` 去掉 `/root/taa` | `teellm:<YYYYMMDD>` / `deploy/out/teellm-<YYYYMMDD>.tar.gz` |
+| `deploy-llm.sh`（内建构建 + 部署） | TEE-LLM 网关 | `taa-env:slim-v2` 去掉 `/root/taa` | `teellm:<YYYYMMDD>` / `deploy/out/teellm-<YYYYMMDD>.tar.gz` |
 | `deploy-taa-vm.sh`（驱动 `deploy/guest-build/build-initrd.sh`） | CSV2 机密 VM initrd | `kata-containers-initrd-confidential-csv.img` | 追加 TAA 的 initrd 与测试 Pod 清单 |
 
 `deploy.sh` 有两种模式（默认 `remote`）与三种动作（默认 `start`）：
@@ -692,7 +692,7 @@ TARGET_POD=<pod> ./deploy.sh remote taa # 指定目标 Pod
 
 模板路径可以整体覆盖：`data-anaylsis` 的 `storage.data` 为 `/home/jovyan/systemAuthData`，`fhe` 的 `storage.result` 为 `/data/taa-results`、`storage.keys` 为 `/opt/taa-state/keys`。新增可写路径时以模板为准，不要假设所有实例都落在 `/root/taa`。
 
-Ollama 离线包**不在 TAA 容器内**：TEE-LLM 网关拆分为独立部署后，Ollama 与网关同容器，由 `teellm` 子模块提供源码、由 `build-teellm-image.sh` 构建镜像、`deploy-llm.sh` 部署到远端宿主机的 Kata CSV2 Pod，TAA 通过 `codeAudit.llm.endpoint`（或 `LLM_IP`）访问。
+Ollama 离线包**不在 TAA 容器内**：TEE-LLM 网关拆分为独立部署后，Ollama 与网关同容器，由 `teellm` 子模块提供源码、由 `deploy-llm.sh` 内建构建镜像并部署到远端宿主机的 Kata CSV2 Pod，TAA 通过 `codeAudit.llm.endpoint`（或 `LLM_IP`）访问。
 
 ## 10. 项目目录结构
 
@@ -733,7 +733,7 @@ taa/
 ├── teellm/                      TEE-LLM 独立 go.work 子模块（含 models/ollama）
 ├── go.mod / go.work             模块与工作区定义
 ├── deploy.sh / deploy-fhe.sh / deploy-dataanaylsis.sh / deploy-llm.sh
-├── deploy-taa-vm.sh / build-teellm-image.sh
+├── deploy-taa-vm.sh
 └── docs/                        文档
     ├── api-design.md            接口设计文档
     ├── api-design.html          接口文档的本地预览/编辑页（配合 tools/showdoc-sync）
