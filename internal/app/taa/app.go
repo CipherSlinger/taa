@@ -367,7 +367,7 @@ func probeInferenceService(ctx context.Context, cfg config.StartupConfig) error 
 	defer cancel()
 
 	// The verdict carries its wall-clock cost: the probe is a full TEE-TLS handshake plus
-	// /healthz, and /healthz answers only once the backend model has loaded, so a slow gateway
+	// /v1/llm/healthz, and it answers only once the backend model has loaded, so a slow gateway
 	// is expected on a cold start. Without the timing, "gateway is cold" and "gateway is
 	// unreachable" produce lookalike failures.
 	started := time.Now()

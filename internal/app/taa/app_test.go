@@ -474,7 +474,7 @@ func TestProbeInferenceService_ContextCancelled(t *testing.T) {
 // TestProbeInferenceService_HealthyEndpoint verifies probeInferenceService succeeds when endpoint health check passes.
 func TestProbeInferenceService_HealthyEndpoint(t *testing.T) {
 	server := newTestTEETLSServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/healthz" {
+		if r.URL.Path == "/v1/llm/healthz" {
 			w.WriteHeader(http.StatusOK)
 			_, _ = w.Write([]byte(`{"status":"ok"}`))
 			return
@@ -501,7 +501,7 @@ func TestProbeInferenceService_HealthyEndpoint(t *testing.T) {
 // TestProbeInferenceService_UnhealthyEndpoint verifies probeInferenceService errors when endpoint returns failure.
 func TestProbeInferenceService_UnhealthyEndpoint(t *testing.T) {
 	server := newTestTEETLSServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/healthz" {
+		if r.URL.Path == "/v1/llm/healthz" {
 			w.WriteHeader(http.StatusServiceUnavailable)
 			_, _ = w.Write([]byte(`{"status":"unhealthy"}`))
 			return
