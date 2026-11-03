@@ -116,11 +116,6 @@
       <span>注册于: <span id="llmRegisteredAt">—</span></span>
     </div>
 
-    <details id="llmSourcesBox" style="display:none; margin-bottom:10px;">
-      <summary style="cursor:pointer; font-size:13px; font-weight:650;">最近来源 (<span id="llmSourcesCount">0</span>)</summary>
-      <div id="llmSourcesList" style="margin-top:8px; display:flex; flex-direction:column; gap:4px; font-size:12.5px;"></div>
-    </details>
-
     <details id="llmLogBox">
       <summary style="cursor:pointer; font-size:13px; font-weight:650;">运行日志</summary>
       <div style="display:flex; align-items:center; justify-content:space-between; gap:8px; margin:8px 0 6px;">
@@ -129,6 +124,20 @@
       </div>
       <div id="llmLogOutput" style="max-height:240px; overflow:auto; background:var(--panel-sub); border:1px solid var(--line); border-radius:8px; padding:8px; font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:12px;"></div>
     </details>
+  </section>
+
+  <!-- Bookkeeping kept outside the instance card on purpose: the card above
+       describes the single registration record currently in force, while this
+       list also remembers dockerIds that record has already overwritten. -->
+  <section class="card" id="card-llmSources" data-console="tee" style="display:none; margin-bottom:24px;">
+    <div class="card-head" style="margin-bottom:10px; padding-bottom:10px;">
+      <div>
+        <h2 style="margin:0;">TEE-LLM 接入记录</h2>
+        <span class="muted" style="font-size:12.5px;">mock 收到过上报的 dockerId，按最后活动时间倒序，最多 5 条；上方实例卡片只保留最后注册的那一个。</span>
+      </div>
+      <span id="llmSourcesCount" class="muted" style="font-size:12.5px;">0 个来源</span>
+    </div>
+    <div id="llmSourcesList" style="display:flex; flex-direction:column; gap:4px; font-size:12.5px;"></div>
   </section>
 
   <!-- ─── 训练流程（平台 → TAA）接口测试 ─── -->

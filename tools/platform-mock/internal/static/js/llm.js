@@ -85,12 +85,12 @@ function renderLLMStatus(payload) {
 }
 
 function renderLLMSources(sources, reg) {
-  const box = document.getElementById('llmSourcesBox');
+  const box = document.getElementById('card-llmSources');
   const list = document.getElementById('llmSourcesList');
   const count = document.getElementById('llmSourcesCount');
   const items = Array.isArray(sources) ? sources : [];
   if (box) box.style.display = items.length ? '' : 'none';
-  if (count) count.textContent = String(items.length);
+  if (count) count.textContent = `${items.length} 个来源`;
   if (!list) return;
 
   const eventLabels = { register: '注册', heartbeat: '心跳', log: '日志' };
