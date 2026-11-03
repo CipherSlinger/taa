@@ -23,14 +23,14 @@ set -euo pipefail
 # SCRIPT_DIR 是 deploy/guest-build，ROOT_DIR 是仓库根（再上两级）。
 #
 # 这里曾经写的是 $SCRIPT_DIR/.. ——那时 guest-build/ 就在仓库根下，恰好对；
-# 它搬到 deploy/ 之后，ROOT_DIR 变成 deploy/，于是 TAA_SRC、配置与证书的默认值
+# 它搬到 deploy/ 之后，ROOT_DIR 变成 deploy/，于是 TAA_SRC 与配置的默认值
 # 全部指向不存在的路径（表现为"缺 build input"，而不是"路径写错了"）。
 # 因此下面加一条断言：解析不出仓库根就当场报错，不再静默用错误默认值。
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
 if [[ ! -f "$ROOT_DIR/go.mod" ]]; then
   echo "error: repository root not found from $SCRIPT_DIR (no go.mod in $ROOT_DIR)" >&2
-  echo "hint: override TAA_SRC / TAA_CONFIG_SRC / TAA_HRK_CERT_SRC / TAA_HSK_CEK_CERT_SRC explicitly" >&2
+  echo "hint: override TAA_SRC / TAA_CONFIG_SRC explicitly" >&2
   exit 1
 fi
 
@@ -47,8 +47,6 @@ fi
 TAA_SRC="${TAA_SRC:-$ROOT_DIR/bin/taa}"
 TAA_INIT_SRC="${TAA_INIT_SRC:-$SCRIPT_DIR/taa-init.sh}"
 TAA_CONFIG_SRC="${TAA_CONFIG_SRC:-$ROOT_DIR/configs/taa-initrd.json}"
-TAA_HRK_CERT_SRC="${TAA_HRK_CERT_SRC:-$ROOT_DIR/deploy/certs/hrk.cert}"
-TAA_HSK_CEK_CERT_SRC="${TAA_HSK_CEK_CERT_SRC:-$ROOT_DIR/deploy/certs/hsk_cek.cert}"
 BASE_INITRD="${BASE_INITRD:-$SCRIPT_DIR/base/kata-containers-initrd-confidential-csv.img}"
 OUT_DIR="${OUT_DIR:-$SCRIPT_DIR/out}"
 INITRD_OUT="${INITRD_OUT:-$OUT_DIR/kata-containers-initrd-taa-csv.initrd}"
@@ -319,7 +317,7 @@ check_build_inputs() {
   fi
 
   local input
-  for input in "$TAA_INIT_SRC" "$TAA_CONFIG_SRC" "$TAA_HRK_CERT_SRC" "$TAA_HSK_CEK_CERT_SRC"; do
+  for input in "$TAA_INIT_SRC" "$TAA_CONFIG_SRC"; do
     if [[ ! -f "$input" ]]; then
       echo "error: missing build input: $input" >&2
       exit 1
@@ -503,14 +501,11 @@ build_initrd() {
   install -m 0755 "$TAA_INIT_SRC" "$BUILD_WORK_DIR/extra/usr/local/bin/taa-init"
 
   # TAA reads its config from a fixed absolute path, so the file has to be part
-  # of the measured image. configs/taa-initrd.json is the initrd baseline: the
-  # cert paths under /etc/taa/certs that the two installs below populate, and,
-  # when that config selects the semgrep engine, the payload staged afterwards
+  # of the measured image. configs/taa-initrd.json is the initrd baseline; when
+  # that config selects the semgrep engine, the payload is staged afterwards
   # under /opt/taa/semgrep plus the interpreter and CLI that run it.
-  mkdir -p "$BUILD_WORK_DIR/extra/etc/taa/certs"
+  mkdir -p "$BUILD_WORK_DIR/extra/etc/taa"
   install -m 0644 "$TAA_CONFIG_SRC" "$BUILD_WORK_DIR/extra/etc/taa/taa-config.json"
-  install -m 0644 "$TAA_HRK_CERT_SRC" "$BUILD_WORK_DIR/extra/etc/taa/certs/hrk.cert"
-  install -m 0644 "$TAA_HSK_CEK_CERT_SRC" "$BUILD_WORK_DIR/extra/etc/taa/certs/hsk_cek.cert"
 
   echo "生成可选 env 文件"
 
@@ -565,9 +560,9 @@ build_initrd() {
 
   # Queue a file together with every parent directory that is missing from both
   # the base and the queue, parents first. Deduplicating against the queue and
-  # not only against the base matters: several new files share etc/taa and
-  # etc/taa/certs, and queueing them once per file would append those directory
-  # entries two or three times over.
+  # not only against the base matters: several new files share the same parent
+  # directory, and queueing them once per file would append that directory
+  # entry two or three times over.
   queue_entry() {
     local path="$1"
     local dir

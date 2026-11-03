@@ -326,7 +326,7 @@ docker 与远端两种路径行为一致。
 **追加进 initrd**
 
 `usr/local/bin/taa`（必须静态链接 —— 基座 glibc 2.35，动态链接会随打包机漂移）、
-`usr/local/bin/taa-init`、`etc/taa/taa-config.json`、`etc/taa/certs/*.cert`、
+`usr/local/bin/taa-init`、`etc/taa/taa-config.json`、
 `etc/default/taa.env`；选中 semgrep 时整棵 `semgrep-payload/rootfs`（4242 文件，
 **自带 `python3.10`**，不依赖基座）。
 

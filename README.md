@@ -189,7 +189,7 @@ flowchart TB
 │   ├── taa-fhe-supervisor.sh         # FHE + TAA combined container entrypoint (FHE priority)
 │   ├── teellm-supervisor.sh          # TEE-LLM Pod supervisor (teellm-service + ollama)
 │   ├── base/                         # Base image archives (inputs: taa-env, jupyter-nologin-full)
-│   ├── certs/                        # Hygon CSV certificate chain (hrk.cert, hsk_cek.cert)
+│   ├── certs/                        # Hygon CSV certificate chain for the TEE-LLM gateway (hrk.cert, hsk_cek.cert)
 │   ├── out/                          # Packaged image archives produced by the deploy scripts
 │   └── manifest/docker/              # Base environment Dockerfiles & build assets
 ├── models/                           # Bundled offline models & runtimes (e.g., Ollama / Qwen)
@@ -373,10 +373,6 @@ TAA reads its configuration from `taa-config.json` located in its working direct
       "failClosed": true,
       "insecureSkipVerify": false
     }
-  },
-  "attestation": {
-    "hrkCertPath": "/root/taa/certs/hrk.cert",
-    "hskCekCertPath": "/root/taa/certs/hsk_cek.cert"
   }
 }
 ```
@@ -419,8 +415,6 @@ TAA reads its configuration from `taa-config.json` located in its working direct
 | `codeAudit.llm.temperature` | unset | Sampling temperature sent with each verify request, in `[0, 2]`. Unset leaves the choice to the inference service, which decodes deterministically so the same finding always yields the same verdict. Setting anything other than `0` re-enables sampling: identical findings may then be judged differently, and a single `MALICIOUS` verdict under `failClosed` fails the audit. A non-zero value is therefore logged as a startup warning. Out-of-range values are rejected at startup |
 | `codeAudit.llm.insecureSkipVerify` | `false` | Skips TLS CA certificate verification (set to `true` only for local Docker testing) |
 | `codeAudit.llm.attestation.measurement` | unset | Expected measurement digest from the gateway's attestation report. Non-empty requires a match or the handshake fails. Empty or absent skips the measurement comparison and logs a warning; the trust chain and key binding are still verified (unless `insecureSkipVerify` is set) |
-| `attestation.hrkCertPath` | `/root/taa/certs/hrk.cert` | Hygon Root Key (HRK) certificate path for CSV attestation verification |
-| `attestation.hskCekCertPath` | `/root/taa/certs/hsk_cek.cert` | Hygon Sign Key (HSK) / Chip Endorsement Key (CEK) certificate path |
 | `fhe.endpoint` | **required** | String. FHE API base URL, an absolute `http`/`https` URL with a host, e.g. `http://127.0.0.1:58996` |
 | `fhe.dataDir` | **required** | String. The shared directory, given as the local path of the same bind mount the FHE containers see as `/data` |
 | `fhe.keyCacheDir` | **required** | String. Holds eval keys by content digest, so a repeat user never re-downloads several gigabytes |

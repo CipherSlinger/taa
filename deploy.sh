@@ -107,12 +107,7 @@ TAA_BINARY_PATH="${TAA_BINARY_PATH:-$PROJECT_DIR/bin/$BINARY_NAME}"
 MOCK_BINARY_NAME="${MOCK_BINARY_NAME:-platform-mock}"
 MOCK_BINARY_PATH="${MOCK_BINARY_PATH:-$PROJECT_DIR/bin/$MOCK_BINARY_NAME}"
 
-# 远程证明文件：HRK 证书、HSK/CEK 证书的本地源路径。
-CERT_DIR="${CERT_DIR:-$PROJECT_DIR/deploy/certs}"
-ATT_HRK_SOURCE="${ATT_HRK_SOURCE:-$CERT_DIR/hrk.cert}"
-ATT_HSK_SOURCE="${ATT_HSK_SOURCE:-$CERT_DIR/hsk_cek.cert}"
-
-# 远程容器目录：TAA 容器内的工作目录和证书路径，以及 attestation report 文件路径。
+# 远程容器目录：TAA 容器内的工作目录，以及 attestation report 文件路径。
 CON_WORKDIR="${CON_WORKDIR:-/root/taa}"
 CON_PORT="${CON_PORT:-6001}"
 ATT_REPORT_FILE="${CON_WORKDIR}/attestation.report"
@@ -564,9 +559,7 @@ save_local_docker_image() {
   # necessarily the image's, and the saved binary must not depend on the two happening to match.
   spin_task "building taa daemon from ./cmd/taa" env CGO_ENABLED=0 GOOS=linux go build -o "$TAA_BINARY_PATH" ./cmd/taa
   require_file "build failed: taa binary" "$TAA_BINARY_PATH"
-  require_file "certificate missing: hrk.cert" "$ATT_HRK_SOURCE"
-  require_file "certificate missing: hsk_cek.cert" "$ATT_HSK_SOURCE"
-  info "binaries and attestation certificates ready"
+  info "taa binary ready"
 
   step "preparing production configuration from $(basename "$prod_config_template")"
   require_file "production config template not found" "$prod_config_template"
@@ -641,14 +634,12 @@ save_local_docker_image() {
 
   provision_local_scan_engine "$builder_container" "$prod_config_template"
 
-  step "deploying taa binary, certificates, and production config"
+  step "deploying taa binary and production config"
   spin_task "copying runtime files into container" bash -c '
     set -euo pipefail
     docker cp "$1" "$2:/root/taa/taa"
-    docker cp "$3" "$2:/root/taa/certs/hrk.cert"
-    docker cp "$4" "$2:/root/taa/certs/hsk_cek.cert"
-    docker cp "$5" "$2:/root/taa/taa-config.json"
-  ' _ "$TAA_BINARY_PATH" "$builder_container" "$ATT_HRK_SOURCE" "$ATT_HSK_SOURCE" "$prod_config_source"
+    docker cp "$3" "$2:/root/taa/taa-config.json"
+  ' _ "$TAA_BINARY_PATH" "$builder_container" "$prod_config_source"
 
   step "committing container to production image: $target_image"
   local commit_msg="Production image packaged from base $(basename "$base_archive") with $(basename "$prod_config_template") at $(date -u +%Y-%m-%dT%H:%M:%SZ)"
@@ -831,8 +822,6 @@ Environment overrides:
       正式远程场景 TAA 配置模板。
   CONTRACT_ID=${CONTRACT_ID}
       写入配置文件的合约 ID（可选，正式场景通常由运行环境注入）。
-  CERT_DIR=${CERT_DIR}
-      本地 attestation 证书目录。
   TAA_KEEP_MANUAL=${TAA_KEEP_MANUAL:-false}
       远程部署后是否保持容器 manual 挂起状态而不自启（默认 false）。
   REMOTE_SEMGREP_BUNDLE=$REMOTE_SEMGREP_BUNDLE
@@ -1564,16 +1553,6 @@ if llm_model:
     llm["model"] = llm_model
 llm.pop("dir", None)
 
-workdir = "/root/taa"
-if model_dir:
-    cleaned = model_dir.rstrip("/")
-    if "/" in cleaned:
-        workdir = os.path.dirname(cleaned)
-
-attestation = cfg.setdefault("attestation", {})
-attestation["hrkCertPath"] = f"{workdir}/certs/hrk.cert"
-attestation["hskCekCertPath"] = f"{workdir}/certs/hsk_cek.cert"
-
 with open(path, "w", encoding="utf-8") as f:
     json.dump(cfg, f, ensure_ascii=False, indent=2)
     f.write("\n")
@@ -1887,8 +1866,6 @@ fi
 if [[ "$DEPLOY_TAA" == true ]]; then
   require_file "build verification failed (taa binary missing)" "$TAA_BINARY_PATH"
   require_file "taa supervisor script missing" "$PROJECT_DIR/deploy/taa-supervisor.sh"
-  require_file "certificate missing" "$ATT_HRK_SOURCE"
-  require_file "certificate missing" "$ATT_HSK_SOURCE"
 fi
 
 
@@ -1910,20 +1887,17 @@ deploy_platform_mock() {
 
 deploy_docker_taa() {
   step "preparing runtime directories inside container"
-  docker exec -i "$LOCAL_DOCKER_CONTAINER" sh -lc "mkdir -p '$TAA_CONTAINER_WORKDIR/models' '$TAA_CONTAINER_WORKDIR/data' '$TAA_CONTAINER_WORKDIR/results' '$TAA_CONTAINER_WORKDIR/certs' '$TAA_CONTAINER_WORKDIR/keys' '$LOCAL_DOCKER_INPUT_DIR' '$LOCAL_DOCKER_OUTPUT_DIR' && chmod 700 '$TAA_CONTAINER_WORKDIR/keys'" >/dev/null 2>&1
+  docker exec -i "$LOCAL_DOCKER_CONTAINER" sh -lc "mkdir -p '$TAA_CONTAINER_WORKDIR/models' '$TAA_CONTAINER_WORKDIR/data' '$TAA_CONTAINER_WORKDIR/results' '$TAA_CONTAINER_WORKDIR/keys' '$LOCAL_DOCKER_INPUT_DIR' '$LOCAL_DOCKER_OUTPUT_DIR' && chmod 700 '$TAA_CONTAINER_WORKDIR/keys'" >/dev/null 2>&1
   info "runtime directories initialized: $TAA_CONTAINER_WORKDIR"
 
-  step "copying taa binary and certificates into container"
-  spin_task "copying binary and certificates into container" bash -c '
+  step "copying taa binary into container"
+  spin_task "copying binary into container" bash -c '
     set -euo pipefail
     docker cp "$1" "$2:$3/$4" >/dev/null
-    docker cp "$5" "$2:$3/certs/hrk.cert" >/dev/null
-    docker cp "$6" "$2:$3/certs/hsk_cek.cert" >/dev/null
     docker exec -i "$2" sh -lc "chmod +x \"$3/$4\"" >/dev/null
-  ' _ "$TAA_BINARY_PATH" "$LOCAL_DOCKER_CONTAINER" "$TAA_CONTAINER_WORKDIR" "$BINARY_NAME" "$ATT_HRK_SOURCE" "$ATT_HSK_SOURCE"
+  ' _ "$TAA_BINARY_PATH" "$LOCAL_DOCKER_CONTAINER" "$TAA_CONTAINER_WORKDIR" "$BINARY_NAME"
 
   step "checking attestation prerequisites inside container"
-  docker exec -i "$LOCAL_DOCKER_CONTAINER" sh -lc "test -f '$TAA_CONTAINER_WORKDIR/certs/hrk.cert' && test -f '$TAA_CONTAINER_WORKDIR/certs/hsk_cek.cert'" >/dev/null
   if ! docker exec -i "$LOCAL_DOCKER_CONTAINER" sh -lc 'test -e /dev/csv-guest' 2>/dev/null; then
     warn "/dev/csv-guest not found in container — attestation will fail (expected in non-TEE Docker)"
   else
@@ -2079,14 +2053,12 @@ if [[ "$DEPLOY_TAA" == true ]]; then
     "$TAA_CONTAINER_WORKDIR/models" "" "$TAA_CONTAINER_WORKDIR/results" \
     "${LLM_IP:-}" "$TARGET_MODEL" "$INCLUDE_TAA_IDENTITY" "" "" "$TAA_CONTAINER_WORKDIR/keys"
 
-  step "uploading taa, config, and certificates to remote host"
+  step "uploading taa and config to remote host"
   sshpass -p "$PASSWORD" scp "${SSH_OPTS[@]}" "$TAA_BINARY_PATH" "${REMOTE_USER}@${REMOTE_HOST}:$REMOTE_DIR/$BINARY_NAME.new"
   sshpass -p "$PASSWORD" scp "${SSH_OPTS[@]}" "$REMOTE_TAA_CONFIG_SOURCE" "${REMOTE_USER}@${REMOTE_HOST}:$REMOTE_TAA_CONFIG_PATH.new"
-  sshpass -p "$PASSWORD" scp "${SSH_OPTS[@]}" "$ATT_HRK_SOURCE" "${REMOTE_USER}@${REMOTE_HOST}:$REMOTE_DIR/hrk.cert.new"
-  sshpass -p "$PASSWORD" scp "${SSH_OPTS[@]}" "$ATT_HSK_SOURCE" "${REMOTE_USER}@${REMOTE_HOST}:$REMOTE_DIR/hsk_cek.cert.new"
 
-  step "replacing remote taa, config, and certificates"
-  remote_ssh "mv '$REMOTE_DIR/$BINARY_NAME.new' '$REMOTE_DIR/$BINARY_NAME' && mv '$REMOTE_TAA_CONFIG_PATH.new' '$REMOTE_TAA_CONFIG_PATH' && mv '$REMOTE_DIR/hrk.cert.new' '$REMOTE_DIR/hrk.cert' && mv '$REMOTE_DIR/hsk_cek.cert.new' '$REMOTE_DIR/hsk_cek.cert' && chmod +x '$REMOTE_DIR/$BINARY_NAME'"
+  step "replacing remote taa and config"
+  remote_ssh "mv '$REMOTE_DIR/$BINARY_NAME.new' '$REMOTE_DIR/$BINARY_NAME' && mv '$REMOTE_TAA_CONFIG_PATH.new' '$REMOTE_TAA_CONFIG_PATH' && chmod +x '$REMOTE_DIR/$BINARY_NAME'"
 
   # Before the running taa is disturbed: failing here leaves the previous daemon serving instead
   # of replacing it with one whose configured engine silently degraded to regex.
@@ -2103,18 +2075,14 @@ if [[ "$DEPLOY_TAA" == true ]]; then
   done
 
   step "copying runtime files into container"
-  remote_ssh "$(container_exec) sh -lc 'mkdir -p $TAA_CONTAINER_WORKDIR/certs'"
   remote_ssh "$(container_cp "$REMOTE_DIR/$BINARY_NAME" "$TAA_CONTAINER_WORKDIR/$BINARY_NAME")"
   remote_ssh "$(container_cp "$REMOTE_TAA_CONFIG_PATH" "$CONTAINER_TAA_CONFIG_PATH")"
-  remote_ssh "$(container_cp "$REMOTE_DIR/hrk.cert" "$TAA_CONTAINER_WORKDIR/certs/hrk.cert")"
-  remote_ssh "$(container_cp "$REMOTE_DIR/hsk_cek.cert" "$TAA_CONTAINER_WORKDIR/certs/hsk_cek.cert")"
   remote_ssh "$(container_exec) sh -lc 'chmod +x $TAA_CONTAINER_WORKDIR/$BINARY_NAME'"
 
   step "verifying copied files inside container"
-  remote_ssh "$(container_exec) sh -lc 'ls -l $TAA_CONTAINER_WORKDIR/$BINARY_NAME $CONTAINER_TAA_CONFIG_PATH $TAA_CONTAINER_WORKDIR/certs/hrk.cert $TAA_CONTAINER_WORKDIR/certs/hsk_cek.cert 2>/dev/null'"
+  remote_ssh "$(container_exec) sh -lc 'ls -l $TAA_CONTAINER_WORKDIR/$BINARY_NAME $CONTAINER_TAA_CONFIG_PATH 2>/dev/null'"
 
   step "checking attestation prerequisites inside container"
-  remote_ssh "$(container_exec) sh -lc 'test -f $TAA_CONTAINER_WORKDIR/certs/hrk.cert && test -f $TAA_CONTAINER_WORKDIR/certs/hsk_cek.cert'"
   if ! remote_ssh "$(container_exec) sh -lc 'test -e /dev/csv-guest'" 2>/dev/null; then
     warn "/dev/csv-guest not found in container — attestation will fail (expected in non-TEE Docker)"
   fi

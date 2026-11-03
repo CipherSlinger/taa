@@ -120,8 +120,6 @@ type StartupConfig struct {
 	ModelLogDir               string
 	ModelProgressDir          string
 	KeysDir                   string
-	AttestationHRKCertPath    string
-	AttestationHSKCekCertPath string
 	// LLM bundles the inference service the audit arbitrates findings with. It is
 	// nested because every one of these settings exists for the code audit and
 	// nothing else: TAA has no other use for a model.
@@ -233,12 +231,11 @@ type FHEConfig struct {
 }
 
 type startupConfigFile struct {
-	Server      startupServerConfigFile      `json:"server"`
-	Platform    startupPlatformConfigFile    `json:"platform"`
-	Storage     startupStorageConfigFile     `json:"storage"`
-	Model       startupModelConfigFile       `json:"model"`
-	CodeAudit   startupCodeAuditConfigFile   `json:"codeAudit"`
-	Attestation startupAttestationConfigFile `json:"attestation"`
+	Server    startupServerConfigFile    `json:"server"`
+	Platform  startupPlatformConfigFile  `json:"platform"`
+	Storage   startupStorageConfigFile   `json:"storage"`
+	Model     startupModelConfigFile     `json:"model"`
+	CodeAudit startupCodeAuditConfigFile `json:"codeAudit"`
 	// FHE is a pointer because "absent" and "present but empty" must be
 	// distinguishable: a type=fhe instance with no section at all is a different
 	// mistake from one missing endpoint or dataDir, and both are startup errors.
@@ -408,11 +405,6 @@ type startupModelOutputConfigFile struct {
 	Result   string `json:"result"`
 	Log      string `json:"log"`
 	Progress string `json:"progress"`
-}
-
-type startupAttestationConfigFile struct {
-	HRKCertPath    string `json:"hrkCertPath"`
-	HSKCekCertPath string `json:"hskCekCertPath"`
 }
 
 type startupLLMAttestationConfigFile struct {
@@ -874,27 +866,25 @@ func defaultStartupConfig() StartupConfig {
 	}
 
 	return StartupConfig{
-		Addr:                      ":6001",
-		ServerType:                ServerTypeTEE,
-		PlatformIP:                os.Getenv("PLATFORM_IP"),
-		DockerID:                  os.Getenv("DOCKER_ID"),
-		Contract:                  os.Getenv("CONTRACT_ID"),
-		PlatformPublicKey:         os.Getenv("PLATFORM_PUBLIC_KEY"),
-		PlatformSM2ID:             os.Getenv("PLATFORM_SM2_ID"),
-		EnableCodeAudit:           true,
-		CodeScan:                  CodeScanConfig{Engine: "semgrep"},
-		BinaryAuditEnabled:        true,
-		ModelDir:                  "/opt/taa/models",
-		EnableResultCheck:         true,
-		DataDir:                   "/opt/taa/data",
-		ResultDir:                 "/opt/taa/results",
-		ModelInputDir:             "/opt/taa/input",
-		ModelOutputDir:            "/opt/taa/output/result",
-		ModelLogDir:               "/opt/taa/output/log",
-		ModelProgressDir:          "/opt/taa/output/progress/progress.json",
-		KeysDir:                   "/root/taa/keys",
-		AttestationHRKCertPath:    hrkDefault,
-		AttestationHSKCekCertPath: hskDefault,
+		Addr:               ":6001",
+		ServerType:         ServerTypeTEE,
+		PlatformIP:         os.Getenv("PLATFORM_IP"),
+		DockerID:           os.Getenv("DOCKER_ID"),
+		Contract:           os.Getenv("CONTRACT_ID"),
+		PlatformPublicKey:  os.Getenv("PLATFORM_PUBLIC_KEY"),
+		PlatformSM2ID:      os.Getenv("PLATFORM_SM2_ID"),
+		EnableCodeAudit:    true,
+		CodeScan:           CodeScanConfig{Engine: "semgrep"},
+		BinaryAuditEnabled: true,
+		ModelDir:           "/opt/taa/models",
+		EnableResultCheck:  true,
+		DataDir:            "/opt/taa/data",
+		ResultDir:          "/opt/taa/results",
+		ModelInputDir:      "/opt/taa/input",
+		ModelOutputDir:     "/opt/taa/output/result",
+		ModelLogDir:        "/opt/taa/output/log",
+		ModelProgressDir:   "/opt/taa/output/progress/progress.json",
+		KeysDir:            "/root/taa/keys",
 		LLM: LLMConfig{
 			Enabled:             true,
 			AttestationEnabled:  true,
@@ -933,20 +923,16 @@ type roleCapabilities struct {
 	// audit covers the code audit: the static engine, the binary channel, the
 	// result check and the LLM arbitration that settles Tier 1 findings.
 	audit bool
-	// attestation covers the quote and the certificate paths it needs. An fhe
-	// instance has no local quote to produce; a data-analysis instance still
-	// runs inside the CSV guest and keeps it.
-	attestation bool
 }
 
 // roleCapabilitySets is the role -> capabilities mapping. A missing entry is
-// the zero value, which disables both: an unknown role is rejected by
+// the zero value, which disables the audit: an unknown role is rejected by
 // validateServerType after the file is applied, so the permissive default only
 // affects a config that is about to fail anyway.
 var roleCapabilitySets = map[string]roleCapabilities{
-	ServerTypeTEE:          {audit: true, attestation: true},
-	ServerTypeDataAnalysis: {audit: false, attestation: true},
-	ServerTypeFHE:          {audit: false, attestation: false},
+	ServerTypeTEE:          {audit: true},
+	ServerTypeDataAnalysis: {audit: false},
+	ServerTypeFHE:          {audit: false},
 }
 
 // applyServerType resolves the instance role with the precedence CONTRACT_TYPE
@@ -1139,14 +1125,6 @@ func applyStartupConfigFile(cfg *StartupConfig, fileCfg startupConfigFile) {
 	}
 	if trimmed := strings.TrimSpace(fileCfg.Model.Output.Progress); trimmed != "" {
 		cfg.ModelProgressDir = trimmed
-	}
-	if caps.attestation {
-		if trimmed := strings.TrimSpace(fileCfg.Attestation.HRKCertPath); trimmed != "" {
-			cfg.AttestationHRKCertPath = trimmed
-		}
-		if trimmed := strings.TrimSpace(fileCfg.Attestation.HSKCekCertPath); trimmed != "" {
-			cfg.AttestationHSKCekCertPath = trimmed
-		}
 	}
 	if caps.audit {
 		if llm := fileCfg.CodeAudit.LLM; llm != nil {

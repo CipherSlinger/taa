@@ -43,9 +43,5 @@
       "requestTimeoutMs": 120000,
       "insecureSkipVerify": true
     }
-  },
-  "attestation": {
-    "hrkCertPath": "/etc/taa/certs/hrk.cert",
-    "hskCekCertPath": "/etc/taa/certs/hsk_cek.cert"
   }
 }

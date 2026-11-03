@@ -254,9 +254,6 @@ func TestLoadStartupConfigDataAnalysisRole(t *testing.T) {
 		t.Errorf("DataDir = %q, want the shared template's data landing directory %q",
 			cfg.DataDir, "/root/taa/data")
 	}
-	if cfg.AttestationHRKCertPath == "" || cfg.AttestationHSKCekCertPath == "" {
-		t.Error("attestation certificate paths are empty: a data-analysis instance still produces a quote")
-	}
 }
 
 // fheConfigSection is the fhe block shared by the fixtures that only need a
@@ -267,8 +264,10 @@ const fheConfigSection = `"fhe": {
 		"keyCacheDir": "/opt/fhe-data/taa-fhe-keys"
 	}`
 
-// auditAndAttestationConfig carries both blocks with values that differ from
-// every default, so a test can tell "applied" from "ignored" on each field.
+// auditAndAttestationConfig carries the audit block with values that differ
+// from every default, plus an attestation block left over from an older
+// render: the keys no longer exist in the schema, and a deployed config that
+// still carries them must keep loading as if it did not.
 const auditAndAttestationConfig = `{
 	"server": {"type": "__SERVER_TYPE__"},
 	"codeAudit": {
@@ -292,13 +291,13 @@ func writeAuditAndAttestationConfig(t *testing.T, path, serverType string) {
 	writeTestConfig(t, path, strings.Replace(auditAndAttestationConfig, `"__SERVER_TYPE__"`, `"`+serverType+`"`, 1))
 }
 
-// TestLoadStartupConfigFHEIgnoresAuditAndAttestation pins what the two blocks
-// mean on an fhe instance: nothing. Such an instance never audits a model (FHE
-// packages are layers, not code) and never produces a quote, so a config that
-// still carries the blocks must load as if it did not carry them - the role
-// disables the audit, and the top-level settings that do matter are read as
-// usual.
-func TestLoadStartupConfigFHEIgnoresAuditAndAttestation(t *testing.T) {
+// TestLoadStartupConfigFHEIgnoresAudit pins what the audit block means on an
+// fhe instance: nothing. Such an instance never audits a model (FHE packages
+// are layers, not code), so a config that still carries the block must load as
+// if it did not carry it - the role disables the audit, and the top-level
+// settings that do matter are read as usual. The fixture also carries a legacy
+// attestation block, which must be ignored rather than rejected.
+func TestLoadStartupConfigFHEIgnoresAudit(t *testing.T) {
 	t.Setenv("PLATFORM_IP", "")
 	t.Setenv("DOCKER_ID", "")
 
@@ -326,20 +325,16 @@ func TestLoadStartupConfigFHEIgnoresAuditAndAttestation(t *testing.T) {
 	if cfg.EnableResultCheck {
 		t.Errorf("EnableResultCheck = true, want the role to disable it on an fhe instance")
 	}
-	if cfg.AttestationHRKCertPath == "/bogus/hrk.cert" || cfg.AttestationHSKCekCertPath == "/bogus/hsk_cek.cert" {
-		t.Errorf("attestation paths = %q/%q, want defaults on an fhe instance",
-			cfg.AttestationHRKCertPath, cfg.AttestationHSKCekCertPath)
-	}
 	if cfg.LLM.Enabled || cfg.LLM.Endpoint != "https://127.0.0.1:8443" || cfg.LLM.Model != "qwen2.5-coder:0.5b" ||
 		!cfg.LLM.FailClosed {
 		t.Errorf("LLM = %+v, want audit disabled and otherwise defaults on an fhe instance", cfg.LLM)
 	}
 }
 
-// TestLoadStartupConfigTEEAppliesAuditAndAttestation is the other half: the same
-// blocks on a tee instance still configure what they name. Without it, deleting
-// the blocks from applyStartupConfigFile outright would keep the test above green.
-func TestLoadStartupConfigTEEAppliesAuditAndAttestation(t *testing.T) {
+// TestLoadStartupConfigTEEAppliesAudit is the other half: the same block on a
+// tee instance still configures what it names. Without it, deleting the block
+// from applyStartupConfigFile outright would keep the test above green.
+func TestLoadStartupConfigTEEAppliesAudit(t *testing.T) {
 	t.Setenv("PLATFORM_IP", "")
 	t.Setenv("DOCKER_ID", "")
 
@@ -363,10 +358,6 @@ func TestLoadStartupConfigTEEAppliesAuditAndAttestation(t *testing.T) {
 	}
 	if cfg.EnableResultCheck {
 		t.Errorf("EnableResultCheck = true, want the file's false on a tee instance")
-	}
-	if cfg.AttestationHRKCertPath != "/bogus/hrk.cert" || cfg.AttestationHSKCekCertPath != "/bogus/hsk_cek.cert" {
-		t.Errorf("attestation paths = %q/%q, want the file values on a tee instance",
-			cfg.AttestationHRKCertPath, cfg.AttestationHSKCekCertPath)
 	}
 	if cfg.LLM.Enabled || cfg.LLM.Endpoint != "https://bogus.example:1" || cfg.LLM.Model != "bogus-model" ||
 		cfg.LLM.FailClosed {
@@ -427,9 +418,6 @@ func TestLoadStartupConfigAppliesDefaults(t *testing.T) {
 	}
 	if !cfg.LLM.FailClosed {
 		t.Fatalf("LLM.FailClosed = false, want default true")
-	}
-	if cfg.AttestationHRKCertPath == "" || cfg.AttestationHSKCekCertPath == "" {
-		t.Fatalf("Attestation cert paths unexpectedly empty: hrk=%q, hsk=%q", cfg.AttestationHRKCertPath, cfg.AttestationHSKCekCertPath)
 	}
 }
 
@@ -566,7 +554,12 @@ func TestLoadStartupConfigMissingFileReturnsError(t *testing.T) {
 	}
 }
 
-func TestLoadStartupConfigReadsAttestationCertPaths(t *testing.T) {
+// TestLoadStartupConfigIgnoresTheRemovedAttestationBlock pins upgrade
+// behaviour. attestation.hrkCertPath / hskCekCertPath no longer exist in the
+// schema, but a rendered config from an older deployment still carries them:
+// pods are updated by swapping the binary, so a leftover key nothing reads
+// must be ignored rather than take the instance down.
+func TestLoadStartupConfigIgnoresTheRemovedAttestationBlock(t *testing.T) {
 	path := filepath.Join(t.TempDir(), DefaultFileName)
 	writeTestConfig(t, path, `{
 		"attestation": {
@@ -577,36 +570,10 @@ func TestLoadStartupConfigReadsAttestationCertPaths(t *testing.T) {
 
 	cfg, err := LoadStartupConfig(path)
 	if err != nil {
-		t.Fatalf("LoadStartupConfig() error = %v", err)
+		t.Fatalf("LoadStartupConfig() error = %v, want the removed block ignored", err)
 	}
-
-	if cfg.AttestationHRKCertPath != "/custom/path/hrk.cert" {
-		t.Errorf("AttestationHRKCertPath = %q, want %q", cfg.AttestationHRKCertPath, "/custom/path/hrk.cert")
-	}
-	if cfg.AttestationHSKCekCertPath != "/custom/path/hsk_cek.cert" {
-		t.Errorf("AttestationHSKCekCertPath = %q, want %q", cfg.AttestationHSKCekCertPath, "/custom/path/hsk_cek.cert")
-	}
-}
-
-func TestLoadStartupConfigAttestationTrimWhitespace(t *testing.T) {
-	path := filepath.Join(t.TempDir(), DefaultFileName)
-	writeTestConfig(t, path, `{
-		"attestation": {
-			"hrkCertPath": "  /trimmed/hrk.cert  ",
-			"hskCekCertPath": "  /trimmed/hsk_cek.cert  "
-		}
-	}`)
-
-	cfg, err := LoadStartupConfig(path)
-	if err != nil {
-		t.Fatalf("LoadStartupConfig() error = %v", err)
-	}
-
-	if cfg.AttestationHRKCertPath != "/trimmed/hrk.cert" {
-		t.Errorf("AttestationHRKCertPath = %q, want %q", cfg.AttestationHRKCertPath, "/trimmed/hrk.cert")
-	}
-	if cfg.AttestationHSKCekCertPath != "/trimmed/hsk_cek.cert" {
-		t.Errorf("AttestationHSKCekCertPath = %q, want %q", cfg.AttestationHSKCekCertPath, "/trimmed/hsk_cek.cert")
+	if cfg.Addr != ":6001" || cfg.ServerType != ServerTypeTEE {
+		t.Errorf("cfg = %+v, want the rest of the config loaded as usual", cfg)
 	}
 }
 
@@ -618,8 +585,6 @@ func TestLoadStartupConfigTemplateFiles(t *testing.T) {
 		wantDataDir          string
 		wantResultDir        string
 		wantKeysDir          string
-		wantHRK              string
-		wantHSKCek           string
 		wantModelInputDir    string
 		wantModelOutputDir   string
 		wantModelLogDir      string
@@ -648,8 +613,6 @@ func TestLoadStartupConfigTemplateFiles(t *testing.T) {
 			wantDataDir:          "/root/taa/data",
 			wantResultDir:        "/root/taa/results",
 			wantKeysDir:          "/root/taa/keys",
-			wantHRK:              "/root/taa/certs/hrk.cert",
-			wantHSKCek:           "/root/taa/certs/hsk_cek.cert",
 			wantModelInputDir:    "/opt/taa/input",
 			wantModelOutputDir:   "/opt/taa/output/result",
 			wantModelLogDir:      "/opt/taa/output/log",
@@ -668,8 +631,6 @@ func TestLoadStartupConfigTemplateFiles(t *testing.T) {
 			wantDataDir:          "/root/taa/data",
 			wantResultDir:        "/root/taa/results",
 			wantKeysDir:          "/root/taa/keys",
-			wantHRK:              "/root/taa/certs/hrk.cert",
-			wantHSKCek:           "/root/taa/certs/hsk_cek.cert",
 			wantModelInputDir:    "/opt/taa/input",
 			wantModelOutputDir:   "/opt/taa/output/result",
 			wantModelLogDir:      "/opt/taa/output/log",
@@ -704,12 +665,6 @@ func TestLoadStartupConfigTemplateFiles(t *testing.T) {
 			}
 			if cfg.KeysDir != tc.wantKeysDir {
 				t.Errorf("KeysDir = %q, want %q", cfg.KeysDir, tc.wantKeysDir)
-			}
-			if cfg.AttestationHRKCertPath != tc.wantHRK {
-				t.Errorf("AttestationHRKCertPath = %q, want %q", cfg.AttestationHRKCertPath, tc.wantHRK)
-			}
-			if cfg.AttestationHSKCekCertPath != tc.wantHSKCek {
-				t.Errorf("AttestationHSKCekCertPath = %q, want %q", cfg.AttestationHSKCekCertPath, tc.wantHSKCek)
 			}
 			if cfg.ModelInputDir != tc.wantModelInputDir {
 				t.Errorf("ModelInputDir = %q, want %q", cfg.ModelInputDir, tc.wantModelInputDir)

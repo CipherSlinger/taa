@@ -250,7 +250,6 @@ sequenceDiagram
 | `storage` | `model`、`data`、`result`、`keys` | 目录；状态密封密钥来源不再配置，启动时按 `/dev/csv-guest` 是否存在自动选择硬件密钥或 SM2 派生 |
 | `model` | `input`、`output.result` / `.log` / `.progress` | 训练输入/输出/日志/进度路径 |
 | `codeAudit` | `enabled`、`codeScan.engine`（`regex`/`semgrep`）、`codeScan.rulesPath`、`codeScan.timeoutSeconds`、`binaryAudit`、`resultCheck`、`llm` | 审计总开关及各通道参数 |
-| `attestation` | `hrkCertPath`、`hskCekCertPath` | 自校验证书；缺省回落到 `deploy/certs/` |
 | `fhe` | `endpoint`、`dataDir`、`keyCacheDir`、`pollIntervalMs`、`requestTimeoutMs`、`activateModelOnImport` | 仅 `server.type=fhe` 必填 |
 
 已移除的旧键（`security`、`llm`、`maxFileBytes`、`maxResultBytes`、`codeAudit.maxFileBytes`、`codeAudit.codeScanEngine`、`codeAudit.semgrepRulesPath`、`codeAudit.llm.*` 等）会让加载直接失败并列出修正项，而不是静默丢弃。旧版扁平字段（`addr`、`platformIP`、`dockerID` 等）仍可识别，但新配置应使用分段结构。
@@ -262,7 +261,7 @@ sequenceDiagram
 | `configs/taa-production.json` | 生产 Pod，`tee` 训练 / `tee` 推理 / `data-anaylsis` 共用（`csv-hw` 密封、Semgrep + LLM 审计；后两者的审计由角色关闭） |
 | `configs/taa-docker.json` | 本地 Docker 测试（`sm2` 密封，LLM 指向 `127.0.0.1:8443`） |
 | `configs/taa-fhe.json` | FHE 实例（`server.type=fhe`，指向同容器 `127.0.0.1:58996`） |
-| `configs/taa-initrd.json` | CSV2 机密 VM initrd 内运行（证书在 `/etc/taa/certs`） |
+| `configs/taa-initrd.json` | CSV2 机密 VM initrd 内运行（配置在 `/etc/taa/taa-config.json`） |
 
 ### 3.3 持久化状态与崩溃恢复
 
@@ -677,9 +676,6 @@ TARGET_POD=<pod> ./deploy.sh remote taa # 指定目标 Pod
 ├── taa-supervisor.sh             启动监督脚本（保持 TAA 常驻）
 ├── taa.log                       TAA 运行日志
 ├── attestation.report            远程证明报告
-├── certs/
-│   ├── hrk.cert                  HRK 根证书
-│   └── hsk_cek.cert              HSK/CEK 证书
 ├── keys/                         TAA SM2 密钥对与密封状态 (0700)
 │   ├── sm2_private_key.pem
 │   ├── sm2_public_key.pem

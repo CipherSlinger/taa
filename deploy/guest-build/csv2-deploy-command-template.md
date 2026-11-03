@@ -115,7 +115,6 @@ kubectl -n "${TARGET_NAMESPACE}" exec "${TARGET_POD}" -c "${TARGET_CONTAINER}" -
 # 如果需要查看容器内 TAA 相关文件
 kubectl -n "${TARGET_NAMESPACE}" exec "${TARGET_POD}" -c "${TARGET_CONTAINER}" -- sh -lc '
   ls -l /root/taa /root/taa/attestation 2>/dev/null || true
-  ls -l /root/taa/hrk.cert /root/taa/hsk_cek.cert 2>/dev/null || true
 '
 ```
 
