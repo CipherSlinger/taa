@@ -1117,13 +1117,14 @@ git commit -m "feat(platform-mock): keep one TAA key per dockerId"
 
 **Files:**
 - Modify: `tools/platform-mock/internal/handlers_taa.go`
-- Modify: `tools/platform-mock/internal/envelope_helpers_test.go`
+- Create: `tools/platform-mock/internal/instances_testhelpers_test.go`
+  （不放进 `envelope_helpers_test.go`：该文件在当前检出里带有其它并发工作留下的未提交改动，整文件提交会把它一起卷进来）
 - Modify: `tools/platform-mock/internal/server_test.go`（38 处构造点）
 - Modify: `tools/platform-mock/internal/server.go`（仅入站路由，先保证编译）
 
 - [ ] **Step 1: 增加测试管理器 helper**
 
-在 `envelope_helpers_test.go` 末尾追加：
+新建 `tools/platform-mock/internal/instances_testhelpers_test.go`（package `mock`）：
 
 ```go
 // testManagerWith builds an instance manager whose bundle uses dockerID and a
@@ -1181,7 +1182,7 @@ func registerInstanceForTest(t *testing.T, mgr *instanceManager, dockerID string
 }
 ```
 
-同时给 `envelope_helpers_test.go` 的 import 加上 `bytes`、`fmt`、`path/filepath`。
+同时给新文件的 import 加上 `bytes`、`fmt`、`net/http`、`net/http/httptest`、`path/filepath`、`testing`。
 
 - [ ] **Step 2: 写失败测试：两个实例的 store 不再互相覆盖**
 
@@ -1354,6 +1355,10 @@ func openTAARequestBody(r *http.Request) ([]byte, string, error) {
 		}
 ```
 
+在 `state.DockerID = req.DockerID` 之后补一行 `state.DockerID = strings.TrimSpace(state.DockerID)`：
+实例目录名与密钥表都按这个 id 索引，而 envelope 提示已去空白（`openBodyWithID`），
+不统一就会同一个实例落到两个目录。
+
 其后所有 `store.set(state)` 改为 `bundle.register.set(state)`，并在第一次写入前插入：
 
 ```go
@@ -1464,7 +1469,7 @@ Expected: `ok  taa/tools/platform-mock/internal`。若 `server.go` 因控制台 
 - [ ] **Step 8: 提交**
 
 ```bash
-git add tools/platform-mock/internal/handlers_taa.go tools/platform-mock/internal/envelope_helpers_test.go \
+git add tools/platform-mock/internal/handlers_taa.go tools/platform-mock/internal/instances_testhelpers_test.go \
   tools/platform-mock/internal/instances.go tools/platform-mock/internal/instances_inbound_test.go \
   tools/platform-mock/internal/server_test.go tools/platform-mock/internal/server.go
 git commit -m "feat(platform-mock): route inbound callbacks to per-instance stores"
