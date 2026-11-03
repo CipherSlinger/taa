@@ -3,41 +3,25 @@ package llmclient
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
-	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
 
-// newTestClient wires the unexported client around a test TLS server. The
-// exported constructor validates the endpoint scheme (https only), so a test
-// server on 127.0.0.1 could not pass through it; everything else - request
-// shape, retry, circuit breaker and the separate health budget - is the
-// production code path.
+// newTestClient wires the client around a test TLS server. NewClient cannot be
+// used directly because it owns the http.Client and the test server's
+// self-signed certificate is only trusted by the client httptest hands back;
+// the wiring after that point is the production one.
 func newTestClient(t *testing.T, server *httptest.Server, mutate func(*Config)) Client {
 	t.Helper()
-	cfg := Config{
-		Endpoint:           server.URL,
-		MaxRetries:         3,
-		RetryBaseDelay:     time.Millisecond,
-		RetryMaxDelay:      time.Millisecond,
-		HealthCheckTimeout: DefaultHealthCheckTimeout,
-	}
+	cfg := Config{Endpoint: server.URL, RetryBaseDelay: time.Millisecond, RetryMaxDelay: time.Millisecond}
 	if mutate != nil {
 		mutate(&cfg)
 	}
-	httpClient := server.Client()
-	httpClient.Timeout = cfg.Timeout
-	healthClient := *httpClient
-	healthClient.Timeout = cfg.HealthCheckTimeout
-	return &client{
-		cfg:          cfg,
-		httpClient:   httpClient,
-		healthClient: &healthClient,
-		cb:           NewCircuitBreaker(3, time.Second),
-		endpoint:     strings.TrimRight(cfg.Endpoint, "/"),
-	}
+	return newClient(withDefaults(cfg), server.Client())
 }
 
 func TestNewClientRejectsPlainHTTP(t *testing.T) {
@@ -144,7 +128,10 @@ func TestHealthCheckOutlastsTheRequestTimeout(t *testing.T) {
 
 func TestHealthCheckRemainsBounded(t *testing.T) {
 	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		time.Sleep(3 * time.Second)
+		select {
+		case <-r.Context().Done():
+		case <-time.After(3 * time.Second):
+		}
 		_, _ = w.Write([]byte("OK"))
 	}))
 	defer server.Close()
@@ -158,5 +145,98 @@ func TestHealthCheckRemainsBounded(t *testing.T) {
 	defer cancel()
 	if err := c.HealthCheck(ctx); err == nil {
 		t.Fatal("HealthCheck must fail when the endpoint outlasts its budget")
+	}
+}
+
+func TestGenerateCountsOneFailurePerLogicalCall(t *testing.T) {
+	var attempts int
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts++
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	defer server.Close()
+
+	c := newTestClient(t, server, func(cfg *Config) {
+		cfg.CircuitBreakerFailureThreshold = 2
+		cfg.CircuitBreakerCooldown = time.Hour
+	})
+
+	// First logical call: one attempt plus retries, but exactly one failure.
+	_, _ = c.Generate(context.Background(), &GenerateRequest{ProtocolVersion: CurrentProtocolVersion, Prompt: "p"})
+	if attempts < 2 {
+		t.Fatalf("attempts = %d, want retries", attempts)
+	}
+	// A second call must still be allowed; the first one alone must not trip a
+	// threshold of 2.
+	if _, err := c.Generate(context.Background(), &GenerateRequest{ProtocolVersion: CurrentProtocolVersion, Prompt: "p"}); errors.Is(err, ErrCircuitOpen) {
+		t.Fatal("one logical call's retries must count as a single failure")
+	}
+	// The second logical call opens it.
+	if _, err := c.Generate(context.Background(), &GenerateRequest{ProtocolVersion: CurrentProtocolVersion, Prompt: "p"}); !errors.Is(err, ErrCircuitOpen) {
+		t.Fatalf("breaker must open after two failed calls, got %v", err)
+	}
+}
+
+func TestHalfOpenProbeIsReleasedOnMalformedBody(t *testing.T) {
+	var good bool
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if good {
+			_, _ = w.Write([]byte(`{"status":"SUCCESS","text":"ok"}`))
+			return
+		}
+		_, _ = w.Write([]byte("not json"))
+	}))
+	defer server.Close()
+
+	c := newTestClient(t, server, func(cfg *Config) {
+		cfg.CircuitBreakerFailureThreshold = 1
+		cfg.CircuitBreakerCooldown = 10 * time.Millisecond
+	})
+
+	// Trip it.
+	if _, err := c.Generate(context.Background(), &GenerateRequest{ProtocolVersion: CurrentProtocolVersion, Prompt: "p"}); err == nil {
+		t.Fatal("expected a decode error")
+	}
+	time.Sleep(20 * time.Millisecond)
+
+	// This call runs as the half-open probe and fails again. Before the fix the
+	// probe stayed active forever and every later call returned ErrCircuitOpen.
+	if _, err := c.Generate(context.Background(), &GenerateRequest{ProtocolVersion: CurrentProtocolVersion, Prompt: "p"}); err == nil || errors.Is(err, ErrCircuitOpen) {
+		t.Fatalf("half-open probe must report the real error, got %v", err)
+	}
+
+	time.Sleep(20 * time.Millisecond)
+	good = true
+	resp, err := c.Generate(context.Background(), &GenerateRequest{ProtocolVersion: CurrentProtocolVersion, Prompt: "p"})
+	if err != nil {
+		t.Fatalf("breaker must recover after a good probe: %v", err)
+	}
+	if resp.Text != "ok" {
+		t.Fatalf("response = %+v", resp)
+	}
+}
+
+func TestHealthCheckDoesNotRetryTimeouts(t *testing.T) {
+	var attempts atomic.Int32
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts.Add(1)
+		select {
+		case <-r.Context().Done():
+		case <-time.After(2 * time.Second):
+		}
+	}))
+	defer server.Close()
+
+	c := newTestClient(t, server, func(cfg *Config) {
+		cfg.HealthCheckTimeout = 100 * time.Millisecond
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := c.HealthCheck(ctx); err == nil {
+		t.Fatal("expected a timeout")
+	}
+	if got := attempts.Load(); got != 1 {
+		t.Fatalf("attempts = %d, want 1: a timed-out health check must not be retried", got)
 	}
 }
