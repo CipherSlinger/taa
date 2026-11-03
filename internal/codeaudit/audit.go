@@ -13,11 +13,12 @@ import (
 
 // ── Audit Report Types ────────────────────────────────────
 
-// auditPolicyMode records the arbitration the report was produced under. The
-// wire protocol no longer carries a policy, but the report still states which
-// one TAA applied: the LLM's verdict decides a static HIGH, and MEDIUM findings
-// still block. It is a constant rather than a setting because a deployment must
-// not be able to turn the LLM's decision back into advisory.
+// auditPolicyMode is the arbitration value recorded in the audit metadata. The
+// wire protocol no longer carries a policy, and projectCodeAuditSection never
+// projects scan_metadata, so this field is retained for the local audit report
+// only and is not sent to the platform. It stays a constant rather than a
+// setting because a deployment must not be able to turn the LLM's decision back
+// into advisory.
 const auditPolicyMode = "gate"
 
 // AuditReport is the comprehensive security audit result for a code directory.
@@ -283,7 +284,7 @@ const suspiciousPresenceDowngradeReason = "该规则命中的是危险调用的�
 // inability to prove misuse is not a finding of misuse. MALICIOUS still blocks,
 // and an explicit HIGH/CRITICAL risk assessment still blocks.
 func ClassifyFindingRisk(f Finding) string {
-	if strings.EqualFold(strings.TrimSpace(f.LLMVerdict), "SUSPICIOUS") &&
+	if strings.EqualFold(strings.TrimSpace(f.LLMVerdict), VerdictSuspicious) &&
 		presenceOnlyRule(f.RuleID) && !corroboratedSuspicion(f) && !blockingRiskText(f.LLMRisk) {
 		return "LOW"
 	}
@@ -298,13 +299,13 @@ func ClassifyFindingRisk(f Finding) string {
 	}
 
 	switch strings.ToUpper(strings.TrimSpace(f.LLMVerdict)) {
-	case "MALICIOUS":
+	case VerdictMalicious:
 		return "HIGH"
-	case "SUSPICIOUS":
+	case VerdictSuspicious:
 		return "MEDIUM"
-	case "BENIGN":
+	case VerdictBenign:
 		return "LOW"
-	case "UNCERTAIN":
+	case VerdictUncertain:
 		if f.Severity == SeverityHigh {
 			return "HIGH"
 		}
@@ -415,7 +416,7 @@ func AssembleAuditReport(
 	if scanReport != nil {
 		llmDegraded = scanReport.LLMDegraded
 		for _, f := range scanReport.Findings {
-			if strings.EqualFold(strings.TrimSpace(f.LLMVerdict), "BENIGN") {
+			if strings.EqualFold(strings.TrimSpace(f.LLMVerdict), VerdictBenign) {
 				hasLLMBenign = true
 				break
 			}

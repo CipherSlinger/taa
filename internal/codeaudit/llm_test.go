@@ -46,6 +46,27 @@ func TestParseDecisionInvalidVerdict(t *testing.T) {
 	}
 }
 
+// TestParseDecisionNormalizesCaseAndWhitespace pins the normalization the old
+// server-side parser performed. Accepting "benign" or " BENIGN " and then
+// rejecting it as UNCERTAIN would silently change verdict semantics: a model
+// that answers in lowercase would block imports it used to clear.
+func TestParseDecisionNormalizesCaseAndWhitespace(t *testing.T) {
+	for _, tc := range []struct {
+		raw  string
+		want string
+	}{
+		{`{"verdict":"benign","reason":"ok"}`, VerdictBenign},
+		{`{"verdict":" BENIGN ","reason":"ok"}`, VerdictBenign},
+		{`{"verdict":" Malicious ","reason":"bad"}`, VerdictMalicious},
+		{`{"verdict":"suspicious","reason":"odd"}`, VerdictSuspicious},
+		{`{"verdict":"uncertain","reason":"unclear"}`, VerdictUncertain},
+	} {
+		if got := parseDecision(tc.raw); got.Verdict != tc.want {
+			t.Errorf("parseDecision(%s).Verdict = %s, want %s", tc.raw, got.Verdict, tc.want)
+		}
+	}
+}
+
 // ── Mock LLM client ──────────────────────────────────────
 
 type mockLLMClient struct {
@@ -121,6 +142,20 @@ func (m *mockInferenceClient) Generate(_ context.Context, _ *llmclient.GenerateR
 
 func (m *mockInferenceClient) HealthCheck(context.Context) error { return m.err }
 func (m *mockInferenceClient) Close() error                      { return nil }
+
+// mockRawGenerateClient returns a fixed response and error. It covers the
+// paths a verdict-shaped mock cannot produce: text that parseDecision cannot
+// parse, and a nil response with no error.
+type mockRawGenerateClient struct {
+	resp *llmclient.GenerateResponse
+	err  error
+}
+
+func (m *mockRawGenerateClient) Generate(_ context.Context, _ *llmclient.GenerateRequest) (*llmclient.GenerateResponse, error) {
+	return m.resp, m.err
+}
+func (m *mockRawGenerateClient) HealthCheck(context.Context) error { return nil }
+func (m *mockRawGenerateClient) Close() error                      { return nil }
 
 // ── VerifyReport tests ───────────────────────────────────
 
@@ -303,6 +338,79 @@ func TestVerifyReport_InferenceClient_BenignDowngrade(t *testing.T) {
 	}
 }
 
+// TestVerifyReport_UnparseableOutputIsUncertainWithoutDegrading pins the line
+// between a service failure and a model answer TAA cannot read. Unparseable
+// text is a verdict of UNCERTAIN, not a degraded inference: the service
+// answered, so LLMDegraded stays false. The finding still blocks under
+// fail-closed because UNCERTAIN never clears a static HIGH.
+func TestVerifyReport_UnparseableOutputIsUncertainWithoutDegrading(t *testing.T) {
+	report := &Report{
+		ScanComplete: true,
+		HighCount:    1,
+		Passed:       false,
+		Findings: []Finding{
+			{File: "a.py", Line: 1, RuleID: "NET_001", Severity: SeverityHigh, CodeSnippet: "requests.post(url)"},
+		},
+	}
+	client := &mockRawGenerateClient{resp: &llmclient.GenerateResponse{
+		ProtocolVersion: llmclient.CurrentProtocolVersion,
+		Status:          llmclient.StatusSuccess,
+		Text:            "I cannot determine the verdict.",
+	}}
+	cfg := LLMConfig{Enabled: true, FailClosed: true, MaxFindings: 10}
+
+	res, err := VerifyReport(context.Background(), report, cfg, client)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if res.LLMDegraded {
+		t.Fatal("unparseable model output must not count as an inference failure")
+	}
+	if res.Findings[0].LLMVerdict != VerdictUncertain {
+		t.Fatalf("verdict = %s, want UNCERTAIN", res.Findings[0].LLMVerdict)
+	}
+	if res.Findings[0].LLMReason != "unable to parse model output" {
+		t.Fatalf("reason = %s, want unable to parse model output", res.Findings[0].LLMReason)
+	}
+	if res.Passed {
+		t.Fatal("a HIGH finding with an UNCERTAIN verdict must still block")
+	}
+}
+
+// TestVerifyReport_NilResponseFailsClosed pins the nil-response branch and its
+// exact wording. A client that returns neither a response nor an error is
+// treated as a service failure, not as an empty answer: the report degrades and
+// fail-closed keeps a HIGH finding blocking.
+func TestVerifyReport_NilResponseFailsClosed(t *testing.T) {
+	report := &Report{
+		ScanComplete: true,
+		HighCount:    1,
+		Passed:       false,
+		Findings: []Finding{
+			{File: "a.py", Line: 1, RuleID: "NET_001", Severity: SeverityHigh, CodeSnippet: "requests.post(url)"},
+		},
+	}
+	client := &mockRawGenerateClient{}
+	cfg := LLMConfig{Enabled: true, FailClosed: true, MaxFindings: 10}
+
+	res, err := VerifyReport(context.Background(), report, cfg, client)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !res.LLMDegraded {
+		t.Fatal("a nil response must mark the report degraded")
+	}
+	if res.Passed {
+		t.Fatal("a nil response must fail closed on a HIGH finding")
+	}
+	if res.Findings[0].LLMVerdict != VerdictUncertain {
+		t.Fatalf("verdict = %s, want UNCERTAIN", res.Findings[0].LLMVerdict)
+	}
+	if res.Findings[0].LLMReason != "SERVICE_UNAVAILABLE: nil response" {
+		t.Fatalf("reason = %q, want SERVICE_UNAVAILABLE: nil response", res.Findings[0].LLMReason)
+	}
+}
+
 func TestVerifyReport_InferenceClient_CircuitOpen_GateFailClosed(t *testing.T) {
 	report := &Report{
 		ScanComplete: true,
@@ -410,7 +518,7 @@ func (m *mockCaptureRequestClient) Generate(_ context.Context, req *llmclient.Ge
 func (m *mockCaptureRequestClient) HealthCheck(_ context.Context) error { return nil }
 func (m *mockCaptureRequestClient) Close() error                        { return nil }
 
-func TestVerifyReport_ModelRefPopulated(t *testing.T) {
+func TestVerifyReport_Model(t *testing.T) {
 	report := &Report{
 		ScanComplete: true,
 		HighCount:    1,
@@ -437,14 +545,14 @@ func TestVerifyReport_ModelRefPopulated(t *testing.T) {
 	}
 }
 
-// TestVerifyReport_PolicyTemperature pins the wire form of the sampling
+// TestVerifyReport_Temperature pins the wire form of the sampling
 // temperature, in all three states.
 //
 // TAA now owns the default: the service no longer decides it, so nil must be
 // sent as an explicit 0 rather than omitted. An explicit zero stays zero, and a
 // non-zero value is carried as configured. If nil ever went back to omitting
 // the field, determinism would depend on the service's own default again.
-func TestVerifyReport_PolicyTemperature(t *testing.T) {
+func TestVerifyReport_Temperature(t *testing.T) {
 	temp := func(v float32) *float32 { return &v }
 
 	for _, tc := range []struct {

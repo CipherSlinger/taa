@@ -86,7 +86,8 @@ func DefaultLLMConfig() LLMConfig {
 	}
 }
 
-// LLMDecision represents a structured decision for test mocks and legacy parsers.
+// LLMDecision is the structured decision TAA extracts from the model's text.
+// The inference service itself returns raw text only.
 type LLMDecision struct {
 	Verdict string `json:"verdict"` // MALICIOUS / SUSPICIOUS / BENIGN / UNCERTAIN
 	Reason  string `json:"reason"`
@@ -198,9 +199,10 @@ func parseDecision(raw string) LLMDecision {
 		return LLMDecision{Verdict: VerdictUncertain, Reason: "model output json parse error"}
 	}
 
-	switch decision.Verdict {
+	normalized := strings.ToUpper(strings.TrimSpace(decision.Verdict))
+	switch normalized {
 	case VerdictMalicious, VerdictSuspicious, VerdictBenign, VerdictUncertain:
-		// valid
+		decision.Verdict = normalized
 	default:
 		decision.Verdict = VerdictUncertain
 	}
