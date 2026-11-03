@@ -118,7 +118,7 @@ func llmHeartbeatHandler(store *llmStateStore) http.HandlerFunc {
 }
 
 // llmLogHandler accepts batched run logs in plaintext.
-func llmLogHandler(store *taaLogStore) http.HandlerFunc {
+func llmLogHandler(store *taaLogStore, state *llmStateStore) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		setCORS(w)
 		if r.Method == http.MethodOptions {
@@ -150,6 +150,7 @@ func llmLogHandler(store *taaLogStore) http.HandlerFunc {
 		}
 
 		store.addEntries(req.DockerID, req.RequestID, req.TaskID, req.Entries)
+		state.touchLog(req.DockerID)
 		writeLLMResponse(w, http.StatusOK, "success", map[string]any{"received": true}, 0)
 	}
 }
@@ -158,16 +159,20 @@ func llmLogHandler(store *taaLogStore) http.HandlerFunc {
 func llmStatusHandler(state *llmStateStore, logs *taaLogStore) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		setCORS(w)
+		snapshot := state.get()
 		writeJSON(w, http.StatusOK, map[string]any{
-			"register":  state.get().Register,
-			"heartbeat": state.get().Heartbeat,
+			"register":  snapshot.Register,
+			"heartbeat": snapshot.Heartbeat,
 			"logs":      logs.get(),
+			"sources":   snapshot.Sources,
 		})
 	}
 }
 
 // llmResetHandler clears the record so a test can start from a clean panel.
-func llmResetHandler(state *llmStateStore) http.HandlerFunc {
+// The log store is part of what the panel shows, so leaving it behind would
+// contradict the button's meaning.
+func llmResetHandler(state *llmStateStore, logs *taaLogStore) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		setCORS(w)
 		if r.Method != http.MethodPost {
@@ -176,6 +181,7 @@ func llmResetHandler(state *llmStateStore) http.HandlerFunc {
 			return
 		}
 		state.reset()
+		logs.reset()
 		writeLLMResponse(w, http.StatusOK, "success", map[string]any{"reset": true}, 0)
 	}
 }
