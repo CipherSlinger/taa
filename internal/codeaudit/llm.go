@@ -153,21 +153,6 @@ func NewInferenceClient(cfg LLMConfig) (LLMClient, error) {
 	})
 }
 
-// NewOllamaClient provides backward compatibility, returning an LLMClient via NewInferenceClient.
-// A zero timeout means no request deadline.
-func NewOllamaClient(endpoint, model string, timeout time.Duration) LLMClient {
-	client, err := NewInferenceClient(LLMConfig{
-		Endpoint:           endpoint,
-		Model:              model,
-		Timeout:            timeout,
-		InsecureSkipVerify: true,
-	})
-	if err != nil {
-		return nil
-	}
-	return client
-}
-
 // parseDecision extracts a JSON decision from raw text response.
 func parseDecision(raw string) LLMDecision {
 	start := -1

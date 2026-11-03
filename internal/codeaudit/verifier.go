@@ -30,6 +30,11 @@ func VerifyReport(ctx context.Context, report *Report, cfg LLMConfig, client LLM
 
 	var hasInferenceFailure bool
 
+	options := map[string]any{"temperature": 0.0}
+	if cfg.Temperature != nil {
+		options["temperature"] = *cfg.Temperature
+	}
+
 	for i := 0; i < limit; i++ {
 		if ctx.Err() != nil {
 			for j := i; j < len(report.Findings); j++ {
@@ -51,11 +56,6 @@ func VerifyReport(ctx context.Context, report *Report, cfg LLMConfig, client LLM
 		}
 
 		prompt := BuildFindingPrompt(*f, ctxAfter)
-
-		options := map[string]any{"temperature": 0.0}
-		if cfg.Temperature != nil {
-			options["temperature"] = *cfg.Temperature
-		}
 
 		req := &llmclient.GenerateRequest{
 			ProtocolVersion: llmclient.CurrentProtocolVersion,

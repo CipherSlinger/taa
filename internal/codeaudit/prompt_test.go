@@ -5,31 +5,6 @@ import (
 	"testing"
 )
 
-func TestBuildFindingPromptCarriesEveryField(t *testing.T) {
-	f := Finding{
-		RuleID:        "EMB_003",
-		Category:      "exfiltration",
-		Severity:      SeverityHigh,
-		Description:   "documented rule text",
-		File:          "train.py",
-		Line:          42,
-		CodeSnippet:   "print(dataset)",
-		ContextBefore: "before line",
-		ContextAfter:  "after line",
-	}
-	got := BuildFindingPrompt(f, f.ContextAfter)
-
-	for _, want := range []string{
-		"train.py", "第 42 行", "before line", "print(dataset)", "after line",
-		"EMB_003", "exfiltration", SeverityHigh, "documented rule text",
-		"良性判定规则优先", "请严格按以下 JSON 格式回答",
-	} {
-		if !strings.Contains(got, want) {
-			t.Errorf("prompt is missing %q", want)
-		}
-	}
-}
-
 // TestFindingAnalysisPromptTemplateIsPinned pins the migrated prompt byte for
 // byte. Substring assertions cannot catch a one-character edit, and the wording
 // and the rubric's leading/trailing positions are load-bearing for the verdicts

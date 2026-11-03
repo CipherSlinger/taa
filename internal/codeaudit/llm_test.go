@@ -775,9 +775,14 @@ func TestOllamaClientServerError(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewOllamaClient(server.URL, "test-model", 1*time.Second)
-	if client == nil {
-		t.Fatal("client should not be nil")
+	client, err := NewInferenceClient(LLMConfig{
+		Endpoint:           server.URL,
+		Model:              "test-model",
+		Timeout:            1 * time.Second,
+		InsecureSkipVerify: true,
+	})
+	if err != nil {
+		t.Fatalf("NewInferenceClient: %v", err)
 	}
 	defer client.Close()
 
@@ -786,7 +791,7 @@ func TestOllamaClientServerError(t *testing.T) {
 		RequestID:       "req-1",
 		Prompt:          "ping",
 	}
-	_, err := client.Generate(context.Background(), req)
+	_, err = client.Generate(context.Background(), req)
 	if err == nil {
 		t.Fatal("expected error for server error response")
 	}

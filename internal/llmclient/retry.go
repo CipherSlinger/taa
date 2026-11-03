@@ -45,8 +45,9 @@ func ExecuteWithRetryContext(
 			return nil
 		}
 
-		// Abort immediately if non-retryable error or context error
-		if !errors.Is(lastErr, ErrRetryable) || (ctx != nil && ctx.Err() != nil && errors.Is(lastErr, ctx.Err())) {
+		// Abort immediately on a non-retryable error. A context cancellation is
+		// caught by the wait below, which returns ctx.Err() rather than lastErr.
+		if !errors.Is(lastErr, ErrRetryable) {
 			return lastErr
 		}
 

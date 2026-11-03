@@ -260,7 +260,7 @@ func TestIsLLMServiceAvailable_TimeoutAndErrorLog(t *testing.T) {
 // startHealthzServer starts a minimal TEE-TLS server that only answers
 // /v1/llm/healthz. The controller test needs a real TLS peer to exercise the
 // health probe; it does not need the inference service itself.
-func startHealthzServer(t *testing.T, healthy *atomic.Bool) (string, func()) {
+func startHealthzServer(t *testing.T, healthy *atomic.Bool) string {
 	t.Helper()
 	tlsCfg := &teetls.Config{
 		Mode:             teetls.ModePermissive,
@@ -282,14 +282,14 @@ func startHealthzServer(t *testing.T, healthy *atomic.Bool) (string, func()) {
 
 	srv := &http.Server{Handler: mux}
 	go func() { _ = srv.Serve(listener) }()
-	return listener.Addr().String(), func() { _ = srv.Close() }
+	t.Cleanup(func() { _ = srv.Close() })
+	return listener.Addr().String()
 }
 
 func TestIsLLMServiceAvailable_TEETLS(t *testing.T) {
 	var healthy atomic.Bool
 	healthy.Store(true)
-	addr, stop := startHealthzServer(t, &healthy)
-	defer stop()
+	addr := startHealthzServer(t, &healthy)
 
 	cfg := codeaudit.LLMConfig{
 		Enabled:            true,
