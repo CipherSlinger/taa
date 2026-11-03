@@ -38,8 +38,8 @@ On first start the mock creates and persists a platform SM2 key pair and logs th
 ### Lifecycle (local or remote)
 
 `deploy-platform-mock.sh` at the repository root owns build, start, stop, restart and status.
-`deploy.sh` and `deploy-fhe.sh` delegate to it, so the flags and readiness probe are defined
-in one place.
+`deploy.sh` and `deploy-fhe.sh` do not deploy the mock; they only point TAA at a platform, so
+the flags and readiness probe are defined in one place.
 
 ```bash
 # Local: builds bin/platform-mock, then runs it detached

@@ -8,11 +8,8 @@
 # 打包（本地构建 taa-fhe 镜像、导出归档、上传并 load 到远端）
 ./deploy-fhe.sh taa save
 
-# 只部署统一容器（FHE + TAA；platform-mock 假定已在运行，否则设置 PLATFORM_IP）
+# 只部署统一容器（FHE + TAA；platform-mock 假定已在运行，平台不在本机时设置 PLATFORM_IP）
 ./deploy-fhe.sh taa
-
-# 只部署 platform-mock
-./deploy-fhe.sh platform-mock
 
 # 把 TAA 部署进已有 pod（Kubernetes 里的 FHE 实例）
 # 会重渲染配置以匹配 pod 内的 FHE 数据根，重启 pod 内的 supervisor 并等待健康检查
@@ -30,7 +27,7 @@ POD_CONTAINER=<容器名> ./deploy-fhe.sh pod=<pod 名>
 # 查当前 pod 名
 kubectl -n osr get pods | grep taa-fhe
 
-# 全量（platform-mock → 统一容器）
+# 默认（只部署统一容器）
 ./deploy-fhe.sh
 
 # 用打包好的镜像部署
@@ -69,7 +66,8 @@ TARGET_POD=taa-env-slim-v2-20261016-7104e03003ae0072-f7fbbf8f5-kkdb2 ./deploy.sh
 # platform-mock 部署命令
 
 platform-mock 的构建、启动、停止和就绪检查统一由仓库根目录的 `deploy-platform-mock.sh`
-负责；`deploy.sh` 与 `deploy-fhe.sh` 只负责发现 TAA 目标并调用它。
+负责。`deploy.sh` 与 `deploy-fhe.sh` 不再部署 platform-mock：两者只配置 TAA 的注册地址
+（`PLATFORM_IP` / `REMOTE_PLATFORM_IP`），平台（mock 或生产平台）需单独启动。
 
 ```bash
 ./deploy-platform-mock.sh <local|remote> <start|stop|restart|status> [选项]
@@ -128,39 +126,25 @@ platform-mock 的构建、启动、停止和就绪检查统一由仓库根目录
 - 远程启动使用 `nohup` 脱离 SSH，二进制上传到 `--remote-binary`（默认
   `--remote-dir/platform-mock`）。
 
-**多实例模式（deploy.sh 需显式开启）**
+**多实例模式（deploy-platform-mock.sh 默认行为）**
 
 - platform-mock 二进制默认多实例：不传 `--taa-target` 时，一个进程同时服务多个 TAA 实例，
   实例身份取注册请求里的 `dockerId`，每个实例在注册时按请求源 IP 推导自己的地址
   （`http://<源 IP>:<--taa-port>`，默认端口 6001）。
-- `deploy.sh` 默认关闭（`MULTI_INSTANCE=0`），设置 `MULTI_INSTANCE=1` 才开启该模式，
-  `docker` 与 `remote` 两种模式都支持：
-  ```bash
-  MULTI_INSTANCE=1 ./deploy.sh docker
-  MULTI_INSTANCE=1 ./deploy.sh remote
-  ```
-- 两种模式都会显式传入端口（`docker` 用 `LOCAL_TAA_PORT`，`remote` 用 `CON_PORT`），
-  否则 mock 会退回内置默认 6001，与覆盖后的 TAA 端口不一致；多实例调用还会清空
-  `LOCAL_TAA_URL` / `PLATFORM_MOCK_TAA_TARGET`，避免外部环境变量重新固定单个目标。
 - 直接调用 `deploy-platform-mock.sh` 时省略 `--taa-target` 即可：
   ```bash
   ./deploy-platform-mock.sh local start --taa-port 6001
   ```
-- 仍需要固定单实例地址时继续使用 `--taa-target http://<ip>:6001`（未按注册推导出地址时
-  作为后备）。
+- 需要固定单实例地址时传 `--taa-target http://<ip>:6001`（未按注册推导出地址时作为后备）。
 - 限制：反向代理或端口转发会丢失请求源 IP，此时无法按注册推导地址，应退回
   `--taa-target` 指定固定地址。
 
 **调用方差异**
 
-- `deploy.sh remote` 不传 state/upload/allow-empty 参数，沿用二进制自身默认值。
-- `deploy-fhe.sh` 显式传 state/upload 目录、`--allow-empty-attestation`、`--static`，
-  并使用 `--reuse --reset-register`。
-- `deploy.sh` 非多实例时：`docker` 传 `--taa-target $LOCAL_TAA_URL`；`remote` 用 kubectl
-  发现 TAA Pod IP 后传 `--taa-target`，发现失败退回 `--taa-pod/--taa-ns/--taa-port`。
-  设置 `MULTI_INSTANCE=1` 时，`docker` 不再传 `--taa-target`、`remote` 跳过发现，两者
-  都改为传 `--taa-port`（`docker` 用 `LOCAL_TAA_PORT`，`remote` 用 `CON_PORT`），由每个
-  注册推导各自的目标地址。
+- `deploy.sh` 与 `deploy-fhe.sh` 不再调用 `deploy-platform-mock.sh`，也不再传入
+  state/upload/`--allow-empty-attestation` 等参数；这些参数只在直接部署 mock 时使用。
+- `deploy-fhe.sh` 末尾的注册检查因此是**告警而非失败**：平台不在本机、或 TAA 尚未重试成功
+  （注册会一直重试到平台应答）都只打印 warning。
 
 
 # taa-teellm 部署命令

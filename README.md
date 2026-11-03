@@ -515,15 +515,15 @@ An instance whose `server.type` is `fhe` exposes the same API surface as a `tee`
 
 ## Deployment & Operation (`deploy.sh`)
 
-`deploy.sh` provides unified, multi-mode lifecycle management and image packaging for TAA and platform-mock. The platform-mock build, start, stop and readiness checks themselves live in the dedicated `deploy-platform-mock.sh` (see [Local Platform Mock & Web Console](#local-platform-mock--web-console)); `deploy.sh` only discovers the TAA target and delegates to it.
+`deploy.sh` provides lifecycle management and image packaging for TAA. The platform (or platform-mock) is deployed separately with `deploy-platform-mock.sh` (see [Local Platform Mock & Web Console](#local-platform-mock--web-console)); `deploy.sh` only configures the address TAA registers with.
 
 ### 1. Two Mutually Exclusive Running Modes
 
 ```bash
-./deploy.sh [docker|remote] [start|stop|save] [components...] [options...]
+./deploy.sh [docker|remote] [start|stop|save] [taa] [options...]
 ```
 
-- **`docker`**: Local Docker container mode. Runs TAA inside a local Docker container (`taa-env-slim-v2`) managed by a supervisor daemon (`deploy/taa-supervisor.sh`), while platform-mock runs on the host.
+- **`docker`**: Local Docker container mode. Runs TAA inside a local Docker container (`taa-env-slim-v2`) managed by a supervisor daemon (`deploy/taa-supervisor.sh`). The platform must already run on the host (e.g. `./deploy-platform-mock.sh local start`).
 - **`remote`**: Remote Kubernetes mode (default when omitted). Deploys to a remote TEE Kubernetes Pod via SSH and `kubectl`.
 
 ### 2. Supported Actions
@@ -532,11 +532,9 @@ An instance whose `server.type` is `fhe` exposes the same API surface as a `tee`
 - **`stop`**: Gracefully stops target services in the chosen mode.
 - **`save`**: **Exclusively valid in `docker` mode** (`./deploy.sh docker save`). Assembles a **TAA-only production image — TAA plus the code scan engine** — and exports it as an archive. It removes every TEE-LLM and ollama artifact the base image may carry (asserting each is gone), installs the supervisor from `deploy/taa-supervisor.sh` instead of inheriting the base image's copy, provisions semgrep offline from a payload archive and verifies it with a real scan, then copies the binary, certificates and generated production config (`configs/taa-production.json`) before `docker commit` + `docker save`. TEE-LLM and ollama are **not** in this image; deploy them separately with `./deploy-llm.sh`. The generated config's `codeAudit.llm.endpoint` is the template's value verbatim — nothing is discovered on the packaging host — so a deployment that needs a different address sets `LLM_IP` at container startup.
 
-### 3. Component Selection
+### 3. Component Selection and Platform Address
 
-Specify one or more components: `platform-mock`, `taa`. If omitted:
-- In `docker` mode: defaults to deploying both `platform-mock` and `taa`.
-- In `remote` mode: defaults to `taa` (omits `platform-mock` to avoid port 18080 conflict with host production agents).
+TAA is the only component `deploy.sh` deploys; `taa` may be given explicitly for compatibility. The platform (or platform-mock) is deployed separately with `./deploy-platform-mock.sh`; `PLATFORM_PORT`, `LOCAL_PLATFORM_PORT` and `REMOTE_PLATFORM_IP` only tell TAA where to register.
 - **Note on TEE-LLM / Qwen / Ollama**: The LLM inference service sources live in the `teellm` submodule, but its deployment script sits at the repository root. TEE-LLM needs a real `/dev/csv-guest` to produce a genuine attestation, so it is deployed as a Kata CSV2 Pod on the remote host: run `./deploy-llm.sh` (add `--create-pod` the first time, to create that Pod).
 
 ### 4. Container Autostart Supervisor (`deploy/taa-supervisor.sh`)
@@ -550,9 +548,8 @@ Inside Docker containers, TAA runs under the supervision of `deploy/taa-supervis
 
 ```bash
 # Docker Container Mode
-./deploy.sh docker start                      # Start TAA in container and platform-mock on host
+./deploy.sh docker start                      # Start TAA in container (platform must already run on the host)
 ./deploy.sh docker taa                        # Deploy/update only TAA inside Docker
-./deploy.sh docker platform-mock              # Deploy/update only platform-mock on host
 ./deploy.sh docker stop                       # Stop local Docker services
 ./deploy.sh docker save                       # Export production Docker image archive
 ./deploy.sh docker save --tag my-taa:v1 -o /tmp/taa.tar.gz
@@ -669,9 +666,9 @@ FHE API at `127.0.0.1:58996` over container loopback.
 # On the GPU host itself
 ./deploy-fhe.sh --local
 
-# Deploy one component only (mutually exclusive)
-./deploy-fhe.sh taa             # the unified FHE + TAA container
-./deploy-fhe.sh platform-mock   # only platform-mock
+# Deploy the unified FHE + TAA container
+./deploy-fhe.sh taa
+./deploy-fhe.sh                 # same as taa
 
 # Package instead of deploy: bake TAA into the FHE image and export an archive
 ./deploy-fhe.sh taa save        # -> deploy/out/taa-fhe-<date>.tar.gz
@@ -700,8 +697,9 @@ FHE API at `127.0.0.1:58996` over container loopback.
   `TAA_DOCKER_NETWORK` plus `PLATFORM_PORT` (normally `172.17.0.1:18081`) and injected with
   `-e`; on `type=fhe` the environment wins over the template. A loopback `PLATFORM_IP` is
   refused on a non-host network.
-- **`taa` mode** assumes platform-mock is already running. Set `PLATFORM_IP` explicitly when
-  the platform is not on this host.
+- **The platform is external.** `taa` assumes the platform (or platform-mock, started with
+  `./deploy-platform-mock.sh`) is already running. Set `PLATFORM_IP` explicitly when the
+  platform is not on this host.
 - **`taa save`** builds the TAA binary, bakes it, `deploy/taa-supervisor.sh`, the combined entrypoint
   and the rendered config into an image built **from the FHE image**, tags the result
   `TAA_FHE_SAVE_IMAGE` (`taa-fhe:<date>`) and exports it as `TAA_FHE_SAVE_ARCHIVE` (default
@@ -711,8 +709,8 @@ FHE API at `127.0.0.1:58996` over container loopback.
   `docker load`ed, and the uploaded copy is kept. Run the result with
   `TAA_IMAGE=taa-fhe:<date> ./deploy-fhe.sh taa`; a deploy run never loads the FHE bundle
   archive over a custom tag. `save` is only accepted with the `taa` argument.
-- **Positional modes.** The bare form deploys platform-mock and the unified container together.
-  `taa` skips platform-mock; `platform-mock` touches neither the FHE side nor TAA.
+- **Positional modes.** The bare form deploys the unified container, same as `taa`.
+  `platform-mock` is not accepted: run `./deploy-platform-mock.sh` instead.
 - **Remote by default.** The run targets `REMOTE_HOST` (default `172.16.10.178`) over ssh, the
   same host `deploy.sh remote` uses, and takes the same credentials (`TARGET_PASSWORD`). It
   stages the bundle's models into `HOST_DATA_DIR/models` (`rsync -a`, no `--delete`, so models
@@ -728,20 +726,18 @@ FHE API at `127.0.0.1:58996` over container loopback.
 - **`-n` / `--dry-run`** prints the whole plan and connects to nothing; it does not need the remote
   to be reachable, or the binaries to be built, or the bundle to be unpacked.
 - **`--skip-build`** uses the binaries already on disk instead of building them.
-- **`--no-platform-mock`** skips the platform-mock step, and with it the registration check below.
-  It is refused together with the `platform-mock` argument.
+- **`--no-platform-mock`** is a deprecated no-op: this script never deploys platform-mock.
 
-**The last step is the one that proves the deployment works.** After TAA answers its health probe,
-the script asks the platform what `dockerId` it recorded, and refuses unless it is the one this
-run's identity resolves to and it was accepted. TAA being up and the platform having heard from it
-are two different statements: a rejected registration is a warning in TAA's own log and a background
-retry, so the daemon looks perfectly healthy while nothing reaches the platform. Under `--local`
-the same check runs against a platform-mock this script starts on the host. In a `taa`-only run it
-runs only when something answers on `PLATFORM_PORT`; with no platform there, the run warns instead
-of failing.
+**The last step checks whether the platform heard from TAA, but no longer gates the run.** After
+TAA answers its health probe, the script asks the platform what `dockerId` it recorded — when a
+platform answers on `PLATFORM_PORT`. A missing, rejected, or mismatched registration is a warning:
+the platform is deployed separately, and TAA retries registration in the background until it is
+accepted, so an absent entry right after startup is normal. TAA being up and the platform having
+heard from it are still two different statements, so check the status endpoint again if the
+warning persists; TAA's own log records the retry failures.
 
-The platform-mock is started with `-allow-empty-attestation`, because an `fhe` instance writes an
-empty attestation by design. A re-run reuses the container only when image, binds, environment,
+The platform-mock, when started with `./deploy-platform-mock.sh`, is run with
+`--allow-empty-attestation` because an `fhe` instance writes an empty attestation by design. A re-run reuses the container only when image, binds, environment,
 network, entrypoint, published port, restart policy and GPU request all match; otherwise it
 recreates it, and a running container is refreshed in place (the supervisor is stopped, the files
 are replaced atomically, and the wrapper restarts it).
@@ -780,7 +776,7 @@ go run ./tools/platform-mock/cmd/platform-mock -addr 0.0.0.0:18080 -taa-target h
 ```
 
 `deploy-platform-mock.sh` is the single owner of the mock lifecycle: `deploy.sh` and
-`deploy-fhe.sh` call it instead of carrying their own build/start logic. `start` rebuilds
+`deploy-fhe.sh` do not start the mock at all, so its build/start logic lives here alone. `start` rebuilds
 unless `--skip-build` is given, `restart` stops then starts, and `status` exits non-zero when
 the instance is neither running nor answering `/api/register/status`.
 

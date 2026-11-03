@@ -91,14 +91,10 @@ trap cleanup_display EXIT INT TERM
 
 # Kubernetes target: the TAA Pod lives in the osr namespace by default. An explicit TARGET_POD
 # names a Pod the deployment must not create; when it is unset, remote mode owns a Pod of its own
-# and creates it on the remote host (see ensure_remote_pod). The effective name is resolved after
-# argument parsing, because a run that does not deploy TAA (platform-mock only) must keep its own
-# target instead of the name a TAA deployment would create.
+# and creates it on the remote host (see ensure_remote_pod).
 TARGET_NAMESPACE="${TARGET_NAMESPACE:-osr}"
 TARGET_POD_WAS_SET="${TARGET_POD:+set}"
 TAA_POD_NAME="${TAA_POD_NAME:-taa-deploy}"
-# The historical default target, still used by runs that do not deploy TAA.
-TARGET_POD_LEGACY_DEFAULT="taa-env-slim-v2-20260916-506ca9a0790167bf-768d54479-m8b9z"
 
 # Project and remote host: local source tree, SSH login, and the remote working directory.
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -140,16 +136,15 @@ TAA_POD_DOCKER_ID="${TAA_POD_DOCKER_ID:-}"
 TAA_POD_TEMPLATE="${TAA_POD_TEMPLATE:-$PROJECT_DIR/deploy/manifest/k8s/taa-pod.yaml.tmpl}"
 TEMP_TAA_POD_MANIFEST=""
 
-# Platform：远程平台模拟器的监听端口、绑定地址，以及 TAA 容器访问平台的地址。
+# Platform address that TAA registers with. The platform itself is deployed separately with
+# deploy-platform-mock.sh (or is the production control plane); this script only tells TAA where
+# to find it.
 PLATFORM_PORT="${PLATFORM_PORT:-18080}"
-PLATFORM_ADDR="${PLATFORM_ADDR:-0.0.0.0:${PLATFORM_PORT}}"
 REMOTE_PLATFORM_IP="${REMOTE_PLATFORM_IP:-${REMOTE_HOST}:${PLATFORM_PORT}}"
 
-# 本地构建产物：TAA 与 Platform Mock 的二进制文件名和本地路径。
+# 本地构建产物：TAA 的二进制文件名和本地路径。
 BINARY_NAME="${BINARY_NAME:-taa}"
 TAA_BINARY_PATH="${TAA_BINARY_PATH:-$PROJECT_DIR/bin/$BINARY_NAME}"
-MOCK_BINARY_NAME="${MOCK_BINARY_NAME:-platform-mock}"
-MOCK_BINARY_PATH="${MOCK_BINARY_PATH:-$PROJECT_DIR/bin/$MOCK_BINARY_NAME}"
 
 # 远程容器目录：TAA 容器内的工作目录，以及 attestation report 文件路径。
 CON_WORKDIR="${CON_WORKDIR:-/root/taa}"
@@ -204,9 +199,7 @@ PASSWORD="${TARGET_PASSWORD:-Osrd@2026}"
 
 DEPLOY_DOCKER=false
 DEPLOY_REMOTE=false
-DEPLOY_PLATFORM_MOCK=false
-DEPLOY_TAA=false
-SELECTED_COMPONENT=false
+DEPLOY_TAA=true
 STEP=0
 
 # Best-effort routable IPv4 address of this host, empty when none can be determined.
@@ -225,25 +218,19 @@ detect_local_host_ip() {
   printf '%s' "$ip"
 }
 
-LOCAL_PLATFORM_STATE_DIR="${LOCAL_PLATFORM_STATE_DIR:-$PROJECT_DIR/.local/platform-mock}"
 LOCAL_PLATFORM_PORT="${LOCAL_PLATFORM_PORT:-18080}"
-MULTI_INSTANCE="${MULTI_INSTANCE:-0}"
-LOCAL_PLATFORM_BIND="${LOCAL_PLATFORM_BIND:-0.0.0.0:${LOCAL_PLATFORM_PORT}}"
 LOCAL_PLATFORM_IP="${LOCAL_PLATFORM_IP:-127.0.0.1:${LOCAL_PLATFORM_PORT}}"
-LOCAL_PLATFORM_URL="${LOCAL_PLATFORM_URL:-http://127.0.0.1:${LOCAL_PLATFORM_PORT}}"
-LOCAL_PLATFORM_UPLOAD_DIR="${LOCAL_PLATFORM_UPLOAD_DIR:-$PROJECT_DIR/.local/upload}"
 LOCAL_RUN_DIR="${LOCAL_RUN_DIR:-$PROJECT_DIR/.local/run}"
 REMOTE_TAA_CONFIG_SOURCE="${REMOTE_TAA_CONFIG_SOURCE:-$LOCAL_RUN_DIR/remote-$TAA_CONFIG_FILE}"
 LOCAL_DOCKER_CONFIG_SOURCE="${LOCAL_DOCKER_CONFIG_SOURCE:-$LOCAL_RUN_DIR/docker-$TAA_CONFIG_FILE}"
 LOCAL_TAA_PORT="${LOCAL_TAA_PORT:-$CON_PORT}"
 LOCAL_TAA_BIND="${LOCAL_TAA_BIND:-:${LOCAL_TAA_PORT}}"
 # TAA publishes on the host network, so it answers on loopback and on the host's routable
-# address alike. Prefer the routable one: platform-mock prints this value verbatim as its
-# "TAA proxy" badge, and 127.0.0.1 is meaningless to anyone reading that page from another
-# machine. Loopback remains the fallback for hosts with no routable address.
+# address alike. Prefer the routable one: it is what the platform is given as the TAA endpoint,
+# and 127.0.0.1 is meaningless to anyone reading it from another machine. Loopback remains the
+# fallback for hosts with no routable address.
 LOCAL_HOST_IP="${LOCAL_HOST_IP:-$(detect_local_host_ip)}"
 LOCAL_TAA_URL="${LOCAL_TAA_URL:-http://${LOCAL_HOST_IP:-127.0.0.1}:${LOCAL_TAA_PORT}}"
-LOCAL_PLATFORM_LOG_FILE="${LOCAL_PLATFORM_LOG_FILE:-$PROJECT_DIR/.local/logs/platform-mock.log}"
 LOCAL_DOCKER_CONTAINER="${LOCAL_DOCKER_CONTAINER:-taa-env-slim-v2}"
 LOCAL_DOCKER_IMAGE_ARCHIVE="${LOCAL_DOCKER_IMAGE_ARCHIVE:-$PROJECT_DIR/deploy/base/taa-env-slim-v2.tar.gz}"
 LOCAL_DOCKER_IMAGE="${LOCAL_DOCKER_IMAGE:-taa-env:slim-v2}"
@@ -1018,10 +1005,10 @@ save_local_docker_image() {
 
 usage() {
   cat <<EOF
-Usage: $(basename "$0") [docker|remote] [start|stop|save] [platform-mock] [taa] [--model <name>]
+Usage: $(basename "$0") [docker|remote] [start|stop|save] [taa] [--model <name>]
 
 Running modes (mutually exclusive, default: remote):
-  docker    Deploy TAA and its dependencies into a local Docker container for testing, with platform-mock running locally on host.
+  docker    Deploy TAA into a local Docker container for testing.
   remote    Deploy remotely via Kubernetes Pod and SSH (default mode).
 
 Actions (mutually exclusive, default: start):
@@ -1047,8 +1034,8 @@ Options:
       Specify local Docker container name (docker mode).
 
 Component selection:
-  When no component names are given, target components are deployed by default (in remote mode, platform-mock is omitted to avoid port 18080 conflict with ccs-node-agent).
-  Provide one or more component names (platform-mock, taa) to deploy or operate on them separately.
+  taa is the only component this script deploys; it is the default and may be given explicitly.
+  The platform (or platform-mock) is deployed separately with deploy-platform-mock.sh.
   Note: Qwen / Ollama / TEE-LLM inference service is managed independently via deploy-llm.sh.
 
 Remote Pod lifecycle:
@@ -1074,15 +1061,12 @@ Examples:
   $(basename "$0") docker save -o /tmp/taa-env-production.tar.gz
   $(basename "$0") docker
   $(basename "$0") docker taa
-  $(basename "$0") docker platform-mock
-  $(basename "$0") docker taa platform-mock
 
   # Remote mode (Kubernetes / SSH)
   $(basename "$0") remote start
   $(basename "$0") remote stop
   $(basename "$0") remote
   $(basename "$0") remote taa
-  $(basename "$0") remote platform-mock
   $(basename "$0") taa
 
 Environment overrides:
@@ -1136,21 +1120,14 @@ Environment overrides:
   TARGET_PASSWORD=<password>
       SSH 密码覆盖项；置空时脚本会交互式询问。
 
-  # Platform Mock
+  # Platform address observed by TAA
+  # The platform itself (or platform-mock) is deployed separately with deploy-platform-mock.sh.
   PLATFORM_PORT=${PLATFORM_PORT}
-      Platform Mock 监听端口。
-  PLATFORM_ADDR=${PLATFORM_ADDR}
-      Platform Mock 绑定地址。
+      remote 模式下 TAA 访问 platform 使用的端口（默认 18080）。
   LOCAL_PLATFORM_PORT=${LOCAL_PLATFORM_PORT}
-      本地 Platform Mock 监听端口。
-  LOCAL_PLATFORM_UPLOAD_DIR=${LOCAL_PLATFORM_UPLOAD_DIR}
-      Platform Mock 上传与静态文件服务目录（默认 $PROJECT_DIR/.local/upload）。
+      docker 模式下 TAA 访问宿主机 platform 使用的端口（默认 18080）。
   REMOTE_PLATFORM_IP=${REMOTE_PLATFORM_IP}
-      TAA 容器访问 Platform Mock 使用的地址。
-  MOCK_BINARY_PATH=${MOCK_BINARY_PATH}
-      本地 Platform Mock 二进制文件路径。
-  MULTI_INSTANCE=${MULTI_INSTANCE}
-      置为 1 时按注册信息推导每个 TAA 实例的地址，而不是传入单个 --taa-target。
+      TAA 容器访问 platform 使用的完整地址（默认 <REMOTE_HOST>:<PLATFORM_PORT>）。
 
   # TAA service / attestation
   BINARY_NAME=${BINARY_NAME}
@@ -1907,8 +1884,6 @@ PY
 ACTION=""
 
 if [[ $# -eq 0 ]]; then
-  DEPLOY_PLATFORM_MOCK=true
-  DEPLOY_TAA=true
   ACTION="start"
   DEPLOY_REMOTE=true
 else
@@ -2015,12 +1990,11 @@ else
         LOCAL_DOCKER_CONTAINER="$1"
         ;;
       platform-mock)
-        DEPLOY_PLATFORM_MOCK=true
-        SELECTED_COMPONENT=true
+        err "platform-mock is no longer deployed by this script; use ./deploy-platform-mock.sh <local|remote> start"
+        exit 1
         ;;
       taa)
-        DEPLOY_TAA=true
-        SELECTED_COMPONENT=true
+        # TAA is the only component this script deploys; accepted for compatibility.
         ;;
       qwen)
         info "Qwen/Ollama/TEE-LLM is now independently managed by teellm submodule."
@@ -2071,32 +2045,12 @@ else
     fi
     DEPLOY_REMOTE=true
   fi
-
-  if [[ "$SELECTED_COMPONENT" == false ]]; then
-    if [[ "$DEPLOY_DOCKER" == false ]]; then
-      # 正式远程部署模式下，宿主机已有生产管控平台 (如 ccs-node-agent) 监听 18080，默认不部署 platform-mock
-      DEPLOY_PLATFORM_MOCK=false
-    else
-      DEPLOY_PLATFORM_MOCK=true
-    fi
-    DEPLOY_TAA=true
-  fi
-
-  if [[ "$DEPLOY_PLATFORM_MOCK" == true && "$DEPLOY_DOCKER" == false && "$PLATFORM_PORT" == "18080" ]]; then
-    warn "远程宿主机 18080 端口通常由生产平台 (如 ccs-node-agent) 占用；若需部署 platform-mock，建议指定 PLATFORM_PORT"
-  fi
 fi
 
-# Resolve the effective Pod name only now that the components are known. A run that does not
-# deploy TAA (for example `remote platform-mock`) must keep its own target, not the name a TAA
-# deployment would create: pointing discovery at a Pod only this script creates would leave that
-# run looking at a Pod that is about to change.
+# Resolve the effective Pod name. TAA is the only thing deployed here, so an unset TARGET_POD
+# always means the Pod this script owns and creates.
 if [[ -z "${TARGET_POD:-}" ]]; then
-  if [[ "$DEPLOY_TAA" == true ]]; then
-    TARGET_POD="$TAA_POD_NAME"
-  else
-    TARGET_POD="$TARGET_POD_LEGACY_DEFAULT"
-  fi
+  TARGET_POD="$TAA_POD_NAME"
 fi
 
 cd "$PROJECT_DIR"
@@ -2149,12 +2103,6 @@ if [[ "$ACTION" == "stop" ]]; then
   banner "Stopping Services"
   if [[ "$DEPLOY_DOCKER" == true ]]; then
     step "stopping docker services"
-    if [[ "$DEPLOY_PLATFORM_MOCK" == true ]]; then
-      "$PROJECT_DIR/deploy-platform-mock.sh" local stop \
-        --binary "$MOCK_BINARY_PATH" \
-        --binary-name "$MOCK_BINARY_NAME" \
-        --pid-file "$LOCAL_RUN_DIR/platform-mock.pid"
-    fi
     if command -v docker >/dev/null 2>&1 && docker ps --format '{{.Names}}' | grep -Eq "^${LOCAL_DOCKER_CONTAINER}\$"; then
       if [[ "$DEPLOY_TAA" == true ]]; then
         docker exec -i "$LOCAL_DOCKER_CONTAINER" sh -lc "touch '$TAA_CONTAINER_WORKDIR/manual'; pkill -f '[s]tart\.sh' >/dev/null 2>&1 || true; pkill -x '$BINARY_NAME' >/dev/null 2>&1 || true; killall '$BINARY_NAME' >/dev/null 2>&1 || true" 2>/dev/null || true
@@ -2163,16 +2111,6 @@ if [[ "$ACTION" == "stop" ]]; then
   else
     step "stopping remote processes"
     check_remote_connectivity
-    if [[ "$DEPLOY_PLATFORM_MOCK" == true ]]; then
-      ensure_remote_ssh
-      "$PROJECT_DIR/deploy-platform-mock.sh" remote stop \
-        --host "$REMOTE_HOST" \
-        --user "$REMOTE_USER" \
-        --password "$PASSWORD" \
-        --remote-dir "$REMOTE_DIR" \
-        --binary-name "$MOCK_BINARY_NAME" \
-        --pid-file "$REMOTE_DIR/platform-mock.pid"
-    fi
     if [[ "$DEPLOY_TAA" == true ]]; then
       if remote_pod_exists; then
         # A Pod that is Pending or wedged cannot be exec'd into; that must not stop the deletion
@@ -2203,12 +2141,6 @@ if [[ "$ACTION" == "save" ]]; then
   exit 0
 fi
 
-# 用户可见的平台标签：docker 模式显示 "platform-mock"，远程模式显示 "platform"
-PLATFORM_LABEL="platform"
-if [[ "$DEPLOY_DOCKER" == true ]]; then
-  PLATFORM_LABEL="platform-mock"
-fi
-
 # 容器标识显示名：docker 模式显示本地容器名，k8s 模式显示 Pod 名。
 if [[ "$DEPLOY_DOCKER" == true ]]; then
   CONTAINER_LABEL="${LOCAL_DOCKER_CONTAINER}"
@@ -2217,9 +2149,7 @@ else
 fi
 REMOTE_DOCKER_ID="${REMOTE_DOCKER_ID:-$CONTAINER_LABEL}"
 
-DEPLOY_COMPONENTS=""
-[[ "$DEPLOY_PLATFORM_MOCK" == true ]] && DEPLOY_COMPONENTS+="$PLATFORM_LABEL "
-[[ "$DEPLOY_TAA" == true ]] && DEPLOY_COMPONENTS+="taa "
+DEPLOY_COMPONENTS="taa "
 DEPLOY_TARGET_DESC="${REMOTE_USER}@${REMOTE_HOST}"
 if [[ "$DEPLOY_DOCKER" == true ]]; then
   DEPLOY_TARGET_DESC="local docker (${LOCAL_DOCKER_CONTAINER})"
@@ -2238,35 +2168,6 @@ if [[ "$DEPLOY_TAA" == true ]]; then
   require_file "taa supervisor script missing" "$PROJECT_DIR/deploy/taa-supervisor.sh"
 fi
 
-
-deploy_platform_mock() {
-  step "deploying local platform-mock on ${LOCAL_PLATFORM_BIND}"
-  local -a mock_args=(
-    local start
-    --binary "$MOCK_BINARY_PATH"
-    --binary-name "$MOCK_BINARY_NAME"
-    --addr "$LOCAL_PLATFORM_BIND"
-    --state-dir "$LOCAL_PLATFORM_STATE_DIR"
-    --upload-dir "$LOCAL_PLATFORM_UPLOAD_DIR"
-    --log-file "$LOCAL_PLATFORM_LOG_FILE"
-    --pid-file "$LOCAL_RUN_DIR/platform-mock.pid"
-    --allow-empty-attestation
-    --ready-timeout "$READY_TIMEOUT"
-    --ready-interval "$READY_INTERVAL"
-  )
-  if [[ "$MULTI_INSTANCE" == "1" ]]; then
-    # The port must be explicit: without --taa-target the mock derives each
-    # instance's target from its registration but otherwise falls back to its
-    # compiled default (6001), which would miss an overridden LOCAL_TAA_PORT.
-    mock_args+=(--taa-port "$LOCAL_TAA_PORT")
-    # Neutralize exported fixed targets so an inherited LOCAL_TAA_URL or
-    # PLATFORM_MOCK_TAA_TARGET cannot pin a single address again.
-    env LOCAL_TAA_URL= PLATFORM_MOCK_TAA_TARGET= "$PROJECT_DIR/deploy-platform-mock.sh" "${mock_args[@]}"
-  else
-    mock_args+=(--taa-target "$LOCAL_TAA_URL")
-    "$PROJECT_DIR/deploy-platform-mock.sh" "${mock_args[@]}"
-  fi
-}
 
 deploy_docker_taa() {
   step "preparing runtime directories inside container"
@@ -2354,25 +2255,12 @@ if [[ "$DEPLOY_DOCKER" == true ]]; then
     ensure_local_docker_container
   fi
 
-  # 1. 启动本地 platform-mock（若包含 platform-mock）
-  if [[ "$DEPLOY_PLATFORM_MOCK" == true ]]; then
-    deploy_platform_mock
-  fi
-
-  # 2. 部署 taa 进本地容器
+  # 1. 部署 taa 进本地容器
   if [[ "$DEPLOY_TAA" == true ]]; then
     deploy_docker_taa
   fi
 
   banner "Deploy Complete (Docker)" "All requested services are running in Docker container and verified healthy"
-  if [[ "$DEPLOY_PLATFORM_MOCK" == true ]]; then
-    echo -e "  ${BOLD}${CYAN}● Platform Mock${NC}  ${DIM}(API & Storage Emulator)${NC}"
-    echo -e "    ${MUTED}↳ Endpoint   :${NC} ${BOLD}${LOCAL_PLATFORM_URL}${NC}"
-    echo -e "    ${MUTED}↳ State dir  :${NC} ${LOCAL_PLATFORM_STATE_DIR}"
-    echo -e "    ${MUTED}↳ Upload dir :${NC} ${LOCAL_PLATFORM_UPLOAD_DIR}"
-    echo -e "    ${MUTED}↳ Log file   :${NC} ${LOCAL_PLATFORM_LOG_FILE}"
-    echo ""
-  fi
   if [[ "$DEPLOY_TAA" == true ]]; then
     echo -e "  ${BOLD}${CYAN}● TAA Secure Enclave Daemon${NC}  ${DIM}(In-Container Daemon)${NC}"
     echo -e "    ${MUTED}↳ API        :${NC} ${BOLD}${LOCAL_TAA_URL}/v1/taa/*${NC} ${DIM}(sealed: needs the platform key pair)${NC}"
@@ -2395,44 +2283,6 @@ check_remote_connectivity
 if [[ "$DEPLOY_TAA" == true ]]; then
   step "checking remote target pod: ${TARGET_POD} (${TARGET_NAMESPACE})"
   ensure_remote_pod
-fi
-
-if [[ "$DEPLOY_PLATFORM_MOCK" == true ]]; then
-  # Pod IP discovery stays here: deploy-platform-mock.sh knows nothing about kubectl.
-  # In multi-instance mode every target is derived from its own registration.
-  MOCK_ARGS=(
-    remote start
-    --host "$REMOTE_HOST"
-    --user "$REMOTE_USER"
-    --password "$PASSWORD"
-    --remote-dir "$REMOTE_DIR"
-    --binary "$MOCK_BINARY_PATH"
-    --binary-name "$MOCK_BINARY_NAME"
-    --addr "$PLATFORM_ADDR"
-    --log-file "$REMOTE_DIR/platform-mock.log"
-    --pid-file "$REMOTE_DIR/platform-mock.pid"
-    --ready-timeout "$READY_TIMEOUT"
-    --ready-interval "$READY_INTERVAL"
-  )
-  if [[ "$MULTI_INSTANCE" == "1" ]]; then
-    echo "  MULTI_INSTANCE=1: skipping single-Pod discovery; targets come from each registration"
-    MOCK_ARGS+=(--taa-port "$CON_PORT")
-    # Neutralize exported fixed targets so an inherited LOCAL_TAA_URL or
-    # PLATFORM_MOCK_TAA_TARGET cannot pin a single address again.
-    step "deploying remote $PLATFORM_LABEL on ${PLATFORM_ADDR}"
-    env LOCAL_TAA_URL= PLATFORM_MOCK_TAA_TARGET= "$PROJECT_DIR/deploy-platform-mock.sh" "${MOCK_ARGS[@]}"
-  else
-    TAA_POD_IP=$(remote_ssh "kubectl $K_NS get pod '$TARGET_POD' -o jsonpath='{.status.podIP}' 2>/dev/null" || echo "")
-    if [[ -n "$TAA_POD_IP" ]]; then
-      MOCK_ARGS+=(--taa-target "http://${TAA_POD_IP}:${CON_PORT}")
-      echo "  discovered TAA Pod IP: $TAA_POD_IP"
-    else
-      echo "  warning: could not discover TAA Pod IP, falling back to -taa-pod auto-discovery"
-      MOCK_ARGS+=(--taa-pod "$TARGET_POD" --taa-ns "$TARGET_NAMESPACE" --taa-port "$CON_PORT")
-    fi
-    step "deploying remote $PLATFORM_LABEL on ${PLATFORM_ADDR}"
-    "$PROJECT_DIR/deploy-platform-mock.sh" "${MOCK_ARGS[@]}"
-  fi
 fi
 
 if [[ "$DEPLOY_TAA" == true ]]; then
@@ -2507,11 +2357,6 @@ if [[ "$DEPLOY_TAA" == true ]]; then
 fi
 
 banner "Deploy Complete (Remote)" "All remote services deployed and verified healthy"
-if [[ "$DEPLOY_PLATFORM_MOCK" == true ]]; then
-  echo -e "  ${BOLD}${CYAN}● ${PLATFORM_LABEL}${NC}  ${DIM}(Remote Host Service)${NC}"
-  echo -e "    ${MUTED}↳ Endpoint   :${NC} ${BOLD}${REMOTE_HOST}:${PLATFORM_PORT}${NC}"
-  echo ""
-fi
 if [[ "$DEPLOY_TAA" == true ]]; then
   echo -e "  ${BOLD}${CYAN}● TAA Secure Enclave Daemon${NC}  ${DIM}(In-Container Daemon)${NC}"
   echo -e "    ${MUTED}↳ Container  :${NC} ${CONTAINER_LABEL}:${TAA_CONTAINER_WORKDIR} (addr ${TAA_CONTAINER_ADDR})"

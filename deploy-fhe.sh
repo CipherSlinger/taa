@@ -64,7 +64,7 @@ TAA_LOG_FILE="${TAA_LOG_FILE:-$TAA_CONTAINER_WORKDIR/taa.log}"
 SUPERVISOR_PATTERN='[t]aa-supervisor[.]sh'
 # Must match server.addr in $TAA_FHE_CONFIG. This is the one port published on
 # the host: the platform reaches TAA through it. TAA_PUBLISH_ADDR narrows the
-# bind (127.0.0.1 is enough for a host-local platform-mock); an empty value
+# bind (127.0.0.1 is enough for a platform on this host); an empty value
 # disables publishing, and then the platform has to reach the container IP.
 TAA_PORT="${TAA_PORT:-6001}"
 TAA_PUBLISH_ADDR="${TAA_PUBLISH_ADDR:-0.0.0.0}"
@@ -111,16 +111,10 @@ HOST_TAA_STATE_DIR="${HOST_TAA_STATE_DIR:-/opt/taa-state}"
 HOST_FHE_REDIS_DIR="${HOST_FHE_REDIS_DIR:-$HOST_DATA_DIR/redis-unified}"
 
 # ── Platform side ────────────────────────────────────────────────────────────
-# platform-mock stands in for the control plane. 18081, not deploy.sh's 18080:
-# on the shared FHE host 18080 is held by ccs-node-agent.
+# The platform TAA registers with is deployed separately (deploy-platform-mock.sh,
+# or the production control plane). 18081, not deploy.sh's 18080: on the shared
+# FHE host 18080 is held by ccs-node-agent.
 PLATFORM_PORT="${PLATFORM_PORT:-18081}"
-PLATFORM_ADDR="${PLATFORM_ADDR:-0.0.0.0:$PLATFORM_PORT}"
-PLATFORM_MOCK_BINARY_NAME="${PLATFORM_MOCK_BINARY_NAME:-platform-mock}"
-PLATFORM_MOCK_BINARY_PATH="${PLATFORM_MOCK_BINARY_PATH:-$PROJECT_DIR/bin/$PLATFORM_MOCK_BINARY_NAME}"
-PLATFORM_MOCK_STATE_DIR="${PLATFORM_MOCK_STATE_DIR:-$REMOTE_DIR/platform-mock-state}"
-PLATFORM_MOCK_UPLOAD_DIR="${PLATFORM_MOCK_UPLOAD_DIR:-$REMOTE_DIR/platform-mock-files}"
-PLATFORM_READY_TIMEOUT="${PLATFORM_READY_TIMEOUT:-30}"
-DEPLOY_PLATFORM_MOCK=1
 
 TAA_BINARY_PATH="${TAA_BINARY_PATH:-$PROJECT_DIR/bin/taa}"
 BUILD_BINARIES=1
@@ -535,7 +529,7 @@ verify_one() {
 
 usage() {
   cat <<EOF
-Usage: $(basename "$0") [taa|platform-mock] [save] [options]
+Usage: $(basename "$0") [taa] [save] [options]
 
 Deploy the unified FHE + TAA node. One container is started from the handoff
 image (latti/latti-server-node:latest), which already contains redis, the FHE
@@ -549,17 +543,15 @@ Arguments:
   taa
       Deploy the unified container: prepare/load the image, stage the models,
       create the container, inject TAA, wait for both health endpoints and
-      activate the model. platform-mock is assumed to be running already;
-      set PLATFORM_IP if it is not on this host.
-  platform-mock
-      Deploy only platform-mock: build and upload its binary, start it if
-      nothing answers on PLATFORM_PORT, and clear its register state.
+      activate the model. The platform TAA registers with is deployed
+      separately (./deploy-platform-mock.sh or the production control plane);
+      set PLATFORM_IP if it is not reachable at the docker bridge gateway.
   (no argument)
-      Deploy platform-mock and the unified container.
+      Deploy the unified container, same as taa.
 
   pod=<name>
       Deploy TAA into an existing Kubernetes pod instead of starting a docker
-      container (implies taa; conflicts with save and platform-mock). The pod
+      container (implies taa; conflicts with save). The pod
       must already run the TAA supervisor; this copies taa, deploy/taa-supervisor.sh
       and a re-rendered config into /root/taa, restarts the supervisor in the
       pod and waits for its health endpoint. The pod env supplies PLATFORM_IP
@@ -583,10 +575,8 @@ Options:
   -n, --dry-run         Print the commands and execute nothing.
   --remote              Deploy to ${REMOTE_USER}@${REMOTE_HOST} (default).
   --local               Deploy on the machine running this script.
-  --no-platform-mock    Do not build, upload or start platform-mock, and do not
-                        check the registration at the end.
-  --skip-build          Use the binaries already at TAA_BINARY_PATH /
-                        PLATFORM_MOCK_BINARY_PATH.
+  --no-platform-mock    Deprecated no-op: this script never deploys platform-mock.
+  --skip-build          Use the binary already at TAA_BINARY_PATH.
   -h, --help            Show this help.
 
 Environment:
@@ -622,7 +612,7 @@ Environment:
       Defaulted to the docker network gateway on this host, because
       127.0.0.1 inside the container is the container itself.
   PLATFORM_PORT=${PLATFORM_PORT}
-      Port platform-mock listens on.
+      Port of the platform that TAA registers with (default 18081).
   HOST_DATA_DIR=${HOST_DATA_DIR}
       Host directory mounted at FHE_CONTAINER_DATA_DIR. It holds the model
       tree, per-user eval contexts, tasks and results.
@@ -660,13 +650,17 @@ while [ $# -gt 0 ]; do
       printf '[deploy-fhe] ERROR: the fhe mode was removed: the FHE services now run inside the taa container\n' >&2
       exit 1
       ;;
-    taa|platform-mock)
+    taa)
       if [ "$DEPLOY_MODE" != "all" ] && [ "$DEPLOY_MODE" != "$1" ]; then
-        printf '[deploy-fhe] ERROR: choose one of taa or platform-mock\n' >&2
+        printf '[deploy-fhe] ERROR: the taa argument was given twice\n' >&2
         usage >&2
         exit 1
       fi
       DEPLOY_MODE="$1"
+      ;;
+    platform-mock)
+      printf '[deploy-fhe] ERROR: platform-mock is no longer deployed by this script; use ./deploy-platform-mock.sh <local|remote> start\n' >&2
+      exit 1
       ;;
     save)
       if [ "$SAVE_ACTION" = 1 ]; then
@@ -684,7 +678,7 @@ while [ $# -gt 0 ]; do
     -n|--dry-run) DRY_RUN=1 ;;
     --remote) REMOTE_TARGET="${REMOTE_USER}@${REMOTE_HOST}" ;;
     --local) REMOTE_TARGET="" ;;
-    --no-platform-mock) DEPLOY_PLATFORM_MOCK=0 ;;
+    --no-platform-mock) warn "--no-platform-mock is deprecated and now a no-op: this script never deploys platform-mock" ;;
     --skip-build) BUILD_BINARIES=0 ;;
     -h|--help|help) usage; exit 0 ;;
     *) printf '[deploy-fhe] ERROR: unknown argument: %s\n' "$1" >&2; usage >&2; exit 1 ;;
@@ -692,25 +686,12 @@ while [ $# -gt 0 ]; do
   shift
 done
 
+# TAA is the only thing this script deploys.
 DEPLOY_TAA=1
-DEPLOY_MOCK=1
-case "$DEPLOY_MODE" in
-  taa) DEPLOY_MOCK=0 ;;
-  platform-mock) DEPLOY_TAA=0 ;;
-esac
-if [ "$DEPLOY_MODE" = "platform-mock" ] && [ "$DEPLOY_PLATFORM_MOCK" != 1 ]; then
-  printf '[deploy-fhe] ERROR: the platform-mock argument deploys platform-mock, but --no-platform-mock was given\n' >&2
-  usage >&2
-  exit 1
-fi
 if [ "$SAVE_ACTION" = 1 ] && [ "$DEPLOY_MODE" != "taa" ]; then
   printf '[deploy-fhe] ERROR: save is only valid with the taa argument: deploy-fhe.sh taa save\n' >&2
   usage >&2
   exit 1
-fi
-# A save run starts nothing, so it builds and deploys no mock.
-if [ "$SAVE_ACTION" = 1 ]; then
-  DEPLOY_MOCK=0
 fi
 
 # Pod mode replaces the docker container with a pod that the platform already
@@ -718,11 +699,6 @@ fi
 if [ -n "$TARGET_POD" ]; then
   if [ "$SAVE_ACTION" = 1 ]; then
     printf '[deploy-fhe] ERROR: pod= cannot be combined with save: a saved image is built here, not deployed into a pod\n' >&2
-    usage >&2
-    exit 1
-  fi
-  if [ "$DEPLOY_MODE" = "platform-mock" ]; then
-    printf '[deploy-fhe] ERROR: pod= deploys TAA into a pod; it cannot be combined with platform-mock\n' >&2
     usage >&2
     exit 1
   fi
@@ -744,8 +720,6 @@ if [ -n "$TARGET_POD" ]; then
   POD_MODE=1
   DEPLOY_MODE=taa
   DEPLOY_TAA=1
-  DEPLOY_MOCK=0
-  DEPLOY_PLATFORM_MOCK=0
   if [ "$POD_ARG_SEEN" = 0 ]; then
     log "pod mode enabled by TARGET_POD=$TARGET_POD"
   fi
@@ -780,13 +754,11 @@ fi
 
 HOST_START_SH="$PROJECT_DIR/deploy/taa-supervisor.sh"
 HOST_TAA_BINARY_PATH="$TAA_BINARY_PATH"
-HOST_PLATFORM_MOCK_BINARY_PATH="$PLATFORM_MOCK_BINARY_PATH"
 HOST_ENTRYPOINT_PATH="$TAA_ENTRYPOINT_SOURCE"
 HOST_FHE_IMAGE_ARCHIVE="$FHE_IMAGE_ARCHIVE"
 if [ -n "$REMOTE_TARGET" ]; then
   HOST_START_SH="$REMOTE_DIR/deploy/taa-supervisor.sh"
   HOST_TAA_BINARY_PATH="$REMOTE_DIR/bin/$BINARY_NAME"
-  HOST_PLATFORM_MOCK_BINARY_PATH="$REMOTE_DIR/bin/$PLATFORM_MOCK_BINARY_NAME"
   HOST_ENTRYPOINT_PATH="$REMOTE_DIR/deploy/$(basename "$TAA_ENTRYPOINT_SOURCE")"
   HOST_FHE_IMAGE_ARCHIVE="$REMOTE_DIR/image/$(basename "$FHE_IMAGE_ARCHIVE")"
 fi
@@ -1589,47 +1561,6 @@ else
 fi
 fi
 
-# ── platform-mock ────────────────────────────────────────────────────────────
-if [ "$DEPLOY_MOCK" = 1 ]; then
-step "starting platform-mock on $PLATFORM_ADDR"
-if [ "$DEPLOY_PLATFORM_MOCK" != 1 ]; then
-  log "--no-platform-mock: nothing started here; TAA registers with PLATFORM_IP=${PLATFORM_IP:-<unset>}"
-else
-  MOCK_ARGS=(
-    start
-    --binary "$PLATFORM_MOCK_BINARY_PATH"
-    --binary-name "$PLATFORM_MOCK_BINARY_NAME"
-    --addr "$PLATFORM_ADDR"
-    --state-dir "$PLATFORM_MOCK_STATE_DIR"
-    --upload-dir "$PLATFORM_MOCK_UPLOAD_DIR"
-    --log-file "$REMOTE_DIR/platform-mock.log"
-    --pid-file "$REMOTE_DIR/platform-mock.pid"
-    --taa-target "http://${TAA_PROBE_HOST}:${TAA_PORT}"
-    --allow-empty-attestation
-    --static
-    --reuse
-    --reset-register
-    --ready-timeout "$PLATFORM_READY_TIMEOUT"
-    --ready-interval "$TAA_READY_INTERVAL"
-  )
-  if [ -n "$REMOTE_TARGET" ]; then
-    MOCK_TARGET=remote
-    MOCK_ARGS+=(
-      --host "$REMOTE_HOST"
-      --user "$REMOTE_USER"
-      --remote-dir "$REMOTE_DIR"
-      --remote-binary "$HOST_PLATFORM_MOCK_BINARY_PATH"
-    )
-    [ -n "$PASSWORD" ] && MOCK_ARGS+=(--password "$PASSWORD")
-  else
-    MOCK_TARGET=local
-  fi
-  [ "$BUILD_BINARIES" = 1 ] || MOCK_ARGS+=(--skip-build)
-  is_dry_run && MOCK_ARGS+=(--dry-run)
-  "$PROJECT_DIR/deploy-platform-mock.sh" "$MOCK_TARGET" "${MOCK_ARGS[@]}"
-fi
-fi
-
 # ── Container ────────────────────────────────────────────────────────────────
 if [ "$DEPLOY_TAA" = 1 ]; then
 step "creating or reusing $TAA_CONTAINER_NAME"
@@ -1688,22 +1619,16 @@ else
 fi
 fi
 
-# ── Registration gate ────────────────────────────────────────────────────────
+# ── Registration check (advisory) ────────────────────────────────────────────
+# The platform is deployed separately, so its state is only observable when it
+# answers on this host. TAA retries registration until the platform accepts it,
+# which makes an absent entry right after startup normal rather than fatal.
 if [ "$DEPLOY_TAA" = 1 ]; then
-step "verifying the platform recorded this instance's registration"
+step "checking whether the platform recorded this instance's registration"
 if is_dry_run; then
-  if [ "$DEPLOY_PLATFORM_MOCK" != 1 ]; then
-    log "--no-platform-mock: nothing to ask"
-  elif [ "$DEPLOY_MOCK" = 1 ]; then
-    log "would read http://127.0.0.1:$PLATFORM_PORT/api/register/status and require the dockerId this run's identity resolves to"
-  else
-    log "would read http://127.0.0.1:$PLATFORM_PORT/api/register/status only if something answers there"
-  fi
-elif [ "$DEPLOY_PLATFORM_MOCK" != 1 ]; then
-  log "--no-platform-mock: nothing to ask; this run does not start the platform"
-elif [ "$DEPLOY_MOCK" != 1 ] \
-  && ! host_sh "curl -fsS -o /dev/null 'http://127.0.0.1:${PLATFORM_PORT}/api/register/status'"; then
-  warn "taa-only run: nothing answers on 127.0.0.1:$PLATFORM_PORT, so the registration was not checked; deploy platform-mock (./deploy-fhe.sh platform-mock) or point PLATFORM_IP at a live platform"
+  log "would read http://127.0.0.1:$PLATFORM_PORT/api/register/status if something answers there; a missing registration is a warning, not a failure"
+elif ! host_sh "curl -fsS -o /dev/null 'http://127.0.0.1:${PLATFORM_PORT}/api/register/status'"; then
+  warn "nothing answers on 127.0.0.1:$PLATFORM_PORT, so the registration was not checked; TAA keeps retrying in the background, and the platform may be elsewhere (PLATFORM_IP=$PLATFORM_IP)"
 else
   if [ -n "$DOCKER_ID" ]; then
     expected_docker_id="$DOCKER_ID"
@@ -1716,16 +1641,15 @@ else
   registered_id="$(printf '%s' "$register_state" | jq -r '.result.dockerId // empty' 2>/dev/null || true)"
   registered_ok="$(printf '%s' "$register_state" | jq -r '.result.accepted // false' 2>/dev/null || true)"
   if [ -z "$registered_id" ] && [ "$registered_ok" != "true" ]; then
-    die "platform-mock on 127.0.0.1:$PLATFORM_PORT recorded no registration at all (expected dockerId '$expected_docker_id' from $expected_source). TAA is up, but the platform never heard from it -- see docker logs $TAA_CONTAINER_NAME and /root/taa/taa.log"
+    warn "no registration recorded yet (expected dockerId '$expected_docker_id' from $expected_source); TAA retries in the background -- check again with: curl http://127.0.0.1:$PLATFORM_PORT/api/register/status"
+  elif [ "$registered_ok" != "true" ]; then
+    warn "the platform recorded dockerId '$registered_id' and REJECTED it: $(printf '%s' "$register_state" | jq -r '.result.message // "no message"' 2>/dev/null || true)"
+  elif [ "$registered_id" != "$expected_docker_id" ]; then
+    warn "the platform recorded dockerId '$registered_id', but this run's identity resolves to '$expected_docker_id' (from $expected_source)"
+  else
+    log "registration confirmed: dockerId=$registered_id accepted=true"
+    log "platform status: http://127.0.0.1:$PLATFORM_PORT/api/register/status"
   fi
-  if [ "$registered_ok" != "true" ]; then
-    die "platform-mock recorded dockerId '$registered_id' and REJECTED it: $(printf '%s' "$register_state" | jq -r '.result.message // "no message"' 2>/dev/null || true)"
-  fi
-  if [ "$registered_id" != "$expected_docker_id" ]; then
-    die "platform-mock recorded dockerId '$registered_id', but this run's identity resolves to '$expected_docker_id' (from $expected_source)"
-  fi
-  log "registration confirmed: dockerId=$registered_id accepted=true"
-  log "platform status: http://127.0.0.1:$PLATFORM_PORT/api/register/status"
 fi
 fi
 
@@ -1741,11 +1665,6 @@ if [ "$DEPLOY_TAA" = 1 ] && ! is_dry_run; then
   log "logs           : docker logs -f $TAA_CONTAINER_NAME"
   log "taa log        : docker exec $TAA_CONTAINER_NAME tail -f $TAA_LOG_FILE"
   log "stop           : docker rm -f $TAA_CONTAINER_NAME"
-fi
-if [ "$DEPLOY_MOCK" = 1 ] && [ "$DEPLOY_TAA" = 0 ] && ! is_dry_run; then
-  printf '\n[deploy-fhe] platform-mock deployed\n'
-  log "platform-mock  : http://127.0.0.1:${PLATFORM_PORT} (state $PLATFORM_MOCK_STATE_DIR)"
-  log "platform log   : $REMOTE_DIR/platform-mock.log"
 fi
 
 if is_dry_run; then

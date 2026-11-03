@@ -2,19 +2,18 @@
 #
 # deploy-platform-mock.sh - build, run and inspect the platform mock.
 #
-# This is the single place that owns the platform-mock lifecycle. deploy.sh and
-# deploy-fhe.sh call it instead of carrying their own copies, so the build flags,
-# readiness probe and pid handling cannot drift between the two entry points.
+# This is the single place that owns the platform-mock lifecycle. The deployment
+# scripts (deploy.sh, deploy-fhe.sh) do not start the mock: they only point TAA at
+# a platform, so the build flags, readiness probe and pid handling live here alone.
 #
 # Usage:
 #   ./deploy-platform-mock.sh local  start|stop|restart|status [options]
 #   ./deploy-platform-mock.sh remote start|stop|restart|status [options]
 #
 # Local mode runs the binary on this host. Remote mode uploads it over SSH and
-# starts it detached there. TAA-specific coupling stays in the caller: deploy.sh
-# discovers the TAA Pod IP and passes it as --taa-target, unless MULTI_INSTANCE=1,
-# in which case it passes --taa-port and each instance derives its own target
-# from its registration.
+# starts it detached there. Without --taa-target the mock runs in multi-instance
+# mode: each TAA instance derives its own target from its registration, using
+# --taa-port (default 6001).
 set -Eeuo pipefail
 
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
