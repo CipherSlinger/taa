@@ -122,15 +122,13 @@ func (b *instanceStores) target() string {
 func (b *instanceStores) setTarget(target string) {
 	target = strings.TrimRight(strings.TrimSpace(target), "/")
 	b.mu.Lock()
+	defer b.mu.Unlock()
 	if b.meta.TaaTarget == target {
-		b.mu.Unlock()
 		return
 	}
 	b.meta.TaaTarget = target
 	b.meta.UpdatedAt = time.Now().Format(time.RFC3339)
-	meta := b.meta
-	b.mu.Unlock()
-	b.saveMeta(meta)
+	b.saveMeta(b.meta)
 }
 
 func (b *instanceStores) saveMeta(meta instanceMeta) {
@@ -149,10 +147,13 @@ func (b *instanceStores) saveMeta(meta instanceMeta) {
 // instanceManager owns the per-dockerId bundles. Its map is guarded by mu;
 // each bundle's stores keep their own locks.
 type instanceManager struct {
-	mu      sync.RWMutex
-	root    string
-	cfg     Config
-	byID    map[string]*instanceStores
+	mu   sync.RWMutex
+	root string
+	// cfg is reserved for test construction and later tasks.
+	cfg  Config
+	byID map[string]*instanceStores
+	// scanned records that the initial on-disk scan ran; reserved for later
+	// tasks that need to distinguish a scan from a live lookup.
 	scanned bool
 
 	staticTarget     string
@@ -182,10 +183,17 @@ func newInstanceManager(stateDir string, cfg Config) *instanceManager {
 func (m *instanceManager) migrateLegacy() {
 	instRoot := filepath.Join(m.root, instancesDirName)
 	if _, err := os.Stat(instRoot); err == nil {
+		// Migration is staged into a temp directory and published with one
+		// rename, so an existing instances/ means it completed (or was never
+		// needed). Leftover root files are only reported once, together.
+		var leftover []string
 		for _, name := range legacyStateFiles {
 			if _, statErr := os.Stat(filepath.Join(m.root, name)); statErr == nil {
-				log.Printf("legacy state file %s is ignored because %s already exists", name, instRoot)
+				leftover = append(leftover, name)
 			}
+		}
+		if len(leftover) > 0 {
+			log.Printf("legacy state files %v are ignored because %s already exists; move them by hand if they hold data you still need", leftover, instRoot)
 		}
 		return
 	}
@@ -201,13 +209,36 @@ func (m *instanceManager) migrateLegacy() {
 		return
 	}
 
+	// Read the dockerId before moving anything: register-state.json is one of
+	// the files that moves.
 	dockerID := ""
 	if state, err := loadJSONFile[registerState](filepath.Join(m.root, "register-state.json")); err == nil {
 		dockerID = strings.TrimSpace(state.DockerID)
 	}
-	dir := filepath.Join(instRoot, instanceDirName(dockerID))
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		log.Printf("create migration directory %s failed: %v", dir, err)
+
+	tmp, err := os.MkdirTemp(m.root, ".instances-migrating-")
+	if err != nil {
+		log.Printf("create the migration staging directory failed, legacy state stays in place: %v", err)
+		return
+	}
+	// The staging directory becomes instances/, so the instance directory is
+	// built inside it before the single rename publishes the whole tree.
+	stagingInstanceDir := filepath.Join(tmp, instanceDirName(dockerID))
+	moved := make([]string, 0, len(legacyStateFiles))
+	rollback := func(cause error) {
+		for _, name := range moved {
+			if err := os.Rename(filepath.Join(stagingInstanceDir, name), filepath.Join(m.root, name)); err != nil {
+				log.Printf("rollback of %s failed, its data is in %s: %v", name, tmp, err)
+			}
+		}
+		if err := os.RemoveAll(tmp); err != nil {
+			log.Printf("remove the migration staging directory %s failed: %v", tmp, err)
+		}
+		log.Printf("legacy state migration aborted and rolled back, nothing was moved: %v", cause)
+	}
+
+	if err := os.MkdirAll(stagingInstanceDir, 0o755); err != nil {
+		rollback(err)
 		return
 	}
 	for _, name := range legacyStateFiles {
@@ -215,16 +246,21 @@ func (m *instanceManager) migrateLegacy() {
 		if _, err := os.Stat(src); err != nil {
 			continue
 		}
-		if err := os.Rename(src, filepath.Join(dir, name)); err != nil {
-			log.Printf("migrate legacy state file %s failed: %v", src, err)
+		if err := os.Rename(src, filepath.Join(stagingInstanceDir, name)); err != nil {
+			rollback(err)
+			return
 		}
+		moved = append(moved, name)
 	}
-	b := newInstanceStores(dir, dockerID)
-	now := time.Now().Format(time.RFC3339)
-	b.meta.CreatedAt = now
-	b.meta.UpdatedAt = now
+
+	b := newInstanceStores(stagingInstanceDir, dockerID)
 	b.saveMeta(b.meta)
-	log.Printf("migrated legacy single-instance state into %s (dockerId=%q)", dir, dockerID)
+
+	if err := os.Rename(tmp, instRoot); err != nil {
+		rollback(err)
+		return
+	}
+	log.Printf("migrated legacy single-instance state into %s (dockerId=%q)", filepath.Join(instRoot, instanceDirName(dockerID)), dockerID)
 }
 
 func (m *instanceManager) scan() {
@@ -245,6 +281,12 @@ func (m *instanceManager) scan() {
 		if err != nil {
 			log.Printf("skip instance directory %s without readable instance.json: %v", dir, err)
 			continue
+		}
+		if strings.TrimSpace(meta.DockerID) == "" {
+			if entry.Name() != "i-legacy" {
+				log.Printf("skip instance directory %s: instance.json has no dockerId", dir)
+				continue
+			}
 		}
 		b := loadInstanceStores(dir, meta.DockerID)
 		m.byID[b.dockerID] = b
@@ -365,13 +407,15 @@ func (m *instanceManager) resolve(r *http.Request) (*instanceStores, error) {
 	return nil, errNoInstance
 }
 
-// resolveLenient is for the console endpoints that must answer before any TAA
-// has registered (the readiness probe is one). An explicitly unknown dockerId
-// is still an error; only the "nothing registered yet" case degrades to the
-// empty legacy bundle.
+// resolveLenient is for console endpoints that must answer before any TAA has
+// registered (the readiness probe is one). An explicitly unknown dockerId is
+// still an error; only the "nothing registered yet" case degrades to the empty
+// legacy bundle. Once that bundle exists, a later resolve() finds it and no
+// longer reports errNoInstance; handlers must therefore tolerate an empty
+// register state instead of relying on that sentinel.
 func (m *instanceManager) resolveLenient(r *http.Request) (*instanceStores, error) {
 	b, err := m.resolve(r)
-	if err == errNoInstance {
+	if errors.Is(err, errNoInstance) {
 		return m.getOrCreate(""), nil
 	}
 	return b, err

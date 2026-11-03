@@ -1,9 +1,11 @@
 package mock
 
 import (
+	"fmt"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 )
 
@@ -148,13 +150,25 @@ func TestStaticTargetWinsWhileOnlyOneRealInstanceExists(t *testing.T) {
 }
 
 func TestInstanceForWriteNeverCreatesDirectoriesForUnknownIDs(t *testing.T) {
-	mgr := newInstanceManager(t.TempDir(), Config{})
+	root := t.TempDir()
+	mgr := newInstanceManager(root, Config{})
 	got := mgr.instanceForWrite("never-registered")
 	if got.dockerID != "" {
 		t.Fatalf("instanceForWrite created bundle for %q, want the legacy bundle", got.dockerID)
 	}
 	if mgr.lookup("never-registered") != nil {
 		t.Fatal("instanceForWrite created a directory for an unknown dockerId")
+	}
+
+	entries, err := os.ReadDir(filepath.Join(root, instancesDirName))
+	if err != nil {
+		t.Fatalf("read instances dir: %v", err)
+	}
+	if len(entries) != 1 || entries[0].Name() != "i-legacy" {
+		t.Fatalf("instances dir = %v, want only i-legacy", entries)
+	}
+	if _, err := os.Stat(filepath.Join(root, instancesDirName, instanceDirName("never-registered"))); !os.IsNotExist(err) {
+		t.Fatal("a directory named after the unknown dockerId exists")
 	}
 
 	created := mgr.instanceForRegistration("registered", true)
@@ -171,5 +185,84 @@ func TestInstanceForWriteNeverCreatesDirectoriesForUnknownIDs(t *testing.T) {
 	}
 	if mgr.lookup("registered-2") != nil {
 		t.Fatal("instanceForRegistration created a directory for a rejected registration")
+	}
+}
+
+func TestMigrationLeavesLegacyFilesInPlaceWhenItFails(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores directory permissions")
+	}
+	root := t.TempDir()
+	if err := saveJSONFile(filepath.Join(root, "register-state.json"), registerState{DockerID: "legacy-docker"}); err != nil {
+		t.Fatalf("write legacy register state: %v", err)
+	}
+	// A read-only root makes the staging directory impossible to create.
+	if err := os.Chmod(root, 0o555); err != nil {
+		t.Fatalf("make the state root read-only: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(root, 0o755) })
+
+	newInstanceManager(root, Config{})
+
+	if err := os.Chmod(root, 0o755); err != nil {
+		t.Fatalf("restore permissions: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "register-state.json")); err != nil {
+		t.Fatal("a failed migration moved the legacy file away")
+	}
+	if _, err := os.Stat(filepath.Join(root, instancesDirName)); !os.IsNotExist(err) {
+		t.Fatal("a failed migration still created instances/")
+	}
+}
+
+func TestConcurrentWritesShareOneLegacyBundle(t *testing.T) {
+	root := t.TempDir()
+	mgr := newInstanceManager(root, Config{})
+
+	const workers = 16
+	got := make([]*instanceStores, workers)
+	var wg sync.WaitGroup
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			got[i] = mgr.instanceForWrite(fmt.Sprintf("unknown-%d", i))
+		}(i)
+	}
+	wg.Wait()
+
+	for i, b := range got {
+		if b != got[0] {
+			t.Fatalf("worker %d got a different legacy bundle", i)
+		}
+	}
+	entries, err := os.ReadDir(filepath.Join(root, instancesDirName))
+	if err != nil {
+		t.Fatalf("read instances dir: %v", err)
+	}
+	if len(entries) != 1 || entries[0].Name() != "i-legacy" {
+		t.Fatalf("instances dir = %v, want only i-legacy", entries)
+	}
+}
+
+func TestConcurrentGetOrCreateReturnsOneBundle(t *testing.T) {
+	mgr := newInstanceManager(t.TempDir(), Config{})
+
+	const workers = 16
+	got := make([]*instanceStores, workers)
+	var wg sync.WaitGroup
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			got[i] = mgr.getOrCreate("docker-a")
+		}(i)
+	}
+	wg.Wait()
+
+	for i, b := range got {
+		if b != got[0] {
+			t.Fatalf("worker %d got a different bundle", i)
+		}
 	}
 }
