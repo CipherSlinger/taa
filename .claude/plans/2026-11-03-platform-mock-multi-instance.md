@@ -225,6 +225,26 @@ func TestInstanceForWriteNeverCreatesDirectoriesForUnknownIDs(t *testing.T) {
 		t.Fatal("a rejected registration created a directory")
 	}
 }
+
+func TestStaticTargetWinsWhileOnlyOneRealInstanceExists(t *testing.T) {
+	mgr := newInstanceManager(t.TempDir(), Config{TAATarget: "http://127.0.0.1:6001"})
+
+	// A console probe before registration creates the legacy bundle.
+	if _, err := mgr.resolveLenient(httptest.NewRequest("GET", "/api/taa-target", nil)); err != nil {
+		t.Fatalf("resolveLenient: %v", err)
+	}
+	b := mgr.getOrCreate("docker-a")
+	b.setTarget("http://10.244.0.7:6001")
+
+	if id, target, err := mgr.targetFor(""); err != nil || id != "docker-a" || target != "http://127.0.0.1:6001" {
+		t.Fatalf("targetFor = (%q, %q, %v), want (docker-a, http://127.0.0.1:6001, nil)", id, target, err)
+	}
+
+	mgr.getOrCreate("docker-b").setTarget("http://10.244.0.8:6001")
+	if id, target, err := mgr.targetFor(""); err != nil || id != "docker-a" || target != "http://10.244.0.7:6001" {
+		t.Fatalf("with two instances targetFor = (%q, %q, %v), want docker-a's derived target", id, target, err)
+	}
+}
 ```
 
 - [ ] **Step 2: 运行测试确认失败**
@@ -361,15 +381,13 @@ func (b *instanceStores) target() string {
 func (b *instanceStores) setTarget(target string) {
 	target = strings.TrimRight(strings.TrimSpace(target), "/")
 	b.mu.Lock()
+	defer b.mu.Unlock()
 	if b.meta.TaaTarget == target {
-		b.mu.Unlock()
 		return
 	}
 	b.meta.TaaTarget = target
 	b.meta.UpdatedAt = time.Now().Format(time.RFC3339)
-	meta := b.meta
-	b.mu.Unlock()
-	b.saveMeta(meta)
+	b.saveMeta(b.meta)
 }
 
 func (b *instanceStores) saveMeta(meta instanceMeta) {
@@ -388,10 +406,12 @@ func (b *instanceStores) saveMeta(meta instanceMeta) {
 // instanceManager owns the per-dockerId bundles. Its map is guarded by mu;
 // each bundle's stores keep their own locks.
 type instanceManager struct {
-	mu     sync.RWMutex
-	root   string
-	cfg    Config
-	byID   map[string]*instanceStores
+	mu   sync.RWMutex
+	root string
+	// cfg is kept for test construction and later tasks that need the original
+	// configuration; scanned records that the startup scan ran.
+	cfg     Config
+	byID    map[string]*instanceStores
 	scanned bool
 
 	staticTarget     string
@@ -418,13 +438,22 @@ func newInstanceManager(stateDir string, cfg Config) *instanceManager {
 	return m
 }
 
+// migrateLegacy moves the single-instance files into their instance directory.
+//
+// It stages into a temp directory and publishes it with one rename, so a
+// failure leaves every legacy file where it was; an existing instances/ can
+// only mean the migration already completed.
 func (m *instanceManager) migrateLegacy() {
 	instRoot := filepath.Join(m.root, instancesDirName)
 	if _, err := os.Stat(instRoot); err == nil {
+		var leftover []string
 		for _, name := range legacyStateFiles {
 			if _, statErr := os.Stat(filepath.Join(m.root, name)); statErr == nil {
-				log.Printf("legacy state file %s is ignored because %s already exists", name, instRoot)
+				leftover = append(leftover, name)
 			}
+		}
+		if len(leftover) > 0 {
+			log.Printf("legacy state files %v are ignored because %s already exists; move them by hand if they hold data you still need", leftover, instRoot)
 		}
 		return
 	}
@@ -440,30 +469,59 @@ func (m *instanceManager) migrateLegacy() {
 		return
 	}
 
+	// Read the dockerId before moving anything: register-state.json is one of
+	// the files that moves.
 	dockerID := ""
 	if state, err := loadJSONFile[registerState](filepath.Join(m.root, "register-state.json")); err == nil {
 		dockerID = strings.TrimSpace(state.DockerID)
 	}
-	dir := filepath.Join(instRoot, instanceDirName(dockerID))
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		log.Printf("create migration directory %s failed: %v", dir, err)
+
+	tmp, err := os.MkdirTemp(m.root, ".instances-migrating-")
+	if err != nil {
+		log.Printf("create the migration staging directory failed, legacy state stays in place: %v", err)
 		return
 	}
+	// The staged layout mirrors the final one: instances/<name>/<files>. The
+	// temp root becomes instances/ in a single rename.
+	staged := filepath.Join(tmp, instanceDirName(dockerID))
+	if err := os.MkdirAll(staged, 0o755); err != nil {
+		_ = os.RemoveAll(tmp)
+		log.Printf("create the migration staging directory failed, legacy state stays in place: %v", err)
+		return
+	}
+	moved := make([]string, 0, len(legacyStateFiles))
+	rollback := func(cause error) {
+		for _, name := range moved {
+			if err := os.Rename(filepath.Join(staged, name), filepath.Join(m.root, name)); err != nil {
+				log.Printf("rollback of %s failed, its data is in %s: %v", name, staged, err)
+			}
+		}
+		if err := os.RemoveAll(tmp); err != nil {
+			log.Printf("remove the migration staging directory %s failed: %v", tmp, err)
+		}
+		log.Printf("legacy state migration aborted and rolled back, nothing was moved: %v", cause)
+	}
+
 	for _, name := range legacyStateFiles {
 		src := filepath.Join(m.root, name)
 		if _, err := os.Stat(src); err != nil {
 			continue
 		}
-		if err := os.Rename(src, filepath.Join(dir, name)); err != nil {
-			log.Printf("migrate legacy state file %s failed: %v", src, err)
+		if err := os.Rename(src, filepath.Join(staged, name)); err != nil {
+			rollback(err)
+			return
 		}
+		moved = append(moved, name)
 	}
-	b := newInstanceStores(dir, dockerID)
-	now := time.Now().Format(time.RFC3339)
-	b.meta.CreatedAt = now
-	b.meta.UpdatedAt = now
+
+	b := newInstanceStores(staged, dockerID)
 	b.saveMeta(b.meta)
-	log.Printf("migrated legacy single-instance state into %s (dockerId=%q)", dir, dockerID)
+
+	if err := os.Rename(tmp, instRoot); err != nil {
+		rollback(err)
+		return
+	}
+	log.Printf("migrated legacy single-instance state into %s (dockerId=%q)", filepath.Join(instRoot, instanceDirName(dockerID)), dockerID)
 }
 
 func (m *instanceManager) scan() {
@@ -483,6 +541,10 @@ func (m *instanceManager) scan() {
 		meta, err := loadJSONFile[instanceMeta](filepath.Join(dir, "instance.json"))
 		if err != nil {
 			log.Printf("skip instance directory %s without readable instance.json: %v", dir, err)
+			continue
+		}
+		if strings.TrimSpace(meta.DockerID) == "" && entry.Name() != "i-legacy" {
+			log.Printf("skip instance directory %s: instance.json has no dockerId", dir)
 			continue
 		}
 		b := loadInstanceStores(dir, meta.DockerID)
@@ -540,10 +602,17 @@ func instanceLess(a, b *instanceStores) bool {
 	return a.dockerID < b.dockerID
 }
 
+// defaultBundle prefers a real instance over the empty-id legacy bundle; the
+// legacy bundle is only the default when nothing else exists.
 func (m *instanceManager) defaultBundle() *instanceStores {
 	bundles := m.list()
 	if len(bundles) == 0 {
 		return nil
+	}
+	for _, b := range bundles {
+		if b.dockerID != "" {
+			return b
+		}
 	}
 	return bundles[0]
 }
@@ -553,6 +622,18 @@ func (m *instanceManager) defaultID() string {
 		return b.dockerID
 	}
 	return ""
+}
+
+// realInstanceCount counts registered instances; the empty-id legacy bundle is
+// not an instance for precedence purposes.
+func (m *instanceManager) realInstanceCount() int {
+	n := 0
+	for _, b := range m.list() {
+		if b.dockerID != "" {
+			n++
+		}
+	}
+	return n
 }
 
 // instanceForWrite picks the bundle an inbound callback writes to. Writing
@@ -596,13 +677,15 @@ func (m *instanceManager) resolve(r *http.Request) (*instanceStores, error) {
 	return nil, errNoInstance
 }
 
-// resolveLenient is for the console endpoints that must answer before any TAA
-// has registered (the readiness probe is one). An explicitly unknown dockerId
-// is still an error; only the "nothing registered yet" case degrades to the
-// empty legacy bundle.
+// resolveLenient is for console endpoints that must answer before any TAA has
+// registered (the readiness probe is one). An explicitly unknown dockerId is
+// still an error; only the "nothing registered yet" case degrades to the empty
+// legacy bundle. Once that bundle exists, a later resolve() finds it and no
+// longer reports errNoInstance; handlers must therefore tolerate an empty
+// register state instead of relying on that sentinel.
 func (m *instanceManager) resolveLenient(r *http.Request) (*instanceStores, error) {
 	b, err := m.resolve(r)
-	if err == errNoInstance {
+	if errors.Is(err, errNoInstance) {
 		return m.getOrCreate(""), nil
 	}
 	return b, err
@@ -627,7 +710,7 @@ func (m *instanceManager) targetFor(requestedID string) (string, string, error) 
 
 	if b != nil {
 		id := b.dockerID
-		if len(m.list()) <= 1 && m.staticTarget != "" {
+		if m.realInstanceCount() <= 1 && m.staticTarget != "" {
 			return id, m.staticTarget, nil
 		}
 		if target := b.target(); target != "" {
@@ -882,18 +965,22 @@ type keystore struct {
 把 `taaPublic`/`hasTaaPublicKey`/`setTaaPublicKey`/`sealForTAA`/`openBody`/`openFromTAAResponse` 这一段替换为（旧方法保留为单实例包装，现有调用点不动）：
 
 ```go
-// taaPublicFor returns the key registered for dockerID. An empty identity, or
-// an id with no key of its own, falls back to the legacy single key so a state
-// directory written before multi-instance keeps working.
-func (s *keystore) taaPublicFor(dockerID string) *teecrypto.SM2PublicKey {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+// taaPubForLocked returns the key registered for dockerID. Callers must hold mu.
+// An empty identity, or an id with no key of its own, falls back to the legacy
+// single key so a state directory written before multi-instance keeps working.
+func (s *keystore) taaPubForLocked(dockerID string) *teecrypto.SM2PublicKey {
 	if dockerID != "" {
 		if pub, ok := s.taaPubs[dockerID]; ok {
 			return pub
 		}
 	}
 	return s.legacyTaaPub
+}
+
+func (s *keystore) taaPublicFor(dockerID string) *teecrypto.SM2PublicKey {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.taaPubForLocked(dockerID)
 }
 
 func (s *keystore) taaPublic() *teecrypto.SM2PublicKey {
@@ -932,7 +1019,7 @@ func (s *keystore) setTaaPublicKey(pub *teecrypto.SM2PublicKey) error {
 func (s *keystore) sealForTAAFor(dockerID string, plaintext []byte) ([]byte, error) {
 	s.mu.RLock()
 	priv := s.priv
-	taaPub := s.taaPublicFor(dockerID)
+	taaPub := s.taaPubForLocked(dockerID)
 	userID := s.userID
 	s.mu.RUnlock()
 	if priv == nil {
@@ -990,7 +1077,7 @@ func (s *keystore) openBody(body []byte) ([]byte, error) {
 func (s *keystore) openFromTAAResponseFor(dockerID string, env *envelope.Envelope) ([]byte, error) {
 	s.mu.RLock()
 	priv := s.priv
-	taaPub := s.taaPublicFor(dockerID)
+	taaPub := s.taaPubForLocked(dockerID)
 	userID := s.userID
 	s.mu.RUnlock()
 	if priv == nil {
