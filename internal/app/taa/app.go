@@ -717,10 +717,14 @@ func registerPlatform(ctx context.Context, platformIP, dockerID, publicKeyPEM st
 //
 // It returns an error because the Tier 1 engine is resolved here, at startup,
 // rather than on the import path. The configuration layer has already rejected
-// an unknown engine name; this resolves the name into the engine itself, so a
-// selection that cannot be honoured (a name the selector does not know, or a
-// Semgrep rules file that is not there) stops the process instead of silently
-// scanning with the wrong engine or blocking every import with a scan failure.
+// an unknown engine name, so the only selection that can fail here is semgrep,
+// and it fails for one reason: its rules path is not there. That is a missing
+// deployment artifact, not a configuration mistake the operator asked for, so
+// the audit degrades to the built-in regex engine and says so in the startup log
+// rather than blocking the service. An engine name this build does not know is
+// still refused: starting with an engine other than the one configured would be
+// a silent substitution, which is exactly what the fallback avoids by being
+// explicit and by only covering semgrep.
 func buildSecurityConfig(cfg config.StartupConfig) (controller.SecurityConfig, error) {
 	engine, err := codeaudit.NewEngine(codeaudit.EngineConfig{
 		Name:             cfg.CodeScan.Engine,
@@ -728,7 +732,11 @@ func buildSecurityConfig(cfg config.StartupConfig) (controller.SecurityConfig, e
 		SemgrepTimeout:   cfg.CodeScan.Timeout,
 	})
 	if err != nil {
-		return controller.SecurityConfig{}, fmt.Errorf("resolve code scan engine: %w", err)
+		if cfg.CodeScan.Engine != codeaudit.EngineNameSemgrep {
+			return controller.SecurityConfig{}, fmt.Errorf("resolve code scan engine: %w", err)
+		}
+		log.Printf("WARNING: [codeaudit] semgrep engine unavailable (%v); falling back to the built-in regex engine", err)
+		engine = codeaudit.DefaultEngine()
 	}
 
 	timeout := time.Duration(cfg.LLM.TimeoutMs) * time.Millisecond

@@ -402,7 +402,7 @@ TAA reads its configuration from `taa-config.json` located in its working direct
 | `model.output.progress` | `/opt/taa/output/progress/progress.json` | Model progress file (or directory) monitored by progress watcher (`reportProgress`) |
 | `codeAudit.enabled` | `true` | Master audit switch: enables the static rule-based security scan during model import |
 | `codeAudit.codeScan.engine` | `semgrep` | Tier 1 static engine, `semgrep` or `regex`. Normalized to lower case; any other value is rejected at startup, because an unrecognized name would silently scan with the regex baseline while the deployment believed otherwise. `regex` is the baseline an operator falls back to deliberately |
-| `codeAudit.codeScan.rulesPath` | unset | Rules file or directory for the semgrep engine, passed through as semgrep's `--config`. Unset means the engine's built-in default, which is relative to the repository root and therefore useless in a container: a deployment that selects semgrep has to set this, and startup fails when the path does not exist |
+| `codeAudit.codeScan.rulesPath` | unset | Rules file or directory for the semgrep engine, passed through as semgrep's `--config`. Unset means the engine's built-in default, which is relative to the repository root and therefore useless in a container: a deployment that selects semgrep has to set this. If the path does not exist at startup, TAA logs a warning and runs the regex engine for the rest of the process |
 | `codeAudit.codeScan.timeoutSeconds` | unset | Whole-scan deadline for one semgrep run, not a scan budget but a safety net: an import waits on the scan, and an expired deadline becomes a failed scan, which the audit fails closed on. Unset or `0` means the adapter's own default (5 minutes); a negative value is rejected at startup. The `taa-initrd.json` template sets `900`; the other three leave it unset |
 | `codeAudit.resultCheck.enabled` | `true` | Runs the plaintext data leakage check over the result directory as soon as training finishes, and stores the verdict on the task's import index record. `/v1/taa/export` reads that verdict instead of scanning again, so it refuses to export when the verdict failed, when the check itself could not run, and when no verdict exists at all (fail-closed: records committed before this field existed have none and must be retrained - both of those states are governed by `codeAudit.llm.failClosed`, which turns them into a warning when set to `false`). A failing check never fails the training process itself, but it does change how the run is reported: the training report is uploaded with `code` `2` and the reason in `msg`, its `training_task.status` is `failed` (with `exit_code` still `0`), and it carries no `result_files` at all - the directory tree's table previews are the data rows being withheld. Everything else about the run still reports normally (accepts object or boolean) |
 | `codeAudit.binaryAudit.enabled` | `true` | Runs the binary audit channel alongside the source scan (see [4. Binary Audit Channel](#4-binary-audit-channel)). Off restores the pre-channel behavior exactly |
@@ -594,13 +594,15 @@ Inside Docker containers, TAA runs under the supervision of `deploy/taa-supervis
 > non-zero exit. A failure prints semgrep's own output rather than an exit code alone.
 
 > **`docker save` needs the semgrep payload archive built first.** The base image carries neither
-> the engine nor the rules while the production template selects semgrep, and a missing rules path is
-> a hard startup failure rather than a downgrade — an image packaged without an engine would start,
-> die, and then sit in the supervisor's 10s restart loop. Build the archive once with
+> the engine nor the rules while the production template selects semgrep, and a missing rules path
+> is now a downgrade rather than a startup failure — an image packaged without an engine would
+> start on the regex scanner with only a warning in the log, and the deployment would silently lose
+> the semgrep tier. Build the archive once with
 > `./deploy/guest-build/build-semgrep-payload-container.sh` (needs network, ~350 MiB, writes
 > `deploy/guest-build/out/semgrep-bundle.tar.gz`); every later `./deploy.sh docker save` extracts it
 > offline, so packaging itself never needs the network. A missing archive fails the packaging with
-> that command as the hint instead of producing an image that cannot scan.
+> that command as the hint instead of producing an image that silently scans with the baseline
+> engine.
 >
 > The archive's embedded `MANIFEST` is checked against `SEMGREP_VERSION` (1.177.0) so a stale bundle
 > is rejected rather than shipped, the rules are copied from `SEMGREP_RULES_SOURCE`

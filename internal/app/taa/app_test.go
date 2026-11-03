@@ -365,18 +365,16 @@ func TestBuildSecurityConfigResolvesTheConfiguredEngine(t *testing.T) {
 	}
 }
 
-// TestBuildSecurityConfigFailsFastOnAnUnusableEngine pins that a Tier 1 engine
-// that cannot be honoured stops the process instead of starting and failing
-// every import.
+// TestBuildSecurityConfigFailsFastOnAnUnusableEngine pins that an engine name
+// this build does not know stops the process instead of starting and scanning
+// with something else.
 //
-// Both cases below are configuration mistakes with consequences that look like
-// the scanner working: an unknown name would silently scan with another engine,
-// and a missing rules file fails every scan, which the import path reports as a
-// failed audit. Neither is diagnosable from the
-// audit result, so both have to be refused here.
+// A missing rules path is deliberately not in this table: semgrep covers that
+// case by falling back to regex (see
+// TestBuildSecurityConfigFallsBackToRegexWhenSemgrepIsUnavailable). An unknown
+// name has no honest fallback - the operator asked for an engine, and running a
+// different one would look like the request was honoured - so it is refused.
 func TestBuildSecurityConfigFailsFastOnAnUnusableEngine(t *testing.T) {
-	missing := filepath.Join(t.TempDir(), "absent-rules.yaml")
-
 	for _, tc := range []struct {
 		name   string
 		engine string
@@ -384,7 +382,6 @@ func TestBuildSecurityConfigFailsFastOnAnUnusableEngine(t *testing.T) {
 	}{
 		{"unknown engine name", "enforce", ""},
 		{"unset engine name", "", ""},
-		{"semgrep without rules", "semgrep", missing},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			sec, err := buildSecurityConfig(config.StartupConfig{
@@ -396,6 +393,32 @@ func TestBuildSecurityConfigFailsFastOnAnUnusableEngine(t *testing.T) {
 					tc.engine, sec.Engine)
 			}
 		})
+	}
+}
+
+// TestBuildSecurityConfigFallsBackToRegexWhenSemgrepIsUnavailable pins the
+// degradation contract: a semgrep selection whose rules are missing leaves the
+// audit running on the built-in engine instead of stopping the service.
+//
+// The rules path is a deployment artifact (the payload archive plus the rule
+// stream) and its absence says nothing about the rest of the instance, so
+// refusing to start would take training down over a missing optional tier. The
+// fallback is visible in the startup log and in the engine's reported name, so
+// a deployment that believes it is running semgrep can tell it is not.
+func TestBuildSecurityConfigFallsBackToRegexWhenSemgrepIsUnavailable(t *testing.T) {
+	missing := filepath.Join(t.TempDir(), "absent-rules.yaml")
+
+	sec, err := buildSecurityConfig(config.StartupConfig{
+		CodeScan: config.CodeScanConfig{Engine: "semgrep", RulesPath: missing},
+	})
+	if err != nil {
+		t.Fatalf("buildSecurityConfig() error = %v; semgrep unavailability must degrade, not fail", err)
+	}
+	if sec.Engine == nil {
+		t.Fatal("SecurityConfig.Engine = nil; the controller would have no engine to scan with")
+	}
+	if got := sec.Engine.Name(); got != "regex" {
+		t.Errorf("SecurityConfig.Engine.Name() = %q, want the regex fallback", got)
 	}
 }
 

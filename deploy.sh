@@ -133,10 +133,11 @@ CLI_MODEL=""
 READY_TIMEOUT="${READY_TIMEOUT:-120}"
 READY_INTERVAL="${READY_INTERVAL:-2}"
 
-# Semgrep payload for the code scan engine. TAA resolves the engine fail-closed: with
-# codeAudit.codeScan.engine=semgrep the rules path must exist or the daemon exits FATAL at startup
-# and the supervisor restarts it every 10s. The kata pod image ships python3 and tar but neither
-# the semgrep CLI nor any rules, so a remote deploy has to provision both.
+# Semgrep payload for the code scan engine. TAA resolves the engine at startup: with
+# codeAudit.codeScan.engine=semgrep a missing rules path makes it fall back to the built-in regex
+# engine and log a warning, so the deployment would quietly lose the semgrep tier rather than
+# fail visibly. The kata pod image ships python3 and tar but neither the semgrep CLI nor any
+# rules, so a remote deploy has to provision both.
 # The engine runtime is a fixed third-party payload and travels as an archive that is expected to
 # sit on the remote host (build it with deploy/guest-build/build-semgrep-payload-container.sh and
 # copy it over, or point SEMGREP_BUNDLE at a local copy to have it uploaded). The rules are not
@@ -1255,10 +1256,11 @@ version=$(bounded semgrep --version --disable-version-check 2>/dev/null | head -
 echo "$verdict version=${version:-unknown}"'
 
 # Makes sure the code scan engine the config selects actually works inside the container. The
-# engine is resolved by taa at startup and is fail-closed: a missing rules path is a FATAL exit,
-# and the supervisor then restarts the daemon every 10s while the readiness gate keeps failing --
-# an unprovisioned engine therefore looks exactly like a hung service. Probing first keeps a
-# redeploy onto an already-provisioned pod free.
+# engine is resolved by taa at startup and is fail-open for semgrep: a missing rules path leaves
+# the audit on the built-in regex engine with a warning, and a missing CLI fails every scan the
+# adapter runs. Neither shows up as an error -- the first looks like a healthy start, the second
+# like a failed audit -- so provisioning is checked here rather than left to the pod's logs.
+# Probing first keeps a redeploy onto an already-provisioned pod free.
 provision_remote_scan_engine() {
   local template="$1"
   local engine="" rules_path=""
@@ -1295,7 +1297,7 @@ echo engine=\$e rules=\$r"
     info "code scan engine already provisioned inside container (rules: $rules_path)"
   else
     if [[ "$engine_present" != "yes" ]]; then
-      warn "semgrep is not installed in the container; taa would exit FATAL and restart every 10s"
+      warn "semgrep is not installed in the container; taa would fall back to the regex engine at startup"
       if [[ -n "$SEMGREP_BUNDLE" ]]; then
         require_file "semgrep payload bundle not found" "$SEMGREP_BUNDLE"
         spin_task "uploading semgrep payload to ${REMOTE_HOST} ($(du -h "$SEMGREP_BUNDLE" 2>/dev/null | cut -f1))" \
@@ -2086,8 +2088,8 @@ if [[ "$DEPLOY_TAA" == true ]]; then
   step "replacing remote taa, config, and certificates"
   remote_ssh "mv '$REMOTE_DIR/$BINARY_NAME.new' '$REMOTE_DIR/$BINARY_NAME' && mv '$REMOTE_TAA_CONFIG_PATH.new' '$REMOTE_TAA_CONFIG_PATH' && mv '$REMOTE_DIR/hrk.cert.new' '$REMOTE_DIR/hrk.cert' && mv '$REMOTE_DIR/hsk_cek.cert.new' '$REMOTE_DIR/hsk_cek.cert' && chmod +x '$REMOTE_DIR/$BINARY_NAME'"
 
-  # Before the running taa is disturbed: an unprovisioned engine is a startup FATAL, so failing
-  # here leaves the previous daemon serving instead of trading it for a restart loop.
+  # Before the running taa is disturbed: failing here leaves the previous daemon serving instead
+  # of replacing it with one whose configured engine silently degraded to regex.
   step "provisioning code scan engine inside container"
   provision_remote_scan_engine "$TAA_CONFIG_TEMPLATE"
 

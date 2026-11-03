@@ -208,7 +208,7 @@ sequenceDiagram
 │     └─ 携带: dockerId, attestation(base64), taaPublicKey,           │
 │              taaSecretKey(可选), timestamp, verifiedPass            │
 │     └─ 失败则后台指数退避重试（时间戳沿用启动时刻）                 │
-│  7. 构建 SecurityConfig（启动期解析静态引擎，失败即 FATAL）         │
+│  7. 构建 SecurityConfig（启动期解析静态引擎；semgrep 规则缺失则回退 regex 并告警）      │
 │     └─ 确保 ModelDir / DataDir / ResultDir / input / output 存在    │
 │  8. 创建 TAAState，恢复密封状态                                     │
 │     └─ 有 RUNNING 在飞任务 → 崩溃恢复（含 3 次熔断）                │
@@ -492,7 +492,7 @@ TAA 作为服务端注册的路由（`internal/controller/router.go`）：
 
 关键语义：
 
-- **静态引擎二选一**：`regex`（内置规则基线）或 `semgrep`（外部 CLI 适配器，带超时与 `--max-memory` 上限，失败即判审计失败）。引擎名在启动期解析，无法兑现的选择会让进程启动失败，而不是悄悄退回别的引擎。
+- **静态引擎二选一**：`regex`（内置规则基线）或 `semgrep`（外部 CLI 适配器，带超时与 `--max-memory` 上限，失败即判审计失败）。引擎名在启动期解析；选中的 semgrep 因规则路径缺失而无法构建时，回退到内置 regex 引擎并在启动日志告警；无法识别的引擎名仍然拒绝启动。
 - **二进制通道**不是"没有发现就干净"：它会记录 `bounded_executable` / `incomplete` / `errored` 等覆盖缺口；有缺口时不会宣称扫描干净。通道自身不返回错误，缺口写进报告由结论体现。
 - **LLM 启停与 fail-closed**：`llm.enabled` 且有 Finding 时才调用；`failClosed=true` 而推理客户端不可用时，审计直接判为无结论（`code=2`），避免"只跑了静态扫描却报告已审计"。`llm.failClosed=false` 时降级为静态结论并在报告中标记。
 - **结论仅供参考**：审计在模型导入完成后由后台 goroutine 异步执行，与训练并行，两者互不阻塞。TAA 不因结论删除、回滚或拒绝已导入的模型包，是否采用该模型由平台侧决定。

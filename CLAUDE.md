@@ -70,8 +70,9 @@ and a `AuditPending` marker so an audit interrupted by a crash is still reported
 Two tiers plus an independent binary channel:
 - **Tier 1** is a `StaticEngine` interface with two implementations — the built-in regex
   scanner and an offline Semgrep CLI adapter. The engine is chosen by
-  `codeAudit.codeScan.engine` and constructed once at startup; a semgrep deployment without a
-  usable rules path fails at startup, not per import.
+  `codeAudit.codeScan.engine` and constructed once at startup; a semgrep selection whose rules
+  path is missing falls back to regex with a startup warning, while an unknown engine name is
+  refused.
 - **Tier 2** asks the TEE-LLM gateway (over RFC 8998 TLS 1.3 with attestation, via the `teellm`
   submodule) to adjudicate each Tier 1 finding. `FailClosed` makes an unreachable gateway
   reject the import rather than silently degrading to static-only.
