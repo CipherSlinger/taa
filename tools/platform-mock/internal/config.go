@@ -20,13 +20,16 @@ type Config struct {
 	StateDir string
 	// UploadDir is the directory used to store uploaded files, served at /files/.
 	UploadDir string
-	// TAATarget is the console's default TAA address (e.g.
-	// http://10.244.0.5:6001). The /taa/* proxy does not use it: each request
-	// selects the target of the instance it names or the default instance.
-	// When empty, TAAPod is used to auto-discover a fallback address via kubectl.
+	// TAATarget is the single-instance fixed TAA address (e.g.
+	// http://10.244.0.5:6001). targetFor resolves an instance's outbound
+	// address in this order: the address derived from that instance's own
+	// registration, then this fixed target, then the Pod address discovered via
+	// TAAPod. While only one real instance exists, this fixed target keeps
+	// winning as it did before multi-instance. Empty means no fixed target.
 	TAATarget string
-	// TAAPod is the Kubernetes pod name used for auto-discovering the TAA
-	// address when TAATarget is empty.
+	// TAAPod is the Kubernetes pod name used to discover a fallback TAA
+	// address when neither the per-instance derived address nor TAATarget is
+	// available.
 	TAAPod string
 	// TAANS is the Kubernetes namespace for TAAPod (empty = default namespace).
 	TAANS string

@@ -211,12 +211,15 @@ func (s *keystore) taaPublicFor(dockerID string) *teecrypto.SM2PublicKey {
 	return s.taaPubForLocked(dockerID)
 }
 
+// taaPublic is a test-only compatibility wrapper around taaPublicFor for the
+// pre-multi-instance single key.
 func (s *keystore) taaPublic() *teecrypto.SM2PublicKey {
 	return s.taaPublicFor("")
 }
 
-// hasTaaPublicKey reports whether the legacy single key is registered, which is
-// the key the wrapper methods use; it says nothing about per-instance keys.
+// hasTaaPublicKey is a test-only compatibility wrapper. It reports whether the
+// legacy single key is registered, which is the key the wrapper methods use; it
+// says nothing about per-instance keys.
 func (s *keystore) hasTaaPublicKey() bool {
 	return s.taaPublic() != nil
 }
@@ -245,6 +248,8 @@ func (s *keystore) setTaaPublicKeyFor(dockerID string, pub *teecrypto.SM2PublicK
 	return nil
 }
 
+// setTaaPublicKey is a test-only compatibility wrapper around
+// setTaaPublicKeyFor for the pre-multi-instance single key.
 func (s *keystore) setTaaPublicKey(pub *teecrypto.SM2PublicKey) error {
 	return s.setTaaPublicKeyFor("", pub)
 }
@@ -319,8 +324,9 @@ func (s *keystore) openBodyWithID(body []byte) ([]byte, string, error) {
 	return plaintext, hint, nil
 }
 
-// openBody parses and verifies a sealed report from TAA, returning the
-// plaintext body the handlers decode exactly as before.
+// openBody is a test-only compatibility wrapper around openBodyWithID. The
+// production handlers call openBodyWithID so they also learn which instance
+// signed the report.
 func (s *keystore) openBody(body []byte) ([]byte, error) {
 	plaintext, _, err := s.openBodyWithID(body)
 	return plaintext, err

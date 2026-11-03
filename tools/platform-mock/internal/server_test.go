@@ -657,6 +657,40 @@ func TestUploadHandlerEncryption(t *testing.T) {
 		t.Fatalf("decrypted fallback = %q, want %q", string(decryptedFallback), string(rawContent))
 	}
 
+	// 3b. The instance's registered key wins over the form's publicKey: the form
+	// may still carry the snapshot of a previously selected instance.
+	otherKey, err := crypto.GenerateSM2KeyPair()
+	if err != nil {
+		t.Fatalf("generate the stale form key: %v", err)
+	}
+	otherPEM, err := crypto.MarshalSM2PublicKeyPEM(&otherKey.PublicKey)
+	if err != nil {
+		t.Fatalf("marshal the stale form key: %v", err)
+	}
+	regStore.set(registerState{TaaPublicKey: string(pubPEM)})
+	status, api = postMultipartUploadWithFields(t, server.URL+"/api/upload", "precedence.tar.gz", rawContent, map[string]string{
+		"encrypt":   "true",
+		"publicKey": string(otherPEM),
+	})
+	if status != http.StatusOK || api.Error != 0 {
+		t.Fatalf("upload with both keys failed: status=%d, api=%+v", status, api)
+	}
+	resMap = api.Result.(map[string]any)
+	precedenceCipher, err := os.ReadFile(filepath.Join(uploadDir, resMap["filename"].(string)))
+	if err != nil {
+		t.Fatalf("read precedence cipher: %v", err)
+	}
+	decryptedPrecedence, err := crypto.OpenSM2SM4GCM(privKey, precedenceCipher)
+	if err != nil {
+		t.Fatalf("the registered key did not decrypt the upload: %v", err)
+	}
+	if !bytes.Equal(decryptedPrecedence, rawContent) {
+		t.Fatalf("decrypted with the registered key = %q, want %q", string(decryptedPrecedence), string(rawContent))
+	}
+	if _, err := crypto.OpenSM2SM4GCM(otherKey, precedenceCipher); err == nil {
+		t.Fatal("the form's key decrypted the upload; the registered key must take precedence")
+	}
+
 	// 4. 开启加密但既无 publicKey 也无注册公钥时，返回 400 错误
 	regStore.set(registerState{})
 	status, api = postMultipartUploadWithFields(t, server.URL+"/api/upload", "err.txt", rawContent, map[string]string{

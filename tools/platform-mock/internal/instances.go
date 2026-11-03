@@ -196,6 +196,12 @@ func (m *instanceManager) migrateLegacy() {
 		return
 	}
 
+	// A previous migration may have died after moving files into its staging
+	// directory but before publishing it; instances/ is absent in that window,
+	// so restore the staged legacy files before deciding there is nothing to
+	// migrate.
+	m.recoverInterruptedMigration()
+
 	found := false
 	for _, name := range legacyStateFiles {
 		if _, err := os.Stat(filepath.Join(m.root, name)); err == nil {
@@ -259,6 +265,67 @@ func (m *instanceManager) migrateLegacy() {
 		return
 	}
 	log.Printf("migrated legacy single-instance state into %s (dockerId=%q)", filepath.Join(instRoot, instanceDirName(dockerID)), dockerID)
+}
+
+// recoverInterruptedMigration restores legacy state a previous migration had
+// staged but never published. The migration moves each legacy file into a
+// .instances-migrating-* directory and publishes that directory with one rename;
+// a crash between those steps leaves instances/ absent and the files in staging.
+// Without this recovery the next start would find no legacy files in the root
+// and silently create an empty instance store.
+func (m *instanceManager) recoverInterruptedMigration() {
+	stagingDirs, err := filepath.Glob(filepath.Join(m.root, ".instances-migrating-*"))
+	if err != nil {
+		log.Printf("warning: scan interrupted migration staging directories under %s failed: %v", m.root, err)
+		return
+	}
+	for _, tmp := range stagingDirs {
+		if info, err := os.Stat(tmp); err != nil || !info.IsDir() {
+			continue
+		}
+		log.Printf("warning: found an interrupted legacy state migration at %s; restoring its files before migrating", tmp)
+		unrestored := false
+		walkErr := filepath.Walk(tmp, func(path string, info os.FileInfo, walkErr error) error {
+			if walkErr != nil {
+				log.Printf("warning: inspect %s during migration recovery failed: %v", path, walkErr)
+				unrestored = true
+				return nil
+			}
+			if info.IsDir() || !isLegacyStateFile(info.Name()) {
+				return nil
+			}
+			dst := filepath.Join(m.root, info.Name())
+			if _, statErr := os.Stat(dst); statErr == nil {
+				log.Printf("warning: %s already exists in %s; keeping the root copy and discarding the staged one", info.Name(), m.root)
+				return nil
+			}
+			if renameErr := os.Rename(path, dst); renameErr != nil {
+				log.Printf("warning: restore %s from %s failed, it stays there: %v", info.Name(), tmp, renameErr)
+				unrestored = true
+			}
+			return nil
+		})
+		if walkErr != nil {
+			log.Printf("warning: recovery of interrupted migration %s failed: %v", tmp, walkErr)
+			unrestored = true
+		}
+		if unrestored {
+			log.Printf("warning: interrupted migration directory %s was not fully restored; inspect it by hand", tmp)
+			continue
+		}
+		if err := os.RemoveAll(tmp); err != nil {
+			log.Printf("warning: remove recovered migration staging directory %s failed: %v", tmp, err)
+		}
+	}
+}
+
+func isLegacyStateFile(name string) bool {
+	for _, legacy := range legacyStateFiles {
+		if name == legacy {
+			return true
+		}
+	}
+	return false
 }
 
 func (m *instanceManager) scan() {

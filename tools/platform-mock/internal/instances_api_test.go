@@ -274,11 +274,27 @@ func TestConsoleStatusRejectsWrongMethod(t *testing.T) {
 	}
 }
 
-func TestConsoleStatusReportsNoInstance(t *testing.T) {
+func TestConsoleStatusLenientBeforeRegistration(t *testing.T) {
 	mgr := newInstanceManager(t.TempDir(), Config{})
 	w := httptest.NewRecorder()
-	taaLogStatusHandler(mgr).ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/api/taaLog/status", nil))
-	if w.Code != http.StatusServiceUnavailable {
-		t.Fatalf("status = %d, want 503 before any registration; body = %s", w.Code, w.Body.String())
+	modelLogStatusHandler(mgr).ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/api/modelLog/status", nil))
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 before any registration; body = %s", w.Code, w.Body.String())
+	}
+	var payload struct {
+		Msg    string `json:"msg"`
+		Error  int    `json:"error"`
+		Result struct {
+			Entries []modelLogEntry `json:"entries"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode status envelope: %v", err)
+	}
+	if payload.Error != 0 || payload.Msg != "success" {
+		t.Fatalf("envelope = %+v, want error 0 and msg success", payload)
+	}
+	if payload.Result.Entries == nil || len(payload.Result.Entries) != 0 {
+		t.Fatalf("entries = %v, want an empty array", payload.Result.Entries)
 	}
 }

@@ -272,9 +272,14 @@ func uploadHandler(addr, uploadDir string, mgr *instanceManager) http.HandlerFun
 		)
 
 		if shouldEncrypt {
-			pubKeyPEM := strings.TrimSpace(r.FormValue("publicKey"))
+			// The selected instance's registered key wins: the form's publicKey
+			// comes from the page's last registration snapshot, which can be
+			// stale when the console is pointed at another instance. The form
+			// value is only a fallback for an instance that has not registered
+			// its key yet.
+			pubKeyPEM := strings.TrimSpace(b.register.get().TaaPublicKey)
 			if pubKeyPEM == "" {
-				pubKeyPEM = strings.TrimSpace(b.register.get().TaaPublicKey)
+				pubKeyPEM = strings.TrimSpace(r.FormValue("publicKey"))
 			}
 			if pubKeyPEM == "" {
 				writeEnvelope(w, http.StatusBadRequest, "开启加密但尚未获取到 TAA 注册公钥，请等待 TAA 完成注册", nil, http.StatusBadRequest)

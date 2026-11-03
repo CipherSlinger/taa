@@ -79,6 +79,67 @@ func TestInstanceManagerMigratesLegacyState(t *testing.T) {
 	}
 }
 
+func TestInstanceManagerRecoversInterruptedMigration(t *testing.T) {
+	root := t.TempDir()
+	// Simulate a migration killed between moving the files and publishing the
+	// staging directory: instances/ is absent and the moved files are in a
+	// .instances-migrating-* directory.
+	staging := filepath.Join(root, ".instances-migrating-crashed")
+	stagedDir := filepath.Join(staging, instanceDirName("legacy-docker"))
+	if err := os.MkdirAll(stagedDir, 0o755); err != nil {
+		t.Fatalf("create staging dir: %v", err)
+	}
+	legacy := registerState{
+		Received:   true,
+		Accepted:   true,
+		DockerID:   "legacy-docker",
+		ReceivedAt: "2026-01-01T00:00:00Z",
+	}
+	if err := saveJSONFile(filepath.Join(stagedDir, "register-state.json"), legacy); err != nil {
+		t.Fatalf("write staged register state: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(stagedDir, "reportRes-state.json"), []byte(`{"current":{"received":true},"history":[]}`), 0o644); err != nil {
+		t.Fatalf("write staged report state: %v", err)
+	}
+	// One file had not been moved yet when the process died.
+	if err := os.WriteFile(filepath.Join(root, "reportAudit-state.json"), []byte(`{"current":{"received":true},"history":[]}`), 0o644); err != nil {
+		t.Fatalf("write root report state: %v", err)
+	}
+
+	mgr := newInstanceManager(root, Config{})
+	b := mgr.lookup("legacy-docker")
+	if b == nil {
+		t.Fatal("the interrupted migration lost the registered instance")
+	}
+	if !b.register.get().Accepted {
+		t.Fatal("recovered register state lost its accepted flag")
+	}
+	if !b.reportRes.get().Received {
+		t.Fatal("recovered report state was not restored")
+	}
+	if !b.reportAudit.get().Received {
+		t.Fatal("the file still in the root was not migrated")
+	}
+	if _, err := os.Stat(staging); !os.IsNotExist(err) {
+		t.Fatal("the recovered staging directory still exists")
+	}
+
+	// A second construction is a no-op: the same state comes back and only the
+	// one published instance directory exists.
+	reopened := newInstanceManager(root, Config{})
+	rb := reopened.lookup("legacy-docker")
+	if rb == nil || !rb.register.get().Accepted {
+		t.Fatal("a second start did not find the recovered instance")
+	}
+	entries, err := os.ReadDir(filepath.Join(root, instancesDirName))
+	if err != nil {
+		t.Fatalf("read instances dir: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("instances dir = %v, want only the recovered instance", entries)
+	}
+}
+
 func TestInstanceManagerDoesNotMigrateOverExistingInstancesDir(t *testing.T) {
 	root := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(root, instancesDirName, "i-existing"), 0o755); err != nil {

@@ -259,7 +259,7 @@ func reportStatusHandler(mgr *instanceManager, pick func(*instanceStores) *repor
 		if !requireMethod(w, r, http.MethodGet) {
 			return
 		}
-		b, err := mgr.resolve(r)
+		b, err := mgr.resolveLenient(r)
 		if writeInstanceError(w, err) {
 			return
 		}
@@ -282,7 +282,7 @@ func progressStatusHandler(mgr *instanceManager) http.HandlerFunc {
 		if !requireMethod(w, r, http.MethodGet) {
 			return
 		}
-		b, err := mgr.resolve(r)
+		b, err := mgr.resolveLenient(r)
 		if writeInstanceError(w, err) {
 			return
 		}
@@ -309,7 +309,7 @@ func modelLogStatusHandler(mgr *instanceManager) http.HandlerFunc {
 		if !requireMethod(w, r, http.MethodGet) {
 			return
 		}
-		b, err := mgr.resolve(r)
+		b, err := mgr.resolveLenient(r)
 		if writeInstanceError(w, err) {
 			return
 		}
@@ -331,7 +331,7 @@ func taaLogStatusHandler(mgr *instanceManager) http.HandlerFunc {
 		if !requireMethod(w, r, http.MethodGet) {
 			return
 		}
-		b, err := mgr.resolve(r)
+		b, err := mgr.resolveLenient(r)
 		if writeInstanceError(w, err) {
 			return
 		}
