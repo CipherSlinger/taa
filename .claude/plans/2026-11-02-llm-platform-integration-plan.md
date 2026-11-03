@@ -329,6 +329,9 @@ type AttestationSnapshot struct {
 	Report         []byte
 	Values         AttestationValues
 	VerifiedPass   bool
+	// VerifyMessage carries the reason a failed self-check failed, so the
+	// response can say "自检验证失败: <原因>" the way TAA does.
+	VerifyMessage string
 }
 
 // ValuesJSON renders Values the way the platform expects to receive it: a JSON
@@ -380,6 +383,7 @@ func BuildAttestationSnapshot(ctx context.Context, cfg *teetls.Config) (*Attesta
 	}
 
 	pubPEM := pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: cert.RawSubjectPublicKeyInfo})
+	verified, verifyMsg := snapshotVerifies(evidence, cfg, cert)
 
 	return &AttestationSnapshot{
 		CertificatePEM: append([]byte(nil), certPEM...),
@@ -391,14 +395,15 @@ func BuildAttestationSnapshot(ctx context.Context, cfg *teetls.Config) (*Attesta
 			Digest:   hex.EncodeToString(res.Digest),
 			ChipID:   strings.TrimRight(string(res.ChipID), "\x00"),
 		},
-		VerifiedPass: snapshotVerifies(evidence, cfg, cert),
+		VerifiedPass:  verified,
+		VerifyMessage: verifyMsg,
 	}, nil
 }
 
 // snapshotVerifies runs the same chain check the platform will run, plus the
 // public-key binding check. A failure here does not withhold the report; it
 // only marks it unverified, matching how TAA degrades on a failed self-check.
-func snapshotVerifies(evidence *teetls.CSVEvidenceExtension, cfg *teetls.Config, cert *cx509.Certificate) bool {
+func snapshotVerifies(evidence *teetls.CSVEvidenceExtension, cfg *teetls.Config, cert *cx509.Certificate) (bool, string) {
 	opts := csvattest.VerifyOptions{VerifyChain: true}
 	switch {
 	case cfg.HRKCertPath != "" && cfg.HSKCekCertPath != "":
@@ -411,15 +416,18 @@ func snapshotVerifies(evidence *teetls.CSVEvidenceExtension, cfg *teetls.Config,
 		opts.TrustedHRKCertBytes = evidence.HRKCert
 		opts.HSKCekCertBytes = evidence.HSKCekCert
 	default:
-		return false
+		return false, "没有可信 HRK/HSK-CEK 证书可用于链验"
 	}
 
 	res, err := csvattest.VerifyReportWithOptions(evidence.Report, opts)
 	if err != nil {
-		return false
+		return false, err.Error()
 	}
 	bound := teetls.ComputePublicKeySM3(cert.RawSubjectPublicKeyInfo)
-	return len(res.UserData) >= 32 && bytes.Equal(res.UserData[:32], bound[:])
+	if len(res.UserData) < 32 || !bytes.Equal(res.UserData[:32], bound[:]) {
+		return false, "报告 userdata 与证书公钥的 SM3 不一致"
+	}
+	return true, ""
 }
 
 // apiResponse is the envelope TAA already answers with, reproduced here so the
@@ -478,7 +486,7 @@ func (s *Server) handleGetAttestation(w http.ResponseWriter, r *http.Request) {
 
 	msg := "success"
 	if !snapshot.VerifiedPass {
-		msg = "自检验证失败，报告仍按原样返回"
+		msg = "自检验证失败: " + snapshot.VerifyMessage
 	}
 
 	writeAPIResponse(w, http.StatusOK, msg, map[string]any{
