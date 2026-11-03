@@ -37,14 +37,13 @@
   - [6.1 连通性检查（/v1/taa/health）](#61-连通性检查v1taahealth)
   - [6.2 查询 TAA 完整状态（/v1/taa/status）](#62-查询-taa-完整状态v1taastatus)
 - [7. TEE-LLM（LLM 侧）与平台](#7-tee-llmllm-侧与平台)
-  - [7.1 与 TAA 接口的边界](#71-与-taa-接口的边界)
-  - [7.2 LLM → 平台](#72-llm--平台)
-    - [7.2.1 LLM 启动注册（/v1/llm/register）](#721-llm-启动注册v1llmregister)
-    - [7.2.2 LLM 上报心跳（/v1/llm/heartbeat）](#722-llm-上报心跳v1llmheartbeat)
-    - [7.2.3 LLM 上报运行日志（/v1/llm/log）](#723-llm-上报运行日志v1llmlog)
-  - [7.3 平台 → LLM](#73-平台--llm)
-    - [7.3.1 获取远程证明报告（/v1/llm/getAttestation，TEE-TLS :8443）](#731-获取远程证明报告v1llmgetattestationtee-tls-8443)
-  - [7.4 上报器行为与配置](#74-上报器行为与配置)
+  - [7.1 LLM → 平台](#71-llm--平台)
+    - [7.1.1 LLM 启动注册（/v1/llm/register）](#711-llm-启动注册v1llmregister)
+    - [7.1.2 LLM 上报心跳（/v1/llm/heartbeat）](#712-llm-上报心跳v1llmheartbeat)
+    - [7.1.3 LLM 上报运行日志（/v1/llm/log）](#713-llm-上报运行日志v1llmlog)
+  - [7.2 平台 → LLM](#72-平台--llm)
+    - [7.2.1 获取远程证明报告（/v1/llm/getAttestation，TEE-TLS :8443）](#721-获取远程证明报告v1llmgetattestationtee-tls-8443)
+  - [7.3 上报器行为与配置](#73-上报器行为与配置)
 
 ---
 
@@ -1734,30 +1733,13 @@ curl -X POST "http://{TAA_ADDR}/v1/taa/export" \
 
 > **本节与第 3～6 节互不替代。** TAA 与 TEE-LLM 是独立部署的两个进程，各有各的身份、密钥与报文形态。语义相近的几件事（注册、日志上报、取远程证明）落在不同路径、不同信封、不同传输上，**把任何一侧的报文样例照搬到另一侧都会被拒绝**。
 
-### 7.1 与 TAA 接口的边界
-
-| 维度 | TAA（第 3～6 节） | TEE-LLM（本节） |
-| --- | --- | --- |
-| 路径前缀 | `/v1/taa/*` | `/v1/llm/*` |
-| 部署位置 | CSV 客户机内的 TAA 进程，监听 `:6001` | TEE-LLM Pod 内的 `teellm-service`，只监听 `:8443`（TEE-TLS） |
-| LLM → 平台 报文外层 | `{dockerId, cipher, sign}` | **无信封**，明文 JSON |
-| 平台 → LLM 报文外层 | `{dockerId, cipher, sign}`（`dockerId` 可省略） | **无信封**，明文 JSON |
-| 传输 | 明文 HTTP，完整性由信封承担 | 出方向明文 HTTP；入方向全部走 TEE-TLS（RFC 8998） |
-| `dockerId` 来源 | 容器参数 `DOCKER_ID` | 配置 `platform.dockerId`，缺省 `taa-teellm` |
-| SM2 密钥 | 长期密钥，落盘持久化，可由 `TAASECRETKEY` 恢复 | **每次启动新生成**，不持久化，不上报 `taaSecretKey` |
-| 公共返回格式 | `{msg, result, error}` | 同形状（只复用结构，不复用信封） |
-
-**为什么没有信封**：TAA 与平台**各持一对 SM2 密钥**——不是共用一对，而是各自持有自己的私钥、并且知道对方的公钥。平台的公钥由部署时下发的 `PLATFORM_PUBLIC_KEY` 交给 TAA，TAA 的公钥由 `/v1/taa/register` 上报给平台。于是两个方向都能成立：平台 → TAA 用 TAA 公钥加密、平台私钥签名；TAA → 平台用平台公钥加密、TAA 私钥签名。
-
-LLM 不具备这个前提。它的密钥就是 TEE-TLS 证书的密钥，每次启动新生成、不持久化，平台在注册之前无从知晓；而第一条注册报文本身就是明文 HTTP，公钥随报文一起到达，没有可信的前置交换可依。LLM 侧也从未被下发过平台公钥，加密和验签都无从谈起。于是 LLM 的身份改由证据承担：出方向靠 TEE-TLS 握手（平台验证 LLM 出示的证书与证明），入方向靠报告自带的 `userdata ← 证书公钥` 绑定。
-
-### 7.2 LLM → 平台
+### 7.1 LLM → 平台
 
 三个接口全部由 `teellm-service` 主动调用平台，`Content-Type: application/json`，请求与响应都是**明文 JSON**。平台应答同样不经信封，LLM 只校验 HTTP `200`，非 `200` 一律按失败处理（正文最多读 1 KB 附在错误信息里）；LLM 不解析 `msg`/`error`，也不区分状态码做不同退避——这些本仓库都没有实现。
 
-**重试只有注册一处**：启动注册在后台指数退避（`1s → 2s → 4s …`，封顶 `60s`），**不设放弃窗口，一直重试到成功**。心跳与日志是周期任务，失败不重试，等下一个周期自然重来；但这两条通道若因**连不上平台**而失败，会触发一次重新注册（见 7.2.1）。全部失败路径都不阻塞推理，也不影响推理服务的就绪状态；因为重试永不停止，失败日志只在"进入失败"这一跳和每第 10 次注册尝试时各记一行，不会刷屏。
+**重试只有注册一处**：启动注册在后台指数退避（`1s → 2s → 4s …`，封顶 `60s`），**不设放弃窗口，一直重试到成功**。心跳与日志是周期任务，失败不重试，等下一个周期自然重来；但这两条通道若因**连不上平台**而失败，会触发一次重新注册（见 7.1.1）。全部失败路径都不阻塞推理，也不影响推理服务的就绪状态；因为重试永不停止，失败日志只在"进入失败"这一跳和每第 10 次注册尝试时各记一行，不会刷屏。
 
-#### 7.2.1 LLM 启动注册（/v1/llm/register）
+#### 7.1.1 LLM 启动注册（/v1/llm/register）
 
 **请求**：`POST http://{platform.addr}/v1/llm/register`
 
@@ -1824,7 +1806,7 @@ curl -X POST "http://${PLATFORM_ADDR}/v1/llm/register" \
 }
 ```
 
-#### 7.2.2 LLM 上报心跳（/v1/llm/heartbeat）
+#### 7.1.2 LLM 上报心跳（/v1/llm/heartbeat）
 
 **请求**：`POST http://{platform.addr}/v1/llm/heartbeat`
 
@@ -1853,7 +1835,7 @@ curl -X POST "http://${PLATFORM_ADDR}/v1/llm/register" \
 | --- | --- | --- |
 | `received` | `bool` | 平台是否成功接收本次心跳 |
 
-#### 7.2.3 LLM 上报运行日志（/v1/llm/log）
+#### 7.1.3 LLM 上报运行日志（/v1/llm/log）
 
 **请求**：`POST http://{platform.addr}/v1/llm/log`
 
@@ -1902,7 +1884,7 @@ curl -X POST "http://${PLATFORM_ADDR}/v1/llm/register" \
 
 **响应结果字段**：同 [3.6](#36-taa-上报运行日志v1taataalog)，`result.received` 为 `true` 才算本批送达。
 
-### 7.3 平台 → LLM
+### 7.2 平台 → LLM
 
 平台访问 LLM 只有一个接口，与另外两个接口同在 `:8443`：
 
@@ -1918,7 +1900,7 @@ LLM 只把提示词转给模型并返回原始文本。
 
 普通 `curl` 无法与这个端口握手（需要 RFC 8998 的 ShangMi TLS），平台侧必须用 `teetls` 或等价实现作为客户端。
 
-#### 7.3.1 获取远程证明报告（/v1/llm/getAttestation，TEE-TLS :8443）
+#### 7.2.1 获取远程证明报告（/v1/llm/getAttestation，TEE-TLS :8443）
 
 **请求**：`POST https://{llm-host}:8443/v1/llm/getAttestation`（TEE-TLS 1.3）
 
@@ -1945,7 +1927,7 @@ LLM 只把提示词转给模型并返回原始文本。
 | `requestId` | `string` | 与请求中的 `requestId` 一致 |
 | `verifiedPass` | `bool` | 自检结果：HRK/HSK-CEK 链验通过 **且** `userdata[:32] == SM3(证书公钥)` |
 | `attestation` | `string` | 远程证明报告，Base64 编码（`0x9F4` = 2548 字节），二进制格式见 [4.1.1](#411-远程证明报告二进制格式) |
-| `attestationValues` | `string` (JSON) | 报告核心字段的 JSON **字符串**，字段同 [7.2.1](#721-llm-启动注册v1llmregister)：**`userdata` 为 hex** |
+| `attestationValues` | `string` (JSON) | 报告核心字段的 JSON **字符串**，字段同 [7.1.1](#711-llm-启动注册v1llmregister)：**`userdata` 为 hex** |
 | `certificate` | `string` | **本实例当前出示的 TEE-TLS 证书，PEM 编码**。该字段是 LLM 侧独有的 |
 
 **与 TAA `/v1/taa/getAttestation` 的差异**：
@@ -2020,7 +2002,7 @@ openssl x509 -in /tmp/cert.pem -pubkey -noout \
 
 两段输出的摘要值必须逐字节相同。
 
-### 7.4 上报器行为与配置
+### 7.3 上报器行为与配置
 
 配置位于 `teellm-service` 配置文件（缺省 `configs/teellm-production.json`）：
 
