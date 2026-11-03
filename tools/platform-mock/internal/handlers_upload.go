@@ -210,7 +210,7 @@ func sanitizeUploadFilename(name string) string {
 	return cleaned
 }
 
-func uploadHandler(addr, uploadDir string, registerStores ...*registerStateStore) http.HandlerFunc {
+func uploadHandler(addr, uploadDir string, mgr *instanceManager) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		setCORS(w)
 		if r.Method == http.MethodOptions {
@@ -220,6 +220,11 @@ func uploadHandler(addr, uploadDir string, registerStores ...*registerStateStore
 		if r.Method != http.MethodPost {
 			w.Header().Set("Allow", http.MethodPost)
 			writeEnvelope(w, http.StatusMethodNotAllowed, "仅支持 POST 方法", nil, http.StatusMethodNotAllowed)
+			return
+		}
+
+		b, resolveErr := mgr.resolveLenient(r)
+		if writeInstanceError(w, resolveErr) {
 			return
 		}
 
@@ -268,8 +273,8 @@ func uploadHandler(addr, uploadDir string, registerStores ...*registerStateStore
 
 		if shouldEncrypt {
 			pubKeyPEM := strings.TrimSpace(r.FormValue("publicKey"))
-			if pubKeyPEM == "" && len(registerStores) > 0 && registerStores[0] != nil {
-				pubKeyPEM = strings.TrimSpace(registerStores[0].get().TaaPublicKey)
+			if pubKeyPEM == "" {
+				pubKeyPEM = strings.TrimSpace(b.register.get().TaaPublicKey)
 			}
 			if pubKeyPEM == "" {
 				writeEnvelope(w, http.StatusBadRequest, "开启加密但尚未获取到 TAA 注册公钥，请等待 TAA 完成注册", nil, http.StatusBadRequest)

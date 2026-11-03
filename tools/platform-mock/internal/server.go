@@ -76,14 +76,6 @@ func NewServer(cfg Config) *Server {
 		log.Printf("failed to create state directory %s: %v", cfg.StateDir, err)
 	}
 
-	// Resolve the console's default TAA address. The /taa/* proxy does not use
-	// this value: it selects the target per request, and newInstanceManager
-	// below logs the mode it will use.
-	taaAddr := strings.TrimRight(strings.TrimSpace(cfg.TAATarget), "/")
-	if taaAddr == "" {
-		taaAddr = discoverTAAAddr(cfg.TAAPod, cfg.TAANS, strings.TrimSpace(cfg.TAAPort))
-	}
-
 	// The keystore is installed before anything is routed: the envelope is
 	// mandatory on every TAA route, so a server without one could not serve a
 	// single callback. A failure here is logged and leaves the routes answering
@@ -94,17 +86,6 @@ func NewServer(cfg Config) *Server {
 	} else {
 		setPlatformKeys(keys)
 	}
-
-	// Transitional: inbound callbacks write through mgr; these root-path stores
-	// still feed the console routes until the console is rewired to the manager.
-	registerStore := newRegisterStateStore(cfg.StateDir)
-	reportStore := newReportStateStore(cfg.StateDir)
-	reportResStore := newReportStateStore(cfg.StateDir, "reportRes-state.json")
-	reportModelImportStore := newReportStateStore(cfg.StateDir, "reportModelImport-state.json")
-	reportAuditStore := newReportStateStore(cfg.StateDir, "reportAudit-state.json")
-	progressStore := newProgressStateStore(cfg.StateDir)
-	modelLogStore := newModelLogStore(cfg.StateDir, 2000)
-	taaLogStore := newTaaLogStore(cfg.StateDir, 2000)
 
 	mgr := newInstanceManager(cfg.StateDir, cfg)
 	if mgr.staticTarget != "" {
@@ -142,25 +123,26 @@ func NewServer(cfg Config) *Server {
 	mux.HandleFunc("/v1/taa/reportProgress", reportProgressHandler(mgr))
 	mux.HandleFunc("/v1/taa/modelLog", modelLogHandler(mgr))
 	mux.HandleFunc("/v1/taa/taaLog", taaLogHandler(mgr))
-	mux.HandleFunc("/api/dashboard/status", dashboardStatusHandler(registerStore, reportModelImportStore, reportAuditStore, progressStore, taaAddr))
-	mux.HandleFunc("/api/register/status", registerStatusHandler(registerStore))
-	mux.HandleFunc("/api/register/reset", registerResetHandler(registerStore))
-	mux.HandleFunc("/api/reportResourceRes/status", reportStatusHandler(reportStore))
-	mux.HandleFunc("/api/reportResourceRes/reset", reportResetHandler(reportStore))
-	mux.HandleFunc("/api/reportRes/status", reportStatusHandler(reportResStore))
-	mux.HandleFunc("/api/reportRes/reset", reportResetHandler(reportResStore))
-	mux.HandleFunc("/api/reportModelImport/status", reportStatusHandler(reportModelImportStore))
-	mux.HandleFunc("/api/reportModelImport/reset", reportResetHandler(reportModelImportStore))
-	mux.HandleFunc("/api/reportAudit/status", reportStatusHandler(reportAuditStore))
-	mux.HandleFunc("/api/reportAudit/reset", reportResetHandler(reportAuditStore))
-	mux.HandleFunc("/api/reportProgress/status", progressStatusHandler(progressStore))
-	mux.HandleFunc("/api/reportProgress/reset", progressResetHandler(progressStore))
-	mux.HandleFunc("/api/modelLog/status", modelLogStatusHandler(modelLogStore))
-	mux.HandleFunc("/api/modelLog/reset", modelLogResetHandler(modelLogStore))
-	mux.HandleFunc("/api/taaLog/status", taaLogStatusHandler(taaLogStore))
-	mux.HandleFunc("/api/taaLog/reset", taaLogResetHandler(taaLogStore))
-	mux.HandleFunc("/api/taa-target", taaTargetHandler(taaAddr))
-	mux.HandleFunc("/api/upload", uploadHandler(cfg.Addr, uploadDir, registerStore))
+	mux.HandleFunc("/api/instances", instancesHandler(mgr))
+	mux.HandleFunc("/api/dashboard/status", dashboardStatusHandler(mgr))
+	mux.HandleFunc("/api/register/status", registerStatusHandler(mgr))
+	mux.HandleFunc("/api/register/reset", registerResetHandler(mgr))
+	mux.HandleFunc("/api/reportResourceRes/status", reportStatusHandler(mgr, func(b *instanceStores) *reportStateStore { return b.reportResourceRes }))
+	mux.HandleFunc("/api/reportResourceRes/reset", reportResetHandler(mgr, func(b *instanceStores) *reportStateStore { return b.reportResourceRes }))
+	mux.HandleFunc("/api/reportRes/status", reportStatusHandler(mgr, func(b *instanceStores) *reportStateStore { return b.reportRes }))
+	mux.HandleFunc("/api/reportRes/reset", reportResetHandler(mgr, func(b *instanceStores) *reportStateStore { return b.reportRes }))
+	mux.HandleFunc("/api/reportModelImport/status", reportStatusHandler(mgr, func(b *instanceStores) *reportStateStore { return b.reportModelImport }))
+	mux.HandleFunc("/api/reportModelImport/reset", reportResetHandler(mgr, func(b *instanceStores) *reportStateStore { return b.reportModelImport }))
+	mux.HandleFunc("/api/reportAudit/status", reportStatusHandler(mgr, func(b *instanceStores) *reportStateStore { return b.reportAudit }))
+	mux.HandleFunc("/api/reportAudit/reset", reportResetHandler(mgr, func(b *instanceStores) *reportStateStore { return b.reportAudit }))
+	mux.HandleFunc("/api/reportProgress/status", progressStatusHandler(mgr))
+	mux.HandleFunc("/api/reportProgress/reset", progressResetHandler(mgr))
+	mux.HandleFunc("/api/modelLog/status", modelLogStatusHandler(mgr))
+	mux.HandleFunc("/api/modelLog/reset", modelLogResetHandler(mgr))
+	mux.HandleFunc("/api/taaLog/status", taaLogStatusHandler(mgr))
+	mux.HandleFunc("/api/taaLog/reset", taaLogResetHandler(mgr))
+	mux.HandleFunc("/api/taa-target", taaTargetHandler(mgr))
+	mux.HandleFunc("/api/upload", uploadHandler(cfg.Addr, uploadDir, mgr))
 	registerUploadDeleteRoutes(mux, uploadDir)
 	mux.HandleFunc("/api/uploads", uploadListHandler(cfg.Addr, uploadDir))
 	mux.HandleFunc("/api/uploads/reset", uploadResetHandler(uploadDir))

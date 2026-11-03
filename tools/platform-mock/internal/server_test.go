@@ -277,8 +277,13 @@ func TestDiscoverTAAAddrUsesConfiguredPort(t *testing.T) {
 
 func newUploadTestServer(t *testing.T, uploadDir string, registerStores ...*registerStateStore) *httptest.Server {
 	t.Helper()
+	mgr := testManagerWith(t, "", func(b *instanceStores) {
+		if len(registerStores) > 0 {
+			b.register = registerStores[0]
+		}
+	})
 	mux := http.NewServeMux()
-	mux.HandleFunc("/api/upload", uploadHandler("127.0.0.1:6001", uploadDir, registerStores...))
+	mux.HandleFunc("/api/upload", uploadHandler("127.0.0.1:6001", uploadDir, mgr))
 	registerUploadDeleteRoutes(mux, uploadDir)
 	mux.HandleFunc("/api/uploads", uploadListHandler("127.0.0.1:6001", uploadDir))
 	mux.HandleFunc("/api/uploads/reset", uploadResetHandler(uploadDir))
@@ -1290,8 +1295,8 @@ func TestReportProgressHandlingAndTimestampOrdering(t *testing.T) {
 func TestReportProgressStatusAndReset(t *testing.T) {
 	store := newProgressStateStore(t.TempDir())
 	reportHandler := reportProgressHandler(testManagerWith(t, "", func(b *instanceStores) { b.progress = store }))
-	statusHandler := progressStatusHandler(store)
-	resetHandler := progressResetHandler(store)
+	statusHandler := progressStatusHandler(testManagerWith(t, "", func(b *instanceStores) { b.progress = store }))
+	resetHandler := progressResetHandler(testManagerWith(t, "", func(b *instanceStores) { b.progress = store }))
 
 	// 上报一次进度
 	reqReport := httptest.NewRequest(http.MethodPost, "/v1/taa/reportProgress", sealedReader(t, `{
@@ -1488,8 +1493,8 @@ func TestModelLogValidation(t *testing.T) {
 func TestModelLogStatusAndReset(t *testing.T) {
 	store := newModelLogStore(t.TempDir(), 2000)
 	logHandler := modelLogHandler(testManagerWith(t, "", func(b *instanceStores) { b.modelLog = store }))
-	statusHandler := modelLogStatusHandler(store)
-	resetHandler := modelLogResetHandler(store)
+	statusHandler := modelLogStatusHandler(testManagerWith(t, "", func(b *instanceStores) { b.modelLog = store }))
+	resetHandler := modelLogResetHandler(testManagerWith(t, "", func(b *instanceStores) { b.modelLog = store }))
 
 	// 发送一条日志
 	reqLog := httptest.NewRequest(http.MethodPost, "/v1/taa/modelLog", sealedReader(t, `{
@@ -1686,8 +1691,8 @@ func TestTaaLogValidation(t *testing.T) {
 func TestTaaLogStatusAndReset(t *testing.T) {
 	store := newTaaLogStore(t.TempDir(), 2000)
 	logHandler := taaLogHandler(testManagerWith(t, "", func(b *instanceStores) { b.taaLog = store }))
-	statusHandler := taaLogStatusHandler(store)
-	resetHandler := taaLogResetHandler(store)
+	statusHandler := taaLogStatusHandler(testManagerWith(t, "", func(b *instanceStores) { b.taaLog = store }))
+	resetHandler := taaLogResetHandler(testManagerWith(t, "", func(b *instanceStores) { b.taaLog = store }))
 
 	reqLog := httptest.NewRequest(http.MethodPost, "/v1/taa/taaLog", sealedReader(t, `{
 		"dockerId": "docker-taa",
@@ -2147,7 +2152,7 @@ func TestReportResHistoryPersistenceAndReset(t *testing.T) {
 	// Verify history returned via status handler
 	statusW := httptest.NewRecorder()
 	statusReq := httptest.NewRequest(http.MethodGet, "/api/reportRes/status", nil)
-	reportStatusHandler(store)(statusW, statusReq)
+	reportStatusHandler(testManagerWith(t, "", func(b *instanceStores) { b.reportRes = store }), func(b *instanceStores) *reportStateStore { return b.reportRes })(statusW, statusReq)
 	if statusW.Code != http.StatusOK {
 		t.Fatalf("status status = %d, want 200", statusW.Code)
 	}
@@ -2181,7 +2186,7 @@ func TestReportResHistoryPersistenceAndReset(t *testing.T) {
 	// Test reset
 	resetW := httptest.NewRecorder()
 	resetReq := httptest.NewRequest(http.MethodPost, "/api/reportRes/reset", nil)
-	reportResetHandler(store)(resetW, resetReq)
+	reportResetHandler(testManagerWith(t, "", func(b *instanceStores) { b.reportRes = store }), func(b *instanceStores) *reportStateStore { return b.reportRes })(resetW, resetReq)
 	if resetW.Code != http.StatusOK {
 		t.Fatalf("reset status = %d, want 200", resetW.Code)
 	}
