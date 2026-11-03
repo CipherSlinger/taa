@@ -316,18 +316,25 @@ func (m *instanceManager) defaultID() string {
 	return ""
 }
 
-// instanceForWrite picks the bundle an inbound callback writes to. New
-// instances are created only by registration; a callback from an id the mock
-// has never registered falls back to the legacy bundle instead of creating a
-// directory per spoofed id.
-func (m *instanceManager) instanceForWrite(dockerID string, accepted bool) *instanceStores {
-	if accepted && dockerID != "" {
-		return m.getOrCreate(dockerID)
-	}
+// instanceForWrite picks the bundle an inbound callback writes to. Writing
+// never creates an instance: only registration does. An id the mock has never
+// registered falls back to the legacy bundle, so a signed callback cannot make
+// the state directory grow.
+func (m *instanceManager) instanceForWrite(dockerID string) *instanceStores {
 	if b := m.lookup(dockerID); b != nil {
 		return b
 	}
 	return m.getOrCreate("")
+}
+
+// instanceForRegistration creates the bundle only for an accepted registration
+// with a non-empty dockerId; a rejected one is recorded on an existing or the
+// legacy bundle.
+func (m *instanceManager) instanceForRegistration(dockerID string, accepted bool) *instanceStores {
+	if accepted && dockerID != "" {
+		return m.getOrCreate(dockerID)
+	}
+	return m.instanceForWrite(dockerID)
 }
 
 func requestedDockerID(r *http.Request) string {

@@ -129,7 +129,7 @@ func TestInstanceManagerResolveRejectsUnknownDockerID(t *testing.T) {
 
 func TestInstanceForWriteNeverCreatesDirectoriesForUnknownIDs(t *testing.T) {
 	mgr := newInstanceManager(t.TempDir(), Config{})
-	got := mgr.instanceForWrite("never-registered", false)
+	got := mgr.instanceForWrite("never-registered")
 	if got.dockerID != "" {
 		t.Fatalf("instanceForWrite created bundle for %q, want the legacy bundle", got.dockerID)
 	}
@@ -137,8 +137,19 @@ func TestInstanceForWriteNeverCreatesDirectoriesForUnknownIDs(t *testing.T) {
 		t.Fatal("instanceForWrite created a directory for an unknown dockerId")
 	}
 
-	created := mgr.instanceForWrite("registered", true)
+	created := mgr.instanceForRegistration("registered", true)
 	if created == nil || created.dockerID != "registered" {
-		t.Fatal("instanceForWrite did not create the accepted instance")
+		t.Fatal("instanceForRegistration did not create the accepted instance")
+	}
+	if mgr.lookup("registered") == nil {
+		t.Fatal("instanceForRegistration did not publish the accepted instance")
+	}
+
+	rejected := mgr.instanceForRegistration("registered-2", false)
+	if rejected.dockerID != "" {
+		t.Fatalf("instanceForRegistration created bundle for %q, want the legacy bundle", rejected.dockerID)
+	}
+	if mgr.lookup("registered-2") != nil {
+		t.Fatal("instanceForRegistration created a directory for a rejected registration")
 	}
 }
