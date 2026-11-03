@@ -2,9 +2,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** 在 `teellm-service` 中新增向平台注册、维持心跳、批量上报运行日志三条出方向通道，并在新增的明文 `:8444` 上提供 `/v1/llm/getAttestation`，同时把现有 `/v1/verify`、`/healthz` 统一改名为 `/v1/llm/*`。
+**Goal:** 在 `teellm-service` 中新增向平台注册、维持心跳、批量上报运行日志三条出方向通道，并在既有的 TEE-TLS `:8443` 上提供 `/v1/llm/getAttestation`，同时把现有 `/v1/verify`、`/healthz` 统一改名为 `/v1/llm/*`。
 
-**Architecture:** 出方向由新增的 `teellm/platformagent` 包负责：一个 `Agent` 持有内存环形日志缓冲，注册成功后起心跳与日志定时器，全链路明文 JSON POST 到平台 `/v1/llm/*`，失败只写本地 stderr、不做持久化 outbox。入方向由 `teellm.Server` 第二个明文 listener 承担 `getAttestation`，它与 TEE-TLS 握手共用同一个 `*teetls.Config` 的证书缓存，因此返回的报告与握手出示的证书是同一份。
+**Architecture:** 出方向由新增的 `teellm/platformagent` 包负责：一个 `Agent` 持有内存环形日志缓冲，注册成功后起心跳与日志定时器，全链路明文 JSON POST 到平台 `/v1/llm/*`，失败只写本地日志、不做持久化 outbox。入方向全部挂在 `teellm.Server` 既有的 TEE-TLS mux 上（不再新增监听端口），`getAttestation` 与握手共用同一个 `*teetls.Config` 的证书缓存，因此返回的报告与握手出示的证书是同一份。
 
 **Tech Stack:** Go 1.22、`github.com/CipherSlinger/teetls`（含 `pkg/csvattest`）、标准库 `net/http` + `encoding/json`、`httptest`。
 
@@ -16,20 +16,19 @@
 
 | 文件 | 职责 |
 | --- | --- |
-| `teellm/server.go` | mux 改名；`ServerConfig.AttestationAddr`；第二个明文 listener 的建立与关闭 |
+| `teellm/server.go` | mux 改名，并挂上 `/v1/llm/getAttestation` |
 | `teellm/client.go` | 请求路径改为 `/v1/llm/verify`、`/v1/llm/healthz` |
-| `teellm/attestation.go`（新增） | `AttestationSnapshot` 类型与 `BuildAttestationSnapshot`；明文 `getAttestation` handler |
+| `teellm/attestation.go`（新增） | `AttestationSnapshot` 类型与 `BuildAttestationSnapshot`；`getAttestation` handler |
 | `teellm/platformagent/config.go`（新增） | 上报器配置、默认值、校验 |
 | `teellm/platformagent/logs.go`（新增） | 有界环形日志缓冲 `LogBuffer`（不依赖 `taa/pkg/logger`） |
 | `teellm/platformagent/attestation.go`（新增） | 把 `teellm.AttestationSnapshot` 转成注册报文所需的字段 |
 | `teellm/platformagent/register.go`（新增） | `POST /v1/llm/register` 报文与发送 |
 | `teellm/platformagent/heartbeat.go`（新增） | `POST /v1/llm/heartbeat` 报文与发送 |
 | `teellm/platformagent/reporter.go`（新增） | `Agent`：注册重试、心跳循环、日志批量推送、失败状态机 |
-| `teellm/cmd/teellm-service/main.go` | 读 `server.attestationAddr` 与 `platform` 段，构造并启动 `Agent` |
-| `teellm/configs/teellm-production.json`、`teellm/configs/teellm-docker.json` | 新增 `attestationAddr` 与顶层 `platform` 段 |
-| `teellm/README.md` | 接口表路径与 `:8444` 说明、配置段说明 |
-| `build-teellm-image.sh` | `EXPOSE 8443` → `EXPOSE 8443 8444` |
-| `deploy-llm.sh` | 新增 `TEELLM_ATTESTATION_PORT`、`TEELLM_PLATFORM_ADDR`；`prepare_config` 注入两段 |
+| `teellm/cmd/teellm-service/main.go` | 读 `platform` 段，构造并启动 `Agent` |
+| `teellm/configs/teellm-production.json`、`teellm/configs/teellm-docker.json` | 新增顶层 `platform` 段 |
+| `teellm/README.md` | 接口表路径与 `platform` 配置段说明 |
+| `deploy-llm.sh` | 新增 `TEELLM_PLATFORM_ADDR`；`prepare_config` 注入 `platform` 段 |
 | `tools/platform-mock/internal/handlers_llm.go`（新增） | `/v1/llm/register`、`/v1/llm/heartbeat`、`/v1/llm/log` 明文处理 |
 | `tools/platform-mock/internal/llm_state.go`（新增） | LLM 侧注册/心跳状态存储与 status 端点 |
 | `tools/platform-mock/internal/server.go` | 挂载上述路由 |
@@ -136,7 +135,7 @@ git commit -m "refactor(teellm): move the HTTP surface under /v1/llm"
 
 ---
 
-## Task 2: 明文 `:8444` 上的 `getAttestation`
+## Task 2: `:8443` 上的 `getAttestation`
 
 **Files:**
 - Create: `teellm/attestation.go`
@@ -154,6 +153,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
@@ -173,15 +173,13 @@ type attestationResponse struct {
 	} `json:"result"`
 }
 
-func newPlaintextAttestationServer(t *testing.T) *Server {
+func newAttestationServer(t *testing.T) *Server {
 	t.Helper()
-	provider := teetls.NewMockEvidenceProvider()
 	srv, err := NewServer(ServerConfig{
-		Addr:            "127.0.0.1:0",
-		AttestationAddr: "127.0.0.1:0",
+		Addr: "127.0.0.1:0",
 		TEETLS: &teetls.Config{
 			Mode:                          teetls.ModePermissive,
-			EvidenceProvider:              provider,
+			EvidenceProvider:              teetls.NewMockEvidenceProvider(),
 			InsecureSkipAttestationVerify: true,
 		},
 		Backend: &mockBackend{},
@@ -189,15 +187,25 @@ func newPlaintextAttestationServer(t *testing.T) *Server {
 	if err != nil {
 		t.Fatalf("NewServer failed: %v", err)
 	}
-	go func() { _ = srv.Start() }()
 	t.Cleanup(func() { _ = srv.Close() })
 	return srv
 }
 
-func TestGetAttestationReturnsReportBoundToCertificate(t *testing.T) {
-	srv := newPlaintextAttestationServer(t)
+// attestationURL exposes the handler on a plaintext httptest server. Only the
+// response bytes are under test, and the transport has no bearing on them;
+// TestGetAttestationIsMountedOnTheTEETLSMux checks that the real TEE-TLS mux
+// routes the same path.
+func attestationURL(t *testing.T, srv *Server) string {
+	t.Helper()
+	ts := httptest.NewServer(http.HandlerFunc(srv.handleGetAttestation))
+	t.Cleanup(ts.Close)
+	return ts.URL + "/v1/llm/getAttestation"
+}
 
-	resp, err := http.Post("http://"+srv.AttestationAddr()+"/v1/llm/getAttestation",
+func TestGetAttestationReturnsReportBoundToCertificate(t *testing.T) {
+	srv := newAttestationServer(t)
+
+	resp, err := http.Post(attestationURL(t, srv),
 		"application/json", strings.NewReader(`{"requestId":"req-1"}`))
 	if err != nil {
 		t.Fatalf("post failed: %v", err)
@@ -234,7 +242,7 @@ func TestGetAttestationReturnsReportBoundToCertificate(t *testing.T) {
 		t.Fatalf("returned certificate does not parse: %v", err)
 	}
 
-	// The whole point of the plaintext channel: the report binds this exact key.
+	// The report must bind the key of the certificate returned alongside it.
 	parsed, err := csvattest.ParseReport(report)
 	if err != nil {
 		t.Fatalf("parse report: %v", err)
@@ -246,9 +254,9 @@ func TestGetAttestationReturnsReportBoundToCertificate(t *testing.T) {
 }
 
 func TestGetAttestationRejectsEmptyRequestID(t *testing.T) {
-	srv := newPlaintextAttestationServer(t)
+	srv := newAttestationServer(t)
 
-	resp, err := http.Post("http://"+srv.AttestationAddr()+"/v1/llm/getAttestation",
+	resp, err := http.Post(attestationURL(t, srv),
 		"application/json", strings.NewReader(`{"requestId":""}`))
 	if err != nil {
 		t.Fatalf("post failed: %v", err)
@@ -259,27 +267,25 @@ func TestGetAttestationRejectsEmptyRequestID(t *testing.T) {
 	}
 }
 
-func TestServerWithoutAttestationAddrHasNoPlaintextListener(t *testing.T) {
-	srv, err := NewServer(ServerConfig{
-		Addr:    "127.0.0.1:0",
-		TEETLS:  &teetls.Config{Mode: teetls.ModePermissive, EvidenceProvider: teetls.NewMockEvidenceProvider(), InsecureSkipAttestationVerify: true},
-		Backend: &mockBackend{},
-	})
-	if err != nil {
-		t.Fatalf("NewServer failed: %v", err)
+func TestGetAttestationIsMountedOnTheTEETLSMux(t *testing.T) {
+	srv := newAttestationServer(t)
+
+	mux, ok := srv.httpSrv.Handler.(*http.ServeMux)
+	if !ok {
+		t.Fatalf("server handler is %T, want *http.ServeMux", srv.httpSrv.Handler)
 	}
-	defer srv.Close()
-	if addr := srv.AttestationAddr(); addr != "" {
-		t.Fatalf("AttestationAddr = %q, want empty", addr)
+	req := httptest.NewRequest(http.MethodPost, "/v1/llm/getAttestation", nil)
+	if _, pattern := mux.Handler(req); pattern != "/v1/llm/getAttestation" {
+		t.Fatalf("route pattern = %q, want /v1/llm/getAttestation", pattern)
 	}
 }
 ```
 
 - [ ] **Step 2: 运行测试确认失败**
 
-Run: `cd /home/hjy/taa/teellm && go test -run 'TestGetAttestation|TestServerWithoutAttestation' -count=1 ./`
+Run: `cd /home/hjy/taa/teellm && go test -run 'TestGetAttestation' -count=1 ./`
 
-Expected: 编译失败 —— `unknown field AttestationAddr in struct literal`、`srv.AttestationAddr undefined`。
+Expected: 编译失败 —— `s.handleGetAttestation undefined`。
 
 - [ ] **Step 3: 实现 `teellm/attestation.go`**
 
@@ -448,10 +454,11 @@ func writeAPIResponse(w http.ResponseWriter, status int, msg string, result any,
 	_ = json.NewEncoder(w).Encode(apiResponse{Msg: msg, Result: result, Error: errorCode})
 }
 
-// handleGetAttestation answers the platform over the plaintext listener. The
-// response carries the certificate as well as the report: on a plaintext
-// channel the peer never saw the certificate in a handshake, and without it
-// the report cannot be tied to any key.
+// handleGetAttestation answers the platform on the TEE-TLS listener. The
+// response carries the certificate as well as the report so the caller can
+// check SM3(certificate public key) == userdata[:32] against the bytes it was
+// given, rather than against whichever certificate the handshake happened to
+// serve if the cache rotated in between.
 func (s *Server) handleGetAttestation(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -499,120 +506,22 @@ func (s *Server) handleGetAttestation(w http.ResponseWriter, r *http.Request) {
 }
 ```
 
-- [ ] **Step 4: 在 `server.go` 上挂第二个 listener**
+- [ ] **Step 4: 在 TEE-TLS mux 上挂路由**
 
-把 `teellm/server.go` 的 `ServerConfig` 与 `Server` 改为：
-
-```go
-// ServerConfig specifies configuration options for initializing the TEE-LLM Server.
-type ServerConfig struct {
-	Addr string
-	// AttestationAddr, when non-empty, starts a plaintext HTTP listener that
-	// serves only POST /v1/llm/getAttestation. Empty leaves it unmounted, so a
-	// pure inference deployment exposes no unauthenticated port.
-	AttestationAddr string
-	TEETLS          *teetls.Config
-	Backend         Backend
-}
-
-// Server provides the HTTP REST server for teellm-protocol/v1.
-type Server struct {
-	cfg                 ServerConfig
-	listener            net.Listener
-	httpSrv             *http.Server
-	attestationListener net.Listener
-	attestationSrv      *http.Server
-	backend             Backend
-}
-```
-
-`NewServer` 在创建完主 listener 后追加：
+`NewServer` 里已有的 mux 加一行即可：
 
 ```go
-	if cfg.AttestationAddr != "" && cfg.TEETLS == nil {
-		_ = listener.Close()
-		return nil, errors.New("attestation listener requires a TEE-TLS config")
-	}
-
-	s := &Server{
-		cfg:      cfg,
-		listener: listener,
-		backend:  cfg.Backend,
-	}
-
 	mux := http.NewServeMux()
 	mux.HandleFunc("/v1/llm/verify", s.handleVerify)
 	mux.HandleFunc("/v1/llm/healthz", s.handleHealthz)
-
-	s.httpSrv = &http.Server{
-		Handler: mux,
-	}
-
-	if cfg.AttestationAddr != "" {
-		attestationListener, listenErr := net.Listen("tcp", cfg.AttestationAddr)
-		if listenErr != nil {
-			_ = listener.Close()
-			return nil, fmt.Errorf("attestation listen error: %w", listenErr)
-		}
-		attestationMux := http.NewServeMux()
-		attestationMux.HandleFunc("/v1/llm/getAttestation", s.handleGetAttestation)
-		s.attestationListener = attestationListener
-		s.attestationSrv = &http.Server{Handler: attestationMux}
-	}
-
-	return s, nil
+	mux.HandleFunc("/v1/llm/getAttestation", s.handleGetAttestation)
 ```
 
-`Start` 改为：
-
-```go
-// Start runs the TEE-TLS server and, when configured, the plaintext attestation
-// listener. It returns nil when the primary server is cleanly closed.
-func (s *Server) Start() error {
-	if s.attestationSrv != nil {
-		go func() {
-			// The attestation port is auxiliary and plaintext: its failure must be
-			// visible but must not take inference down with it.
-			if err := s.attestationSrv.Serve(s.attestationListener); err != nil && !errors.Is(err, http.ErrServerClosed) {
-				log.Printf("[WARN] [teellm] plaintext attestation listener stopped: %v", err)
-			}
-		}()
-	}
-
-	err := s.httpSrv.Serve(s.listener)
-	if errors.Is(err, http.ErrServerClosed) {
-		return nil
-	}
-	return err
-}
-```
-
-`Close` 与新增 `AttestationAddr`：
-
-```go
-// Close gracefully closes the HTTP server and both listeners.
-func (s *Server) Close() error {
-	if s.attestationSrv != nil {
-		_ = s.attestationSrv.Close()
-	}
-	return s.httpSrv.Close()
-}
-
-// AttestationAddr returns the plaintext attestation address, or "" when the
-// listener is not mounted.
-func (s *Server) AttestationAddr() string {
-	if s.attestationListener != nil {
-		return s.attestationListener.Addr().String()
-	}
-	return ""
-}
-```
-
-并给 `server.go` 的 import 增加 `"log"`。
+`ServerConfig`、`Server`、`Start`、`Close` 都不需要改动：证明接口与另外两个接口共用同一个 TEE-TLS 监听，`server.go` 也不需要引入 `log`。
 
 - [ ] **Step 5: 运行测试确认通过**
 
-Run: `cd /home/hjy/taa/teellm && go test -run 'TestGetAttestation|TestServerWithoutAttestation' -count=1 -v ./`
+Run: `cd /home/hjy/taa/teellm && go test -run 'TestGetAttestation' -count=1 -v ./`
 
 Expected: PASS，三条测试均为 `--- PASS`。
 
@@ -626,7 +535,7 @@ Expected: `ok`。
 
 ```bash
 cd /home/hjy/taa && git add teellm/attestation.go teellm/attestation_test.go teellm/server.go
-git commit -m "feat(teellm): serve getAttestation on a plaintext listener"
+git commit -m "feat(teellm): serve getAttestation on the TEE-TLS listener"
 ```
 
 ---
@@ -1420,7 +1329,7 @@ func (a *Agent) reportFailure(channel string, err error) {
 	a.mu.Unlock()
 
 	if !wasFailing {
-		log.Printf("[WARN] [platform] %s reporting failed: %v", channel, err)
+		// Add mirrors to stderr as well, so this is the only call needed.
 		a.logs.Add(LevelWarn, "platform", "%s reporting failed: %v", channel, err)
 
 		// Losing the platform is what triggers a fresh registration. It is
@@ -2029,22 +1938,9 @@ git commit -m "feat(platformagent): run registration, heartbeat and log loops"
 - Modify: `teellm/configs/teellm-production.json`
 - Modify: `teellm/configs/teellm-docker.json`
 
-- [ ] **Step 1: 配置结构体加两段**
+- [ ] **Step 1: 配置结构体加一段**
 
-`main.go` 的 `ServerConfigSection` 改为：
-
-```go
-// ServerConfigSection defines the HTTP server runtime configuration.
-type ServerConfigSection struct {
-	Addr                string `json:"addr"`
-	AttestationAddr     string `json:"attestationAddr"`
-	ReadTimeoutSeconds  int    `json:"readTimeoutSeconds"`
-	WriteTimeoutSeconds int    `json:"writeTimeoutSeconds"`
-	MaxResponseBytes    int    `json:"maxResponseBytes"`
-}
-```
-
-新增：
+`main.go` 新增：
 
 ```go
 // PlatformConfigSection defines the outbound platform reporting configuration.
@@ -2067,15 +1963,9 @@ type ServiceConfigFile struct {
 }
 ```
 
-- [ ] **Step 2: 默认值补两段**
+- [ ] **Step 2: 默认值补一段**
 
-`loadServiceConfig` 的 `defaultCfg` 里，`Server` 增加：
-
-```go
-			AttestationAddr:     ":8444",
-```
-
-并在 `Attestation` 之后追加：
+`loadServiceConfig` 的 `defaultCfg` 里，在 `Attestation` 之后追加：
 
 ```go
 		Platform: PlatformConfigSection{
@@ -2114,7 +2004,6 @@ type ServiceConfigFile struct {
 ```go
 	server, err := teellm.NewServer(teellm.ServerConfig{
 		Addr:            cfg.Server.Addr,
-		AttestationAddr: cfg.Server.AttestationAddr,
 		TEETLS:          teeTLSConfig,
 		Backend:         backend,
 	})
@@ -2140,9 +2029,6 @@ type ServiceConfigFile struct {
 ```go
 	go func() {
 		logs.Add(platformagent.LevelInfo, "teellm", "teellm-service listening on %s via RFC 8998 TEE-TLS 1.3", server.Addr())
-		if addr := server.AttestationAddr(); addr != "" {
-			logs.Add(platformagent.LevelInfo, "teellm", "plaintext attestation listener on %s", addr)
-		}
 		if err := server.Start(); err != nil {
 			serverErrCh <- err
 		}
@@ -2195,7 +2081,6 @@ Expected: 无输出，退出码 0。若报 `declared and not used`，检查 `log
 {
   "server": {
     "addr": ":8443",
-    "attestationAddr": ":8444",
     "readTimeoutSeconds": 60,
     "writeTimeoutSeconds": 60,
     "maxResponseBytes": 1048576
@@ -2222,13 +2107,13 @@ Expected: 无输出，退出码 0。若报 `declared and not used`，检查 `log
 }
 ```
 
-`teellm/configs/teellm-docker.json` 同样追加 `attestationAddr` 与 `platform` 段，其余保留原值（`readTimeoutSeconds`/`writeTimeoutSeconds` 为 120、`timeoutSeconds` 为 100、`attestation.mode` 为 `permissive`）。
+`teellm/configs/teellm-docker.json` 同样追加 `platform` 段，其余保留原值（`readTimeoutSeconds`/`writeTimeoutSeconds` 为 120、`timeoutSeconds` 为 100、`attestation.mode` 为 `permissive`）。
 
 - [ ] **Step 7: 验证配置能被解析且不启用上报**
 
 Run: `cd /home/hjy/taa/teellm && ./bin/teellm-service -config configs/teellm-docker.json -mock-attestation -addr 127.0.0.1:18443 2>&1 | head -5`
 
-Expected: 输出包含 `teellm-service listening on 127.0.0.1:18443` 与 `plaintext attestation listener on :8444`，且**没有**任何对平台的请求。按 Ctrl-C 结束。
+Expected: 输出包含 `teellm-service listening on 127.0.0.1:18443`，且**没有**任何对平台的请求。按 Ctrl-C 结束。
 
 - [ ] **Step 8: 提交**
 
@@ -2239,34 +2124,24 @@ git commit -m "feat(teellm-service): wire the platform agent and attestation lis
 
 ---
 
-## Task 7: 镜像与部署脚本
+## Task 7: 部署脚本
 
 **Files:**
-- Modify: `build-teellm-image.sh:240`
 - Modify: `deploy-llm.sh:239,891-922,1593,1604,2095`
 
-- [ ] **Step 1: 镜像暴露新端口**
+三个接口共用既有的 TEE-TLS `:8443`，所以镜像不需要 `EXPOSE` 新端口，Pod spec 也不动。本任务只注入 `platform` 段。
 
-`build-teellm-image.sh` 中：
-
-```bash
-  -c 'EXPOSE 8443 8444' \
-```
-
-- [ ] **Step 2: `deploy-llm.sh` 增加两个环境变量**
+- [ ] **Step 1: `deploy-llm.sh` 增加一个环境变量**
 
 在 `TEELLM_PORT="${TEELLM_PORT:-8443}"` 之后追加：
 
 ```bash
-# Plaintext attestation listener. It is intentionally not part of any Service or
-# Ingress: it has no authentication and only serves the CSV report.
-TEELLM_ATTESTATION_PORT="${TEELLM_ATTESTATION_PORT:-8444}"
 # Platform the instance registers with, heartbeats to and pushes logs to. Empty
-# disables all outbound reporting while leaving the attestation port mounted.
+# disables all outbound reporting.
 TEELLM_PLATFORM_ADDR="${TEELLM_PLATFORM_ADDR:-http://172.16.10.181:18081}"
 ```
 
-- [ ] **Step 3: 扩展 `prepare_config`**
+- [ ] **Step 2: 扩展 `prepare_config`**
 
 ```bash
 prepare_config() {
@@ -2276,16 +2151,15 @@ prepare_config() {
   local port="$4"
   local hrk_path="${5:-}"
   local hsk_path="${6:-}"
-  local attestation_port="${7:-}"
-  local platform_addr="${8:-}"
+  local platform_addr="${7:-}"
 
   require_file "teellm config template" "$template"
   require_command python3
 
-  python3 - "$template" "$output_file" "$model" "$port" "$hrk_path" "$hsk_path" "$attestation_port" "$platform_addr" <<'PY'
+  python3 - "$template" "$output_file" "$model" "$port" "$hrk_path" "$hsk_path" "$platform_addr" <<'PY'
 import json, sys
 
-template_path, output_path, model, port, hrk_path, hsk_path, attestation_port, platform_addr = sys.argv[1:9]
+template_path, output_path, model, port, hrk_path, hsk_path, platform_addr = sys.argv[1:8]
 with open(template_path, "r", encoding="utf-8") as f:
     cfg = json.load(f)
 
@@ -2293,8 +2167,6 @@ if model:
     cfg.setdefault("backend", {})["defaultModel"] = model
 if port:
     cfg.setdefault("server", {})["addr"] = f":{port}"
-if attestation_port:
-    cfg.setdefault("server", {})["attestationAddr"] = f":{attestation_port}"
 if hrk_path:
     cfg.setdefault("attestation", {})["hrkCertPath"] = hrk_path
 if hsk_path:
@@ -2312,61 +2184,51 @@ PY
 调用点改为：
 
 ```bash
-  prepare_config "$cfg_template" "$tmp_cfg" "$OLLAMA_MODEL" "$TEELLM_PORT" "$CON_WORKDIR/certs/hrk.cert" "$CON_WORKDIR/certs/hsk_cek.cert" "$TEELLM_ATTESTATION_PORT" "$TEELLM_PLATFORM_ADDR"
+  prepare_config "$cfg_template" "$tmp_cfg" "$OLLAMA_MODEL" "$TEELLM_PORT" "$CON_WORKDIR/certs/hrk.cert" "$CON_WORKDIR/certs/hsk_cek.cert" "$TEELLM_PLATFORM_ADDR"
 ```
 
-- [ ] **Step 4: 使用说明里登记两个变量**
-
-`--port` 说明之后追加：
-
-```bash
-  --attestation-port <port> (or --attestation-port=<port>)
-      Specify the plaintext attestation listening port (default: $TEELLM_ATTESTATION_PORT).
-```
+- [ ] **Step 3: 使用说明里登记变量**
 
 `Environment overrides:` 段落里追加：
 
 ```bash
-  TEELLM_ATTESTATION_PORT=${TEELLM_ATTESTATION_PORT}
-      Plaintext attestation port. Not published outside the Pod network.
   TEELLM_PLATFORM_ADDR=${TEELLM_PLATFORM_ADDR}
       Platform this instance registers with. Empty disables reporting.
 ```
 
-- [ ] **Step 5: 语法检查**
+- [ ] **Step 4: 语法检查**
 
 Run: `bash -n /home/hjy/taa/deploy-llm.sh && bash -n /home/hjy/taa/build-teellm-image.sh`
 
 Expected: 无输出。
 
-- [ ] **Step 6: 验证 python 注入片段**
+- [ ] **Step 5: 验证 python 注入片段**
 
 Run:
 ```bash
-cd /home/hjy/taa && python3 - teellm/configs/teellm-production.json /tmp/cfg-probe.json qwen 8443 /a/hrk /a/hsk 8444 http://1.2.3.4:18081 <<'PY'
+cd /home/hjy/taa && python3 - teellm/configs/teellm-production.json /tmp/cfg-probe.json qwen 8443 /a/hrk /a/hsk http://1.2.3.4:18081 <<'PY'
 import json, sys
-template_path, output_path, model, port, hrk_path, hsk_path, attestation_port, platform_addr = sys.argv[1:9]
+template_path, output_path, model, port, hrk_path, hsk_path, platform_addr = sys.argv[1:8]
 with open(template_path, "r", encoding="utf-8") as f:
     cfg = json.load(f)
 if model: cfg.setdefault("backend", {})["defaultModel"] = model
 if port: cfg.setdefault("server", {})["addr"] = f":{port}"
-if attestation_port: cfg.setdefault("server", {})["attestationAddr"] = f":{attestation_port}"
 if hrk_path: cfg.setdefault("attestation", {})["hrkCertPath"] = hrk_path
 if hsk_path: cfg.setdefault("attestation", {})["hskCekCertPath"] = hsk_path
 if platform_addr: cfg.setdefault("platform", {})["addr"] = platform_addr
 with open(output_path, "w", encoding="utf-8") as f:
     json.dump(cfg, f, indent=2, ensure_ascii=False); f.write("\n")
 PY
-python3 -c "import json;print(json.load(open('/tmp/cfg-probe.json'))['server']['attestationAddr'], json.load(open('/tmp/cfg-probe.json'))['platform']['addr'])"
+python3 -c "import json;c=json.load(open('/tmp/cfg-probe.json'));print(c['server']['addr'], c['platform']['addr'])"
 ```
 
-Expected: `:8444 http://1.2.3.4:18081`
+Expected: `:8443 http://1.2.3.4:18081`
 
-- [ ] **Step 7: 提交**
+- [ ] **Step 6: 提交**
 
 ```bash
-cd /home/hjy/taa && git add build-teellm-image.sh deploy-llm.sh
-git commit -m "feat(deploy): publish the attestation port and inject the platform section"
+cd /home/hjy/taa && git add deploy-llm.sh
+git commit -m "feat(deploy): inject the teellm platform reporting section"
 ```
 
 ---
@@ -2855,14 +2717,19 @@ git commit -m "feat(platform-mock): accept plaintext LLM register, heartbeat and
 ```markdown
 ### HTTP Surface
 
-| Listener | Path | Transport | Purpose |
-|----------|------|-----------|---------|
-| `:8443` | `POST /v1/llm/verify` | TEE-TLS 1.3 | Finding verification |
-| `:8443` | `GET /v1/llm/healthz` | TEE-TLS 1.3 | Readiness |
-| `:8444` | `POST /v1/llm/getAttestation` | **plaintext** | Platform fetches the CSV report and the certificate it is bound to |
+All three endpoints share the single TEE-TLS 1.3 listener on `:8443`.
 
-`:8444` carries no authentication. Keep it inside the Pod network: it must not
-appear in any Service, NodePort or Ingress.
+| Path | Method | Purpose |
+|------|--------|---------|
+| `/v1/llm/verify` | POST | Finding verification |
+| `/v1/llm/healthz` | GET | Readiness |
+| `/v1/llm/getAttestation` | POST | Platform fetches the CSV report and the certificate it is bound to |
+
+`/v1/llm/getAttestation` is mounted on the same TEE-TLS listener as the other
+two, so a plain HTTP client cannot call it: the platform must speak ShangMi TLS
+(RFC 8998). The response still carries `certificate` in PEM so the caller can
+check `SM3(certificate public key) == userdata[:32]` against the report it just
+received, instead of relying on whichever certificate the handshake served.
 
 ### Platform Reporting
 
@@ -2872,8 +2739,8 @@ succeeds -- it never gives up), sends a liveness heartbeat every
 `heartbeatSeconds`, and pushes buffered logs every `logFlushSeconds`. If a
 heartbeat or a log push fails because the platform cannot be reached at all, the
 instance registers again; there is no periodic re-registration. An empty
-`platform.addr` disables all three; the attestation listener is controlled
-separately by `server.attestationAddr`.
+`platform.addr` disables all three outbound channels; `getAttestation` stays
+mounted either way because it is part of the TEE-TLS surface.
 
 ```json
 "platform": {
@@ -2912,7 +2779,7 @@ git commit -m "docs(teellm): document the /v1/llm surface and platform reporting
 
 | Spec 章节 | 对应任务 |
 | --- | --- |
-| §3.1 明文 `:8444` | Task 2 |
+| §3.1 `getAttestation` 在 TEE-TLS 上 | Task 2 |
 | §3.2 路径改名 | Task 1 |
 | §5.0–5.4 报文 | Task 4（register/heartbeat/log）、Task 2（getAttestation） |
 | §6 上报器行为 | Task 5 |

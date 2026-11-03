@@ -43,10 +43,11 @@ LLM（qwen / ollama）部署在**独立的 Kata CSV2 Pod**（`deploy-llm.sh`、`
 
 四项由用户拍板：
 
-1. **入方向分两个监听。** `/v1/llm/verify` 与 `/v1/llm/healthz` 留在现有 `:8443` TEE-TLS 上；
-   `/v1/llm/getAttestation` 走新增的明文 `:8444`。两者共用同一个 `teetls.Config` 的证书缓存与
-   同一个 `EvidenceProvider`，因此返回的报告与握手实际出示的证书仍是同一份。**这是本设计的
-   一次修订**：最初把 `getAttestation` 也放在 `:8443`，后改为明文，理由见 3.1。
+1. **入方向只有一个监听。** `/v1/llm/verify`、`/v1/llm/healthz` 与新增的
+   `/v1/llm/getAttestation` 全部挂在现有 `:8443` TEE-TLS 上，不新增端口。三者共用同一个
+   `teetls.Config` 的证书缓存与同一个 `EvidenceProvider`，因此 `getAttestation` 返回的报告与
+   握手实际出示的证书仍是同一份。**这是本设计的一次修订**：中间版本曾把 `getAttestation`
+   挪到明文 `:8444`，后按"所有接口保持一致"改回 TEE-TLS，理由见 3.1。
 2. **全链路不包外层信封。** 入方向跑在 TEE-TLS 上（证明握手已提供机密性、完整性与对端身份），
    出方向直接明文 POST 到平台。
 3. **路径统一到 `/v1/llm/*`，含现有的 `/v1/verify` 与 `/healthz`。** 平台现有 `/v1/taa/*` 处理器
@@ -54,22 +55,23 @@ LLM（qwen / ollama）部署在**独立的 Kata CSV2 Pod**（`deploy-llm.sh`、`
    既有的两个接口一并改名，**不保留旧路径**（见 3.2）。
 4. **LLM 每次启动重新生成密钥。** 证书与密钥随进程生命周期存在，不持久化、不回收到平台。
 
-### 3.1 `getAttestation` 为什么走明文
+### 3.1 `getAttestation` 为什么仍在 TEE-TLS 上
 
-在 `:8443` 上，LLM 作为服务端**只出证、不验证**（`main.go` 未开 `VerifyMutualAttestation`）。
-握手里那份报告只有在对端客户端开了校验时才被检查——而平台这一侧正是要靠
-`getAttestation` 拿报告的地方，用 TEE-TLS 包住它等于用一个不被校验的通道搬运证明。
+早期版本把它放到明文端口，理由是"报告自身带有认证性（PEK 签名 + `userdata` 绑定证书公钥），
+传输层加密对它没有增量"。这个论证成立，但它忽略了另一面：
 
-明文 `:8444` 上，报告的**认证性由报告自身承担**，不由传输层承担：
+- 平台作为消费方本来就必须是一个 TEE-TLS 客户端——它要先和 LLM 完成证明握手才能确认对端身份。
+  多开一个明文端口等于为同一组事实留了第二条、无认证的取数通道，Pod 网络内任何人都能取到报告里的
+  度量与 ChipID。
+- 一个 Pod 只暴露一个端口，Service、NetworkPolicy 与端口审计都只有一条规则要维护。
 
-- 报告里 `userdata[:32] = SM3(证书公钥)`，说明"这份报告绑定了哪把公钥"；
-- 注册报文与 `getAttestation` 同时给出这把公钥的 PEM 和这份报告，平台验
-  `SM3(PEM 里的公钥) == userdata[:32]` 即可确认二者配套；
-- 报告本身用 PEK 签名，`VerifyReportWithOptions` 验到 HRK 根，伪造不了。
+代价写清楚：**普通 HTTP 客户端（curl 等）不再能直接调用它**，平台侧必须使用 ShangMi TLS 栈
+（RFC 8998；`teellm` 的 `teetls`，或平台自己的等价实现）。这是刻意的取舍：能取到证明的人，
+就是已经能完成证明握手的人。
 
-因此明文传输不会削弱证明；传输层加密在这里保护的是"报告内容不被旁听"，而报告本来就是
-要交给平台存档的公开证据。**代价**写清楚：`:8444` 无任何认证，Pod 网络内能连上的人都能取到
-报告。报告不含秘密，但会泄露实例的度量与 ChipID，所以该端口只能在集群内网暴露。
+响应仍保留 `certificate` 字段。TEE-TLS 上平台在握手里已经拿到证书，字段看似冗余，但有两条用处：
+证书缓存（`CertCacheTTL`，默认 1 小时）可能在握手与 handler 之间轮换，只有用响应里的证书才能
+确认"这份报告 ↔ 这把公钥"；同时让报文自包含，便于平台存档与离线核验。
 
 ### 3.2 路径改名的影响面
 
@@ -93,9 +95,7 @@ LLM（qwen / ollama）部署在**独立的 Kata CSV2 Pod**（`deploy-llm.sh`、`
 LLM Pod / teellm-service
 ├── :8443  TEE-TLS（同一个 teetls.Config，同一张缓存证书）
 │   ├── /v1/llm/verify             原 /v1/verify，改名
-│   └── /v1/llm/healthz            原 /healthz，改名
-│
-├── :8444  明文 HTTP
+│   ├── /v1/llm/healthz            原 /healthz，改名
 │   └── /v1/llm/getAttestation     新增，平台 → LLM
 │
 └── 平台上报 goroutine（同进程）
@@ -109,8 +109,8 @@ LLM Pod / teellm-service
 `teetls.Listen`（已由 `server.go` 提供）+ `csvattest`（`teetls` 已依赖）。`teellm` 子模块本来就有
 这些能力，不需要 `taa/internal/platform`，也就不存在模块边界问题。
 
-**两个 listener 共用一份证书缓存。** `teetls.Config.GetOrGenerateCertificateContext` 内部有证书缓存
-（`CertCacheTTL`，默认 1 小时）和 `certMu`。`:8444` 的 `getAttestation` handler 持有的是**同一个**
+**入方向只有一个 listener，三个路由共用一份证书缓存。** `teetls.Config.GetOrGenerateCertificateContext`
+内部有证书缓存（`CertCacheTTL`，默认 1 小时）和 `certMu`。`:8443` 上三个 handler 持有的是**同一个**
 `*teetls.Config` 指针，调用同一个 `GetOrGenerateCertificateContext`，因此：
 
 - 返回的报告与 TEE-TLS 握手实际出示的证书，是同一份；
@@ -180,7 +180,7 @@ LLM Pod / teellm-service
 - `message` 用 `Entry.FormatMessage()` 的同一格式（`[时间] [级别] [组件] 正文`），平台展示代码零改动。
 - `seq` 从 1 单调递增，每批连续；批量上限沿用 TAA 的 `maxLogBatchSize`。
 
-### 5.4 `POST /v1/llm/getAttestation`（平台 → LLM，明文 HTTP :8444，明文 JSON）
+### 5.4 `POST /v1/llm/getAttestation`（平台 → LLM，TEE-TLS :8443，明文 JSON）
 
 请求：
 
@@ -206,9 +206,9 @@ LLM Pod / teellm-service
 
 结构与 TAA 的 `getAttestationHandler` 响应一致，平台解析代码可直接复用；**多一个 `certificate` 字段**。
 
-- `certificate` 是给明文通道补上的那一环：TEE-TLS 上平台本来就在握手里拿到证书，明文上拿不到，
-  没有它平台无法验证 `userdata[:32] == SM3(证书公钥)`，报告就退化成一段自说自话的 base64。
-  传 PEM 与 `taaPublicKey` 同格式，平台侧一份解析代码两处复用。
+- `certificate` 与 `taaPublicKey` 同为 PEM 格式，平台侧一份解析代码两处复用。TEE-TLS 上平台在
+  握手里已经拿到证书，这个字段仍然返回：证书缓存可能在握手与 handler 之间轮换，只有用响应里的
+  证书才能核上 `userdata[:32] == SM3(证书公钥)`；同时让报文自包含，便于存档与离线核验。
 - 报告与 `certificate` 同时取自当前缓存证书，**不重新 IOCTL**。理由：证书本身就是从
   `/dev/csv-guest` 出的，报告里的 `userdata` 绑定的是这张证书公钥；重取一份会引入报告与证书
   不匹配的可能，而平台要的正是"证书 ↔ 报告"这条链。
@@ -252,14 +252,14 @@ LLM Pod / teellm-service
 | 位置 | 变更 |
 | --- | --- |
 | `teellm/platformagent/`（新增包） | `config.go`、`register.go`、`heartbeat.go`、`logs.go`、`attestation.go`、`reporter.go` |
-| `teellm/attestation.go`（新增） | 明文 `:8444` 的 `getAttestation` handler 与它的 listener |
-| `teellm/server.go` | mux 改为 `/v1/llm/verify`、`/v1/llm/healthz`；`ServerConfig` 增加 `AttestationAddr`，非空时另起一个明文 listener 挂 `/v1/llm/getAttestation` |
+| `teellm/attestation.go`（新增） | `getAttestation` handler 与证据快照构造 |
+| `teellm/server.go` | mux 改为 `/v1/llm/verify`、`/v1/llm/healthz`，并挂上 `/v1/llm/getAttestation`；不新增监听 |
 | `teellm/client.go` | 请求路径改为 `/v1/llm/verify`、`/v1/llm/healthz` |
-| `teellm/cmd/teellm-service/main.go` | 读配置 `server.attestationAddr` 与 `platform` 段，构造并启动 agent |
-| `teellm/configs/teellm-production.json`、`teellm/configs/teellm-docker.json` | `server` 段新增 `attestationAddr`；顶层新增 `platform` 段 |
-| `teellm/README.md` | 接口表路径更新、补 `:8444` |
-| `build-teellm-image.sh:240` | `EXPOSE 8443` 改为 `EXPOSE 8443 8444` |
-| `deploy-llm.sh` | 新增 `TEELLM_ATTESTATION_PORT`（默认 8444）并注入 `server.attestationAddr`；`platform` 段注入 |
+| `teellm/cmd/teellm-service/main.go` | 读配置 `platform` 段，构造并启动 agent |
+| `teellm/configs/teellm-production.json`、`teellm/configs/teellm-docker.json` | 顶层新增 `platform` 段 |
+| `teellm/README.md` | 接口表路径更新，三个接口同在 TEE-TLS `:8443` |
+| `build-teellm-image.sh:240` | **不改**，仍然只 `EXPOSE 8443` |
+| `deploy-llm.sh` | 新增 `TEELLM_PLATFORM_ADDR` 并注入 `platform` 段 |
 | `teellm/go.mod` | **不新增依赖** |
 
 配置段：
@@ -267,7 +267,6 @@ LLM Pod / teellm-service
 ```json
 "server": {
   "addr": ":8443",
-  "attestationAddr": ":8444",
   "readTimeoutSeconds": 60,
   "writeTimeoutSeconds": 60,
   "maxResponseBytes": 1048576
@@ -280,10 +279,9 @@ LLM Pod / teellm-service
 }
 ```
 
-- `server.attestationAddr` 为空表示**不挂载** `getAttestation`（纯推理部署，不留无认证端口）。
-  这是与 `platform.addr` 独立的开关：前者是入方向，后者是出方向，可分别关闭。
-- `platform.addr` 为空表示不启用上报，明文端口仍按 `attestationAddr` 独立决定是否监听。
-- `:8444` 绑在 Pod 内网卡上即可，**不要**放进任何 NodePort / Ingress。
+- `platform.addr` 为空表示不启用出方向上报；`getAttestation` 是入方向接口，属于 TEE-TLS 面，
+  照常挂载。两者位置不同，互不影响。
+- 入方向没有任何无认证端口：`getAttestation` 与另外两个接口一样，只在 TEE-TLS `:8443` 上可达。
 
 ## 9. 与 TAA 的差异（平台需要知道的）
 
@@ -291,25 +289,27 @@ LLM Pod / teellm-service
 | --- | --- | --- |
 | 外层信封 | `{dockerId, cipher, sign}` | **无，明文 JSON** |
 | 路径 | `/v1/taa/*` | **`/v1/llm/*`**（含原 `/v1/verify`、`/healthz`） |
-| 监听 | 全部明文 HTTP `:6001` | 业务口 **TEE-TLS `:8443`**；`getAttestation` **明文 `:8444`** |
+| 监听 | 全部明文 HTTP `:6001` | 全部 **TEE-TLS `:8443`** |
 | 身份密钥 | 自生成 SM2 密钥对，`taaSecretKey` 可回收 | TEE-TLS 证书密钥对，每次启动新生成，不可回收 |
 | `taaSecretKey` | 有（CSV 实例） | **不报** |
 | 持久化 | sealed outbox | **无，内存缓冲** |
 | 心跳 | 无 | **新增** |
-| 证明获取 | `getAttestation` 在信封内 | `getAttestation` 明文，响应多带 `certificate` |
+| 证明获取 | `getAttestation` 在信封内 | `getAttestation` 在 TEE-TLS 上，响应多带 `certificate` |
 
 ## 10. 验证方式
 
 - `teellm/platformagent` 单测：报文序列化对齐 `internal/platform` 的字段名与 `taaLog` 结构；
   环形缓冲在满与失败回填下的顺序正确；退避序列符合 `1s…60s`；心跳/日志因连不上平台失败时
   触发一次重新注册（用超时模拟不可达），而 HTTP 错误状态码不触发。
-- `/v1/llm/getAttestation` 的 httptest（明文 listener）：空 `requestId` 返回 400；正常返回里
+- `/v1/llm/getAttestation` 的 httptest（handler 直接挂 `httptest.Server`，路由由 mux 断言覆盖）：
+  空 `requestId` 返回 400；正常返回里
   `attestation` 能被 `csvattest.ParseReport` 解析，`certificate` 能被
   `teetls.ParseCertificatePEM` 解析，且 `userdata[:32]` 等于 `certificate` 公钥的 SM3 摘要。
 - 端到端：对 `tools/platform-mock` 增加 `/v1/llm/*` 的明文处理分支后，跑一次
   `deploy-llm.sh start`，确认注册、心跳、日志三条都在 mock 面板上出现。
-- 证明一致性：`curl -s -X POST http://<pod-ip>:8444/v1/llm/getAttestation -d '{"requestId":"x"}'`，
-  把拿到的 `attestation` 与注册报文里的 `attestation`、以及 `:8443` 握手出示证书里的报告逐字节比对。
-- 端口隔离：确认 `:8444` 未出现在 Pod spec 的 `ports`、Service 或 Ingress 里。
+- 证明一致性：用一个 `teetls` 客户端（`teellm/client.go` 用的同一套栈）向
+  `https://<pod-ip>:8443/v1/llm/getAttestation` POST `{"requestId":"x"}`，把拿到的 `attestation`
+  与注册报文里的 `attestation`、以及握手出示证书里的报告逐字节比对。普通 curl 打不通这个端口。
+- 端口一致性：`ss -ltnp` 确认进程只监听 `:8443`，Pod spec 的 `ports` 里也只有 8443。
 - 路径改名回归：`go test ./teellm/...` 与 `go test ./internal/codeaudit/` 全绿，确认服务端与
   客户端两侧的路径已一致；`deploy-llm.sh start` 的就绪探针（`teellm-service -probe`）通过。
