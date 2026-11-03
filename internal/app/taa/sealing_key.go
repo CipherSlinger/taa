@@ -3,17 +3,36 @@ package taa
 import (
 	"errors"
 	"fmt"
+	"io/fs"
 	"log"
+	"os"
 
-	"taa/internal/config"
 	"taa/internal/store"
 	teecrypto "taa/pkg/crypto"
 	"taa/pkg/csvattest"
 )
 
+// csvGuestDevicePath is the Hygon CSV guest node. Its presence is how TAA tells
+// a confidential guest from an ordinary container: the node can only be created
+// where the csv-guest driver is loaded, which is the guest kernel.
+const csvGuestDevicePath = "/dev/csv-guest"
+
 // hardwareSealingKeyFetcher fills keyBuf with the 32-byte Hygon CSV hardware
 // sealing key. It is a function type so tests can run without a CSV device.
 type hardwareSealingKeyFetcher func(keyBuf []byte) error
+
+// detectStateSealingKeySource picks where the state sealing key should come
+// from. A missing device node means this process is not inside a CSV guest, so
+// the SM2 derivation is the only source available. Any other stat failure is
+// treated as "the guest is there but the node is unreadable": the csv-hw path
+// then fails at the fetch, which is what keeps a degraded guest from silently
+// falling back to the weaker key.
+func detectStateSealingKeySource(devicePath string) store.KeySource {
+	if _, err := os.Stat(devicePath); err == nil || !errors.Is(err, fs.ErrNotExist) {
+		return store.KeySourceCSVHW
+	}
+	return store.KeySourceSM2
+}
 
 // fetchCSVHardwareSealingKey reads the sealing key from /dev/csv-guest.
 func fetchCSVHardwareSealingKey(keyBuf []byte) error {
@@ -50,19 +69,19 @@ func fetchStartupHardwareKey(fetch hardwareSealingKeyFetcher) ([]byte, error) {
 // is csv-hw; it is fetched once by fetchStartupHardwareKey and shared with the
 // taaSecretKey path.
 func resolveStateSealingKey(
-	source string,
+	source store.KeySource,
 	privKey *teecrypto.SM2PrivateKey,
 	hwKey []byte,
 ) ([]byte, store.KeySource, error) {
 	switch source {
-	case config.StateSealingKeySourceSM2:
+	case store.KeySourceSM2:
 		key := store.DeriveSealingKey(privKey)
 		if len(key) != 16 {
 			return nil, "", fmt.Errorf("derive SM2 state sealing key: invalid length %d", len(key))
 		}
 		return key, store.KeySourceSM2, nil
 
-	case config.StateSealingKeySourceCSVHW:
+	case store.KeySourceCSVHW:
 		if len(hwKey) != teecrypto.CSVSealingKeySize {
 			return nil, "", fmt.Errorf("csv-hw state sealing key source requires a %d-byte hardware key (got %d)",
 				teecrypto.CSVSealingKeySize, len(hwKey))
@@ -74,6 +93,6 @@ func resolveStateSealingKey(
 		return key, store.KeySourceCSVHW, nil
 
 	default:
-		return nil, "", fmt.Errorf("unsupported storage.stateSealingKeySource %q", source)
+		return nil, "", fmt.Errorf("unsupported state sealing key source %q", source)
 	}
 }

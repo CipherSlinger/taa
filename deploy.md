@@ -244,7 +244,8 @@ HOME/WORKDIR = `/home/jovyan`，EXPOSE 8888。
 `server.type=data-anaylsis`、`storage.data=/home/jovyan/systemAuthData`（jupyter 运行时读取的位置），
 并把 `codeAudit` 三项与 LLM 关掉、引擎落到 `regex`。即使不渲染，加载器也会按角色关闭审计；
 渲染是为了让 `deploy.sh save` 的打包前检查不再去装这个镜像用不了的 semgrep payload。
-docker 模式另外把密封来源改成 `sm2`（容器不在 CSV guest 内）。
+密封密钥来源不需要渲染：TAA 启动时按 `/dev/csv-guest` 是否存在自动选择硬件密钥或 SM2 派生，
+docker 与远端两种路径行为一致。
 
 **基础镜像自带**
 

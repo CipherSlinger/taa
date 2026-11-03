@@ -395,7 +395,7 @@ TAA reads its configuration from `taa-config.json` located in its working direct
 | `storage.data` | `/root/taa/data` | TAA platform-internal storage directory for imported datasets and resources |
 | `storage.result` | `/root/taa/results` | TAA platform-internal storage directory for final packaged computation results |
 | `storage.keys` | `/root/taa/keys` | Sensitive cryptographic key storage (restricted with `0700` permissions). On an `fhe` instance it must be a directory the deployment persists across container recreation: `configs/taa-fhe.json` points it at `/opt/taa-state/keys`, inside a bind of its own rather than the data directory the FHE stack mounts |
-| `storage.stateSealingKeySource` | `sm2` | Where the key sealing `state.sealed` comes from: `sm2` derives it from the SM2 private scalar, `csv-hw` reads the Hygon CSV hardware sealing key through `/dev/csv-guest`. `csv-hw` has no fallback — a missing device or failed ioctl aborts startup. The hardware key is bound to the physical host and shared by the VMs on it, so sealed state cannot move to another host. `configs/taa-production.json` and `configs/taa-initrd.json` use `csv-hw`; the Docker and FHE templates use `sm2`. Startup logs the source and an SM3 fingerprint of the derived key, never the key itself. |
+| `storage.stateSealingKeySource` (removed) | — | No longer a config field. TAA detects `/dev/csv-guest` at startup: inside a Hygon CSV guest `state.sealed` is sealed with the hardware key (`csv-hw`), anywhere else with the SM2-derived key. The hardware path has no fallback — a device that exists but cannot produce a key aborts startup. The hardware key is bound to the physical host and shared by the VMs on it, so sealed state cannot move to another host. Startup logs the detected source and an SM3 fingerprint of the derived key, never the key itself. A leftover field in an older rendered config is ignored, not rejected |
 | `model.input` | `/opt/taa/input` | Read-only input dataset directory mounted for model training sandbox runtime |
 | `model.output.result` | `/opt/taa/output/result` | Target output directory for model training checkpoints and artifacts |
 | `model.output.log` | `/opt/taa/output/log` | Model execution log directory (or file) monitored by log watcher (`modelLog`); every `*.log`/`*.jsonl` file in it is streamed |
@@ -478,8 +478,9 @@ TAA therefore reports a wrapped copy of its private key with registration:
 - `taaSecretKey = hex(SM4-128-GCM(sk, D))`, where `D` is the private scalar as a 32-byte
   big-endian value. The ciphertext is 60 bytes, so the field is 120 lowercase hex characters.
 
-The field is present only on instances that read the CSV hardware sealing key
-(`storage.stateSealingKeySource: "csv-hw"`) and did not recover their key on this boot.
+The field is present only on instances that read the CSV hardware sealing key (i.e. the
+process runs inside a CSV guest and `/dev/csv-guest` is available) and did not recover their key
+on this boot.
 
 To restore an instance, set `TAASECRETKEY` to the value the platform stored. TAA decrypts it with
 the same hardware key and `CONTRACT_ID`, recomputes the public key (`Q = d·G`), archives any

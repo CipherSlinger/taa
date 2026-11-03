@@ -8,7 +8,6 @@ import (
 	"strings"
 	"testing"
 
-	"taa/internal/config"
 	"taa/internal/store"
 	teecrypto "taa/pkg/crypto"
 )
@@ -21,7 +20,7 @@ func fetchTestHardwareKey(buf []byte) error {
 func TestResolveStartupKeyMaterial_SM2WithoutSecret(t *testing.T) {
 	keysDir := t.TempDir()
 
-	material, err := resolveStartupKeyMaterial(keysDir, config.StateSealingKeySourceSM2, "contract", "", nil)
+	material, err := resolveStartupKeyMaterial(keysDir, store.KeySourceSM2, "contract", "", nil)
 	if err != nil {
 		t.Fatalf("resolve: %v", err)
 	}
@@ -47,7 +46,7 @@ func TestResolveStartupKeyMaterial_SM2WithoutSecret(t *testing.T) {
 func TestResolveStartupKeyMaterial_CSVHWExportsSecret(t *testing.T) {
 	keysDir := t.TempDir()
 
-	material, err := resolveStartupKeyMaterial(keysDir, config.StateSealingKeySourceCSVHW, "contract", "", fetchTestHardwareKey)
+	material, err := resolveStartupKeyMaterial(keysDir, store.KeySourceCSVHW, "contract", "", fetchTestHardwareKey)
 	if err != nil {
 		t.Fatalf("resolve: %v", err)
 	}
@@ -101,7 +100,7 @@ func TestResolveStartupKeyMaterial_RecoversAndArchivesConflictingFiles(t *testin
 		t.Fatalf("write old public key: %v", err)
 	}
 
-	material, err := resolveStartupKeyMaterial(keysDir, config.StateSealingKeySourceCSVHW, "contract", secret, fetchTestHardwareKey)
+	material, err := resolveStartupKeyMaterial(keysDir, store.KeySourceCSVHW, "contract", secret, fetchTestHardwareKey)
 	if err != nil {
 		t.Fatalf("resolve: %v", err)
 	}
@@ -128,7 +127,7 @@ func TestResolveStartupKeyMaterial_RecoversAndArchivesConflictingFiles(t *testin
 	}
 
 	// Keeping TAASECRETKEY set across restarts must be idempotent.
-	again, err := resolveStartupKeyMaterial(keysDir, config.StateSealingKeySourceCSVHW, "contract", secret, fetchTestHardwareKey)
+	again, err := resolveStartupKeyMaterial(keysDir, store.KeySourceCSVHW, "contract", secret, fetchTestHardwareKey)
 	if err != nil {
 		t.Fatalf("resolve again: %v", err)
 	}
@@ -155,21 +154,21 @@ func TestResolveStartupKeyMaterial_RecoveryFailures(t *testing.T) {
 	}
 
 	t.Run("non-CSV instance cannot recover", func(t *testing.T) {
-		_, err := resolveStartupKeyMaterial(t.TempDir(), config.StateSealingKeySourceSM2, "contract", secret, nil)
+		_, err := resolveStartupKeyMaterial(t.TempDir(), store.KeySourceSM2, "contract", secret, nil)
 		if err == nil || !strings.Contains(err.Error(), "TAASECRETKEY requires") {
 			t.Fatalf("error = %v, want a clear non-CSV rejection", err)
 		}
 	})
 
 	t.Run("wrong contract", func(t *testing.T) {
-		_, err := resolveStartupKeyMaterial(t.TempDir(), config.StateSealingKeySourceCSVHW, "other-contract", secret, fetchTestHardwareKey)
+		_, err := resolveStartupKeyMaterial(t.TempDir(), store.KeySourceCSVHW, "other-contract", secret, fetchTestHardwareKey)
 		if err == nil {
 			t.Fatal("expected decryption to fail with a different contract")
 		}
 	})
 
 	t.Run("hardware fetch failure is fatal", func(t *testing.T) {
-		_, err := resolveStartupKeyMaterial(t.TempDir(), config.StateSealingKeySourceCSVHW, "contract", "",
+		_, err := resolveStartupKeyMaterial(t.TempDir(), store.KeySourceCSVHW, "contract", "",
 			func([]byte) error { return errors.New("open /dev/csv-guest: no such file") })
 		if err == nil {
 			t.Fatal("expected the fetch failure to abort startup")
@@ -177,7 +176,7 @@ func TestResolveStartupKeyMaterial_RecoveryFailures(t *testing.T) {
 	})
 
 	t.Run("malformed secret", func(t *testing.T) {
-		_, err := resolveStartupKeyMaterial(t.TempDir(), config.StateSealingKeySourceCSVHW, "contract", "not-hex", fetchTestHardwareKey)
+		_, err := resolveStartupKeyMaterial(t.TempDir(), store.KeySourceCSVHW, "contract", "not-hex", fetchTestHardwareKey)
 		if err == nil {
 			t.Fatal("expected malformed TAASECRETKEY to abort startup")
 		}

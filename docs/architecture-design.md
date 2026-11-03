@@ -235,7 +235,7 @@ sequenceDiagram
 | `CONTRACT_TYPE` | 选择实例角色：`1` tee 训练、`2` tee 推理、`3` 数据分析、`4` fhe；`1`/`2` 都落到普通 `tee` 角色。**环境变量优先于 `server.type`**，两者都没有则 `tee`；取值非法启动即报错 |
 | `PLATFORM_IP` / `DOCKER_ID` / `CONTRACT_ID` | 作为默认值填充 `platform.ip` / `platform.dockerID` / `platform.contract`（配置文件优先） |
 | `PLATFORM_IP` / `DOCKER_ID`（`server.type=fhe` 时） | 反向覆盖配置文件：fhe 实例注册到哪里属于部署位置属性，环境变量优先 |
-| `TAASECRETKEY` | 密钥目录丢失后恢复 SM2 私钥；要求 `storage.stateSealingKeySource=csv-hw` |
+| `TAASECRETKEY` | 密钥目录丢失后恢复 SM2 私钥；要求运行在 CSV guest 内（`/dev/csv-guest` 可用） |
 | `PLATFORM_PUBLIC_KEY` | 平台 SM2 公钥（`04||X||Y` 的 hex）。**环境变量始终优先于配置文件**（与 `platform.ip` 相反），配置文件里的 `platform.publicKey` 只在环境变量为空时兜底；两者都没有则启动 FATAL |
 | `PLATFORM_SM2_ID` | 信封签名/验签用的 SM2 `ID_A`，只认环境变量，缺省 `1234567812345678`；按原始 UTF-8 字节使用，不 trim、不解码 |
 
@@ -247,7 +247,7 @@ sequenceDiagram
 |---|---|---|
 | `server` | `addr`、`type` | `type`：`tee`（默认）/ `fhe` / `data-anaylsis` |
 | `platform` | `ip`、`endpoint`、`dockerID`、`contract`、`publicKey` | 平台地址与实例身份；`contract` 参与 `taaSecretKey` 派生；`publicKey` 是信封用的平台 SM2 公钥，环境变量 `PLATFORM_PUBLIC_KEY` 优先于它 |
-| `storage` | `model`、`data`、`result`、`keys`、`stateSealingKeySource` | 目录与状态密封密钥来源（`sm2` / `csv-hw`） |
+| `storage` | `model`、`data`、`result`、`keys` | 目录；状态密封密钥来源不再配置，启动时按 `/dev/csv-guest` 是否存在自动选择硬件密钥或 SM2 派生 |
 | `model` | `input`、`output.result` / `.log` / `.progress` | 训练输入/输出/日志/进度路径 |
 | `codeAudit` | `enabled`、`codeScan.engine`（`regex`/`semgrep`）、`codeScan.rulesPath`、`codeScan.timeoutSeconds`、`binaryAudit`、`resultCheck`、`llm` | 审计总开关及各通道参数 |
 | `attestation` | `hrkCertPath`、`hskCekCertPath` | 自校验证书；缺省回落到 `deploy/certs/` |

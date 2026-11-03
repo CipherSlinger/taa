@@ -118,8 +118,12 @@ func RunWithConfig(ctx context.Context, cfg config.StartupConfig) error {
 	//    CSV 环境下同时导出可经 TAASECRETKEY 带回的私钥密文
 	keysDir := normalizeKeysDir(cfg.KeysDir)
 	secretEnv := os.Getenv(taaSecretKeyEnv)
+	sealingSource := detectStateSealingKeySource(csvGuestDevicePath)
+	if sealingSource == store.KeySourceSM2 {
+		log.Printf("CSV guest device %s not found; sealing persistent state with the SM2-derived key", csvGuestDevicePath)
+	}
 	material, err := resolveStartupKeyMaterial(
-		keysDir, cfg.StateSealingKeySource, cfg.Contract,
+		keysDir, sealingSource, cfg.Contract,
 		secretEnv, fetchCSVHardwareSealingKey)
 	if err != nil {
 		return fmt.Errorf("initialize TAA key material: %w", err)

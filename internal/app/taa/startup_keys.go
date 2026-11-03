@@ -8,7 +8,6 @@ import (
 	"strings"
 	"time"
 
-	"taa/internal/config"
 	"taa/internal/store"
 	teecrypto "taa/pkg/crypto"
 )
@@ -31,11 +30,11 @@ type startupKeyMaterial struct {
 // back: both the state sealing key (csv-hw) and the taaSecretKey derivation
 // consume the same bytes.
 func resolveStartupKeyMaterial(
-	keysDir, source, contract, secretEnv string,
+	keysDir string, source store.KeySource, contract, secretEnv string,
 	fetch hardwareSealingKeyFetcher,
 ) (*startupKeyMaterial, error) {
 	var hwKey []byte
-	if source == config.StateSealingKeySourceCSVHW {
+	if source == store.KeySourceCSVHW {
 		var err error
 		hwKey, err = fetchStartupHardwareKey(fetch)
 		if err != nil {
@@ -52,8 +51,8 @@ func resolveStartupKeyMaterial(
 
 	if secretEnv = strings.TrimSpace(secretEnv); secretEnv != "" {
 		if len(hwKey) == 0 {
-			return nil, fmt.Errorf("%s requires storage.stateSealingKeySource=%q; non-CSV instances cannot recover a TAA key pair",
-				taaSecretKeyEnv, config.StateSealingKeySourceCSVHW)
+			return nil, fmt.Errorf("%s requires the CSV hardware sealing key (/dev/csv-guest); this instance is not running inside a CSV guest",
+				taaSecretKeyEnv)
 		}
 		priv, err := openTAASecretKey(hwKey, contract, secretEnv)
 		if err != nil {

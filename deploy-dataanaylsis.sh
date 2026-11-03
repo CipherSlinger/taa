@@ -17,10 +17,10 @@
 #     the audit at startup anyway, but an unrendered template would still make
 #     the packaging path ship a payload this image cannot use.
 #
-# docker mode runs outside the CSV guest, so it also renders
-# storage.stateSealingKeySource=sm2: the shared template asks for the CSV
-# hardware key, which exists only inside the guest. The remote and save paths
-# keep the template's csv-hw.
+# The state sealing key source is not rendered: TAA detects /dev/csv-guest at
+# startup and uses the CSV hardware key inside a guest, the SM2 derivation
+# everywhere else. The remote and save paths therefore behave exactly as the
+# docker path does here.
 set -euo pipefail
 
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -37,26 +37,17 @@ log() { printf '[deploy-dataanaylsis] %s\n' "$*"; }
 command -v python3 >/dev/null 2>&1 \
   || die "python3 is required to render the config template"
 
-want_docker=false
-for arg in "$@"; do
-  case "$arg" in
-    docker) want_docker=true ;;
-  esac
-done
-
 mkdir -p "$(dirname "$RENDERED_TEMPLATE")"
-python3 - "$CONFIG_TEMPLATE" "$RENDERED_TEMPLATE" "$want_docker" <<'PY'
+python3 - "$CONFIG_TEMPLATE" "$RENDERED_TEMPLATE" <<'PY'
 import json
 import sys
 
-src, dst, docker = sys.argv[1], sys.argv[2], sys.argv[3] == "true"
+src, dst = sys.argv[1], sys.argv[2]
 with open(src, encoding="utf-8") as f:
     cfg = json.load(f)
 
 cfg.setdefault("server", {})["type"] = "data-anaylsis"
 cfg.setdefault("storage", {})["data"] = "/home/jovyan/systemAuthData"
-if docker:
-    cfg["storage"]["stateSealingKeySource"] = "sm2"
 
 audit = cfg.setdefault("codeAudit", {})
 audit["enabled"] = False

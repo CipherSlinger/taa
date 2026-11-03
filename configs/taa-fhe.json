@@ -13,8 +13,7 @@
     "model": "/root/taa/models",
     "data": "/root/taa/data",
     "result": "/data/taa-results",
-    "keys": "/opt/taa-state/keys",
-    "stateSealingKeySource": "sm2"
+    "keys": "/opt/taa-state/keys"
   },
   "model": {
     "input": "/opt/taa/input",

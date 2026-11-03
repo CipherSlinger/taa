@@ -511,8 +511,7 @@ func TestProbeInferenceService_UnhealthyEndpoint(t *testing.T) {
 // probe instead, which runs with the network up.
 func TestRunWithConfig_MissingPlatformPublicKeyIsFatal(t *testing.T) {
 	cfg := config.StartupConfig{
-		KeysDir:               filepath.Join(t.TempDir(), "keys"),
-		StateSealingKeySource: config.StateSealingKeySourceSM2,
+		KeysDir: filepath.Join(t.TempDir(), "keys"),
 	}
 
 	err := RunWithConfig(context.Background(), cfg)

@@ -4,9 +4,10 @@ import (
 	"bytes"
 	"encoding/hex"
 	"errors"
+	"os"
+	"path/filepath"
 	"testing"
 
-	"taa/internal/config"
 	"taa/internal/store"
 	teecrypto "taa/pkg/crypto"
 )
@@ -25,7 +26,7 @@ func TestResolveStateSealingKey_SM2MatchesLegacyDerivation(t *testing.T) {
 		t.Fatalf("generate SM2 key: %v", err)
 	}
 
-	key, source, err := resolveStateSealingKey(config.StateSealingKeySourceSM2, priv, nil)
+	key, source, err := resolveStateSealingKey(store.KeySourceSM2, priv, nil)
 	if err != nil {
 		t.Fatalf("resolve: %v", err)
 	}
@@ -52,7 +53,7 @@ func TestResolveStateSealingKey_CSVHWDerivesFromFetchedKey(t *testing.T) {
 	if err != nil {
 		t.Fatalf("fetch hardware key: %v", err)
 	}
-	key, source, err := resolveStateSealingKey(config.StateSealingKeySourceCSVHW, priv, hwKey)
+	key, source, err := resolveStateSealingKey(store.KeySourceCSVHW, priv, hwKey)
 	if err != nil {
 		t.Fatalf("resolve: %v", err)
 	}
@@ -92,7 +93,7 @@ func TestResolveStateSealingKey_CSVHWRejectsAllZeroKey(t *testing.T) {
 	if err != nil {
 		t.Fatalf("fetch hardware key: %v", err)
 	}
-	_, _, err = resolveStateSealingKey(config.StateSealingKeySourceCSVHW, priv, hwKey)
+	_, _, err = resolveStateSealingKey(store.KeySourceCSVHW, priv, hwKey)
 	if !errors.Is(err, teecrypto.ErrInvalidCSVSealingKey) {
 		t.Fatalf("expected ErrInvalidCSVSealingKey, got %v", err)
 	}
@@ -123,9 +124,26 @@ func TestResolveStateSealingKey_RejectsUnknownAndEmptySource(t *testing.T) {
 		t.Fatalf("generate SM2 key: %v", err)
 	}
 
-	for _, source := range []string{"", "hsm", "CSV-HW"} {
+	for _, source := range []store.KeySource{"", "hsm", "CSV-HW"} {
 		if _, _, err := resolveStateSealingKey(source, priv, nil); err == nil {
 			t.Fatalf("source %q: expected an error", source)
 		}
+	}
+}
+
+func TestDetectStateSealingKeySource_UsesTheGuestDeviceWhenPresent(t *testing.T) {
+	device := filepath.Join(t.TempDir(), "csv-guest")
+	if err := os.WriteFile(device, nil, 0o600); err != nil {
+		t.Fatalf("create device stand-in: %v", err)
+	}
+	if got := detectStateSealingKeySource(device); got != store.KeySourceCSVHW {
+		t.Fatalf("source = %q, want %q when the guest device exists", got, store.KeySourceCSVHW)
+	}
+}
+
+func TestDetectStateSealingKeySource_FallsBackToSM2OutsideTheGuest(t *testing.T) {
+	missing := filepath.Join(t.TempDir(), "csv-guest")
+	if got := detectStateSealingKeySource(missing); got != store.KeySourceSM2 {
+		t.Fatalf("source = %q, want %q when the guest device is absent", got, store.KeySourceSM2)
 	}
 }
