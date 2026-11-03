@@ -50,13 +50,21 @@ TARGET_POD=taa-env-slim-v2-20261016-7104e03003ae0072-f7fbbf8f5-kkdb2 ./deploy.sh
 
 # platform-mock 部署命令
 
-platform-mock 的构建、启动、停止和就绪检查统一由 `deploy-platform-mock.sh` 负责；
-`deploy.sh` 与 `deploy-fhe.sh` 只负责发现 TAA 目标并调用它。
+platform-mock 的构建、启动、停止和就绪检查统一由仓库根目录的 `deploy-platform-mock.sh`
+负责；`deploy.sh` 与 `deploy-fhe.sh` 只负责发现 TAA 目标并调用它。
+
+```bash
+./deploy-platform-mock.sh <local|remote> <start|stop|restart|status> [选项]
+```
 
 ```bash
 # 本地：构建 bin/platform-mock 并后台启动
 ./deploy-platform-mock.sh local start --taa-target http://127.0.0.1:6001 --allow-empty-attestation
+
+# 查看状态（未运行且端点无应答时退出码非 0）
 ./deploy-platform-mock.sh local status
+
+# 重启 / 停止
 ./deploy-platform-mock.sh local restart
 ./deploy-platform-mock.sh local stop
 
@@ -66,14 +74,48 @@ platform-mock 的构建、启动、停止和就绪检查统一由 `deploy-platfo
   --remote-dir /root/taa --taa-target http://127.0.0.1:6001
 ./deploy-platform-mock.sh remote status --host 172.16.10.178
 ./deploy-platform-mock.sh remote stop --host 172.16.10.178
+
+# 只查看会执行什么，不构建、不连接
+./deploy-platform-mock.sh remote start --host 172.16.10.178 --dry-run
 ```
 
-- `start` 默认先构建，`--skip-build` 复用现有二进制；`--reuse` 表示已有实例应答时不再启动；
-  `--reset-register` 在就绪后清空注册状态。
-- `--state-dir` / `--upload-dir` 为空时不传对应参数，沿用二进制自身的默认目录。
-- 两处调用方的差异保持不变：`deploy.sh remote` 不传 state/upload/allow-empty 参数（沿用原有
-  远端行为），`deploy-fhe.sh` 显式传 state/upload 目录、`--allow-empty-attestation`
+**常用选项**
+
+| 选项 | 说明 |
+|---|---|
+| `--binary PATH` | 本地构建产物，默认 `bin/platform-mock` |
+| `--binary-name NAME` | 进程名与远端安装名，默认 `platform-mock` |
+| `--addr ADDR` / `--port N` | 监听地址，默认 `0.0.0.0:18080` |
+| `--state-dir DIR` / `--upload-dir DIR` | 为空时不传对应参数，沿用二进制自身默认目录 |
+| `--log-file PATH` / `--pid-file PATH` | 默认分别在 `.local/logs/`、`.local/run/`（远端在 `--remote-dir` 下） |
+| `--taa-target URL` | 直接指定 TAA 地址；未指定时透传 `--taa-pod` / `--taa-ns` / `--taa-port` |
+| `--allow-empty-attestation` | 非 TEE 测试环境跳过证明校验 |
+| `--reuse` | 端口已有实例应答时直接复用，不停止、不重启 |
+| `--reset-register` | 就绪后 `POST /api/register/reset` |
+| `--skip-build` | 复用 `--binary` 指向的现有二进制 |
+| `--static` | 强制 `CGO_ENABLED=0 GOOS=linux`（远端模式默认如此） |
+| `--ready-timeout` / `--ready-interval` | 就绪等待，默认 60s / 2s |
+| `--dry-run` | 只打印计划 |
+| `--host` / `--user` / `--password` / `--remote-dir` / `--remote-binary` | 远端目标、SSH 凭据与安装路径 |
+| `--ssh-port` / `--ssh-opt` | 自定义 SSH 端口与额外选项 |
+
+**生命周期语义**
+
+- `start` 默认先构建，然后写 pidfile、后台启动并轮询 `GET /api/register/status`；
+  超时会打印日志末尾并以非 0 退出。
+- `stop` 先按 pidfile 终止，再按进程名兜底，未运行时也返回成功。
+- `restart` 等于 `stop` + 构建 + `start`。
+- `status` 打印 pid、日志与端点结果；进程存活或端点应答即返回 0。
+- 远程启动使用 `nohup` 脱离 SSH，二进制上传到 `--remote-binary`（默认
+  `--remote-dir/platform-mock`）。
+
+**调用方差异（保持不变）**
+
+- `deploy.sh remote` 不传 state/upload/allow-empty 参数，沿用二进制自身默认值。
+- `deploy-fhe.sh` 显式传 state/upload 目录、`--allow-empty-attestation`、`--static`，
   并使用 `--reuse --reset-register`。
+- `deploy.sh` 自己用 kubectl 发现 TAA Pod IP 后通过 `--taa-target` 传入；发现失败时
+  退回 `--taa-pod/--taa-ns/--taa-port`。
 
 
 # taa-teellm 部署命令
