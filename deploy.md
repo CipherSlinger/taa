@@ -171,8 +171,7 @@ platform-mock 的构建、启动、停止和就绪检查统一由仓库根目录
 ./deploy-llm.sh models switch qwen2.5-coder:7b
 ```
 
-**镜像内建构建**：`build-teellm-image.sh` 已删除，构建逻辑并入 `deploy-llm.sh`，只在
-**创建** Pod 时执行，不需要再单独跑任何脚本。流程与原来一致 —— 取 `taa-env:slim-v2` 派生一份
+**镜像内建构建**：取 `taa-env:slim-v2` 派生一份
 剥掉 `/root/taa` 的 `teellm-base:<日期>`，把当前工作树编出的 `teellm-service`、两份配置、
 `teellm-supervisor.sh`、ollama 运行库与模型塞进一次性容器，补齐 6 个 soname 软链后
 `docker commit` 成 `teellm:<YYYYMMDD>`。
@@ -183,9 +182,30 @@ platform-mock 的构建、启动、停止和就绪检查统一由仓库根目录
 `docker load` → `tag` → 推送（推送前先删同 tag 的旧 manifest，当天重建不会冲突）。
 无论有没有推送，这条路径都用 `imagePullPolicy: Always`，因为当天 tag 会被覆盖。
 
+**Pod 已存在时只等就绪**：`kubectl get pod` 成功时不构建镜像、不 apply 清单、不改注解和资源，
+只跑一次 `kubectl wait --for=condition=Ready --timeout=5s`。因为再建一个 Pod 就是第二台机密 VM
+（加密内存常驻宿主），而 guest 可写层里的 ollama 运行时与模型、以及 TAA `llm.endpoint` 指向的
+Pod IP 都绑在这个 Pod 上。它存在但 5s 内没 Ready 时报错并打印 `-o wide` 与 `describe`，
+提示用 `pod-down` 重建，而不是自行重建。
+
+**建之前先预检**：`--create-pod start` 在**构建镜像之前**确认 API server 可达、Pod 名是合法
+DNS label（≤63 字符）、命名空间与 RuntimeClass 存在，任一不满足立即退出 —— 命名空间写错不该
+先花几十分钟编译推送镜像。镜像选定之后再 best-effort 查一次 registry 的 `tags/list`
+（这次运行自己构建并推送过就跳过）；查不到只告警。
+
 **建之前先算内存**：`VM = kata default_memory + TEELLM_POD_MEMORY`，guest 可写层上限是可见内存
 的一半，镜像解包体积要放得下（另加 15% 可写余量），VM 也不能超过宿主 available。不满足直接
 拒绝，`TEELLM_POD_FORCE_MEMORY=true` 是显式逃生口，`TEELLM_POD_IMAGE_SIZE_GIB` 可指定镜像体积。
+放得下不等于跑得起来，所以再报一项业务内存余量：`可见 − 解包 − 256` 与 cgroup 上限取小，
+低于 1024MiB 告警（通常表现为 Ready 之后 llama-server 被 cgroup OOM 杀掉）。
+
+**Pod 规格照参考脚本**：CPU 2、memory 16Gi（requests = limits，机密内存开机即常驻宿主）、
+`restartPolicy: Always`、`terminationGracePeriodSeconds: 30`，`imagePullPolicy` 按路径决定
+（自构建就 Always，显式镜像就 IfNotPresent）。容器 `privileged`、
+`allowPrivilegeEscalation: true`、`runAsUser: 0`、`runAsNonRoot: false`。启动命令是
+`/bin/bash -c`：先从 `/proc/misc` 读出 csv-guest 的次设备号并 `mknod -m 666 /dev/csv-guest c 10`，
+再 `exec` 交棒给 `teellm-supervisor.sh` —— 容器生命周期就是 supervisor 的生命周期，
+重启由 `restartPolicy` 负责。
 
 **删除后查残留**：`pod-down` 提交 `--grace-period=30 --wait=false`，轮询 180s 后必要时强制删除，
 再比较三个数 —— 集群里的 kata Pod 数、`/run/vc/sbs` 目录数、`qemu-system` 进程数。不等就打印

@@ -134,6 +134,15 @@ verb="${args[$i]}"
 echo "KUBECTL $verb ${args[*]:$((i+1))}" >> "$MOCK_LOG"
 case "$verb" in
   get)
+    # The creation preflight asks the cluster three things before it builds anything: that kubectl
+    # reaches the API at all, that the namespace exists, and that the RuntimeClass does. All three
+    # are answered yes here, because the cases under test are about what happens after them.
+    if [[ "$*" == *"--raw /version"* ]]; then exit 0; fi
+    if [[ "${args[$((i+1))]:-}" == "namespace" || "${args[$((i+1))]:-}" == "ns" ]]; then
+      [[ -n "${MOCK_NO_NAMESPACE:-}" ]] && exit 1
+      exit 0
+    fi
+    if [[ "${args[$((i+1))]:-}" == "runtimeclass" ]]; then exit 0; fi
     if [[ "$*" == *"-A"* ]]; then echo "DERIVED_CC_INIT_DATA"; exit 0; fi
     if [[ "$*" == *"status.podIP"* ]]; then printf '%s' "$MOCK_POD_IP"; exit 0; fi
     # The creation path polls the phase and the container's readiness rather than using
@@ -365,6 +374,10 @@ grep -qE "^DOCKER commit .* teellm:$TODAY_TAG\$" "$MOCK_LOG" \
   || fail "the image was not committed under the current build date"
 grep -q '^DOCKER BINARY_PRESENT=yes$' "$MOCK_LOG" \
   || fail "teellm-service was not rebuilt before the image was committed"
+# The cluster answers before the build starts: a missing namespace or RuntimeClass must not cost
+# half an hour of image building first.
+grep -q '^KUBECTL get --raw /version' "$MOCK_LOG" || fail "the preflight never probed the API server"
+grep -q '^KUBECTL get runtimeclass ' "$MOCK_LOG" || fail "the preflight never checked the RuntimeClass"
 grep -q 'MODEL=qwen2.5-coder:0.5b' "$MOCK_LOG" \
   || fail "the image was built for a different model than the deployment targets"
 grep -q "^SCP\[.*deploy/out/teellm-$TODAY_TAG.tar.gz -> " "$MOCK_LOG" \
@@ -396,6 +409,14 @@ memory_limits="$(grep -cE '^          memory: "' "$APPLIED")"
 memory_gi="$(grep -oE '^          memory: "[0-9]+Gi"' "$APPLIED" | grep -oE '[0-9]+' | sort -u)"
 [[ "$memory_gi" == "16" ]] \
   || fail "the TEE-LLM Pod memory default is $memory_gi Gi; a 7B model needs 16 (see the OOM note in deploy-llm.sh)"
+# Two vCPUs, the reference create script's figure: encrypted memory is resident, and a larger vCPU
+# count is a further permanent claim on a host whose CPU requests are already nearly accounted for.
+cpu_limits="$(grep -oE '^          cpu: "[0-9]+"' "$APPLIED" | grep -oE '[0-9]+' | sort -u)"
+[[ "$cpu_limits" == "2" ]] || fail "the TEE-LLM Pod CPU default is $cpu_limits, expected 2"
+# The overlay check only proves the image fits. What the service and the model have left over is a
+# separate number, and it is the one that shows up as a cgroup OOM long after the Pod went Ready.
+grep -qE 'business memory available: [0-9]+MiB \(cgroup limit 16384MiB, physical [0-9]+MiB\)' <<<"$output" \
+  || fail "the deployment did not report the memory left for the service and the model"
 
 # Three annotation keys, the set every kata-qemu-csv2 Pod on this host carries. runtime-handler has
 # to name the same runtime class; kernel_params has to be non-empty and carry the two pull timeouts
@@ -413,16 +434,23 @@ grep -qE '^    io\.katacontainers\.config\.runtime\.cc_init_data: "[^"]+"$' "$AP
 # The device node is created inside the container, not by the guest. A first version of this
 # template assumed the RuntimeClass alone was enough, and the Pod came up Ready with an empty
 # /dev -- every other gate would have passed while teellm-service served mock evidence.
-grep -q "mknod /dev/csv-guest" "$APPLIED" || fail "the manifest does not create /dev/csv-guest"
-grep -q "/sys/class/misc/csv-guest/dev" "$APPLIED" \
-  || fail "the manifest does not read the csv-guest device numbers from sysfs"
+grep -q "/proc/misc" "$APPLIED" || fail "the manifest does not read the device minor from /proc/misc"
+grep -q "mknod -m 666 /dev/csv-guest" "$APPLIED" || fail "the manifest does not create /dev/csv-guest"
 
-# The container's PID 1 is the supervisor, not `sleep infinity`: restartPolicy only reacts to PID 1
-# exiting, so an owned teellm-service and ollama is what keeps a dead daemon from staying dead.
-grep -q "/opt/teellm/teellm-supervisor.sh" "$APPLIED" \
+# The reference create script runs the container privileged as root; mknod on /dev needs
+# CAP_MKNOD, and both the entrypoint and the supervisor expect root.
+grep -q "^        privileged: true$" "$APPLIED" || fail "the container is not privileged"
+grep -q "^        allowPrivilegeEscalation: true$" "$APPLIED" \
+  || fail "the container forbids privilege escalation, which mknod needs"
+grep -q "^        runAsUser: 0$" "$APPLIED" || fail "the container does not run as root"
+grep -q "^        runAsNonRoot: false$" "$APPLIED" || fail "the container declares runAsNonRoot"
+grep -q 'command: \["/bin/bash", "-c"\]' "$APPLIED" || fail "the start command is not bash -c"
+
+# The container's PID 1 is the supervisor, not `sleep infinity` and not a restart loop: the
+# reference create script execs it, so the container's lifetime is the supervisor's and
+# restartPolicy is what brings the service back.
+grep -q "exec /bin/bash /opt/teellm/teellm-supervisor.sh" "$APPLIED" \
   || fail "the manifest does not hand PID 1 to the TEE-LLM supervisor"
-grep -q "supervisor exited; restarting" "$APPLIED" \
-  || fail "the manifest does not restart a supervisor that exits"
 # The supervisor reads the model from the deployment; a Pod that already exists keeps its env.
 grep -q "TEELLM_MODEL" "$APPLIED" || fail "the selected model is not in the Pod environment"
 grep -q 'value: "qwen2.5-coder:0.5b"' "$APPLIED" \
@@ -709,5 +737,23 @@ grep -q "TEE-LLM Pod '$COPY_POD_NAME' does not exist" <<<"$output" \
   || fail "pod-down did not say the Pod was already gone"
 grep -q "checking for leftover kata sandboxes" <<<"$output" \
   || fail "the already-gone path skipped the sandbox check"
+
+# ── 8. Negative control: a missing namespace stops before the build ──────────
+# The preflight is only worth its round trip if it runs first: a namespace typo has to cost a
+# second, not the tens of minutes of compiling, committing and pushing an image that then cannot
+# be applied anywhere.
+
+unset RUN_OLLAMA_DIR
+commit_before="$(grep -c '^DOCKER commit ' "$MOCK_LOG" || true)"
+apply_before="$(cat "$MOCK_STATE_DIR/apply-count")"
+RUN_ENV=(MOCK_NO_NAMESPACE=true)
+run_deploy --create-pod start --model qwen2.5-coder:0.5b
+RUN_ENV=()
+[[ $status -ne 0 ]] || fail "a missing namespace was accepted"
+grep -q "namespace" <<<"$output" || fail "the missing namespace was not named in the error"
+[[ "$(grep -c '^DOCKER commit ' "$MOCK_LOG" || true)" == "$commit_before" ]] \
+  || fail "an image was built before the preflight had vetted the target namespace"
+[[ "$(cat "$MOCK_STATE_DIR/apply-count")" == "$apply_before" ]] \
+  || fail "the manifest was applied even though the target namespace does not exist"
 
 echo "PASS: the dedicated TEE-LLM Pod is created once, reused, gated on its CSV device, and is what the bare invocation deploys into"

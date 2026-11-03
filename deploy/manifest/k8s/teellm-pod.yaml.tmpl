@@ -102,52 +102,40 @@ spec:
         - name: TEELLM_MODEL
           value: "__MODEL__"
       # Overrides the image ENTRYPOINT and hands PID 1 to the TEE-LLM supervisor, which owns
-      # teellm-service and ollama inside this container. A plain
-      # `sleep infinity` would leave both unowned: restartPolicy only reacts to PID 1 exiting and
-      # there is no liveness probe, so a dead daemon would stay dead until someone redeployed.
-      command: ["/bin/sh", "-c"]
+      # teellm-service and ollama inside this container. The shape is the reference create
+      # script's: prepare the device, then exec the supervisor, so the container's lifetime is
+      # the supervisor's and `restartPolicy: Always` is what brings the service back.
+      command: ["/bin/bash", "-c"]
       # Creating /dev/csv-guest is part of starting, not an afterthought. The
       # CSV2 guest kernel registers a csv-guest misc device, but /dev inside the
       # container is a fresh tmpfs: /proc/misc lists the device while /dev stays
       # empty, and teellm-service reads that empty /dev as "no device" and
       # silently serves mock evidence. TAA's own deployment manifest handles this
-      # with a postStart hook; this is the same recipe, run before the keep-alive
-      # loop instead, so the node exists by the time the container is Ready and
-      # the deploy gate may check it. The minor number is not stable -- read it.
-      # Failure here is deliberately not fatal: a crash-looping container would
-      # burn the deployment's Ready timeout, where the deploy gate reports the
-      # missing device immediately and names the cause. Do not "simplify" this
-      # away on the assumption that the guest creates the node.
+      # with a postStart hook; this is the same recipe, run before the exec
+      # instead, so the node exists by the time the container is Ready and the
+      # deploy gate may check it. The minor number is not stable -- read it from
+      # /proc/misc. Failure here is deliberately not fatal: a crash-looping
+      # container would burn the deployment's Ready timeout, where the deploy
+      # gate reports the missing device immediately and names the cause. Do not
+      # "simplify" this away on the assumption that the guest creates the node.
       args:
         - |
-          set -u
-          dev=""
-          i=0
-          while [ -z "$dev" ] && [ "$i" -lt 60 ]; do
-            dev="$(cat /sys/class/misc/csv-guest/dev 2>/dev/null || true)"
-            if [ -z "$dev" ]; then i=$((i + 1)); sleep 1; fi
-          done
-          if [ -n "$dev" ]; then
-            mknod /dev/csv-guest c "${dev%%:*}" "${dev##*:}" 2>/dev/null || true
-            chmod 666 /dev/csv-guest 2>/dev/null || true
-          fi
           if [ ! -e /dev/csv-guest ]; then
-            echo "warning: could not create /dev/csv-guest; teellm-service will fall back to mock evidence" >&2
+            minor=$(sed -n 's/^\([0-9]*\)[[:space:]]*csv-guest$/\1/p' /proc/misc 2>/dev/null | head -1)
+            if [ -n "$minor" ]; then
+              mknod -m 666 /dev/csv-guest c 10 "$minor" || true
+            else
+              echo "warning: /proc/misc has no csv-guest (not a CSV guest?); skipping" >&2
+            fi
           fi
-          # PID 1 is the supervisor, not a keep-alive sleep: restartPolicy only reacts to PID 1
-          # exiting and there is no liveness probe, so an unowned daemon would stay down until
-          # someone redeployed. The script ships in the image (the TEE-LLM image carries it, the
-          # deployment copies its current build over the top), so a freshly booted guest starts
-          # the service without waiting for anything -- which is what keeps it alive across a host
-          # reboot, since that wipes the guest's writable layer. If the supervisor exits (a lost
-          # singleton race with the deployment's own fallback start, or a bug), restart it here
-          # rather than taking the container down with it: an exited container puts the writable
-          # layer, and the model in it, out of reach.
-          while true; do
-            /opt/teellm/teellm-supervisor.sh
-            echo "supervisor exited; restarting in 2s" >&2
-            sleep 2
-          done
+          exec /bin/bash /opt/teellm/teellm-supervisor.sh
+      # The reference create script runs the container privileged as root. mknod on /dev needs
+      # CAP_MKNOD, and the entrypoint and supervisor both expect to run as root.
+      securityContext:
+        privileged: true
+        allowPrivilegeEscalation: true
+        runAsUser: 0
+        runAsNonRoot: false
       resources:
         # Kata sizes the VM from the limits: guest RAM = the kata default_memory
         # (2048M in this host's configuration-qemu-csv2.toml) + limits.memory,

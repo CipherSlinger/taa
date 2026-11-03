@@ -313,12 +313,16 @@ TEELLM_IMAGE_KEEP_BUILDER="${TEELLM_IMAGE_KEEP_BUILDER:-false}"
 # actually has; an explicit name is the operator's decision, and a registry whose tag listing is
 # slow, filtered or 401-guarded is no reason to override it.
 TEELLM_POD_IMAGE_WAS_SET="${TEELLM_POD_IMAGE+set}"
+# Set when this run built and pushed the image, which is what makes the registry tag check in the
+# creation preflight unnecessary: the tag exists by construction.
+TEELLM_POD_IMAGE_BUILT=false
 TEELLM_POD_IMAGE="${TEELLM_POD_IMAGE:-$TEELLM_IMAGE_REGISTRY/$TEELLM_IMAGE_REPO:$(date +%Y%m%d)}"
 TEELLM_POD_NODE="${TEELLM_POD_NODE:-hygon-master}"
 TEELLM_POD_RUNTIME_CLASS="${TEELLM_POD_RUNTIME_CLASS:-kata-qemu-csv2}"
 # Kata sizes the guest as default_memory + limits.memory and default_vcpus + limits.cpu, and
-# encrypted memory is resident from boot, so these two numbers are a permanent host cost.
-TEELLM_POD_CPU="${TEELLM_POD_CPU:-8}"
+# encrypted memory is resident from boot, so these two numbers are a permanent host cost. Two vCPUs
+# is the reference create script's figure, kept so both paths ask the host for the same thing.
+TEELLM_POD_CPU="${TEELLM_POD_CPU:-2}"
 # 16Gi, not the 8Gi the TAA Pod gets away with: this container also has to hold a whole model.
 # At 8Gi the first deployment of this feature came up, reported the hardware evidence provider,
 # and then had llama-server SIGKILLed while loading qwen2.5-coder:7b -- the container's cgroup
@@ -753,6 +757,7 @@ du -sh /opt/teellm/ollama /opt/teellm/teellm-service
     info "the registry already holds this build; nothing uploaded: $registry_image"
     TEELLM_POD_IMAGE="$registry_image"
     TEELLM_POD_PULL_POLICY="Always"
+    TEELLM_POD_IMAGE_BUILT=true
     return 0
   fi
 
@@ -799,6 +804,7 @@ REMOTE_PUSH
 
   TEELLM_POD_IMAGE="$registry_image"
   TEELLM_POD_PULL_POLICY="Always"
+  TEELLM_POD_IMAGE_BUILT=true
   info "TEE-LLM Pod image built and pushed: $TEELLM_POD_IMAGE"
 }
 
@@ -863,6 +869,18 @@ check_pod_memory_budget() {
       exit 1
     fi
     warn "proceeding with a tight overlay budget ($(( run_mib - unpacked_mib ))MiB writable), forced"
+  fi
+
+  local app_room_mib effective_app_mib
+  # What the business can actually use is the smaller of two different numbers: the container's
+  # cgroup limit, and what is physically left of the guest after the rootfs sits in the same RAM.
+  # The reference script reports both; a rootfs that eats almost everything is invisible otherwise,
+  # because the cgroup limit still looks generous.
+  app_room_mib=$(( visible_mib - unpacked_mib - 256 ))
+  effective_app_mib=$(( app_room_mib < mem_mib ? app_room_mib : mem_mib ))
+  detail "business memory available: ${effective_app_mib}MiB (cgroup limit ${mem_mib}MiB, physical ${app_room_mib}MiB)"
+  if [[ "$effective_app_mib" -lt 1024 ]]; then
+    warn "the rootfs leaves only ${effective_app_mib}MiB for the service and the model; expect OOM"
   fi
 
   local avail_mib
@@ -1047,6 +1065,61 @@ REMOTE_ORPHANS
   fi
 }
 
+# The creation preflight of the reference create script, minus its hostPort checks: this Pod
+# publishes no host port, TAA reaches it by Pod IP. Everything here is answered by the cluster
+# before a build that takes tens of minutes starts, so a wrong namespace or RuntimeClass costs a
+# second rather than half an hour.
+preflight_pod_cluster() {
+  step "preflight: cluster, Pod name, namespace and RuntimeClass"
+
+  if ! remote_ssh "kubectl get --raw /version >/dev/null 2>&1"; then
+    err "kubectl on ${REMOTE_USER}@${REMOTE_HOST} cannot reach the cluster"
+    exit 1
+  fi
+  info "cluster reachable"
+
+  if [[ ! "$TARGET_POD" =~ ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$ ]] || [[ ${#TARGET_POD} -gt 63 ]]; then
+    err "Pod name '$TARGET_POD' is not a valid RFC1123 name (lowercase alphanumerics and '-', at most 63 characters)"
+    exit 1
+  fi
+
+  if ! remote_ssh "kubectl get namespace '$TARGET_NAMESPACE' >/dev/null 2>&1"; then
+    err "namespace '$TARGET_NAMESPACE' does not exist on ${REMOTE_USER}@${REMOTE_HOST}"
+    exit 1
+  fi
+  info "namespace $TARGET_NAMESPACE exists"
+
+  if ! remote_ssh "kubectl get runtimeclass '$TEELLM_POD_RUNTIME_CLASS' >/dev/null 2>&1"; then
+    err "RuntimeClass '$TEELLM_POD_RUNTIME_CLASS' does not exist; only a CSV2 class creates /dev/csv-guest"
+    exit 1
+  fi
+  info "RuntimeClass $TEELLM_POD_RUNTIME_CLASS exists"
+}
+
+# Whether the registry already answers for the image this Pod will run. Best effort, exactly as in
+# the reference script: no CA material of its own, so an unreachable registry is a warning -- the
+# deploy cannot repair it either way, and the failure it predicts shows up in the wait loop.
+check_registry_has_tag() {
+  local ref="$TEELLM_POD_IMAGE" repo tag body
+  if [[ "$ref" == */* ]]; then repo="${ref#*/}"; else repo="$ref"; fi
+  repo="${repo%%:*}"
+  if [[ "$ref" == *:* ]]; then tag="${ref##*:}"; else tag="latest"; fi
+
+  body="$(remote_ssh "curl -sk --max-time 8 'https://$TEELLM_IMAGE_REGISTRY/v2/$repo/tags/list'" 2>/dev/null || true)"
+  body="${body//$'\r'/}"
+  body="${body//$'\n'/}"
+  if [[ -z "$body" ]]; then
+    warn "could not list $repo tags in $TEELLM_IMAGE_REGISTRY; skipping the image check"
+    detail "Confirm '$TEELLM_POD_IMAGE' exists, or the guest pull will fail."
+    return 0
+  fi
+  if [[ "$body" == *"\"$tag\""* ]]; then
+    info "registry has ${repo}:${tag}"
+  else
+    warn "registry has no ${repo}:${tag}; the guest pull will fail unless the image arrives another way"
+  fi
+}
+
 # Makes sure the dedicated TEE-LLM Pod exists, is Ready and can really produce a CSV attestation,
 # then records its IP in TEELLM_POD_IP.
 pod_up() {
@@ -1068,6 +1141,10 @@ pod_up() {
     fi
     info "reusing the running TEE-LLM Pod (nothing applied)"
   else
+    # Before the image is chosen: a build is the expensive part, and the cluster answers these in
+    # a second.
+    preflight_pod_cluster
+
     # The image is chosen only on this path: an existing Pod's image cannot change, so building or
     # resolving one there would be work whose result nothing acts on.
     if [[ -n "$TEELLM_POD_IMAGE_WAS_SET" ]]; then
@@ -1076,6 +1153,12 @@ pod_up() {
       build_teellm_pod_image
     else
       resolve_teellm_pod_image
+    fi
+
+    # A tag this run pushed is in the registry by construction; asking again would only add a way
+    # for a working path to fail.
+    if [[ "$TEELLM_POD_IMAGE_BUILT" != true ]]; then
+      check_registry_has_tag
     fi
 
     # Before the manifest is rendered and long before anything is applied: both a guest that cannot
