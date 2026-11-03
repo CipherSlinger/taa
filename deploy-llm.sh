@@ -264,16 +264,18 @@ K_NS="${TARGET_NAMESPACE:+-n $TARGET_NAMESPACE}"
 
 # ── Dedicated TEE-LLM Pod ─────────────────────────────────────
 # The TEE-LLM service needs /dev/csv-guest to produce a real CSV attestation; a plain docker
-# container has no such device, so teellm-service falls back to a mock evidence provider whose HRK
-# changes on every start, and TAA rejects the handshake with "untrusted HRK certificate". A
-# kata-qemu-csv2 Pod has the device, because its guest init creates it -- which is the whole
-# reason this Pod exists, and why --create-pod deploys into it rather than into the TAA Pod that
-# TARGET_POD defaults to (that Pod has the device too, but it is not where teellm-service should
-# run, and aiming the deployment at it would make every later gate pass while the service never
-# reaches the Pod the endpoint points at).
+# container has no such device, so teellm-service falls back to a mock evidence provider that
+# signs its own report. TAA verifies only the report's PEK signature and skips the certificate
+# chain, so it cannot tell that mock report from hardware at the handshake -- which is why the
+# deployment itself refuses to run without the device. A kata-qemu-csv2 Pod has it, because its
+# guest init creates it -- which is the whole reason this Pod exists, and why --create-pod
+# deploys into it rather than into the TAA Pod that TARGET_POD defaults to (that Pod has the
+# device too, but it is not where teellm-service should run, and aiming the deployment at it
+# would make every later gate pass while the service never reaches the Pod the endpoint points
+# at).
 TEELLM_POD_NAME="${TEELLM_POD_NAME:-taa-teellm}"
-# The image built by build-teellm-image.sh carries the service, the supervisor, the certificates
-# and the ollama runtime, so a fresh guest serves without any host-side copy.
+# The image built by build-teellm-image.sh carries the service, the supervisor and the ollama
+# runtime, so a fresh guest serves without any host-side copy.
 #
 # Its tag is the date it was built on, so the same-day default is only a guess: build on the 27th
 # and deploy on the 28th and today's tag names an image nobody pushed. Left alone, that guess is
@@ -543,8 +545,8 @@ pod_up() {
   # rather than the RuntimeClass name, since the name alone does not prove which guest booted.
   if ! remote_ssh "$(container_exec) test -e /dev/csv-guest"; then
     err "Pod '$TARGET_POD' has no /dev/csv-guest, so it cannot produce a real CSV attestation"
-    detail "teellm-service would fall back to mock evidence and TAA would reject every handshake"
-    detail "with 'untrusted HRK certificate'. Expected runtimeClassName $TEELLM_POD_RUNTIME_CLASS."
+    detail "teellm-service would fall back to mock evidence, which TAA cannot tell apart from"
+    detail "hardware now that the certificate chain is skipped. Expected runtimeClassName $TEELLM_POD_RUNTIME_CLASS."
     detail "Pod left running for inspection: kubectl $K_NS exec '$TARGET_POD' -- ls -l /dev/csv*"
     exit 1
   fi
@@ -861,48 +863,19 @@ resolve_target_model() {
   printf '%s' "qwen2.5-coder:3b"
 }
 
-resolve_certificates() {
-  local hrk=""
-  local hsk=""
-
-  if [[ -n "${ATT_HRK_SOURCE:-}" && -f "$ATT_HRK_SOURCE" ]]; then
-    hrk="$ATT_HRK_SOURCE"
-  elif [[ -f "$PROJECT_DIR/deploy/certs/hrk.cert" ]]; then
-    hrk="$PROJECT_DIR/deploy/certs/hrk.cert"
-  elif [[ -f "$TEELLM_DIR/certs/hrk.cert" ]]; then
-    hrk="$TEELLM_DIR/certs/hrk.cert"
-  elif [[ -f "$PROJECT_DIR/certs/hrk.cert" ]]; then
-    hrk="$PROJECT_DIR/certs/hrk.cert"
-  fi
-
-  if [[ -n "${ATT_HSK_SOURCE:-}" && -f "$ATT_HSK_SOURCE" ]]; then
-    hsk="$ATT_HSK_SOURCE"
-  elif [[ -f "$PROJECT_DIR/deploy/certs/hsk_cek.cert" ]]; then
-    hsk="$PROJECT_DIR/deploy/certs/hsk_cek.cert"
-  elif [[ -f "$TEELLM_DIR/certs/hsk_cek.cert" ]]; then
-    hsk="$TEELLM_DIR/certs/hsk_cek.cert"
-  elif [[ -f "$PROJECT_DIR/certs/hsk_cek.cert" ]]; then
-    hsk="$PROJECT_DIR/certs/hsk_cek.cert"
-  fi
-
-  echo "$hrk $hsk"
-}
-
 prepare_config() {
   local template="$1"
   local output_file="$2"
   local model="$3"
   local port="$4"
-  local hrk_path="${5:-}"
-  local hsk_path="${6:-}"
 
   require_file "teellm config template" "$template"
   require_command python3
 
-  python3 - "$template" "$output_file" "$model" "$port" "$hrk_path" "$hsk_path" <<'PY'
+  python3 - "$template" "$output_file" "$model" "$port" <<'PY'
 import json, sys
 
-template_path, output_path, model, port, hrk_path, hsk_path = sys.argv[1:7]
+template_path, output_path, model, port = sys.argv[1:5]
 with open(template_path, "r", encoding="utf-8") as f:
     cfg = json.load(f)
 
@@ -910,10 +883,6 @@ if model:
     cfg.setdefault("backend", {})["defaultModel"] = model
 if port:
     cfg.setdefault("server", {})["addr"] = f":{port}"
-if hrk_path:
-    cfg.setdefault("attestation", {})["hrkCertPath"] = hrk_path
-if hsk_path:
-    cfg.setdefault("attestation", {})["hskCekCertPath"] = hsk_path
 
 with open(output_path, "w", encoding="utf-8") as f:
     json.dump(cfg, f, indent=2, ensure_ascii=False)
@@ -1585,8 +1554,8 @@ Options:
   --create-pod
       Deploy into a dedicated Kata CSV2 Pod named by TEELLM_POD_NAME, creating it if it is absent,
       instead of into TARGET_POD. The Pod exists to give teellm-service a real /dev/csv-guest:
-      without that device it serves mock evidence, and TAA rejects every handshake with
-      "untrusted HRK certificate". An existing Pod is reused and never re-created -- a second Pod
+      without that device it serves mock evidence, and TAA cannot tell that evidence apart from
+      hardware at the handshake. An existing Pod is reused and never re-created -- a second Pod
       would be a second confidential VM.
       If TARGET_POD is set explicitly it must equal TEELLM_POD_NAME, or the run is refused.
   --port <port> (or --port=<port>)
@@ -1888,11 +1857,6 @@ verify_ollama_binary "$OLLAMA_LOCAL_DIR/ollama"
 model_meta="$(resolve_ollama_model_artifacts "$OLLAMA_LOCAL_DIR" "$OLLAMA_MODEL" "json")"
 model_mb="$(python3 -c 'import sys, json; print(json.loads(sys.argv[1])["weight_mb"])' "$model_meta" 2>/dev/null || echo "unknown")"
 
-# Certificates resolution
-cert_pair=($(resolve_certificates))
-LOCAL_HRK_CERT="${cert_pair[0]:-}"
-LOCAL_HSK_CERT="${cert_pair[1]:-}"
-
 # Build teellm-service locally
 build_local_binary() {
   step "building teellm-service from ./teellm/cmd/teellm-service"
@@ -2086,15 +2050,15 @@ deploy_teellm() {
   sync_ollama_to_remote_if_missing
   copy_ollama_to_remote_pod
 
-  # Deploy certificates and binary to remote host then into pod
+  # Deploy the binary and configuration to the remote host, then into the Pod
   step "preparing and uploading configuration and binary"
   local cfg_template="${TEELLM_CONFIG_PATH:-$TEELLM_DIR/configs/teellm-production.json}"
   local tmp_cfg
   tmp_cfg="$(mktemp /tmp/teellm_cfg.XXXXXX)"
   TEMP_CONFIG_FILE="$tmp_cfg"
-  prepare_config "$cfg_template" "$tmp_cfg" "$OLLAMA_MODEL" "$TEELLM_PORT" "$CON_WORKDIR/certs/hrk.cert" "$CON_WORKDIR/certs/hsk_cek.cert"
+  prepare_config "$cfg_template" "$tmp_cfg" "$OLLAMA_MODEL" "$TEELLM_PORT"
 
-  remote_ssh "mkdir -p '$REMOTE_DIR/configs' '$REMOTE_DIR/certs'"
+  remote_ssh "mkdir -p '$REMOTE_DIR/configs'"
   sshpass -p "$PASSWORD" scp "${SSH_OPTS[@]}" "$TEELLM_DIR/bin/teellm-service" "${REMOTE_USER}@${REMOTE_HOST}:$REMOTE_DIR/teellm-service.new"
   sshpass -p "$PASSWORD" scp "${SSH_OPTS[@]}" "$TEELLM_SUPERVISOR_SCRIPT" "${REMOTE_USER}@${REMOTE_HOST}:$REMOTE_DIR/teellm-supervisor.sh"
   sshpass -p "$PASSWORD" scp "${SSH_OPTS[@]}" "$tmp_cfg" "${REMOTE_USER}@${REMOTE_HOST}:$REMOTE_DIR/configs/teellm-production.json"
@@ -2104,33 +2068,17 @@ deploy_teellm() {
   rm -f "$tmp_cfg"
   TEMP_CONFIG_FILE=""
 
-  if [[ -n "$LOCAL_HRK_CERT" && -n "$LOCAL_HSK_CERT" ]]; then
-    sshpass -p "$PASSWORD" scp "${SSH_OPTS[@]}" "$LOCAL_HRK_CERT" "${REMOTE_USER}@${REMOTE_HOST}:$REMOTE_DIR/certs/hrk.cert"
-    sshpass -p "$PASSWORD" scp "${SSH_OPTS[@]}" "$LOCAL_HSK_CERT" "${REMOTE_USER}@${REMOTE_HOST}:$REMOTE_DIR/certs/hsk_cek.cert"
-  elif [[ "$CREATE_POD" == true ]]; then
-    # Fatal on this path only. The certificates are what binds the report's SM3 public key to the
-    # trust anchor, so serving without them fails every handshake -- and a deployment that reports
-    # success while doing that is worse than one that refuses to run.
-    err "no Hygon attestation certificates found, and the TEE-LLM Pod cannot serve without them"
-    detail "Expected $PROJECT_DIR/deploy/certs/hrk.cert and hsk_cek.cert (ATT_HRK_SOURCE / ATT_HSK_SOURCE override the location)."
-    exit 1
-  fi
-
   remote_ssh "mv '$REMOTE_DIR/teellm-service.new' '$REMOTE_DIR/teellm-service' && chmod +x '$REMOTE_DIR/teellm-service'"
 
   # Copy into remote pod
-  step "installing binary, certificates and configuration into remote pod"
-  remote_ssh "$(container_exec) sh -lc 'mkdir -p \"$CON_WORKDIR/certs\" \"$CON_WORKDIR/configs\"'"
+  step "installing binary and configuration into remote pod"
+  remote_ssh "$(container_exec) sh -lc 'mkdir -p \"$CON_WORKDIR/configs\"'"
   remote_ssh "$(container_cp "$REMOTE_DIR/teellm-service" "$CON_WORKDIR/teellm-service")"
   remote_ssh "$(container_cp "$REMOTE_DIR/configs/teellm-production.json" "$CON_WORKDIR/configs/teellm-production.json")"
   if [[ -f "$TEELLM_DIR/configs/models.json" ]]; then
     remote_ssh "$(container_cp "$REMOTE_DIR/configs/models.json" "$CON_WORKDIR/configs/models.json")"
   fi
   remote_ssh "$(container_exec) sh -lc 'chmod +x \"$CON_WORKDIR/teellm-service\"'"
-  if [[ -n "$LOCAL_HRK_CERT" && -n "$LOCAL_HSK_CERT" ]]; then
-    remote_ssh "$(container_cp "$REMOTE_DIR/certs/hrk.cert" "$CON_WORKDIR/certs/hrk.cert")"
-    remote_ssh "$(container_cp "$REMOTE_DIR/certs/hsk_cek.cert" "$CON_WORKDIR/certs/hsk_cek.cert")"
-  fi
 
   # The supervisor is the Pod's PID 1 and the only thing that starts or restarts a daemon. It is
   # moved into place rather than written in place: `mv` swaps the inode, while overwriting a
@@ -2219,8 +2167,10 @@ deploy_teellm() {
 
   # The probe above cannot vouch for the attestation: its client is built with
   # InsecureSkipAttestationVerify set (see runProbe in teellm/cmd/teellm-service), so it passes
-  # just as well against a mock report. Which provider the server picked is only in its log, and a
-  # mock provider is exactly the failure that reaches production as "untrusted HRK certificate".
+  # just as well against a mock report. Which provider the server picked is only in its log, and
+  # a mock provider is the failure this gate exists to catch: TAA verifies only the report's PEK
+  # signature, which the mock authority also produces validly, and with measurement unset nothing
+  # downstream rejects it.
   if [[ "$CREATE_POD" == true ]]; then
     step "confirming the service serves hardware evidence, not mock evidence"
     local provider_log
@@ -2228,8 +2178,8 @@ deploy_teellm() {
     if ! grep -q "using Hygon hardware evidence provider" <<<"$provider_log"; then
       err "teellm-service in '$TARGET_POD' did not report the Hygon hardware evidence provider"
       remote_ssh "$(container_exec) tail -n 30 '$TEELLM_LOG_FILE'" || true
-      detail "TAA will reject a mock report with 'untrusted HRK certificate', so this deployment"
-      detail "would fail code audit. Check that the Pod still has /dev/csv-guest."
+      detail "TAA cannot distinguish a mock report from hardware at the handshake, so this"
+      detail "deployment would serve non-attested evidence. Check that the Pod still has /dev/csv-guest."
       exit 1
     fi
     if grep -q "falling back to mock attestation provider" <<<"$provider_log"; then

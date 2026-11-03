@@ -11,7 +11,9 @@
 #     host-resident encrypted memory, and a new IP that TAA's endpoint no longer points at);
 #   * a Pod without the device must fail the deploy, since the readiness probe cannot tell the
 #     difference (its client skips attestation verification);
-#   * a deployment with no attestation certificates must fail rather than serve nothing;
+#   * the rendered config must carry no Hygon certificate paths, and no certificate may be
+#     copied to the remote host: TAA checks only the report's PEK signature, and the service
+#     errors out if it is told to read a chain that is not there;
 #   * an invocation with no action keyword must reach that same Pod path, since the target keyword
 #     that used to say so is gone -- a bare run is now the only way to start a deployment.
 #
@@ -148,7 +150,7 @@ case "$verb" in
       *"tar -xf"*) cat >/dev/null; exit 0 ;;
       *"/api/tags"*) echo '{"models":[{"name":"qwen2.5-coder:0.5b"}]}'; exit 0 ;;
       *"-probe"*) exit 0 ;;
-      *"tail -n"*) echo "2026-10-15T10:00:00Z using Hygon hardware evidence provider (hrk=/opt/teellm/certs/hrk.cert)"; exit 0 ;;
+      *"tail -n"*) echo "2026-10-15T10:00:00Z using Hygon hardware evidence provider"; exit 0 ;;
       *) exit 0 ;;
     esac
     ;;
@@ -165,7 +167,7 @@ DEFAULT_POD_NAME="taa-env-slim-v2-20260916-b2038037072e1052-54f554445c-n2pnv"
 
 REPO="$TMP_DIR/repo"
 OLLAMA_DIR="$REPO/teellm/models/ollama"
-mkdir -p "$REPO/deploy/manifest/k8s" "$REPO/deploy/certs" \
+mkdir -p "$REPO/deploy/manifest/k8s" \
          "$REPO/teellm/deploy" "$REPO/teellm/configs" "$REPO/teellm/cmd/teellm-service" \
          "$OLLAMA_DIR/lib/ollama" \
          "$OLLAMA_DIR/models/models/blobs" \
@@ -175,8 +177,6 @@ cp "$ROOT_DIR/deploy-llm.sh" "$REPO/deploy-llm.sh"
 cp "$ROOT_DIR/deploy/manifest/k8s/teellm-pod.yaml.tmpl" "$REPO/deploy/manifest/k8s/"
 cp "$ROOT_DIR/deploy/teellm-supervisor.sh" "$REPO/deploy/teellm-supervisor.sh"
 chmod +x "$REPO/deploy/teellm-supervisor.sh"
-printf 'hrk\n' > "$REPO/deploy/certs/hrk.cert"
-printf 'hsk\n' > "$REPO/deploy/certs/hsk_cek.cert"
 
 # The teellm module the deployment builds from. A stub keeps the test independent of the
 # submodule, which the deploy script otherwise expects to be checked out next to itself.
@@ -424,14 +424,20 @@ set -e
 grep -q "addresses the TEE-LLM Pod" <<<"$output" || fail "the refusal does not explain the conflict"
 [[ "$(kubectl_lines)" == "$before" ]] || fail "the refusal happened only after touching the cluster"
 
-# ── 5. Negative control: no attestation certificates on the create path ──────
+# ── 5. The rendered config and the transfers carry no certificates ───────────
+# TAA verifies only the report's embedded PEK signature, so the service must not
+# be told to read a vendor chain: a path left in the config makes the hardware
+# provider fail the handshake when the file is absent, and a copy the peer never
+# needs still has to be shipped.
 
-mv "$REPO/deploy/certs" "$TMP_DIR/certs-hidden"
-run_deploy --create-pod start --model qwen2.5-coder:0.5b
-[[ $status -ne 0 ]] || fail "a deployment without attestation certificates reported success"
-grep -q "no Hygon attestation certificates found" <<<"$output" \
-  || fail "the missing certificates were not named in the error"
-mv "$TMP_DIR/certs-hidden" "$REPO/deploy/certs"
+REMOTE_CFG="$MOCK_REMOTE_ROOT/root/teellm/configs/teellm-production.json"
+[[ -f "$REMOTE_CFG" ]] || fail "no rendered config reached the remote host"
+if grep -qE '"(hrkCertPath|hskCekCertPath)"' "$REMOTE_CFG"; then
+  fail "the rendered config still names Hygon certificate paths"
+fi
+if grep -q 'certs/' "$MOCK_LOG"; then
+  fail "a Hygon certificate was still copied to the remote host or the Pod"
+fi
 
 # ── 6. stop: the daemons are paused, not resurrected ─────────────────────────
 # A supervisor that owns the daemons would restart them within the restart delay, so a stop that

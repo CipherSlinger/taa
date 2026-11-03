@@ -189,7 +189,7 @@ flowchart TB
 │   ├── taa-fhe-supervisor.sh         # FHE + TAA combined container entrypoint (FHE priority)
 │   ├── teellm-supervisor.sh          # TEE-LLM Pod supervisor (teellm-service + ollama)
 │   ├── base/                         # Base image archives (inputs: taa-env, jupyter-nologin-full)
-│   ├── certs/                        # Hygon CSV certificate chain for the TEE-LLM gateway (hrk.cert, hsk_cek.cert)
+│   ├── certs/                        # Hygon CSV certificate chain fixtures (hrk.cert, hsk_cek.cert) for pkg/csvattest tests and the csv2-vm chain smoke run
 │   ├── out/                          # Packaged image archives produced by the deploy scripts
 │   └── manifest/docker/              # Base environment Dockerfiles & build assets
 ├── models/                           # Bundled offline models & runtimes (e.g., Ollama / Qwen)

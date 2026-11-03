@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Builds the dedicated TEE-LLM image: a TAA-free base plus teellm-service, the Pod supervisor,
-# the attestation certificates and the ollama runtime with one model baked in.
+# and the ollama runtime with one model baked in.
 #
 # Why this exists: the TEE-LLM Pod runs on a Kata CSV2 guest whose container rootfs upperdir is a
 # tmpfs inside the guest. Anything deploy-llm.sh copies in at deploy time -- the service binary,
@@ -104,8 +104,6 @@ require_file "$TEELLM_DIR/bin/teellm-service"
 require_file "$PROJECT_DIR/deploy/teellm-supervisor.sh"
 require_file "$TEELLM_DIR/configs/teellm-production.json"
 require_file "$TEELLM_DIR/configs/models.json"
-require_file "$PROJECT_DIR/deploy/certs/hrk.cert"
-require_file "$PROJECT_DIR/deploy/certs/hsk_cek.cert"
 require_file "$OLLAMA_LOCAL_DIR/ollama"
 require_file "$OLLAMA_LOCAL_DIR/start-ollama.sh"
 require_file "$OLLAMA_LOCAL_DIR/$manifest_rel"
@@ -179,15 +177,13 @@ info "payload: $(wc -l < "$file_list") files, ${payload_mb}MB"
 step "starting the builder container"
 docker rm -f "$BUILDER_CONTAINER" >/dev/null 2>&1 || true
 docker run -d --name "$BUILDER_CONTAINER" --user root --entrypoint bash "$BASE_IMAGE" -c 'sleep infinity' >/dev/null
-docker exec -i "$BUILDER_CONTAINER" sh -c 'mkdir -p /opt/teellm/configs /opt/teellm/certs /opt/teellm/ollama'
+docker exec -i "$BUILDER_CONTAINER" sh -c 'mkdir -p /opt/teellm/configs /opt/teellm/ollama'
 
-step "copying teellm-service, supervisor, configs and certificates"
+step "copying teellm-service, supervisor and configs"
 docker cp "$TEELLM_DIR/bin/teellm-service"            "$BUILDER_CONTAINER:/opt/teellm/teellm-service"
 docker cp "$PROJECT_DIR/deploy/teellm-supervisor.sh"  "$BUILDER_CONTAINER:/opt/teellm/teellm-supervisor.sh"
 docker cp "$TEELLM_DIR/configs/teellm-production.json" "$BUILDER_CONTAINER:/opt/teellm/configs/teellm-production.json"
 docker cp "$TEELLM_DIR/configs/models.json"           "$BUILDER_CONTAINER:/opt/teellm/configs/models.json"
-docker cp "$PROJECT_DIR/deploy/certs/hrk.cert"        "$BUILDER_CONTAINER:/opt/teellm/certs/hrk.cert"
-docker cp "$PROJECT_DIR/deploy/certs/hsk_cek.cert"    "$BUILDER_CONTAINER:/opt/teellm/certs/hsk_cek.cert"
 
 step "streaming the ollama runtime and model into the image (${payload_mb}MB)"
 tar -C "$OLLAMA_LOCAL_DIR" -cf - -T "$file_list" | docker exec -i "$BUILDER_CONTAINER" tar -xf - -C /opt/teellm/ollama
@@ -219,7 +215,6 @@ docker exec -i -e MODEL="$OLLAMA_MODEL" "$BUILDER_CONTAINER" sh -c '
 set -e
 for p in /opt/teellm/teellm-service /opt/teellm/teellm-supervisor.sh \
          /opt/teellm/configs/teellm-production.json /opt/teellm/configs/models.json \
-         /opt/teellm/certs/hrk.cert /opt/teellm/certs/hsk_cek.cert \
          /opt/teellm/ollama/ollama /opt/teellm/ollama/start-ollama.sh \
          /opt/teellm/ollama/lib/ollama/libllama-server-impl.so \
          /opt/teellm/ollama/lib/ollama/libllama-common.so.0 \
