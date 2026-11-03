@@ -196,19 +196,21 @@ DNS label（≤63 字符）、命名空间与 RuntimeClass 存在，任一不满
 先花几十分钟编译推送镜像。镜像选定之后再 best-effort 查一次 registry 的 `tags/list`
 （这次运行自己构建并推送过就跳过）；查不到只告警。
 
-**建之前先算内存**：`VM = kata default_memory + TEELLM_POD_MEMORY`，guest 可写层上限是可见内存
-的一半，镜像解包体积要放得下（另加 15% 可写余量），VM 也不能超过宿主 available。不满足直接
-拒绝，`TEELLM_POD_FORCE_MEMORY=true` 是显式逃生口，`TEELLM_POD_IMAGE_SIZE_GIB` 可指定镜像体积。
-放得下不等于跑得起来，所以再报一项业务内存余量：`可见 − 解包 − 256` 与 cgroup 上限取小，
-低于 1024MiB 告警（通常表现为 Ready 之后 llama-server 被 cgroup OOM 杀掉）。
+**连真实平台还是 platform-mock**：teellm-service 的 `platform.addr` 决定它向谁注册、发心跳和推日志。
+一个开关管三件事，每次部署都会重写进 Pod 内的 `configs/teellm-production.json` 并重启服务生效：
 
-**Pod 规格照参考脚本**：CPU 2、memory 16Gi（requests = limits，机密内存开机即常驻宿主）、
-`restartPolicy: Always`、`terminationGracePeriodSeconds: 30`，`imagePullPolicy` 按路径决定
-（自构建就 Always，显式镜像就 IfNotPresent）。容器 `privileged`、
-`allowPrivilegeEscalation: true`、`runAsUser: 0`、`runAsNonRoot: false`。启动命令是
-`/bin/bash -c`：先从 `/proc/misc` 读出 csv-guest 的次设备号并 `mknod -m 666 /dev/csv-guest c 10`，
-再 `exec` 交棒给 `teellm-supervisor.sh` —— 容器生命周期就是 supervisor 的生命周期，
-重启由 `restartPolicy` 负责。
+```bash
+./deploy-llm.sh start                              # 默认：连 platform-mock
+TEELLM_PLATFORM_ADDR=http://10.0.0.5:8080 ./deploy-llm.sh start   # 连真实平台
+./deploy-llm.sh start --platform mock              # 显式回到 mock
+./deploy-llm.sh start --platform off               # 关闭全部对外上报
+```
+
+取值：真实地址原样使用；`mock` 等于 `TEELLM_PLATFORM_MOCK_ADDR`（默认
+`http://172.16.10.181:18081`）；`off` / `none` / 空值表示不注册、不发心跳、不推日志。
+默认之所以指向 mock：无人值守的部署不该写进生产平台的状态。改地址不需要重建镜像或重建 Pod，
+`start` 会把新配置送进 Pod；部署输出里会打印 `platform reporting: <addr|disabled>`，
+Pod 日志里对应 `platform reporting enabled to <addr>` / `platform reporting disabled`。
 
 **删除后查残留**：`pod-down` 提交 `--grace-period=30 --wait=false`，轮询 180s 后必要时强制删除，
 再比较三个数 —— 集群里的 kata Pod 数、`/run/vc/sbs` 目录数、`qemu-system` 进程数。不等就打印
@@ -217,6 +219,7 @@ DNS label（≤63 字符）、命名空间与 RuntimeClass 存在，任一不满
 **相关环境变量**：`TEELLM_POD_IMAGE`（显式指定则不构建也不解析）、
 `TEELLM_BUILD_POD_IMAGE=false`（回到"取 registry 最新日期 tag"的旧行为）、
 `TEELLM_POD_IMAGE_REPO` / `TEELLM_IMAGE_REGISTRY` / `TEELLM_POD_PULL_POLICY`、
+`TEELLM_PLATFORM_ADDR`（平台地址 / `mock` / `off`）、`TEELLM_PLATFORM_MOCK_ADDR`、
 构建用的 `TEELLM_IMAGE_BASE` / `TEELLM_IMAGE_BASE_ARCHIVE` / `TEELLM_IMAGE_KEEP_BUILDER`。
 `TEELLM_IMAGE_KEEP_BUILDER=true` 会把构建容器留下，便于查 payload 为什么没打进去。
 

@@ -580,6 +580,15 @@ Inside Docker containers, TAA runs under the supervision of `deploy/taa-supervis
 > change the Pod IP that TAA's `llm.endpoint` points at. To update an existing Pod instead, run
 > `./deploy-llm.sh start` (or `--pod <name>`), which never creates or deletes a Pod.
 
+> **The platform reporting target is one switch.** `teellm-service` registers with, heartbeats to
+> and pushes logs to `platform.addr`. `deploy-llm.sh` rewrites it on every deployment, so switching
+> needs neither a new image nor a new Pod: the default is the platform-mock
+> (`TEELLM_PLATFORM_MOCK_ADDR`, `http://172.16.10.181:18081`), `--platform <url>` /
+> `TEELLM_PLATFORM_ADDR=<url>` points at the real platform, `--platform mock` names the mock
+> explicitly, and `--platform off` (or an explicitly empty address) disables registration,
+> heartbeats and log pushes. The deployment prints `platform reporting: <addr|disabled>` and the
+> service logs the same fact at startup.
+
 > **Remote mode can create its own Pod.** When `TARGET_POD` is unset, `deploy.sh` creates a
 > dedicated Kata CSV2 Pod on the remote host (`TAA_POD_NAME`, default `taa-deploy`), waits for it
 > to become Ready, and reuses it on later runs; `stop` deletes that Pod, taking its guest writable

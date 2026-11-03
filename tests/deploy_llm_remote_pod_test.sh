@@ -686,6 +686,46 @@ if grep -q 'certs/' "$MOCK_LOG"; then
   fail "a Hygon certificate was still copied to the remote host or the Pod"
 fi
 
+# ── 5b. The platform target is one switch, and an explicit blank disables it ─
+# Debugging alternates between the mock and a real platform, so the address has to be settable
+# without touching the image or the Pod: the rendered config is rewritten on every deployment.
+# The empty case is the one that used to be unreachable -- `${VAR:-default}` turns an explicit
+# blank back into the mock, which makes "off" impossible to ask for.
+
+platform_addr_of() {
+  python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["platform"]["addr"])' "$REMOTE_CFG"
+}
+
+[[ "$(platform_addr_of)" == "http://172.16.10.181:18081" ]] \
+  || fail "an unattended deployment does not report to the platform-mock (got '$(platform_addr_of)')"
+
+RUN_ENV=(TEELLM_PLATFORM_ADDR=http://10.1.2.3:9000)
+run_deploy --pod "$COPY_POD_NAME"
+RUN_ENV=()
+[[ $status -eq 0 ]] || fail "a deployment with an explicit platform address exited $status"
+[[ "$(platform_addr_of)" == "http://10.1.2.3:9000" ]] \
+  || fail "TEELLM_PLATFORM_ADDR did not reach the rendered config (got '$(platform_addr_of)')"
+grep -q "platform reporting: http://10.1.2.3:9000" <<<"$output" \
+  || fail "the deployment did not say which platform it reports to"
+
+RUN_ENV=(TEELLM_PLATFORM_ADDR=mock)
+run_deploy --pod "$COPY_POD_NAME"
+RUN_ENV=()
+[[ "$(platform_addr_of)" == "http://172.16.10.181:18081" ]] \
+  || fail "'mock' did not resolve to TEELLM_PLATFORM_MOCK_ADDR"
+
+run_deploy --pod "$COPY_POD_NAME" --platform off
+[[ "$(platform_addr_of)" == "" ]] \
+  || fail "--platform off left a platform address in the config (got '$(platform_addr_of)')"
+grep -q "platform reporting: disabled" <<<"$output" \
+  || fail "the deployment did not report that platform reporting is disabled"
+
+RUN_ENV=(TEELLM_PLATFORM_ADDR=)
+run_deploy --pod "$COPY_POD_NAME"
+RUN_ENV=()
+[[ "$(platform_addr_of)" == "" ]] \
+  || fail "an explicitly empty TEELLM_PLATFORM_ADDR fell back to the mock instead of disabling reporting"
+
 # ── 6. stop: the daemons are paused, not resurrected ─────────────────────────
 # A supervisor that owns the daemons would restart them within the restart delay, so a stop that
 # only killed processes would quietly do nothing.
