@@ -301,12 +301,20 @@ func instanceLess(a, b *instanceStores) bool {
 	return a.dockerID < b.dockerID
 }
 
+// defaultBundle returns the bundle console endpoints treat as the default. Real
+// instances outrank the empty-id legacy bundle: the legacy bundle is only a
+// fallback for callbacks that arrive before any registration.
 func (m *instanceManager) defaultBundle() *instanceStores {
 	bundles := m.list()
-	if len(bundles) == 0 {
-		return nil
+	for _, b := range bundles {
+		if b.dockerID != "" {
+			return b
+		}
 	}
-	return bundles[0]
+	if len(bundles) > 0 {
+		return bundles[0]
+	}
+	return nil
 }
 
 func (m *instanceManager) defaultID() string {
@@ -369,6 +377,18 @@ func (m *instanceManager) resolveLenient(r *http.Request) (*instanceStores, erro
 	return b, err
 }
 
+// realInstanceCount counts registered instances; the empty-id legacy bundle is
+// not an instance for precedence purposes.
+func (m *instanceManager) realInstanceCount() int {
+	n := 0
+	for _, b := range m.list() {
+		if b.dockerID != "" {
+			n++
+		}
+	}
+	return n
+}
+
 // targetFor resolves the outbound address for one instance.
 //
 // Precedence, in order: a single instance with -taa-target keeps the old static
@@ -388,7 +408,7 @@ func (m *instanceManager) targetFor(requestedID string) (string, string, error) 
 
 	if b != nil {
 		id := b.dockerID
-		if len(m.list()) <= 1 && m.staticTarget != "" {
+		if m.realInstanceCount() <= 1 && m.staticTarget != "" {
 			return id, m.staticTarget, nil
 		}
 		if target := b.target(); target != "" {

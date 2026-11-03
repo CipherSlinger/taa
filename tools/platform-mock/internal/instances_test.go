@@ -127,6 +127,26 @@ func TestInstanceManagerResolveRejectsUnknownDockerID(t *testing.T) {
 	}
 }
 
+func TestStaticTargetWinsWhileOnlyOneRealInstanceExists(t *testing.T) {
+	mgr := newInstanceManager(t.TempDir(), Config{TAATarget: "http://127.0.0.1:6001"})
+
+	// A console probe before registration creates the legacy bundle.
+	if _, err := mgr.resolveLenient(httptest.NewRequest("GET", "/api/taa-target", nil)); err != nil {
+		t.Fatalf("resolveLenient: %v", err)
+	}
+	b := mgr.getOrCreate("docker-a")
+	b.setTarget("http://10.244.0.7:6001")
+
+	if id, target, err := mgr.targetFor(""); err != nil || id != "docker-a" || target != "http://127.0.0.1:6001" {
+		t.Fatalf("targetFor = (%q, %q, %v), want (docker-a, http://127.0.0.1:6001, nil)", id, target, err)
+	}
+
+	mgr.getOrCreate("docker-b").setTarget("http://10.244.0.8:6001")
+	if id, target, err := mgr.targetFor(""); err != nil || id != "docker-a" || target != "http://10.244.0.7:6001" {
+		t.Fatalf("with two instances targetFor = (%q, %q, %v), want docker-a's derived target", id, target, err)
+	}
+}
+
 func TestInstanceForWriteNeverCreatesDirectoriesForUnknownIDs(t *testing.T) {
 	mgr := newInstanceManager(t.TempDir(), Config{})
 	got := mgr.instanceForWrite("never-registered")
