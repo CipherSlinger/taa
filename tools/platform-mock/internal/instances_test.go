@@ -140,6 +140,40 @@ func TestInstanceManagerRecoversInterruptedMigration(t *testing.T) {
 	}
 }
 
+func TestInstanceManagerRecoversMigrationFromGlobMetaStateDir(t *testing.T) {
+	// A state dir with glob metacharacters used to make filepath.Glob return
+	// ErrBadPattern, skipping recovery entirely and reopening the crash window.
+	root := filepath.Join(t.TempDir(), "state[1]")
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatalf("create state dir: %v", err)
+	}
+	staging := filepath.Join(root, ".instances-migrating-crashed")
+	stagedDir := filepath.Join(staging, instanceDirName("legacy-docker"))
+	if err := os.MkdirAll(stagedDir, 0o755); err != nil {
+		t.Fatalf("create staging dir: %v", err)
+	}
+	if err := saveJSONFile(filepath.Join(stagedDir, "register-state.json"), registerState{
+		Received:   true,
+		Accepted:   true,
+		DockerID:   "legacy-docker",
+		ReceivedAt: "2026-01-01T00:00:00Z",
+	}); err != nil {
+		t.Fatalf("write staged register state: %v", err)
+	}
+
+	mgr := newInstanceManager(root, Config{})
+	b := mgr.lookup("legacy-docker")
+	if b == nil {
+		t.Fatal("recovery was skipped for a state dir containing glob metacharacters")
+	}
+	if !b.register.get().Accepted {
+		t.Fatal("recovered register state lost its accepted flag")
+	}
+	if _, err := os.Stat(staging); !os.IsNotExist(err) {
+		t.Fatal("the recovered staging directory still exists")
+	}
+}
+
 func TestInstanceManagerDoesNotMigrateOverExistingInstancesDir(t *testing.T) {
 	root := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(root, instancesDirName, "i-existing"), 0o755); err != nil {

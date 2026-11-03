@@ -274,15 +274,20 @@ func (m *instanceManager) migrateLegacy() {
 // Without this recovery the next start would find no legacy files in the root
 // and silently create an empty instance store.
 func (m *instanceManager) recoverInterruptedMigration() {
-	stagingDirs, err := filepath.Glob(filepath.Join(m.root, ".instances-migrating-*"))
+	entries, err := os.ReadDir(m.root)
 	if err != nil {
-		log.Printf("warning: scan interrupted migration staging directories under %s failed: %v", m.root, err)
+		log.Printf("warning: scan %s for interrupted migration staging directories failed: %v", m.root, err)
 		return
 	}
-	for _, tmp := range stagingDirs {
-		if info, err := os.Stat(tmp); err != nil || !info.IsDir() {
+	const stagingPrefix = ".instances-migrating-"
+	for _, entry := range entries {
+		// A plain ReadDir scan, not filepath.Glob: the state directory may
+		// contain glob metacharacters, which would make Glob fail with
+		// ErrBadPattern and silently reopen the crash window.
+		if !entry.IsDir() || !strings.HasPrefix(entry.Name(), stagingPrefix) {
 			continue
 		}
+		tmp := filepath.Join(m.root, entry.Name())
 		log.Printf("warning: found an interrupted legacy state migration at %s; restoring its files before migrating", tmp)
 		unrestored := false
 		walkErr := filepath.Walk(tmp, func(path string, info os.FileInfo, walkErr error) error {
