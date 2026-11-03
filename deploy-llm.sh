@@ -254,13 +254,13 @@ TEELLM_PORT="${TEELLM_PORT:-8443}"
 # Platform the instance registers with, heartbeats to and pushes logs to.
 #
 # teellm-service resolves the address as: PLATFORM_IP in the environment first, platform.addr in
-# the config file second. The config that ships with teellm names the platform-mock, so a Pod that
-# injects no PLATFORM_IP reports to the mock and runs in debug mode without being told to.
+# the config file second. The config templates that ship with teellm name the platform-mock, so a
+# Pod that injects no PLATFORM_IP reports to the mock and runs in debug mode without being told to.
 #
-# This switch decides what the rendered config file says:
-#   (unset) | config | mock     leave the shipped value alone (the platform-mock)
+# This variable decides what the rendered config file says:
+#   (unset) | config | mock     leave the template's value alone (the platform-mock)
 #   off | none | disabled | ""  rewrite it empty: no registration, heartbeats or log pushes
-#   http://host:port            that platform; a bare host:port gets the http:// scheme
+#   anything else               that address, as written
 #
 # `-` rather than `:-` in the default: an explicitly empty value means "off", which `:-` would
 # silently replace with `config`.
@@ -1568,16 +1568,17 @@ prepare_config() {
   local output_file="$2"
   local model="$3"
   local port="$4"
-  local platform_mode="${5:-config}"
-  local platform_addr="${6:-}"
+  # `-` rather than `:-`: an explicitly empty value means "clear the address", not "keep the
+  # template's", and `:-` would turn it back into the default.
+  local platform="${5-config}"
 
   require_file "teellm config template" "$template"
   require_command python3
 
-  python3 - "$template" "$output_file" "$model" "$port" "$platform_mode" "$platform_addr" <<'PY'
+  python3 - "$template" "$output_file" "$model" "$port" "$platform" <<'PY'
 import json, sys
 
-template_path, output_path, model, port, platform_mode, platform_addr = sys.argv[1:7]
+template_path, output_path, model, port, platform = sys.argv[1:6]
 with open(template_path, "r", encoding="utf-8") as f:
     cfg = json.load(f)
 
@@ -1585,17 +1586,22 @@ if model:
     cfg.setdefault("backend", {})["defaultModel"] = model
 if port:
     cfg.setdefault("server", {})["addr"] = f":{port}"
-# "config" leaves the template's value alone: the shipped config names the platform-mock, so an
-# operator who says nothing gets debug mode. "off" writes an empty addr, which disables
-# registration, heartbeats and log pushes in teellm-service. "addr" writes what was asked for.
-if platform_mode == "off":
+# The same words teellm-service accepts for PLATFORM_IP: an off word (or a blank) clears the
+# address, "config"/"mock" leaves the template's value alone -- which is what makes the shipped
+# mock the debug default -- and anything else is written as given. The service adds the http://
+# scheme to a bare host:port, so that rule is not repeated here.
+platform = platform.strip()
+if platform.lower() in ("", "off", "none", "disabled"):
     cfg.setdefault("platform", {})["addr"] = ""
-elif platform_mode == "addr":
-    cfg.setdefault("platform", {})["addr"] = platform_addr
+elif platform.lower() not in ("config", "mock"):
+    cfg.setdefault("platform", {})["addr"] = platform
 
 with open(output_path, "w", encoding="utf-8") as f:
     json.dump(cfg, f, indent=2, ensure_ascii=False)
     f.write("\n")
+
+# The caller captures this: it is the address the rendered config ended up with.
+print(cfg.get("platform", {}).get("addr", ""))
 PY
 }
 
@@ -2281,8 +2287,8 @@ Options:
   --platform <value> (or --platform=<value>)
       Which platform teellm-service registers with, heartbeats to and pushes logs to. Accepts an
       address, 'config'/'mock' (the default: keep the address the config template already names,
-      which is the platform-mock) or 'off'. A bare host:port gets the http:// scheme, as it does
-      for PLATFORM_IP. An address is written into the Pod's config on every
+      which is the platform-mock) or 'off'. A bare host:port is accepted; teellm-service adds the
+      scheme at startup. An address is written into the Pod's config on every
       deployment, so switching does not need a new image or a new Pod. teellm-service itself
       prefers PLATFORM_IP in its environment over the config file; a script-created Pod injects
       none, so it follows the config.
@@ -2571,24 +2577,6 @@ if [[ -n "$CLI_PLATFORM" ]]; then
   TEELLM_PLATFORM_ADDR="$CLI_PLATFORM"
 fi
 
-# One place turns the words into a mode, so the three ways in (default, environment, flag) all
-# behave the same. Anything unrecognised is an address and is passed through untouched.
-case "${TEELLM_PLATFORM_ADDR,,}" in
-  ""|off|none|disabled) TEELLM_PLATFORM_MODE="off" ;;
-  config|mock|default)  TEELLM_PLATFORM_MODE="config" ;;
-  *)
-    # A bare host:port is accepted and gets the scheme here, the same way teellm-service treats
-    # PLATFORM_IP: the two paths must not disagree about what a valid address looks like.
-    TEELLM_PLATFORM_MODE="addr"
-    if [[ "$TEELLM_PLATFORM_ADDR" != *"://"* ]]; then
-      TEELLM_PLATFORM_ADDR="http://$TEELLM_PLATFORM_ADDR"
-    fi
-    ;;
-esac
-# What the rendered config ended up saying, so the closing summary reports the address that is
-# actually in effect rather than the word the operator typed.
-TEELLM_PLATFORM_EFFECTIVE=""
-
 cd "$PROJECT_DIR"
 
 # ── Probe Action Handler ──────────────────────────────────────
@@ -2854,16 +2842,16 @@ deploy_teellm() {
   local tmp_cfg
   tmp_cfg="$(mktemp /tmp/teellm_cfg.XXXXXX)"
   TEMP_CONFIG_FILE="$tmp_cfg"
-  prepare_config "$cfg_template" "$tmp_cfg" "$OLLAMA_MODEL" "$TEELLM_PORT" "$TEELLM_PLATFORM_MODE" "$TEELLM_PLATFORM_ADDR"
-  # Read back rather than echo the input: with mode "config" the address comes from the template,
-  # and the summary should name the address that is actually in effect.
-  TEELLM_PLATFORM_EFFECTIVE="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("platform", {}).get("addr", ""))' "$tmp_cfg")"
-  if [[ -n "$TEELLM_PLATFORM_EFFECTIVE" ]]; then
-    if [[ "$TEELLM_PLATFORM_MODE" == "config" ]]; then
-      info "platform reporting: $TEELLM_PLATFORM_EFFECTIVE (from the config template; PLATFORM_IP in the Pod overrides it)"
-    else
-      info "platform reporting: $TEELLM_PLATFORM_EFFECTIVE"
-    fi
+  # prepare_config prints the address the rendered config ended up with, so "what is in effect"
+  # is read from the file it wrote rather than re-derived from the word the operator typed.
+  local platform_effective platform_note
+  platform_effective="$(prepare_config "$cfg_template" "$tmp_cfg" "$OLLAMA_MODEL" "$TEELLM_PORT" "$TEELLM_PLATFORM_ADDR")"
+  platform_note=""
+  case "${TEELLM_PLATFORM_ADDR,,}" in
+    config|mock) platform_note=" (from the config template; PLATFORM_IP in the Pod overrides it)" ;;
+  esac
+  if [[ -n "$platform_effective" ]]; then
+    info "platform reporting: ${platform_effective}${platform_note}"
   else
     info "platform reporting: disabled (no registration, heartbeats or log pushes)"
   fi
@@ -3007,7 +2995,7 @@ deploy_teellm() {
   echo -e "    ${MUTED}↳ Remote Host:${NC} ${REMOTE_USER}@${REMOTE_HOST}"
   echo -e "    ${MUTED}↳ Port       :${NC} ${TEELLM_PORT}"
   echo -e "    ${MUTED}↳ Config     :${NC} ${CON_WORKDIR}/configs/teellm-production.json"
-  echo -e "    ${MUTED}↳ Platform   :${NC} ${TEELLM_PLATFORM_EFFECTIVE:-disabled}"
+  echo -e "    ${MUTED}↳ Platform   :${NC} ${platform_effective:-disabled}"
   echo -e "    ${MUTED}↳ Supervisor :${NC} ${CON_WORKDIR}/teellm-supervisor.sh (restarts teellm-service and ollama)"
   echo -e "    ${MUTED}↳ Log file   :${NC} ${TEELLM_LOG_FILE}"
   if [[ -n "$TEELLM_POD_IP" ]]; then

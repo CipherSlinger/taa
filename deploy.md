@@ -210,11 +210,14 @@ TEELLM_PLATFORM_ADDR=http://10.0.0.5:8080 ./deploy-llm.sh start   # 连真实平
 ./deploy-llm.sh start --platform off               # 关闭全部对外上报
 ```
 
-取值：真实地址原样使用；`mock` / `config` 表示保留配置文件里的值；`off` / `none` / 空值表示
-重写为空，即不注册、不发心跳、不推日志。默认不写死任何地址 —— mock 只有配置文件一处
-（`TEELLM_PLATFORM_MOCK_ADDR` 已删除），改了配置模板就改了默认。
+取值：真实地址原样写入；`mock` / `config` 表示保留配置模板里的值；`off` / `none` / 空值表示
+重写为空，即不注册、不发心跳、不推日志。默认不写死任何地址 —— mock 只在两个配置模板里
+（`TEELLM_PLATFORM_MOCK_ADDR` 已删除），改了模板就改了默认。裸 `host:port` 也可以传，
+`http://` 由 teellm-service 启动时补上，脚本不重复这条规则。
 环境变量那一层是给编排方的：同一个镜像、同一个配置，Pod 里设 `PLATFORM_IP=10.0.0.5:8080`
-（可省 `http://`）就指向真实平台，设 `off` 则关闭 —— 优先于配置文件。改地址不需要重建镜像或
+（可省 `http://`）就指向真实平台，设 `off` 则关闭 —— 优先于配置文件。注意 TAA 自己的
+`PLATFORM_IP` 在 `tee` 实例上是配置文件优先，teellm 不是 TAA，永远环境变量优先。
+改地址不需要重建镜像或
 重建 Pod，`start` 会把新配置送进 Pod；部署输出里会打印 `platform reporting: <addr|disabled>`
 （并注明是否来自配置文件），Pod 日志里对应 `platform reporting enabled to <addr>` /
 `platform reporting disabled`。

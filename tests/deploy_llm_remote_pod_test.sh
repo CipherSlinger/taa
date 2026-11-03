@@ -699,7 +699,6 @@ platform_addr_of() {
   python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["platform"]["addr"])' "$REMOTE_CFG"
 }
 
-RUN_ENV=()
 run_deploy --pod "$COPY_POD_NAME"
 [[ $status -eq 0 ]] || fail "a deployment with no platform setting exited $status"
 [[ "$(platform_addr_of)" == "http://172.16.10.181:18081" ]] \
@@ -716,13 +715,13 @@ RUN_ENV=()
 grep -q "platform reporting: http://10.1.2.3:9000" <<<"$output" \
   || fail "the deployment did not say which platform it reports to"
 
-# A bare host:port is what people type; it must come out the same as the full URL, because
-# teellm-service's PLATFORM_IP accepts that form and the two paths must agree.
+# The script writes what was asked for and leaves the value grammar to teellm-service, so a bare
+# host:port survives untouched here and platformagent adds the scheme at startup.
 RUN_ENV=(TEELLM_PLATFORM_ADDR=10.1.2.3:9000)
 run_deploy --pod "$COPY_POD_NAME"
 RUN_ENV=()
-[[ "$(platform_addr_of)" == "http://10.1.2.3:9000" ]] \
-  || fail "a bare host:port was not given the http:// scheme (got '$(platform_addr_of)')"
+[[ "$(platform_addr_of)" == "10.1.2.3:9000" ]] \
+  || fail "the rendered config did not carry the address as given (got '$(platform_addr_of)')"
 
 RUN_ENV=(TEELLM_PLATFORM_ADDR=mock)
 run_deploy --pod "$COPY_POD_NAME"

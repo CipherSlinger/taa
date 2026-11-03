@@ -582,7 +582,7 @@ Inside Docker containers, TAA runs under the supervision of `deploy/taa-supervis
 
 > **The platform reporting target is one switch.** `teellm-service` resolves the platform it
 > registers with, heartbeats to and pushes logs to as **`PLATFORM_IP` in the environment, then
-> `platform.addr` in the config file**. The shipped config names the platform-mock
+> `platform.addr` in the config file**. The shipped configs name the platform-mock
 > (`http://172.16.10.181:18081`), and a script-created Pod injects no `PLATFORM_IP`, so it runs in
 > debug mode without being told to. `deploy-llm.sh` rewrites the address in the Pod's config on
 > every deployment, so switching needs neither a new image nor a new Pod: the default keeps the
