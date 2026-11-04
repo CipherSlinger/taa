@@ -150,6 +150,10 @@ chmod +x "$MOCK_BIN"/*
 
 POD_NAME="taa-deploy"
 DEFAULT_IMAGE="172.16.10.178:31313/taa-env:slim-v2"
+# A syntactically valid platform SM2 public key (04 || X || Y). The value is not used for crypto
+# here; what is pinned is that it reaches the Pod environment, since TAA refuses to start without
+# it and the remote config path has no platform block to carry it.
+TEST_PLATFORM_KEY="04$(printf 'ab%.0s' {1..64})"
 
 REPO="$TMP_DIR/repo"
 mkdir -p "$REPO/deploy/manifest/k8s" "$REPO/configs" "$REPO/cmd/taa"
@@ -175,6 +179,7 @@ run_deploy() {
   # the auto-build path is exercised against the real registry, not by this mock harness.
   output="$(PATH="$MOCK_BIN:$PATH" env -u TARGET_POD -u TAA_POD_NAME -u TAA_POD_IMAGE \
     TAA_POD_IMAGE="$DEFAULT_IMAGE" \
+    PLATFORM_PUBLIC_KEY="$TEST_PLATFORM_KEY" \
     "${RUN_ENV[@]}" \
     READY_TIMEOUT=2 \
     READY_INTERVAL=1 \
@@ -242,6 +247,10 @@ grep -q 'name: DOCKER_ID' "$APPLIED" || fail "the Pod environment does not carry
 grep -q "value: \"$POD_NAME\"" "$APPLIED" || fail "DOCKER_ID does not default to the Pod name"
 grep -q 'name: PLATFORM_IP' "$APPLIED" || fail "the Pod environment does not carry PLATFORM_IP"
 grep -q 'value: "172.16.10.178:18080"' "$APPLIED" || fail "PLATFORM_IP is not the configured platform address"
+grep -q 'name: PLATFORM_PUBLIC_KEY' "$APPLIED" \
+  || fail "the Pod environment does not carry PLATFORM_PUBLIC_KEY"
+grep -q "value: \"$TEST_PLATFORM_KEY\"" "$APPLIED" \
+  || fail "the platform public key did not reach the Pod environment"
 # Requests must equal limits: CSV2 memory is resident from boot, so an overcommit is a permanent
 # host cost, not a burst.
 cpu_limits="$(grep -cE '^          cpu: "' "$APPLIED")"
@@ -338,5 +347,31 @@ tail -n +"$((before + 1))" "$MOCK_LOG" > "$TMP_DIR/stop-wedged.log"
 grep -q "KUBECTL delete pod $POD_NAME" "$TMP_DIR/stop-wedged.log" \
   || fail "stop did not delete an owned Pod it could not exec into"
 rm -f "$MOCK_STATE_DIR/exec_fails"
+
+# ── 8. A new Pod is refused before creation without the platform key ─────────
+#
+# TAA seals every message it sends and exits at startup when the platform's SM2 key is missing,
+# and the remote config path has no platform block to carry one. Creating the Pod anyway would
+# spend a whole guest boot to reach a crash loop, so the gate has to fire before the manifest.
+
+rm -f "$MOCK_STATE_DIR/pod" "$MOCK_STATE_DIR/apply-count"
+before="$(wc -l < "$MOCK_LOG")"
+set +e
+output="$(PATH="$MOCK_BIN:$PATH" env -u TARGET_POD -u TAA_POD_NAME -u TAA_POD_IMAGE \
+  -u PLATFORM_PUBLIC_KEY -u TAA_POD_PLATFORM_PUBLIC_KEY \
+  TAA_POD_IMAGE="$DEFAULT_IMAGE" \
+  READY_TIMEOUT=2 READY_INTERVAL=1 TAA_POD_READY_TIMEOUT=5 \
+  TAA_SCAN_ENGINE_PROVISION=skip \
+  timeout 300 "$REPO/deploy.sh" taa start 2>&1)"
+status=$?
+set -e
+[[ $status -ne 0 ]] || fail "a new Pod was accepted without PLATFORM_PUBLIC_KEY"
+grep -q "PLATFORM_PUBLIC_KEY is not set" <<<"$output" \
+  || fail "the missing platform key was not named in the error"
+tail -n +"$((before + 1))" "$MOCK_LOG" > "$TMP_DIR/missing-key.log"
+if grep -q "KUBECTL create" "$TMP_DIR/missing-key.log"; then
+  fail "a Pod was created without the platform public key"
+fi
+[[ -f "$MOCK_STATE_DIR/pod" ]] && fail "a Pod exists after the refused creation"
 
 echo "PASS: TAA Pod creation, reuse, device gate and stop-deletion behave as specified"

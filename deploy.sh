@@ -133,6 +133,11 @@ TAA_POD_CC_INIT_DATA="${TAA_POD_CC_INIT_DATA:-}"
 # Identity registered with the platform. The Pod name is stable across redeploys, which keeps the
 # instance the platform sees from changing on every deployment.
 TAA_POD_DOCKER_ID="${TAA_POD_DOCKER_ID:-}"
+# The platform's SM2 public key (hex, 04 || X || Y). TAA seals every message it sends and refuses
+# to start without it, and the remote config path drops the `platform` block, so a Pod can only
+# receive it through its environment. PLATFORM_PUBLIC_KEY is read too: that is the name TAA itself
+# uses, and the one the platform-mock tells the operator to set.
+TAA_POD_PLATFORM_PUBLIC_KEY="${TAA_POD_PLATFORM_PUBLIC_KEY:-${PLATFORM_PUBLIC_KEY:-}}"
 TAA_POD_TEMPLATE="${TAA_POD_TEMPLATE:-$PROJECT_DIR/deploy/manifest/k8s/taa-pod.yaml.tmpl}"
 TEMP_TAA_POD_MANIFEST=""
 
@@ -607,6 +612,15 @@ create_taa_pod() {
   if [[ -z "${CONTRACT_ID:-}" ]]; then
     warn "CONTRACT_ID is empty; the Pod will register without a contract id"
   fi
+  # Refused before the manifest is applied: TAA validates the key at startup and exits, so a Pod
+  # created without it would boot, crash-loop, and cost a full guest boot to diagnose.
+  if [[ -z "$TAA_POD_PLATFORM_PUBLIC_KEY" ]]; then
+    err "PLATFORM_PUBLIC_KEY is not set, so the new TAA Pod could not start"
+    detail "TAA seals every platform message and refuses to start without the platform's SM2 public key."
+    detail "The platform-mock prints it at startup and keeps it in <state-dir>/platform-key.json (publicKeyHex)."
+    detail "Export it first: PLATFORM_PUBLIC_KEY=<hex starting with 04> $(basename "$0") remote start"
+    exit 1
+  fi
   TEMP_TAA_POD_MANIFEST="$(mktemp /tmp/taa-pod.XXXXXX.yaml)"
   sed -e "s|__POD_NAME__|$(sed_escape "$TARGET_POD")|g" \
       -e "s|__NAMESPACE__|$(sed_escape "$pod_namespace")|g" \
@@ -619,6 +633,7 @@ create_taa_pod() {
       -e "s|__CC_INIT_DATA__|$(sed_escape "$cc_init_data")|g" \
       -e "s|__DOCKER_ID__|$(sed_escape "$docker_id")|g" \
       -e "s|__PLATFORM_IP__|$(sed_escape "$REMOTE_PLATFORM_IP")|g" \
+      -e "s|__PLATFORM_PUBLIC_KEY__|$(sed_escape "$TAA_POD_PLATFORM_PUBLIC_KEY")|g" \
       -e "s|__CONTRACT_ID__|$(sed_escape "${CONTRACT_ID:-}")|g" \
       "$TAA_POD_TEMPLATE" > "$TEMP_TAA_POD_MANIFEST"
   step "creating the TAA Pod $TARGET_POD (runtimeClassName: $TAA_POD_RUNTIME_CLASS, node: $TAA_POD_NODE, image: $TAA_POD_IMAGE)"
@@ -1109,6 +1124,10 @@ Environment overrides:
       cc_init_data 注解；置空时从宿主上已有 CoCo Pod 推导。
   TAA_POD_DOCKER_ID=<id>
       注册到平台的 DOCKER_ID；置空时使用 Pod 名称。
+  TAA_POD_PLATFORM_PUBLIC_KEY=<hex>
+      平台 SM2 公钥（04||X||Y 的 hex），新建 Pod 时必填；也可直接用 PLATFORM_PUBLIC_KEY。
+      远端配置不写 platform 块，它只能由 Pod 环境变量下发；缺失时 TAA 启动即 FATAL，脚本会在
+      创建 Pod 之前拒绝。mock 的启动日志和 <state-dir>/platform-key.json（publicKeyHex）里有。
 
   # Remote host / SSH
   REMOTE_USER=${REMOTE_USER}

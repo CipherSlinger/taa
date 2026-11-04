@@ -17,6 +17,7 @@
 #    CC_INIT_DATA     cc_init_data annotation, read from a running CoCo Pod
 #    DOCKER_ID        env DOCKER_ID          (TAA_POD_DOCKER_ID, default Pod name)
 #    PLATFORM_IP      env PLATFORM_IP        (REMOTE_PLATFORM_IP)
+#    PLATFORM_PUBLIC_KEY env PLATFORM_PUBLIC_KEY (TAA_POD_PLATFORM_PUBLIC_KEY or PLATFORM_PUBLIC_KEY)
 #    CONTRACT_ID      env CONTRACT_ID        (CONTRACT_ID)
 #
 #  The LLM endpoint is deliberately not an env var here: an env value outlives every deployment
@@ -79,6 +80,10 @@ spec:
           value: "__DOCKER_ID__"
         - name: PLATFORM_IP
           value: "__PLATFORM_IP__"
+        # TAA seals every message it sends and exits at startup without this key. The remote
+        # config path drops the platform block, so the Pod environment is its only source.
+        - name: PLATFORM_PUBLIC_KEY
+          value: "__PLATFORM_PUBLIC_KEY__"
         - name: CONTRACT_ID
           value: "__CONTRACT_ID__"
         - name: TZ
