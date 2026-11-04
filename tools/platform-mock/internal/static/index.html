@@ -88,33 +88,40 @@
     </div>
   </section>
 
-  <!-- TEE-LLM: a separate instance kind. It reports in plaintext on /v1/llm/*
-       and keeps its own state, so this panel is independent of the TAA
-       instance selector. TEE only: the FHE path runs no code audit. -->
+  <!-- TEE-LLM: a separate instance kind. The platform calls it; it never reports
+       out, so this panel renders what the mock's poller learned. Independent of
+       the TAA instance selector. TEE only: the FHE path runs no code audit. -->
   <section class="card" id="card-llm" data-console="tee" style="display:flex; flex-direction:column; margin-bottom:24px;">
     <div class="card-head" style="margin-bottom:12px; padding-bottom:10px; flex-wrap:wrap; gap:12px;">
       <div style="display:flex; align-items:center; gap:12px; flex-wrap:wrap;">
         <h2 style="margin:0;">TEE-LLM 实例</h2>
         <div id="llmStatusPill" class="status-pill pending" style="font-size:13px;">
           <span id="llmStatusDot" class="dot pill-dot pending"></span>
-          <span id="llmStatusText">等待 TEE-LLM 注册</span>
+          <span id="llmStatusText">未发现 TEE-LLM</span>
         </div>
         <span id="llmHeartbeatText" class="muted" style="font-size:12.5px;"></span>
       </div>
       <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
-        <button type="button" id="llmPublicKeyBtn" class="secondary" onclick="openLLMPublicKeyModal()" disabled>公钥</button>
-        <button type="button" id="llmRegisterBodyBtn" class="secondary" onclick="openLLMRegisterBody()" disabled>注册报文</button>
+        <button type="button" id="llmAttestationBtn" class="secondary" onclick="fetchLLMAttestation()">获取证明报告</button>
+        <button type="button" class="secondary" onclick="pollLLMNow()">立即拉取</button>
         <button type="button" class="secondary" onclick="refreshLLMStatus()">刷新</button>
         <button type="button" class="secondary" onclick="resetLLMStatus()">重置</button>
       </div>
     </div>
 
-    <div style="display:flex; align-items:center; gap:18px; flex-wrap:wrap; font-size:13px; margin-bottom:10px;">
-      <span>dockerId: <code id="llmDockerId">—</code></span>
-      <span>自检: <span id="llmVerified">—</span></span>
-      <span>报告: <span id="llmAttestationSize">—</span></span>
-      <span>注册于: <span id="llmRegisteredAt">—</span></span>
+    <div style="display:flex; align-items:center; gap:18px; flex-wrap:wrap; font-size:13px; margin-bottom:6px;">
+      <span>地址: <code id="llmAddress">—</code></span>
+      <span>模型: <code id="llmModel">—</code></span>
+      <span>运行时长: <span id="llmUptime">—</span></span>
+      <span>最近轮询: <span id="llmLastPoll">—</span></span>
+      <span>日志游标: <span id="llmLogCursor">0</span></span>
     </div>
+    <div id="llmLastError" style="display:none; color:#dc2626; font-size:12.5px; margin-bottom:10px;"></div>
+
+    <details id="llmAttestationDetails" style="margin-bottom:10px;">
+      <summary style="cursor:pointer; font-size:13px; font-weight:650;">远程证明</summary>
+      <div id="llmAttestationBox" style="margin-top:8px;"></div>
+    </details>
 
     <details id="llmLogBox">
       <summary style="cursor:pointer; font-size:13px; font-weight:650;">运行日志</summary>
@@ -124,20 +131,6 @@
       </div>
       <div id="llmLogOutput" style="max-height:240px; overflow:auto; background:var(--panel-sub); border:1px solid var(--line); border-radius:8px; padding:8px; font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:12px;"></div>
     </details>
-  </section>
-
-  <!-- Bookkeeping kept outside the instance card on purpose: the card above
-       describes the single registration record currently in force, while this
-       list also remembers dockerIds that record has already overwritten. -->
-  <section class="card" id="card-llmSources" data-console="tee" style="display:none; margin-bottom:24px;">
-    <div class="card-head" style="margin-bottom:10px; padding-bottom:10px;">
-      <div>
-        <h2 style="margin:0;">TEE-LLM 接入记录</h2>
-        <span class="muted" style="font-size:12.5px;">mock 收到过上报的 dockerId，按最后活动时间倒序，最多 5 条；上方实例卡片只保留最后注册的那一个。</span>
-      </div>
-      <span id="llmSourcesCount" class="muted" style="font-size:12.5px;">0 个来源</span>
-    </div>
-    <div id="llmSourcesList" style="display:flex; flex-direction:column; gap:4px; font-size:12.5px;"></div>
   </section>
 
   <!-- ─── 训练流程（平台 → TAA）接口测试 ─── -->
@@ -658,20 +651,6 @@
     </div>
     <div style="padding:14px 16px; overflow:auto;">
       <textarea id="registerPublicKey" readonly style="min-height:140px; font-size:12px; font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace; line-height:1.45; cursor:text; background:rgba(37,99,235,.04); border-radius:8px; margin:0;" onclick="this.select();"></textarea>
-    </div>
-  </div>
-</div>
-
-<div id="llmPublicKeyModal" class="modal-overlay" aria-hidden="true" onclick="if (event.target === this) closeLLMPublicKeyModal();">
-  <div class="modal" style="width:min(680px, 94%); display:flex; flex-direction:column;" role="dialog" aria-modal="true" aria-labelledby="llmPublicKeyModalTitle">
-    <div class="modal-head">
-      <h3 id="llmPublicKeyModalTitle" style="margin:0;">TEE-LLM 注册公钥</h3>
-      <div class="modal-actions">
-        <button type="button" class="secondary" onclick="closeLLMPublicKeyModal()">关闭</button>
-      </div>
-    </div>
-    <div style="padding:14px 16px; overflow:auto;">
-      <textarea id="llmPublicKeyText" readonly style="min-height:140px; font-size:12px; font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace; line-height:1.45; cursor:text; background:rgba(37,99,235,.04); border-radius:8px; margin:0;" onclick="this.select();"></textarea>
     </div>
   </div>
 </div>

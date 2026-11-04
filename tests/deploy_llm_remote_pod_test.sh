@@ -716,59 +716,22 @@ if grep -q 'certs/' "$MOCK_LOG"; then
   fail "a Hygon certificate was still copied to the remote host or the Pod"
 fi
 
-# ── 5b. The platform target: config file by default, one switch to change it ─
-# Debugging alternates between the mock and a real platform, so the address has to be settable
-# without touching the image or the Pod: the rendered config is rewritten on every deployment.
-# The default draws from the config template, which ships the platform-mock -- that is what makes
-# a Pod that injects no PLATFORM_IP a debug deployment (teellm-service prefers the variable).
-# The empty case is the one that used to be unreachable -- `${VAR:-default}` turns an explicit
-# blank back into the default, which makes "off" impossible to ask for.
+# ── 5b. No platform block survives into the rendered config ──────────────────
+# The platform calls TEE-LLM; the instance never reports out, so the rendered config must not
+# carry a platform address even when the template it came from still has one (an image built
+# before the direction changed ships exactly that).
 
-platform_addr_of() {
-  python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["platform"]["addr"])' "$REMOTE_CFG"
+has_platform_key() {
+  python3 -c 'import json,sys; print("platform" in json.load(open(sys.argv[1])))' "$REMOTE_CFG"
 }
 
 run_deploy --pod "$COPY_POD_NAME"
-[[ $status -eq 0 ]] || fail "a deployment with no platform setting exited $status"
-[[ "$(platform_addr_of)" == "http://172.16.10.181:18081" ]] \
-  || fail "an unattended deployment does not report to the platform-mock (got '$(platform_addr_of)')"
-grep -q "platform reporting: http://172.16.10.181:18081 (from the config template" <<<"$output" \
-  || fail "the deployment did not say the mock came from the config template"
+[[ $status -eq 0 ]] || fail "a deployment with a legacy platform block exited $status"
+[[ "$(has_platform_key)" == "False" ]] \
+  || fail "the rendered config still carries the template's platform block"
 
-RUN_ENV=(TEELLM_PLATFORM_ADDR=http://10.1.2.3:9000)
-run_deploy --pod "$COPY_POD_NAME"
-RUN_ENV=()
-[[ $status -eq 0 ]] || fail "a deployment with an explicit platform address exited $status"
-[[ "$(platform_addr_of)" == "http://10.1.2.3:9000" ]] \
-  || fail "TEELLM_PLATFORM_ADDR did not reach the rendered config (got '$(platform_addr_of)')"
-grep -q "platform reporting: http://10.1.2.3:9000" <<<"$output" \
-  || fail "the deployment did not say which platform it reports to"
-
-# The script writes what was asked for and leaves the value grammar to teellm-service, so a bare
-# host:port survives untouched here and platformagent adds the scheme at startup.
-RUN_ENV=(TEELLM_PLATFORM_ADDR=10.1.2.3:9000)
-run_deploy --pod "$COPY_POD_NAME"
-RUN_ENV=()
-[[ "$(platform_addr_of)" == "10.1.2.3:9000" ]] \
-  || fail "the rendered config did not carry the address as given (got '$(platform_addr_of)')"
-
-RUN_ENV=(TEELLM_PLATFORM_ADDR=mock)
-run_deploy --pod "$COPY_POD_NAME"
-RUN_ENV=()
-[[ "$(platform_addr_of)" == "http://172.16.10.181:18081" ]] \
-  || fail "'mock' did not keep the platform-mock the config template names"
-
-run_deploy --pod "$COPY_POD_NAME" --platform off
-[[ "$(platform_addr_of)" == "" ]] \
-  || fail "--platform off left a platform address in the config (got '$(platform_addr_of)')"
-grep -q "platform reporting: disabled" <<<"$output" \
-  || fail "the deployment did not report that platform reporting is disabled"
-
-RUN_ENV=(TEELLM_PLATFORM_ADDR=)
-run_deploy --pod "$COPY_POD_NAME"
-RUN_ENV=()
-[[ "$(platform_addr_of)" == "" ]] \
-  || fail "an explicitly empty TEELLM_PLATFORM_ADDR fell back to the mock instead of disabling reporting"
+grep -q "platform reporting" <<<"$output" \
+  && fail "the deployment still reports a platform address"
 
 # ── 6. stop: the daemons are paused, not resurrected ─────────────────────────
 # A supervisor that owns the daemons would restart them within the restart delay, so a stop that

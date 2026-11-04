@@ -35,6 +35,10 @@ TAA_TARGET="${PLATFORM_MOCK_TAA_TARGET:-${LOCAL_TAA_URL:-}}"
 TAA_POD=""
 TAA_NS=""
 TAA_PORT=""
+LLM_TARGET="${PLATFORM_MOCK_LLM_TARGET:-${LOCAL_LLM_URL:-}}"
+LLM_POD=""
+LLM_NS=""
+LLM_PORT=""
 SM2_ID="${PLATFORM_SM2_ID:-}"
 PLATFORM_KEY_FILE="${PLATFORM_KEY_FILE:-}"
 READY_TIMEOUT="${PLATFORM_READY_TIMEOUT:-${READY_TIMEOUT:-60}}"
@@ -95,6 +99,11 @@ Common options:
   --taa-pod NAME             TAA Pod for kubectl auto-discovery
   --taa-ns NS                Namespace for --taa-pod
   --taa-port PORT            Port used for discovery and for per-instance target derivation
+  --llm-target URL           TEE-LLM base URL; the platform polls it, so no
+                             registration address is needed
+  --llm-pod NAME             TEE-LLM Pod for kubectl auto-discovery (default taa-teellm)
+  --llm-ns NS                Namespace for --llm-pod
+  --llm-port PORT            TEE-LLM plaintext platform port (default 6001)
   --sm2-id ID                SM2 ID_A passed to the mock
   --platform-key-file PATH   Platform SM2 key file passed to the mock
   --allow-empty-attestation  Skip attestation validation (non-TEE testing)
@@ -152,6 +161,10 @@ parse_args() {
       --pid-file) need_value "$@"; PID_FILE="$2"; shift 2 ;;
       --taa-target) need_value "$@"; TAA_TARGET="$2"; shift 2 ;;
       --taa-pod) need_value "$@"; TAA_POD="$2"; shift 2 ;;
+      --llm-target) need_value "$@"; LLM_TARGET="$2"; shift 2 ;;
+      --llm-pod) need_value "$@"; LLM_POD="$2"; shift 2 ;;
+      --llm-ns) need_value "$@"; LLM_NS="$2"; shift 2 ;;
+      --llm-port) need_value "$@"; LLM_PORT="$2"; shift 2 ;;
       --taa-ns) need_value "$@"; TAA_NS="$2"; shift 2 ;;
       --taa-port) need_value "$@"; TAA_PORT="$2"; shift 2 ;;
       --sm2-id) need_value "$@"; SM2_ID="$2"; shift 2 ;;
@@ -327,6 +340,13 @@ build_mock_args() {
     [ -n "$TAA_POD" ] && MOCK_ARGS+=(-taa-pod "$TAA_POD")
     [ -n "$TAA_NS" ] && MOCK_ARGS+=(-taa-ns "$TAA_NS")
     [ -n "$TAA_PORT" ] && MOCK_ARGS+=(-taa-port "$TAA_PORT")
+  fi
+  if [ -n "$LLM_TARGET" ]; then
+    MOCK_ARGS+=(-llm-target "$LLM_TARGET")
+  else
+    [ -n "$LLM_POD" ] && MOCK_ARGS+=(-llm-pod "$LLM_POD")
+    [ -n "$LLM_NS" ] && MOCK_ARGS+=(-llm-ns "$LLM_NS")
+    [ -n "$LLM_PORT" ] && MOCK_ARGS+=(-llm-port "$LLM_PORT")
   fi
   [ "$ALLOW_EMPTY_ATTESTATION" = "1" ] && MOCK_ARGS+=(-allow-empty-attestation)
   [ -n "$SM2_ID" ] && MOCK_ARGS+=(-sm2-id "$SM2_ID")

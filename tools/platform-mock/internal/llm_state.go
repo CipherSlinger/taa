@@ -3,63 +3,50 @@ package mock
 import (
 	"log"
 	"os"
-	"sort"
 	"sync"
 	"time"
 )
 
-// llmRegisterState mirrors the plaintext registration an LLM instance sends.
-// It is deliberately separate from registerState: TAA and LLM instances report
-// different identities and must not overwrite each other's panel entries.
-type llmRegisterState struct {
-	Received          bool   `json:"received"`
-	ReceivedAt        string `json:"receivedAt"`
-	DockerID          string `json:"dockerId"`
-	TaaPublicKey      string `json:"taaPublicKey"`
-	AttestationValues string `json:"attestationValues"`
-	Timestamp         string `json:"timestamp"`
+// llmAttestationState is the last report the platform pulled from the LLM. The
+// report is stored as it came; the mock verifies nothing, which matches how the
+// platform treats TEE-LLM evidence (it is displayed, not enforced).
+type llmAttestationState struct {
+	FetchedAt         string `json:"fetchedAt"`
+	RequestID         string `json:"requestId"`
 	VerifiedPass      bool   `json:"verifiedPass"`
+	AttestationValues string `json:"attestationValues"`
 	AttestationSize   int    `json:"attestationSize"`
 	AttestationBase64 string `json:"attestationBase64"`
+	Error             string `json:"error,omitempty"`
 }
 
-// llmHeartbeatState records the most recent liveness ping.
-type llmHeartbeatState struct {
-	DockerID   string `json:"dockerId"`
-	Timestamp  string `json:"timestamp"`
-	ReceivedAt string `json:"receivedAt"`
-	Count      uint64 `json:"count"`
-}
-
-// maxLLMSources bounds the recent-source list. Five is enough to see which
-// instances have been talking without turning the panel into an audit log.
-const maxLLMSources = 5
-
-// LastEvent values recorded in llmSource.
-const (
-	llmEventRegister  = "register"
-	llmEventHeartbeat = "heartbeat"
-	llmEventLog       = "log"
-)
-
-// llmSource records that a dockerId has reported to this mock. It exists only
-// for observability: the registration state itself stays single-instance, so a
-// second dockerId overwrites the panel while leaving a trace here.
-type llmSource struct {
-	DockerID   string `json:"dockerId"`
-	FirstSeen  string `json:"firstSeen"`
-	LastSeen   string `json:"lastSeen"`
-	LastEvent  string `json:"lastEvent"`
-	Registers  uint64 `json:"registers"`
-	Heartbeats uint64 `json:"heartbeats"`
-	Logs       uint64 `json:"logs"`
-}
-
-// llmState is the persisted aggregate shown by the status endpoint.
+// llmState is what the mock knows about the TEE-LLM instance, all of it learned
+// by polling. Nothing here is self-reported: the address is the one the mock
+// called, and every other field is an answer to a call the mock made.
 type llmState struct {
-	Register  llmRegisterState  `json:"register"`
-	Heartbeat llmHeartbeatState `json:"heartbeat"`
-	Sources   []llmSource       `json:"sources"`
+	// Address is the base URL currently being polled ("" before discovery).
+	Address string `json:"address"`
+	// Reachable is the last poll's outcome.
+	Reachable bool `json:"reachable"`
+	// Model and UptimeSeconds come from the heartbeat's result.
+	Model         string `json:"model"`
+	UptimeSeconds int64  `json:"uptimeSeconds"`
+
+	Heartbeats      uint64 `json:"heartbeats"`
+	LastHeartbeatAt string `json:"lastHeartbeatAt"`
+	LastPollAt      string `json:"lastPollAt"`
+	// LastError keeps the most recent failure until a poll succeeds, so the
+	// panel can show why an instance went offline instead of only that it did.
+	LastError string `json:"lastError"`
+
+	// LogCursor is the highest seq the mock has consumed; the next pull starts
+	// after it. LogDropped reports that the instance's ring aged out records
+	// before this poll read them.
+	LogCursor  uint64 `json:"logCursor"`
+	LogDropped bool   `json:"logDropped"`
+	LogEntries uint64 `json:"logEntries"`
+
+	Attestation llmAttestationState `json:"attestation"`
 }
 
 type llmStateStore struct {
@@ -94,116 +81,107 @@ func (s *llmStateStore) load() {
 func (s *llmStateStore) get() llmState {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	cpy := s.state
-	if len(s.state.Sources) > 0 {
-		cpy.Sources = append([]llmSource(nil), s.state.Sources...)
-	} else {
-		// An empty list must marshal as [] rather than null, matching the
-		// other status fields the console renders.
-		cpy.Sources = []llmSource{}
-	}
-	return cpy
+	return s.state
 }
 
-func (s *llmStateStore) setRegister(state llmRegisterState) {
-	s.mu.Lock()
-	s.state.Register = state
-	s.touchSourceLocked(state.DockerID, llmEventRegister)
-	snapshot := s.state
-	s.mu.Unlock()
+// persist writes a snapshot taken under the lock. Saving outside the lock keeps
+// the poller from stalling the status endpoint for a disk write.
+func (s *llmStateStore) persist(snapshot llmState) {
 	if err := saveJSONFile(s.path, snapshot); err != nil {
 		log.Printf("save llm state failed: %v", err)
 	}
 }
 
-func (s *llmStateStore) recordHeartbeat(state llmHeartbeatState) {
+// recordAddress notes which base URL the poller will call next.
+func (s *llmStateStore) recordAddress(addr string) {
 	s.mu.Lock()
-	s.state.Heartbeat = state
-	s.touchSourceLocked(state.DockerID, llmEventHeartbeat)
-	snapshot := s.state
-	s.mu.Unlock()
-	if err := saveJSONFile(s.path, snapshot); err != nil {
-		log.Printf("save llm state failed: %v", err)
-	}
-}
-
-// touchLog records that a log batch arrived. Logs live in their own store, so
-// this only keeps the recent-source list current.
-func (s *llmStateStore) touchLog(dockerID string) {
-	s.mu.Lock()
-	s.touchSourceLocked(dockerID, llmEventLog)
-	snapshot := s.state
-	s.mu.Unlock()
-	if err := saveJSONFile(s.path, snapshot); err != nil {
-		log.Printf("save llm state failed: %v", err)
-	}
-}
-
-// touchSourceLocked upserts one dockerId and re-sorts newest-first. Empty ids
-// are rejected by the handlers already, but guarding here keeps a malformed
-// state file from producing a nameless row.
-func (s *llmStateStore) touchSourceLocked(dockerID, event string) {
-	if dockerID == "" {
+	if s.state.Address == addr {
+		s.mu.Unlock()
 		return
 	}
+	s.state.Address = addr
+	snapshot := s.state
+	s.mu.Unlock()
+	s.persist(snapshot)
+}
+
+// recordHeartbeat records one successful liveness answer.
+func (s *llmStateStore) recordHeartbeat(model string, uptimeSeconds int64) {
+	s.mu.Lock()
 	now := s.now().Format(time.RFC3339)
-	for i := range s.state.Sources {
-		src := &s.state.Sources[i]
-		if src.DockerID != dockerID {
-			continue
-		}
-		src.LastSeen = now
-		src.LastEvent = event
-		switch event {
-		case llmEventRegister:
-			src.Registers++
-		case llmEventHeartbeat:
-			src.Heartbeats++
-		case llmEventLog:
-			src.Logs++
-		}
-		s.sortSourcesLocked()
-		return
-	}
-	src := llmSource{
-		DockerID:  dockerID,
-		FirstSeen: now,
-		LastSeen:  now,
-		LastEvent: event,
-	}
-	switch event {
-	case llmEventRegister:
-		src.Registers = 1
-	case llmEventHeartbeat:
-		src.Heartbeats = 1
-	case llmEventLog:
-		src.Logs = 1
-	}
-	s.state.Sources = append(s.state.Sources, src)
-	s.sortSourcesLocked()
-	if len(s.state.Sources) > maxLLMSources {
-		s.state.Sources = s.state.Sources[:maxLLMSources]
-	}
+	s.state.Reachable = true
+	s.state.Model = model
+	s.state.UptimeSeconds = uptimeSeconds
+	s.state.Heartbeats++
+	s.state.LastHeartbeatAt = now
+	s.state.LastPollAt = now
+	s.state.LastError = ""
+	snapshot := s.state
+	s.mu.Unlock()
+	s.persist(snapshot)
 }
 
-// sortSourcesLocked orders newest first. The dockerId is the tie-break so an
-// equal timestamp cannot reshuffle the list between request and render.
-func (s *llmStateStore) sortSourcesLocked() {
-	sort.SliceStable(s.state.Sources, func(i, j int) bool {
-		ti, tj := s.state.Sources[i], s.state.Sources[j]
-		if ti.LastSeen != tj.LastSeen {
-			return ti.LastSeen > tj.LastSeen
-		}
-		return ti.DockerID < tj.DockerID
-	})
+// recordPollError records a failed poll. It leaves the last good heartbeat
+// timestamp alone: that is the liveness signal the panel ages out.
+func (s *llmStateStore) recordPollError(errMsg string) {
+	s.mu.Lock()
+	s.state.Reachable = false
+	s.state.LastPollAt = s.now().Format(time.RFC3339)
+	s.state.LastError = errMsg
+	snapshot := s.state
+	s.mu.Unlock()
+	s.persist(snapshot)
+}
+
+// recordLogError records a failed log pull without touching liveness: the
+// heartbeat succeeded, so the instance is up even though this call failed.
+func (s *llmStateStore) recordLogError(errMsg string) {
+	s.mu.Lock()
+	s.state.LastError = errMsg
+	snapshot := s.state
+	s.mu.Unlock()
+	s.persist(snapshot)
+}
+
+// recordLogPull advances the cursor and counts what was added.
+func (s *llmStateStore) recordLogPull(latestSeq uint64, added int, dropped bool) {
+	s.mu.Lock()
+	if latestSeq > s.state.LogCursor {
+		s.state.LogCursor = latestSeq
+	}
+	s.state.LogEntries += uint64(added)
+	if dropped {
+		s.state.LogDropped = true
+	}
+	snapshot := s.state
+	s.mu.Unlock()
+	s.persist(snapshot)
+}
+
+// resetLogCursor clears the read position after the instance restarted (its seq
+// numbering starts over), so the new run's records are not mistaken for
+// duplicates.
+func (s *llmStateStore) resetLogCursor() {
+	s.mu.Lock()
+	s.state.LogCursor = 0
+	s.state.LogDropped = false
+	snapshot := s.state
+	s.mu.Unlock()
+	s.persist(snapshot)
+}
+
+func (s *llmStateStore) setAttestation(state llmAttestationState) {
+	s.mu.Lock()
+	s.state.Attestation = state
+	snapshot := s.state
+	s.mu.Unlock()
+	s.persist(snapshot)
 }
 
 func (s *llmStateStore) reset() {
 	s.mu.Lock()
-	s.state = llmState{Sources: []llmSource{}}
-	path := s.path
+	s.state = llmState{}
+	snapshot := s.state
 	s.mu.Unlock()
-	if err := saveJSONFile(path, llmState{Sources: []llmSource{}}); err != nil {
-		log.Printf("save llm state failed: %v", err)
-	}
+	s.persist(snapshot)
 }

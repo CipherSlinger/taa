@@ -196,31 +196,13 @@ DNS label（≤63 字符）、命名空间与 RuntimeClass 存在，任一不满
 先花几十分钟编译推送镜像。镜像选定之后再 best-effort 查一次 registry 的 `tags/list`
 （这次运行自己构建并推送过就跳过）；查不到只告警。
 
-**连真实平台还是 platform-mock**：teellm-service 按 **环境变量 `PLATFORM_IP` → 配置文件
-`platform.addr`** 的顺序解析要注册、发心跳、推日志的平台地址。teellm 自带的
-`configs/teellm-production.json` 与 `teellm-docker.json` 里写的就是 platform-mock
-（`http://172.16.10.181:18081`），而脚本创建的 Pod **不注入 `PLATFORM_IP`**，所以它自动走配置
-文件、进入调试模式。`deploy-llm.sh` 的 `--platform` 管的是**渲染进 Pod 内配置文件的地址**
-（每次部署都会重写并重启服务生效）：
-
-```bash
-./deploy-llm.sh start                              # 默认：配置文件说什么就是什么（platform-mock）
-TEELLM_PLATFORM_ADDR=http://10.0.0.5:8080 ./deploy-llm.sh start   # 连真实平台
-./deploy-llm.sh start --platform mock              # 显式回到 mock（即保留配置文件里的值）
-./deploy-llm.sh start --platform off               # 关闭全部对外上报
-```
-
-取值：真实地址原样写入；`mock` / `config` 表示保留配置模板里的值；`off` / `none` / 空值表示
-重写为空，即不注册、不发心跳、不推日志。默认不写死任何地址 —— mock 只在两个配置模板里
-（`TEELLM_PLATFORM_MOCK_ADDR` 已删除），改了模板就改了默认。裸 `host:port` 也可以传，
-`http://` 由 teellm-service 启动时补上，脚本不重复这条规则。
-环境变量那一层是给编排方的：同一个镜像、同一个配置，Pod 里设 `PLATFORM_IP=10.0.0.5:8080`
-（可省 `http://`）就指向真实平台，设 `off` 则关闭 —— 优先于配置文件。注意 TAA 自己的
-`PLATFORM_IP` 在 `tee` 实例上是配置文件优先，teellm 不是 TAA，永远环境变量优先。
-改地址不需要重建镜像或
-重建 Pod，`start` 会把新配置送进 Pod；部署输出里会打印 `platform reporting: <addr|disabled>`
-（并注明是否来自配置文件），Pod 日志里对应 `platform reporting enabled to <addr>` /
-`platform reporting disabled`。
+**平台怎么连上实例**：方向已经反过来 —— 平台调用 teellm，teellm 不主动上报。teellm-service
+在明文 `:6001` 上提供三个接口：`/v1/llm/getAttestation`（取远程证明报告）、
+`/v1/llm/heartbeat`（心跳）和 `/v1/llm/log`（按 `sinceSeq` 增量拉日志）。平台侧通过 K8s Pod
+自动发现拿到 teellm 的 Pod IP 和端口，再直接调用；没有任何注册请求，也不再需要
+`PLATFORM_IP`、`DOCKER_ID` 之类的环境变量。渲染进 Pod 的配置文件里不再有 `platform` 段，
+`deploy-llm.sh` 的 `--platform` / `TEELLM_PLATFORM_ADDR` 已删除；重新部署会把旧配置里的
+`platform` 段一并去掉。部署输出的 `Platform` 一行固定打印 `:6001` 上这三个被平台轮询的接口。
 
 **删除后查残留**：`pod-down` 提交 `--grace-period=30 --wait=false`，轮询 180s 后必要时强制删除，
 再比较三个数 —— 集群里的 kata Pod 数、`/run/vc/sbs` 目录数、`qemu-system` 进程数。不等就打印
@@ -229,7 +211,6 @@ TEELLM_PLATFORM_ADDR=http://10.0.0.5:8080 ./deploy-llm.sh start   # 连真实平
 **相关环境变量**：`TEELLM_POD_IMAGE`（显式指定则不构建也不解析）、
 `TEELLM_BUILD_POD_IMAGE=false`（回到"取 registry 最新日期 tag"的旧行为）、
 `TEELLM_POD_IMAGE_REPO` / `TEELLM_IMAGE_REGISTRY` / `TEELLM_POD_PULL_POLICY`、
-`TEELLM_PLATFORM_ADDR`（平台地址 / `mock` / `off`，写进渲染后的配置）、
 构建用的 `TEELLM_IMAGE_BASE` / `TEELLM_IMAGE_BASE_ARCHIVE` / `TEELLM_IMAGE_KEEP_BUILDER`。
 `TEELLM_IMAGE_KEEP_BUILDER=true` 会把构建容器留下，便于查 payload 为什么没打进去。
 

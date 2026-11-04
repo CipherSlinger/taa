@@ -1,11 +1,8 @@
 package mock
 
 import (
-	"encoding/base64"
-	"encoding/json"
-	"io"
+	"context"
 	"net/http"
-	"strings"
 	"time"
 )
 
@@ -15,163 +12,52 @@ func writeLLMResponse(w http.ResponseWriter, status int, msg string, result any,
 	writeEnvelope(w, status, msg, result, errorCode)
 }
 
-// llmRegisterHandler accepts the plaintext registration an LLM instance sends.
-// There is no envelope here on purpose: the LLM's proof of identity is the
-// attestation report it carries, and the certificate that report is bound to is
-// fetched separately through getAttestation rather than sent at registration.
-func llmRegisterHandler(store *llmStateStore) http.HandlerFunc {
+// llmStatusHandler exposes what the mock has learned by polling. Everything in
+// state is a platform observation, not a self-report. pollSeconds is included so
+// the panel can call an instance offline after three missed polls instead of
+// hard-coding a cadence the deployment may have changed.
+func llmStatusHandler(poller *llmPoller, state *llmStateStore, logs *taaLogStore) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		setCORS(w)
-		if r.Method == http.MethodOptions {
-			w.WriteHeader(http.StatusNoContent)
-			return
-		}
-		if r.Method != http.MethodPost {
-			w.Header().Set("Allow", http.MethodPost)
-			writeLLMResponse(w, http.StatusMethodNotAllowed, "仅支持 POST 方法", nil, http.StatusMethodNotAllowed)
-			return
-		}
-
-		body, err := io.ReadAll(io.LimitReader(r.Body, 8<<20))
-		if err != nil {
-			writeLLMResponse(w, http.StatusBadRequest, "读取请求体失败: "+err.Error(), nil, http.StatusBadRequest)
-			return
-		}
-
-		var req struct {
-			DockerID          string `json:"dockerId"`
-			TaaPublicKey      string `json:"taaPublicKey"`
-			AttestationValues string `json:"attestationValues"`
-			Timestamp         string `json:"timestamp"`
-			VerifiedPass      bool   `json:"verifiedPass"`
-			Attestation       string `json:"attestation"`
-		}
-		if err := json.Unmarshal(body, &req); err != nil {
-			writeLLMResponse(w, http.StatusBadRequest, "解析 application/json 失败: "+err.Error(), nil, http.StatusBadRequest)
-			return
-		}
-		if strings.TrimSpace(req.DockerID) == "" {
-			writeLLMResponse(w, http.StatusBadRequest, "缺少 dockerId", nil, http.StatusBadRequest)
-			return
-		}
-
-		state := llmRegisterState{
-			Received:          true,
-			ReceivedAt:        time.Now().Format(time.RFC3339),
-			DockerID:          req.DockerID,
-			TaaPublicKey:      req.TaaPublicKey,
-			AttestationValues: req.AttestationValues,
-			Timestamp:         req.Timestamp,
-			VerifiedPass:      req.VerifiedPass,
-			AttestationBase64: req.Attestation,
-		}
-		if req.Attestation != "" {
-			attBytes, decodeErr := base64.StdEncoding.DecodeString(req.Attestation)
-			if decodeErr != nil {
-				writeLLMResponse(w, http.StatusBadRequest, "attestation Base64 解码失败: "+decodeErr.Error(), nil, http.StatusBadRequest)
-				return
-			}
-			state.AttestationSize = len(attBytes)
-		}
-
-		store.setRegister(state)
-		writeLLMResponse(w, http.StatusOK, "success", map[string]any{"received": true}, 0)
-	}
-}
-
-// llmHeartbeatHandler records liveness only.
-func llmHeartbeatHandler(store *llmStateStore) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		setCORS(w)
-		if r.Method == http.MethodOptions {
-			w.WriteHeader(http.StatusNoContent)
-			return
-		}
-		if r.Method != http.MethodPost {
-			w.Header().Set("Allow", http.MethodPost)
-			writeLLMResponse(w, http.StatusMethodNotAllowed, "仅支持 POST 方法", nil, http.StatusMethodNotAllowed)
-			return
-		}
-
-		var req struct {
-			DockerID  string `json:"dockerId"`
-			Timestamp string `json:"timestamp"`
-		}
-		if err := json.NewDecoder(io.LimitReader(r.Body, 1<<16)).Decode(&req); err != nil {
-			writeLLMResponse(w, http.StatusBadRequest, "解析 JSON 失败: "+err.Error(), nil, http.StatusBadRequest)
-			return
-		}
-		if strings.TrimSpace(req.DockerID) == "" {
-			writeLLMResponse(w, http.StatusBadRequest, "缺少 dockerId", nil, http.StatusBadRequest)
-			return
-		}
-
-		previous := store.get().Heartbeat
-		store.recordHeartbeat(llmHeartbeatState{
-			DockerID:   req.DockerID,
-			Timestamp:  req.Timestamp,
-			ReceivedAt: time.Now().Format(time.RFC3339),
-			Count:      previous.Count + 1,
-		})
-		writeLLMResponse(w, http.StatusOK, "success", map[string]any{"received": true}, 0)
-	}
-}
-
-// llmLogHandler accepts batched run logs in plaintext.
-func llmLogHandler(store *taaLogStore, state *llmStateStore) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		setCORS(w)
-		if r.Method == http.MethodOptions {
-			w.WriteHeader(http.StatusNoContent)
-			return
-		}
-		if r.Method != http.MethodPost {
-			w.Header().Set("Allow", http.MethodPost)
-			writeLLMResponse(w, http.StatusMethodNotAllowed, "仅支持 POST 方法", nil, http.StatusMethodNotAllowed)
-			return
-		}
-
-		var req taaLogRequest
-		if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&req); err != nil {
-			writeLLMResponse(w, http.StatusBadRequest, "解析 JSON 失败: "+err.Error(), nil, http.StatusBadRequest)
-			return
-		}
-		if strings.TrimSpace(req.DockerID) == "" {
-			writeLLMResponse(w, http.StatusBadRequest, "缺少 dockerId", nil, http.StatusBadRequest)
-			return
-		}
-		if strings.TrimSpace(req.RequestID) == "" {
-			writeLLMResponse(w, http.StatusBadRequest, "缺少 requestId", nil, http.StatusBadRequest)
-			return
-		}
-		if len(req.Entries) == 0 {
-			writeLLMResponse(w, http.StatusBadRequest, "entries 不能为空", nil, http.StatusBadRequest)
-			return
-		}
-
-		store.addEntries(req.DockerID, req.RequestID, req.TaskID, req.Entries)
-		state.touchLog(req.DockerID)
-		writeLLMResponse(w, http.StatusOK, "success", map[string]any{"received": true}, 0)
-	}
-}
-
-// llmStatusHandler exposes what the LLM instance last reported.
-func llmStatusHandler(state *llmStateStore, logs *taaLogStore) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		setCORS(w)
-		snapshot := state.get()
 		writeJSON(w, http.StatusOK, map[string]any{
-			"register":  snapshot.Register,
-			"heartbeat": snapshot.Heartbeat,
-			"logs":      logs.get(),
-			"sources":   snapshot.Sources,
+			"state":       state.get(),
+			"logs":        logs.get(),
+			"pollSeconds": poller.pollSeconds(),
 		})
+	}
+}
+
+// llmAttestationHandler pulls the report on demand. It is a button, not a
+// timer: the instance's report is a hardware call and changes only on restart.
+func llmAttestationHandler(poller *llmPoller) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		setCORS(w)
+		if r.Method == http.MethodOptions {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		if r.Method != http.MethodPost {
+			w.Header().Set("Allow", http.MethodPost)
+			writeLLMResponse(w, http.StatusMethodNotAllowed, "仅支持 POST 方法", nil, http.StatusMethodNotAllowed)
+			return
+		}
+
+		ctx, cancel := context.WithTimeout(r.Context(), 3*llmRequestTimeout)
+		defer cancel()
+
+		attestation, err := poller.FetchAttestation(ctx)
+		if err != nil {
+			writeLLMResponse(w, http.StatusBadGateway, "获取远程证明失败: "+err.Error(), nil, http.StatusBadGateway)
+			return
+		}
+		writeLLMResponse(w, http.StatusOK, "success", attestation, 0)
 	}
 }
 
 // llmResetHandler clears the record so a test can start from a clean panel.
 // The log store is part of what the panel shows, so leaving it behind would
-// contradict the button's meaning.
+// contradict the button's meaning; the poller re-reads the instance from seq 0
+// on the next poll.
 func llmResetHandler(state *llmStateStore, logs *taaLogStore) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		setCORS(w)
@@ -183,5 +69,26 @@ func llmResetHandler(state *llmStateStore, logs *taaLogStore) http.HandlerFunc {
 		state.reset()
 		logs.reset()
 		writeLLMResponse(w, http.StatusOK, "success", map[string]any{"reset": true}, 0)
+	}
+}
+
+// llmPollNowHandler runs one poll on demand, so the panel's refresh button does
+// not have to wait for the next tick.
+func llmPollNowHandler(poller *llmPoller) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		setCORS(w)
+		if r.Method == http.MethodOptions {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		if r.Method != http.MethodPost {
+			w.Header().Set("Allow", http.MethodPost)
+			writeLLMResponse(w, http.StatusMethodNotAllowed, "仅支持 POST 方法", nil, http.StatusMethodNotAllowed)
+			return
+		}
+		ctx, cancel := context.WithTimeout(r.Context(), 3*llmRequestTimeout)
+		defer cancel()
+		poller.PollOnce(ctx)
+		writeLLMResponse(w, http.StatusOK, "success", map[string]any{"polled": true, "at": time.Now().Format(time.RFC3339)}, 0)
 	}
 }

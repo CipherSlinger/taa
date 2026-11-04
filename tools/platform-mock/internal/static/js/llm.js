@@ -1,15 +1,16 @@
 // ── TEE-LLM instance panel ──
 //
-// The LLM is a separate instance kind: it reports in plaintext on /v1/llm/* and
-// keeps its own state, so nothing here uses the ?dockerId= selection.
+// The LLM never reports out: the mock polls it on the plaintext platform port
+// and this panel renders what the poller learned. Everything below therefore
+// describes a platform observation (and when it was taken), never a self-report.
 
-// Three missed heartbeats (30s each) mark the instance offline, matching the
-// platform-side rule the LLM spec documents.
-const LLM_OFFLINE_AFTER_MS = 90 * 1000;
+// How many poll intervals without a successful heartbeat before the panel calls
+// the instance offline. The interval itself comes from the status response, so
+// a deployment that changed LLM_POLL_SECONDS does not silently change the rule.
+const LLM_OFFLINE_AFTER_POLLS = 3;
 
 let llmLogPaused = false;
 let llmLogAutoScroll = true;
-let lastLLMState = null;
 
 function llmRelativeTime(iso) {
   if (!iso) return '';
@@ -32,18 +33,25 @@ function llmTimeOfDay(iso) {
   return new Date(t).toLocaleTimeString('zh-CN', { hour12: false });
 }
 
+function llmDuration(seconds) {
+  const s = Number(seconds) || 0;
+  if (s < 60) return `${s}s`;
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m}m ${s % 60}s`;
+  const h = Math.floor(m / 60);
+  return `${h}h ${m % 60}m`;
+}
+
 function renderLLMStatus(payload) {
-  lastLLMState = payload || null;
-  const reg = (payload && payload.register) || {};
-  const hb = (payload && payload.heartbeat) || {};
+  const state = (payload && payload.state) || {};
+  const pollSeconds = Number(payload && payload.pollSeconds) || 10;
+  const offlineAfterMs = pollSeconds * 1000 * LLM_OFFLINE_AFTER_POLLS;
 
   let cls = 'pending';
-  let label = '等待 TEE-LLM 注册';
-  if (reg.received) {
-    const lastHeartbeat = hb.receivedAt ? Date.parse(hb.receivedAt) : NaN;
-    if (Number.isNaN(lastHeartbeat)) {
-      label = '已注册，等待心跳';
-    } else if (Date.now() - lastHeartbeat <= LLM_OFFLINE_AFTER_MS) {
+  let label = '未发现 TEE-LLM';
+  if (state.address) {
+    const lastHeartbeat = state.lastHeartbeatAt ? Date.parse(state.lastHeartbeatAt) : NaN;
+    if (state.reachable && !Number.isNaN(lastHeartbeat) && Date.now() - lastHeartbeat <= offlineAfterMs) {
       cls = 'ok';
       label = '在线';
     } else {
@@ -61,52 +69,49 @@ function renderLLMStatus(payload) {
 
   const hbText = document.getElementById('llmHeartbeatText');
   if (hbText) {
-    hbText.textContent = hb.receivedAt
-      ? `心跳 ${hb.count || 0} 次 · ${llmRelativeTime(hb.receivedAt)}`
-      : '';
+    hbText.textContent = state.lastHeartbeatAt
+      ? `心跳 ${state.heartbeats || 0} 次 · ${llmRelativeTime(state.lastHeartbeatAt)}（每 ${pollSeconds}s 轮询）`
+      : `每 ${pollSeconds}s 轮询`;
   }
 
   const setText = (id, value) => {
     const el = document.getElementById(id);
     if (el) el.textContent = value;
   };
-  setText('llmDockerId', reg.dockerId || '—');
-  setText('llmVerified', reg.received ? (reg.verifiedPass ? '✓' : '✗') : '—');
-  setText('llmAttestationSize', reg.received ? `${reg.attestationSize || 0} B` : '—');
-  setText('llmRegisteredAt', reg.received ? llmTimeOfDay(reg.receivedAt) : '—');
+  setText('llmAddress', state.address || '—');
+  setText('llmModel', state.model || '—');
+  setText('llmUptime', state.address && state.reachable ? llmDuration(state.uptimeSeconds) : '—');
+  setText('llmLastPoll', state.lastPollAt ? llmTimeOfDay(state.lastPollAt) : '—');
+  setText('llmLogCursor', `${state.logCursor || 0}${state.logDropped ? '（有丢弃）' : ''}`);
 
-  const pubKeyBtn = document.getElementById('llmPublicKeyBtn');
-  if (pubKeyBtn) pubKeyBtn.disabled = !(reg.received && reg.taaPublicKey);
-  const bodyBtn = document.getElementById('llmRegisterBodyBtn');
-  if (bodyBtn) bodyBtn.disabled = !reg.received;
+  const errEl = document.getElementById('llmLastError');
+  if (errEl) {
+    errEl.textContent = state.lastError || '';
+    errEl.style.display = state.lastError ? '' : 'none';
+  }
 
-  renderLLMSources(payload && payload.sources, reg);
+  renderLLMAttestation(state.attestation);
   renderLLMLogs(payload && payload.logs);
 }
 
-function renderLLMSources(sources, reg) {
-  const box = document.getElementById('card-llmSources');
-  const list = document.getElementById('llmSourcesList');
-  const count = document.getElementById('llmSourcesCount');
-  const items = Array.isArray(sources) ? sources : [];
-  if (box) box.style.display = items.length ? '' : 'none';
-  if (count) count.textContent = `${items.length} 个来源`;
-  if (!list) return;
-
-  const eventLabels = { register: '注册', heartbeat: '心跳', log: '日志' };
-  const currentId = reg && reg.received ? reg.dockerId : '';
-  list.innerHTML = items.map((src) => {
-    const isCurrent = src.dockerId && src.dockerId === currentId;
-    const tag = isCurrent
-      ? '<span class="status-pill ok" style="font-size:11px; padding:1px 6px;">当前</span>'
-      : '';
-    const event = eventLabels[src.lastEvent] || src.lastEvent || '—';
-    return `<div style="display:flex; align-items:center; gap:10px; padding:4px 8px; background:var(--panel-sub); border-radius:6px; flex-wrap:wrap;">
-      <code style="min-width:160px;">${escapeHtml(src.dockerId || '')}</code>
-      ${tag}
-      <span class="muted">${escapeHtml(event)} · ${escapeHtml(llmRelativeTime(src.lastSeen))}</span>
-    </div>`;
-  }).join('');
+function renderLLMAttestation(att) {
+  const box = document.getElementById('llmAttestationBox');
+  if (!box) return;
+  if (!att || !att.fetchedAt) {
+    box.innerHTML = '<span class="muted" style="font-size:12.5px;">尚未拉取。点击「获取证明报告」向实例发起一次调用。</span>';
+    return;
+  }
+  const verified = att.verifiedPass ? '✓ 自检通过' : '✗ 自检失败';
+  const err = att.error ? `<div style="color:#dc2626; margin-top:6px;">${escapeHtml(att.error)}</div>` : '';
+  box.innerHTML = `
+    <div style="display:flex; gap:18px; flex-wrap:wrap; font-size:13px;">
+      <span>requestId: <code>${escapeHtml(att.requestId || '—')}</code></span>
+      <span>${verified}</span>
+      <span>报告: ${att.attestationSize || 0} B</span>
+      <span>拉取于: ${llmTimeOfDay(att.fetchedAt)}</span>
+    </div>
+    <pre style="margin:8px 0 0; max-height:140px; overflow:auto; background:var(--panel-sub); border:1px solid var(--line); border-radius:8px; padding:8px; font-size:12px;">${escapeHtml(att.attestationValues || '—')}</pre>
+    ${err}`;
 }
 
 function renderLLMLogEntry(entry) {
@@ -127,7 +132,7 @@ function renderLLMLogs(logs) {
 
   out.innerHTML = entries.length
     ? entries.map(renderLLMLogEntry).join('')
-    : '<div style="color:#6b7280; text-align:center; padding:16px 0;">暂无日志。(/v1/llm/log)</div>';
+    : '<div style="color:#6b7280; text-align:center; padding:16px 0;">暂无日志。mock 尚未拉到 /v1/llm/log 的内容。</div>';
 
   if (llmLogAutoScroll) out.scrollTop = out.scrollHeight;
 }
@@ -159,52 +164,40 @@ async function refreshLLMStatus() {
   }
 }
 
+async function pollLLMNow() {
+  try {
+    await fetch('/api/llm/poll', { method: 'POST' });
+  } catch (_) {
+    // refresh below renders whatever the poll managed to record
+  }
+  refreshLLMStatus();
+}
+
+async function fetchLLMAttestation() {
+  try {
+    const res = await fetch('/api/llm/attestation', { method: 'POST' });
+    const data = await res.json();
+    if (data && data.error) {
+      if (typeof showToast === 'function') {
+        showToast({ type: 'warning', title: '获取失败', message: data.msg || '实例未应答' });
+      }
+    } else if (typeof showToast === 'function') {
+      showToast({ type: 'success', title: '已拉取', message: '远程证明报告来自实例，未做校验' });
+    }
+  } catch (_) {
+    if (typeof showToast === 'function') {
+      showToast({ type: 'warning', title: '获取失败', message: '请求未完成' });
+    }
+  }
+  refreshLLMStatus();
+}
+
 async function resetLLMStatus() {
   try {
     await fetch('/api/llm/reset', { method: 'POST' });
   } catch (_) {}
   if (typeof showToast === 'function') {
-    showToast({ type: 'success', title: '已重置', message: 'TEE-LLM 注册、心跳、来源与日志已清空' });
+    showToast({ type: 'success', title: '已重置', message: 'TEE-LLM 轮询状态与日志已清空' });
   }
   refreshLLMStatus();
-}
-
-function openLLMRegisterBody() {
-  if (!lastLLMState || !lastLLMState.register || !lastLLMState.register.received) {
-    if (typeof showToast === 'function') {
-      showToast({ type: 'warning', title: '提示', message: '暂无 TEE-LLM 注册报文' });
-    }
-    return;
-  }
-  recordInteraction('llmRegister', {
-    title: 'TEE-LLM 平台注册详情',
-    primaryLabel: '上报内容 (TEE-LLM 请求体)',
-    secondaryLabel: '平台应答',
-    primaryContent: lastLLMState.register,
-    secondaryContent: { code: 0, msg: 'ok', result: { received: true } },
-    endpoint: '/v1/llm/register',
-  });
-  openInteractionDrawer('llmRegister', 'primary');
-}
-
-function openLLMPublicKeyModal() {
-  const modal = document.getElementById('llmPublicKeyModal');
-  const field = document.getElementById('llmPublicKeyText');
-  const key = lastLLMState && lastLLMState.register ? lastLLMState.register.taaPublicKey : '';
-  if (!modal || !field || !key) {
-    if (typeof showToast === 'function') {
-      showToast({ type: 'warning', title: '提示', message: '暂无 TEE-LLM 注册公钥' });
-    }
-    return;
-  }
-  field.value = key;
-  modal.classList.add('open');
-  modal.setAttribute('aria-hidden', 'false');
-}
-
-function closeLLMPublicKeyModal() {
-  const modal = document.getElementById('llmPublicKeyModal');
-  if (!modal) return;
-  modal.classList.remove('open');
-  modal.setAttribute('aria-hidden', 'true');
 }

@@ -61,6 +61,7 @@ func init() {
 type Server struct {
 	cfg        Config
 	httpServer *http.Server
+	llmPoller  *llmPoller
 }
 
 // NewServer builds a Server from cfg: it prepares the state/upload directories,
@@ -121,14 +122,14 @@ func NewServer(cfg Config) *Server {
 	mux.HandleFunc("/v1/taa/reportProgress", reportProgressHandler(mgr))
 	mux.HandleFunc("/v1/taa/modelLog", modelLogHandler(mgr))
 	mux.HandleFunc("/v1/taa/taaLog", taaLogHandler(mgr))
-	// The LLM reports in plaintext on its own prefix and is not attached to any
-	// TAA instance, so these routes keep their own state and log store.
+	// The LLM does not report out: the platform polls it, so these routes only
+	// read what the poller learned and let the console drive a call on demand.
 	llmState := newLLMStateStore(cfg.StateDir)
 	llmLogStore := newTaaLogStoreAt(defaultStateFile(cfg.StateDir, "llm-log-state.json"), 2000)
-	mux.HandleFunc("/v1/llm/register", llmRegisterHandler(llmState))
-	mux.HandleFunc("/v1/llm/heartbeat", llmHeartbeatHandler(llmState))
-	mux.HandleFunc("/v1/llm/log", llmLogHandler(llmLogStore, llmState))
-	mux.HandleFunc("/api/llm/status", llmStatusHandler(llmState, llmLogStore))
+	llmPoller := newLLMPoller(cfg, llmState, llmLogStore)
+	mux.HandleFunc("/api/llm/status", llmStatusHandler(llmPoller, llmState, llmLogStore))
+	mux.HandleFunc("/api/llm/poll", llmPollNowHandler(llmPoller))
+	mux.HandleFunc("/api/llm/attestation", llmAttestationHandler(llmPoller))
 	mux.HandleFunc("/api/llm/reset", llmResetHandler(llmState, llmLogStore))
 	mux.HandleFunc("/api/instances", instancesHandler(mgr))
 	mux.HandleFunc("/api/dashboard/status", dashboardStatusHandler(mgr))
@@ -178,6 +179,7 @@ func NewServer(cfg Config) *Server {
 			Handler:           mux,
 			ReadHeaderTimeout: 5 * time.Second,
 		},
+		llmPoller: llmPoller,
 	}
 }
 
@@ -188,6 +190,11 @@ func (s *Server) Start(ctx context.Context) error {
 		log.Printf("mock platform URL: %s", u)
 	}
 	log.Printf("TAA should use PLATFORM_IP=%s", platformIP(s.cfg.Addr))
+	log.Printf("TEE-LLM is polled every %ds (pod %q ns %q port %s, target %q)",
+		s.cfg.LLMPollSeconds, s.cfg.LLMPod, s.cfg.LLMNS, s.cfg.LLMPort, s.cfg.LLMTarget)
+
+	// The poller shares the server's lifetime: cancellation stops both.
+	go s.llmPoller.Start(ctx)
 
 	serveErr := make(chan error, 1)
 	go func() {

@@ -1,173 +1,122 @@
 package mock
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"strings"
+	"path/filepath"
 	"testing"
 )
 
-func TestLLMRegisterAcceptsPlaintext(t *testing.T) {
-	store := newLLMStateStore(t.TempDir())
-	handler := llmRegisterHandler(store)
+func newLLMHandlerRig(t *testing.T) (*fakeLLM, *llmStateStore, *taaLogStore, *llmPoller) {
+	t.Helper()
+	fake, poller, state, logs := newPollTestRig(t)
+	return fake, state, logs, poller
+}
 
-	body := `{"dockerId":"taa-teellm","authInfo":null,"taaPublicKey":"-----BEGIN PUBLIC KEY-----\nFAKE\n-----END PUBLIC KEY-----\n","attestationValues":"{\"userdata\":\"aa\",\"mnonce\":\"bb\",\"digest\":\"cc\",\"chipId\":\"CHIP\"}","timestamp":"1730000000","verifiedPass":true,"attestation":"AQID"}`
-	req := httptest.NewRequest(http.MethodPost, "/v1/llm/register", strings.NewReader(body))
-	req.Header.Set("Content-Type", "application/json")
+func decodeLLMStatus(t *testing.T, rec *httptest.ResponseRecorder) (llmState, taaLogState) {
+	t.Helper()
+	var body struct {
+		State llmState    `json:"state"`
+		Logs  taaLogState `json:"logs"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode status: %v", err)
+	}
+	return body.State, body.Logs
+}
+
+func TestLLMStatusReportsPolledState(t *testing.T) {
+	fake, state, logs, poller := newLLMHandlerRig(t)
+	fake.setEntries([]llmLogPullEntry{{Seq: 1, Message: "hello"}})
+	state.recordHeartbeat("m", 42)
+	logs.addEntries("http://tt:6001", "run", "", []taaLogEntry{{Seq: 1, Message: "hello"}})
+
 	rec := httptest.NewRecorder()
-	handler(rec, req)
+	llmStatusHandler(poller, state, logs)(rec, httptest.NewRequest(http.MethodGet, "/api/llm/status", nil))
+	gotState, gotLogs := decodeLLMStatus(t, rec)
 
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	if gotState.Model != "m" || gotState.Heartbeats != 1 {
+		t.Errorf("state = %+v", gotState)
 	}
-	state := store.get()
-	if !state.Register.Received || state.Register.DockerID != "taa-teellm" {
-		t.Fatalf("register state = %+v", state.Register)
-	}
-	if !state.Register.VerifiedPass {
-		t.Error("verifiedPass was not recorded")
-	}
-	if state.Register.AttestationSize != 3 {
-		t.Errorf("attestationSize = %d, want 3", state.Register.AttestationSize)
+	if len(gotLogs.Entries) != 1 {
+		t.Errorf("logs = %+v", gotLogs)
 	}
 }
 
-func TestLLMHeartbeatRecordsLiveness(t *testing.T) {
-	store := newLLMStateStore(t.TempDir())
-	handler := llmHeartbeatHandler(store)
+func TestLLMResetClearsStateAndLogs(t *testing.T) {
+	fake, state, logs, poller := newLLMHandlerRig(t)
+	fake.setEntries([]llmLogPullEntry{{Seq: 1, Message: "hello"}})
+	poller.PollOnce(context.Background())
 
-	req := httptest.NewRequest(http.MethodPost, "/v1/llm/heartbeat", strings.NewReader(`{"dockerId":"taa-teellm","timestamp":"1730000030"}`))
-	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
-	handler(rec, req)
-
+	llmResetHandler(state, logs)(rec, httptest.NewRequest(http.MethodPost, "/api/llm/reset", nil))
 	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+		t.Fatalf("status = %d", rec.Code)
 	}
-	state := store.get()
-	if state.Heartbeat.DockerID != "taa-teellm" || state.Heartbeat.Count != 1 {
-		t.Fatalf("heartbeat state = %+v", state.Heartbeat)
+	if got := state.get(); got.Heartbeats != 0 || got.Reachable || got.LogCursor != 0 {
+		t.Errorf("state after reset = %+v", got)
+	}
+	if entries := logs.get().Entries; len(entries) != 0 {
+		t.Errorf("logs after reset = %+v", entries)
 	}
 }
 
-func TestLLMLogAcceptsPlaintextEntries(t *testing.T) {
-	logStore := newTaaLogStoreAt(t.TempDir()+"/llm-log-state.json", 2000)
-	stateStore := newLLMStateStore(t.TempDir())
-	handler := llmLogHandler(logStore, stateStore)
+func TestLLMPollHandlerRunsOnePoll(t *testing.T) {
+	fake, state, _, poller := newLLMHandlerRig(t)
+	fake.setEntries([]llmLogPullEntry{{Seq: 1, Message: "hello"}})
 
-	body := `{"dockerId":"taa-teellm","requestId":"system","seqStart":1,"entries":[{"seq":1,"message":"[2026-11-02 10:00:00] [INFO] [teellm] ready"}]}`
-	req := httptest.NewRequest(http.MethodPost, "/v1/llm/log", strings.NewReader(body))
-	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
-	handler(rec, req)
-
+	llmPollNowHandler(poller)(rec, httptest.NewRequest(http.MethodPost, "/api/llm/poll", nil))
 	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+		t.Fatalf("status = %d", rec.Code)
 	}
-	if got := logStore.get().TotalCount; got != 1 {
-		t.Fatalf("totalCount = %d, want 1", got)
+	if got := state.get(); got.Heartbeats != 1 || got.LogCursor != 1 {
+		t.Errorf("state = %+v", got)
 	}
 }
 
-func TestLLMRegisterRejectsMissingDockerID(t *testing.T) {
-	store := newLLMStateStore(t.TempDir())
-	handler := llmRegisterHandler(store)
+func TestLLMAttestationHandlerStoresThePull(t *testing.T) {
+	_, state, _, poller := newLLMHandlerRig(t)
 
-	req := httptest.NewRequest(http.MethodPost, "/v1/llm/register", strings.NewReader(`{"attestation":"AQID"}`))
-	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
-	handler(rec, req)
-
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("status = %d, want 400", rec.Code)
+	llmAttestationHandler(poller)(rec, httptest.NewRequest(http.MethodPost, "/api/llm/attestation", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body %s", rec.Code, rec.Body.String())
 	}
-	var resp map[string]any
-	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
-		t.Fatalf("response is not JSON: %v", err)
+	if got := state.get().Attestation; got.RequestID != "req-1" || got.AttestationSize == 0 {
+		t.Errorf("attestation = %+v", got)
 	}
 }
 
-func TestLLMEndpointsRecordSources(t *testing.T) {
-	store := newLLMStateStore(t.TempDir())
-	logs := newTaaLogStoreAt(t.TempDir()+"/llm-log-state.json", 2000)
-
-	register := llmRegisterHandler(store)
-	req := httptest.NewRequest(http.MethodPost, "/v1/llm/register",
-		strings.NewReader(`{"dockerId":"taa-teellm","attestation":"AQID"}`))
-	rec := httptest.NewRecorder()
-	register(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("register status = %d, body = %s", rec.Code, rec.Body.String())
+func TestLLMHandlersRejectTheWrongMethod(t *testing.T) {
+	_, state, logs, poller := newLLMHandlerRig(t)
+	cases := map[string]http.HandlerFunc{
+		"/api/llm/reset":       llmResetHandler(state, logs),
+		"/api/llm/poll":        llmPollNowHandler(poller),
+		"/api/llm/attestation": llmAttestationHandler(poller),
 	}
-
-	heartbeat := llmHeartbeatHandler(store)
-	req = httptest.NewRequest(http.MethodPost, "/v1/llm/heartbeat",
-		strings.NewReader(`{"dockerId":"taa-teellm","timestamp":"1730000030"}`))
-	rec = httptest.NewRecorder()
-	heartbeat(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("heartbeat status = %d, body = %s", rec.Code, rec.Body.String())
-	}
-
-	logHandler := llmLogHandler(logs, store)
-	body := `{"dockerId":"taa-teellm","requestId":"system","entries":[{"seq":1,"message":"ready"}]}`
-	req = httptest.NewRequest(http.MethodPost, "/v1/llm/log", strings.NewReader(body))
-	rec = httptest.NewRecorder()
-	logHandler(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("log status = %d, body = %s", rec.Code, rec.Body.String())
-	}
-
-	sources := store.get().Sources
-	if len(sources) != 1 {
-		t.Fatalf("sources = %+v, want one entry", sources)
-	}
-	if sources[0].Registers != 1 || sources[0].Heartbeats != 1 || sources[0].Logs != 1 {
-		t.Fatalf("source counters = %+v", sources[0])
-	}
-	if sources[0].LastEvent != llmEventLog {
-		t.Errorf("lastEvent = %q, want %q", sources[0].LastEvent, llmEventLog)
+	for path, handler := range cases {
+		rec := httptest.NewRecorder()
+		handler(rec, httptest.NewRequest(http.MethodGet, path, nil))
+		if rec.Code != http.StatusMethodNotAllowed {
+			t.Errorf("%s GET status = %d, want 405", path, rec.Code)
+		}
 	}
 }
 
-func TestLLMStatusReportsSources(t *testing.T) {
-	store := newLLMStateStore(t.TempDir())
-	logs := newTaaLogStoreAt(t.TempDir()+"/llm-log-state.json", 2000)
-	store.recordHeartbeat(llmHeartbeatState{DockerID: "taa-teellm", Count: 1})
-
-	req := httptest.NewRequest(http.MethodGet, "/api/llm/status", nil)
-	rec := httptest.NewRecorder()
-	llmStatusHandler(store, logs)(rec, req)
-
-	var resp struct {
-		Sources []llmSource `json:"sources"`
+func TestLLMLogStoreIsPerRun(t *testing.T) {
+	logs := newTaaLogStoreAt(filepath.Join(t.TempDir(), "llm-log.json"), 10)
+	// The same seq from a different run must not be mistaken for a duplicate:
+	// that is how a restarted instance's first records survive the dedupe.
+	if added := logs.addEntries("http://tt:6001", "run-1", "", []taaLogEntry{{Seq: 1, Message: "one"}}); added != 1 {
+		t.Fatalf("first run added %d", added)
 	}
-	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
-		t.Fatalf("response is not JSON: %v, body = %s", err, rec.Body.String())
+	if added := logs.addEntries("http://tt:6001", "run-2", "", []taaLogEntry{{Seq: 1, Message: "one again"}}); added != 1 {
+		t.Fatalf("second run added %d", added)
 	}
-	if len(resp.Sources) != 1 || resp.Sources[0].DockerID != "taa-teellm" {
-		t.Fatalf("sources = %+v", resp.Sources)
-	}
-}
-
-func TestLLMResetClearsLogsAndSources(t *testing.T) {
-	store := newLLMStateStore(t.TempDir())
-	logs := newTaaLogStoreAt(t.TempDir()+"/llm-log-state.json", 2000)
-	logs.addEntries("taa-teellm", "system", "", []taaLogEntry{{Seq: 1, Message: "ready"}})
-	store.setRegister(llmRegisterState{Received: true, DockerID: "taa-teellm"})
-
-	req := httptest.NewRequest(http.MethodPost, "/api/llm/reset", nil)
-	rec := httptest.NewRecorder()
-	llmResetHandler(store, logs)(rec, req)
-
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
-	}
-	if state := store.get(); state.Register.Received || len(state.Sources) != 0 {
-		t.Fatalf("state after reset = %+v", state)
-	}
-	if got := logs.get().TotalCount; got != 0 {
-		t.Fatalf("log totalCount after reset = %d, want 0", got)
+	if added := logs.addEntries("http://tt:6001", "run-2", "", []taaLogEntry{{Seq: 1, Message: "one again"}}); added != 0 {
+		t.Fatalf("replayed entry added %d, want 0", added)
 	}
 }
