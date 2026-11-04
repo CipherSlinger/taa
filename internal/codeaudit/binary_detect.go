@@ -182,7 +182,7 @@ func isPickleStream(head []byte, path string) bool {
 // Three conditions, all required:
 //
 //   - No structural mark. A mark means the walk desynchronised - an unknown
-//     opcode, an operand past pickleMaxOperandBytes, an overrun stack or memo -
+//     opcode, an operand past the member's byte budget, an overrun stack or memo -
 //     and a stream that cannot survive its own head is not one to claim.
 //   - At least one SourcePickle line, because a stream with no module.attribute
 //     target carries no PKL_001 evidence and the claim is not free: a claimed

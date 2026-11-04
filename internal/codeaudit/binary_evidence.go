@@ -154,8 +154,8 @@ func (s *EvidenceSet) markStructural(reason string) {
 	s.Bound.Reason = reason
 }
 
-// markListing records that evidence lines were dropped by the listing cap, or
-// that one line was cut short at MaxStringLen. A listing never relabels a reason
+// markListing records that evidence lines were dropped by the listing cap. A
+// listing never relabels a reason
 // already recorded - it writes only when Reason is empty - while a structural
 // reason does override one, because markStructural guards on Structural rather
 // than on Reason. Among reasons of the same class the first wins.
@@ -218,11 +218,6 @@ func (s *EvidenceSet) addStructured(src EvidenceSource, text string) {
 // are at or above it.
 const DefaultBinaryMinStringLen = 4
 
-// DefaultBinaryMaxStringLen is how much of one printable run is kept. A long
-// blob is truncated rather than split, so one blob is one line; the truncation
-// is recorded as a listing bound.
-const DefaultBinaryMaxStringLen = 1024
-
 // evidenceReadChunk is the read size for the streaming passes. It is the unit
 // the string carry works across, so it is a constant rather than a tunable.
 const evidenceReadChunk = 64 * 1024
@@ -236,9 +231,6 @@ type stringScanner struct {
 	at    int64
 	run   []byte
 	runAt int64
-	// truncated marks that a run hit MaxStringLen, which is a listing bound: the
-	// tail of that run is not in the listing.
-	truncated bool
 }
 
 func newStringScanner(set *EvidenceSet, cfg BinaryConfig) *stringScanner {
@@ -254,17 +246,17 @@ func newStringScanner(set *EvidenceSet, cfg BinaryConfig) *stringScanner {
 
 // Write implements io.Writer. The run is carried across calls, so a literal
 // split by a chunk boundary is still one string.
+//
+// A run is kept whole. There is no per-run cap any more: the only bound on what a
+// file contributes to the listing is the set's line cap, which counts lines
+// rather than bytes, so line length is left to the read's own memory.
 func (s *stringScanner) Write(p []byte) (int, error) {
 	for _, b := range p {
 		if isPrintableByte(b) {
 			if len(s.run) == 0 {
 				s.runAt = s.at
 			}
-			if len(s.run) < s.cfg.MaxStringLen {
-				s.run = append(s.run, b)
-			} else {
-				s.truncated = true
-			}
+			s.run = append(s.run, b)
 		} else {
 			s.flush()
 		}
@@ -278,9 +270,6 @@ func (s *stringScanner) Write(p []byte) (int, error) {
 // up on files ending in a literal.
 func (s *stringScanner) Flush() {
 	s.flush()
-	if s.truncated {
-		s.set.markListing("string truncated at MaxStringLen")
-	}
 }
 
 func (s *stringScanner) flush() {
@@ -304,14 +293,17 @@ func isPrintableByte(b byte) bool {
 	return b >= 0x20 && b <= 0x7e || b == '\t'
 }
 
-// streamEvidence runs the byte-oriented extractors over one file.
+// streamEvidence runs the byte-oriented extractors over one file, end to end.
 //
-// budget is the maximum number of bytes the pass may read, and it is enforced
-// inside the read rather than between reads: checking it only at the top of the
-// loop lets a single 64 KiB read walk straight past a 32-byte budget, which
-// makes the budget a decoration. Whether the file was too large is decided up
-// front from its size, so that a file that ends exactly at the budget is not
-// reported as bounded - a bound that did not cost anything is not a bound.
+// There is no size switch and no read budget: every byte of every file reaches
+// both scanners, so a literal in the middle of a large file is as visible as one
+// in its head, and nothing an attacker appends past a threshold is skipped.
+//
+// The cost is stated rather than hidden: at the measured 338 MB/s a 3 GiB shard
+// costs about nine seconds, and a file larger than that costs proportionally
+// more. That is the trade this channel makes - the caller's audit is
+// asynchronous, and a look that did not happen was the failure mode the old
+// switch traded away.
 //
 // This pass runs two scanners over the same reads: the string scanner, and the
 // pickle interpreter when the file is claimed to be a pickle. The interpreter is
@@ -320,25 +312,16 @@ func isPrintableByte(b byte) bool {
 // that bound blocks the import. A whole file is the one stream whose kind is the
 // set's own, so the gate is decided here and handed over.
 //
-// The read loop itself is streamReaderEvidence's: this function owns the file
-// handle and the size check, so the budget clamp is written once.
-func streamEvidence(path string, set *EvidenceSet, cfg BinaryConfig, budget int64) error {
+// The read loop itself is streamReaderEvidence's, so the two passes see the same
+// bytes.
+func streamEvidence(path string, set *EvidenceSet, cfg BinaryConfig) error {
 	f, err := os.Open(path)
 	if err != nil {
 		return fmt.Errorf("open %s: %w", path, err)
 	}
 	defer f.Close()
 
-	// The cut is decided from the file's size rather than left to the probe byte
-	// streamReaderEvidence uses, so that the reason can name both numbers. It is
-	// recorded before the read, and markStructural keeps the first reason, so the
-	// wording handed over below is only reached where the size check could not see
-	// the cut at all.
-	if info, statErr := f.Stat(); statErr == nil && budget > 0 && info.Size() > budget {
-		set.markStructural(fmt.Sprintf("stream budget %d bytes reached (file is %d)", budget, info.Size()))
-	}
-	if err := streamReaderEvidence(f, set, cfg, budget,
-		fmt.Sprintf("stream budget %d bytes reached", budget), set.Kind == KindPickle); err != nil {
+	if err := streamReaderEvidence(f, set, cfg, 0, "", set.Kind == KindPickle); err != nil {
 		return fmt.Errorf("scan %s: %w", path, err)
 	}
 	return nil
@@ -474,32 +457,21 @@ type BinaryConfig struct {
 	Enabled bool
 	// MinStringLen is the shortest printable run kept as evidence.
 	MinStringLen int
-	// MaxStringLen is how much of one run is kept before it is truncated.
-	MaxStringLen int
 	// MaxEvidenceLines caps distinct evidence lines per file.
+	//
+	// It is a memory ceiling, not a coverage limit: a file is read end to end, and
+	// the cap only decides how many distinct lines of it are held. See the field's
+	// use in EvidenceSet.add for why it has to stay.
 	MaxEvidenceLines int
-	// MaxStreamBytes bounds how much of one file the streaming pass reads.
-	MaxStreamBytes int64
-	// MaxFullScanBytes is the size above which a file is no longer streamed end to
-	// end, and only its head and tail are read. The number is set from the corpus
-	// this platform actually audits rather than from a guess: the largest file in
-	// the example package that reaches a full pass is a 10.8 MiB protocol-2 pickle,
-	// with .pyc files at 45-58 KiB and the MNIST blobs at ~10 MiB behind it. 64 MiB
-	// leaves six times the headroom over the largest of them, so no file in that
-	// corpus changes behaviour, and at the measured 338 MB/s it caps the work one
-	// file can cost at about 190 ms.
-	MaxFullScanBytes int64
-	// HeadTailBytes is the window read from each end of a file above
-	// MaxFullScanBytes. One mebibyte is what makes an appended payload visible: a
-	// zip's directory and the pickle stapled after the last member are both within
-	// it of one end or the other.
-	HeadTailBytes int64
-	// MaxArchiveMembers bounds how many container members are examined.
-	MaxArchiveMembers int
-	// MaxArchiveMemberBytes bounds the bytes of the ELF/pickle members read whole
-	// across one container: the container's own total decompressed size is not
-	// bounded, because a member that is neither an ELF nor a pickle is classified
-	// from its head and skipped without being read whole.
+	// MaxArchiveMemberBytes bounds the decompressed bytes of one container member,
+	// and separately of one compressed stream that the channel expands.
+	//
+	// This is the zip-bomb guard, and it is the reason the coverage limits could
+	// be removed at the sizes they were: a 250 KiB archive can inflate to
+	// terabytes, and a Go OOM is a fatal error, not a panic, so no handler can turn
+	// it into a failed audit. Reaching it records a structural bound on the member,
+	// which withholds a clean verdict on an executable kind - a cut the report can
+	// see, unlike the memory the member would otherwise have consumed.
 	MaxArchiveMemberBytes int64
 	// MaxFindings caps findings across the whole binary pass.
 	//
@@ -539,12 +511,7 @@ func DefaultBinaryConfig() BinaryConfig {
 	return BinaryConfig{
 		Enabled:               true,
 		MinStringLen:          DefaultBinaryMinStringLen,
-		MaxStringLen:          DefaultBinaryMaxStringLen,
 		MaxEvidenceLines:      50000,
-		MaxStreamBytes:        3 * 1024 * 1024 * 1024,
-		MaxFullScanBytes:      64 * 1024 * 1024,
-		HeadTailBytes:         1 << 20,
-		MaxArchiveMembers:     4096,
 		MaxArchiveMemberBytes: 256 * 1024 * 1024,
 		// Not DefaultConfig().MaxFindings: the two channels are capped
 		// independently and the merge re-truncates neither. See the field comment.
@@ -562,23 +529,8 @@ func normalizeBinaryConfig(cfg BinaryConfig) BinaryConfig {
 	if cfg.MinStringLen <= 0 {
 		cfg.MinStringLen = def.MinStringLen
 	}
-	if cfg.MaxStringLen <= 0 {
-		cfg.MaxStringLen = def.MaxStringLen
-	}
 	if cfg.MaxEvidenceLines <= 0 {
 		cfg.MaxEvidenceLines = def.MaxEvidenceLines
-	}
-	if cfg.MaxStreamBytes <= 0 {
-		cfg.MaxStreamBytes = def.MaxStreamBytes
-	}
-	if cfg.MaxFullScanBytes <= 0 {
-		cfg.MaxFullScanBytes = def.MaxFullScanBytes
-	}
-	if cfg.HeadTailBytes <= 0 {
-		cfg.HeadTailBytes = def.HeadTailBytes
-	}
-	if cfg.MaxArchiveMembers <= 0 {
-		cfg.MaxArchiveMembers = def.MaxArchiveMembers
 	}
 	if cfg.MaxArchiveMemberBytes <= 0 {
 		cfg.MaxArchiveMemberBytes = def.MaxArchiveMemberBytes
@@ -742,10 +694,6 @@ func symbolTableIsEmpty(sec *elf.Section) (bool, error) {
 
 // collectELF reads a file's ELF structure into evidence.
 func collectELF(path string, set *EvidenceSet, cfg BinaryConfig) error {
-	// Resolve a zero config before it reaches streamWithSizeSwitch: that switch
-	// reads cfg.MaxFullScanBytes, and a zero there would read every non-empty file
-	// as above a 0-byte budget and window it. collectELFReader normalizes for the
-	// structural pass, but the stream pass runs first and is bounded from here.
 	cfg = normalizeBinaryConfig(cfg)
 	f, err := os.Open(path)
 	if err != nil {
@@ -757,10 +705,7 @@ func collectELF(path string, set *EvidenceSet, cfg BinaryConfig) error {
 	// pass seeks. Sharing one handle between them would make the structural
 	// parse depend on where the stream pass happened to stop.
 	//
-	// Through streamWithSizeSwitch rather than streamEvidence directly, so that a
-	// large shared object is windowed at its ends like any other large blob
-	// instead of being streamed whole.
-	if err := streamWithSizeSwitch(path, set, cfg); err != nil {
+	if err := streamEvidence(path, set, cfg); err != nil {
 		return err
 	}
 	return collectELFReader(f, set, cfg, path)
@@ -771,30 +716,22 @@ func collectELF(path string, set *EvidenceSet, cfg BinaryConfig) error {
 // path - is parsed by the same code rather than by a second implementation that
 // would drift from this one.
 //
-// It carries the whole of Task 5's body: the sectionless structural bound, the
-// .dynsym walk and its too-short-section guard, the per-section summary lines,
-// and the streamed entropy pass through countSection and entropyVerdictFromCounts.
-// All of that reads through io.ReaderAt already - debug/elf takes one, and
-// elf.Section.Open returns an io.Reader - so the move changes nothing but the
-// parameter that names the file in messages.
+// It carries the sectionless structural bound, the .dynsym walk and its
+// too-short-section guard, the per-section summary lines, and the streamed
+// entropy pass through countSection and entropyVerdictFromCounts. All of that
+// reads through io.ReaderAt already - debug/elf takes one, and elf.Section.Open
+// returns an io.Reader - so every section is read to its declared end with no
+// per-file byte budget.
 //
-// Task 5's `cfg = normalizeBinaryConfig(cfg)` moves here with the body, and it
-// has to stay here rather than in the wrapper: collectELFMember reaches this
-// parse directly, so normalizing only on the path side would leave every
-// container member parsed against a config nobody resolved.
-//
-// There is no size parameter: the parse bounds itself per file through
-// cfg.MaxStreamBytes, applied as the budget countSection stops at, and a size
-// the body never read would be a parameter that only invites the assumption that
-// something is bounds-checked elsewhere.
+// The normalize call has to stay here rather than in the wrapper: collectELFMember
+// reaches this parse directly, so normalizing only on the path side would leave
+// every container member parsed against a config nobody resolved. A
+// HighEntropyThreshold of 0 would flag every non-uniform section as packed, so
+// the zero value is resolved to the defaults up front.
 func collectELFReader(r io.ReaderAt, set *EvidenceSet, cfg BinaryConfig, name string) error {
-	// Normalize first, like every other collector. A zero-valued BinaryConfig is
-	// the shape a caller that only knows about one field passes, and leaving it
-	// raw is not neutral here: MaxStreamBytes of 0 makes the per-file budget spent
-	// before the first section, so every executable section records a structural
-	// "0-byte budget was spent" bound and the import is refused, and a
-	// HighEntropyThreshold of 0 flags every non-uniform section as packed. The
-	// zero value means "use the defaults", so it is resolved to them up front.
+	// Normalize first, like every other collector: a zero-valued BinaryConfig is
+	// the shape a caller that only knows about one field passes, and the zero
+	// value means "use the defaults".
 	cfg = normalizeBinaryConfig(cfg)
 
 	ef, err := elf.NewFile(r)
@@ -906,7 +843,6 @@ func collectELFReader(r io.ReaderAt, set *EvidenceSet, cfg BinaryConfig, name st
 	// a file scale with how many executable sections it declares, and a file can
 	// declare as many as it likes - the same unbounded-work shape the streaming
 	// pass's budget exists to stop, reintroduced through the section headers.
-	budget := cfg.MaxStreamBytes
 	for _, sec := range ef.Sections {
 		executable := sec.Flags&elf.SHF_EXECINSTR != 0
 		// size= is the section header's declared size, not a count of bytes this
@@ -918,15 +854,7 @@ func collectELFReader(r io.ReaderAt, set *EvidenceSet, cfg BinaryConfig, name st
 		if !executable || sec.Size == 0 {
 			continue
 		}
-		if budget <= 0 {
-			// Not a zero-budget read: countSection treats a non-positive budget as
-			// "unlimited", which is right for a caller with no bound and wrong
-			// here. The spend is what names the limit.
-			set.markStructural(fmt.Sprintf("section %s not read: the %d-byte per-file budget was spent", sec.Name, cfg.MaxStreamBytes))
-			continue
-		}
-		counts, read, readErr := countSection(sec.Open(), budget)
-		budget -= read
+		counts, read, readErr := countSection(sec.Open())
 		if readErr != nil {
 			// A section that cannot be read is a gap in the evidence, not a
 			// reason to abandon the file: the symbols already gathered are still
@@ -970,27 +898,17 @@ func collectELFReader(r io.ReaderAt, set *EvidenceSet, cfg BinaryConfig, name st
 // be read whole: an earlier version read it with io.ReadAll under a per-section
 // cap, and that cap fired on ordinary real libraries. Memory here is 256 counters
 // and one chunk regardless of how large the section is, so the only cost that
-// scales is the read itself, and the read is bounded per file by the budget the
-// caller passes (MaxStreamBytes) rather than per section - a budget that only a
-// file with gigabytes of executable sections can reach.
+// scales is the read itself, which now runs to the section's declared end. The
+// declared size is compared against the bytes read afterwards, so a section that
+// could not be read in full is still reported as bounded.
 //
 // It returns the count so the caller can compare it against the declared size:
 // the histogram is over a prefix whenever the read stopped early, and a prefix is
 // not something this function can tell the caller about on its own.
-func countSection(r io.Reader, budget int64) (counts [256]int64, n int64, err error) {
+func countSection(r io.Reader) (counts [256]int64, n int64, err error) {
 	buf := make([]byte, entropyChunkBytes)
-	for budget <= 0 || n < budget {
-		// The read is clamped to what the budget has left, the same way
-		// streamEvidence clamps its reads. Reading whole chunks and testing the
-		// budget at the top of the loop lets a single chunk walk straight past a
-		// budget smaller than it, which would both overshoot the byte count the
-		// caller subtracts from its per-file budget and make the count depend on
-		// the chunk size rather than on the budget.
-		limit := len(buf)
-		if budget > 0 && int64(limit) > budget-n {
-			limit = int(budget - n)
-		}
-		read, readErr := r.Read(buf[:limit])
+	for {
+		read, readErr := r.Read(buf)
 		for _, b := range buf[:read] {
 			counts[b]++
 		}
@@ -1002,7 +920,6 @@ func countSection(r io.Reader, budget int64) (counts [256]int64, n int64, err er
 			return counts, n, readErr
 		}
 	}
-	return counts, n, nil
 }
 
 // The pickle interpreter walks an opcode stream as opcodes, not as bytes.
@@ -1103,14 +1020,6 @@ const (
 	pickPhasePayload
 )
 
-// pickleMaxOperandBytes bounds one operand the interpreter will hold. A module or
-// attribute name beyond this is not a name any rule or reader can act on, so the
-// bytes are consumed - the parse must stay in step - but not kept. The value
-// becomes unresolved, and if it is later used as a target's module or name that
-// is a structural bound rather than a silence: we did not read it, so we will not
-// claim to have looked.
-const pickleMaxOperandBytes = 64 * 1024
-
 // pickleMaxStackSlots bounds the value stack. A pickle legitimately holds many
 // slots at once: a mapping is written as MARK, then every key and value, then a
 // single SETITEMS, so a dict of n entries occupies about 2n slots before any of
@@ -1157,9 +1066,9 @@ type pickleScanner struct {
 	// off is the absolute file offset of buf[0], so an evidence offset is the
 	// opcode's offset in the file and not an offset in the current chunk.
 	off int64
-	// buf holds bytes received but not yet consumed. A counted operand larger
-	// than pickleMaxOperandBytes is consumed without being stored, so buf stays
-	// bounded by the cap plus one fixed operand.
+	// buf holds bytes received but not yet consumed. An operand is stored whole, so
+	// buf is bounded by the largest operand in the stream rather than by a fixed
+	// cap.
 	buf []byte
 
 	phase     pickPhase
@@ -1313,9 +1222,6 @@ func (p *pickleScanner) step(b []byte, absOff int64) int {
 				p.arg = p.arg[:0]
 				p.need = length
 				p.phase = pickPhasePayload
-				if length > pickleMaxOperandBytes {
-					p.keep = false
-				}
 				return n
 			}
 			p.phase = pickPhaseOp
@@ -1363,15 +1269,11 @@ func (p *pickleScanner) step(b []byte, absOff int64) int {
 	}
 }
 
-// appendArg keeps operand bytes up to the cap. Past the cap the value is dropped
-// but the bytes are still consumed by the caller, so the parse stays in step.
+// appendArg keeps operand bytes. There is no per-operand cap: a long module or
+// attribute name is kept whole, so a target spelled with one is resolved rather
+// than reported as a gap.
 func (p *pickleScanner) appendArg(b []byte) {
 	if !p.keep {
-		return
-	}
-	if len(p.arg)+len(b) > pickleMaxOperandBytes {
-		p.keep = false
-		p.arg = p.arg[:0]
 		return
 	}
 	p.arg = append(p.arg, b...)
@@ -1513,10 +1415,6 @@ func (p *pickleScanner) exec(op byte) {
 		// for a blind spot that can.
 		p.push(pickSlot{str: p.keep, unresolved: !p.keep, value: string(p.arg)})
 	case 0x63: // GLOBAL: module and name inline
-		if !p.keep {
-			p.set.markStructural(fmt.Sprintf(
-				"GLOBAL at offset %d has an operand past the %d-byte cap", p.opOff, pickleMaxOperandBytes))
-		}
 		p.recordTarget(p.opOff)
 		p.push(pickSlot{})
 	case 0x68, 0x6a, 0x67: // BINGET LONG_BINGET GET
@@ -1628,126 +1526,6 @@ func atoiSafe(s string) int {
 	return n
 }
 
-// streamWithSizeSwitch streams a file end to end when it is small enough to be
-// worth it, and reads only its head and tail when it is not.
-//
-// The switch exists because the two costs are not comparable. A full pass costs
-// about 3 microseconds per kibibyte at the measured rate, which is nothing for
-// the 10.8 MiB pickle that is the largest such file in the example package and
-// nine seconds for a 3 GiB shard. Above MaxFullScanBytes the pass is replaced by
-// a HeadTailBytes window at each end.
-//
-// Skipping the middle is recorded, and how it is recorded is isExecutableKind's
-// existing asymmetry rather than a new rule: a windowed pickle or ELF leaves a
-// region of an executable format unread, so it is a structural bound and a clean
-// verdict is withheld; a windowed tensor blob is a data bound and is only
-// reported. Without the first half the threshold would be an evasion: padding a
-// pickle past 64 MiB would hide a mid-stream GLOBAL and still pass.
-//
-// What that gives up is stated in the plan's boundary section rather than hidden
-// here: for a raw blob the middle is tensor data no loader reads, so nothing
-// reachable is lost. For a pickle it is a real loss - a GLOBAL emitted in the
-// middle of a long data-building run would be missed - and the two windows are
-// the mitigation rather than a cure, covering the load-time call at the front and
-// the post-load action at the back. A deployment whose packages contain such a
-// file raises maxFullScanBytes rather than being silently exempted.
-func streamWithSizeSwitch(path string, set *EvidenceSet, cfg BinaryConfig) error {
-	if set.Size > cfg.MaxFullScanBytes {
-		// The bound is recorded only when the two windows actually leave a middle
-		// unread. On size alone it would fire for a file the windows cover end to
-		// end, and the reason below would say "only the head and tail were read"
-		// about a file that was read whole - which the report then carries into a
-		// refusal, since a structural bound on an executable kind withholds the
-		// pass. Reachable as soon as a deployment lowers MaxFullScanBytes below
-		// twice HeadTailBytes, and the configuration exposes that knob.
-		if set.Size > 2*cfg.HeadTailBytes {
-			set.markStructural(fmt.Sprintf("file is %d bytes, above MaxFullScanBytes %d: only the head and tail %d bytes were read",
-				set.Size, cfg.MaxFullScanBytes, cfg.HeadTailBytes))
-		}
-		return streamHeadAndTail(path, set, cfg)
-	}
-	return streamEvidence(path, set, cfg, cfg.MaxStreamBytes)
-}
-
-// streamHeadAndTail runs the byte extractors over the first and last
-// HeadTailBytes of a file.
-//
-// It is what makes an appended payload visible. A zip's directory lives at the
-// end of the file and describes only the members before it, so a payload stapled
-// after the last member is inside no member and would otherwise be read by
-// nothing; the same reasoning covers a section appended past an ELF's last
-// section header.
-//
-// The window size is a parameter rather than a constant because two callers want
-// different ones: a container always reads its two ends, while a large blob reads
-// its ends only because it was too large to read whole.
-//
-// The pickle interpreter is gated here the same way it is gated everywhere else:
-// it runs only when set.Kind is KindPickle, and only over the head window. That
-// gating is what keeps this path from being a bound on every archive - a zip's own
-// bytes are not an opcode stream, and KindArchive is an executable kind, so an
-// ungated interpreter would set Bound.Structural on every .pt and .whl. The head
-// window is a valid prefix of the opcode stream and can be parsed; the tail window
-// is a splice out of the middle, and feeding a spliced fragment to a stateful
-// parser would make it read the splice as a continuation and invent targets out of
-// data bytes, so the tail goes to the strings pass alone. Nothing is lost by that:
-// this path is only reached above MaxFullScanBytes, where the file is already
-// recorded as structurally bounded.
-func streamHeadAndTail(path string, set *EvidenceSet, cfg BinaryConfig) error {
-	f, err := os.Open(path)
-	if err != nil {
-		return fmt.Errorf("open %s: %w", path, err)
-	}
-	defer f.Close()
-	info, err := f.Stat()
-	if err != nil {
-		return fmt.Errorf("stat %s: %w", path, err)
-	}
-
-	headTailBytes := cfg.HeadTailBytes
-	scanner := newStringScanner(set, cfg)
-	var pickles *pickleScanner
-	if set.Kind == KindPickle {
-		pickles = newPickleScanner(set)
-	}
-
-	head := make([]byte, headTailBytes)
-	n, err := f.ReadAt(head, 0)
-	if err != nil && err != io.EOF {
-		return fmt.Errorf("read %s: %w", path, err)
-	}
-	if _, err := scanner.Write(head[:n]); err != nil {
-		return err
-	}
-	if pickles != nil {
-		if _, err := pickles.Write(head[:n]); err != nil {
-			return err
-		}
-	}
-
-	if info.Size() > headTailBytes {
-		tail := make([]byte, headTailBytes)
-		at := info.Size() - headTailBytes
-		n, err := f.ReadAt(tail, at)
-		if err != nil && err != io.EOF {
-			return fmt.Errorf("read %s: %w", path, err)
-		}
-		// The offset is rebased so that a tail literal reports where it actually
-		// is: an offset that silently restarted at zero would make two different
-		// payloads report the same location. The interpreter is not rebased and not
-		// fed the tail at all - see the note above.
-		scanner.at = at
-		if _, err := scanner.Write(tail[:n]); err != nil {
-			return err
-		}
-	}
-	scanner.Flush()
-	if pickles != nil {
-		pickles.Flush()
-	}
-	return nil
-}
-
 // collectArchive reads a zip-based container: PyTorch .pt, wheels, .npz, jars.
 //
 // Members are the subject, not the archive's own bytes, because that is where a
@@ -1761,15 +1539,16 @@ func streamHeadAndTail(path string, set *EvidenceSet, cfg BinaryConfig) error {
 // visible as a member line but does not set Bound. That is deliberate and its cost
 // is named in the plan's boundary section (a checkpoint shipped only inside a zip
 // never reaches its data.pkl), so it is not a hole to be plugged here by
-// recursing, which would need its own depth and budget model.
+// recursing, which would need its own depth model.
 //
-// The decompressed-byte budget is shared across the archive rather than applied
-// per member: a zip bomb is many small members, not one large one, so a per-member
-// limit is a limit that does not bind.
+// There is no member ceiling: every member is examined, because a cut on the
+// count is one an attacker picks the position of. What remains is the
+// decompression bound, MaxArchiveMemberBytes, which is a memory guard rather than
+// a coverage decision - it bounds one member's undecompressed bytes, not how many
+// members are looked at - and it is enforced inside the readers that materialise
+// a member, so reaching it is recorded as a structural bound on that member
+// rather than silently ending the loop.
 func collectArchive(path string, set *EvidenceSet, cfg BinaryConfig) error {
-	// Resolve a zero config to the defaults, as the other collectors do. A zero
-	// MaxArchiveMembers would read as "no member is allowed" and bound every
-	// archive on its first member - wrong, and fail-closed, but wrong.
 	cfg = normalizeBinaryConfig(cfg)
 	f, err := os.Open(path)
 	if err != nil {
@@ -1793,12 +1572,7 @@ func collectArchive(path string, set *EvidenceSet, cfg BinaryConfig) error {
 		return fmt.Errorf("open archive %s: %w", path, err)
 	}
 
-	var decompressed int64
-	for i, member := range zr.File {
-		if i >= cfg.MaxArchiveMembers {
-			set.markStructural(fmt.Sprintf("member ceiling %d reached (%d member(s))", cfg.MaxArchiveMembers, len(zr.File)))
-			break
-		}
+	for _, member := range zr.File {
 		set.addStructured(SourceMember, fmt.Sprintf("%s size=%d", member.Name, member.UncompressedSize64))
 
 		if member.FileInfo().IsDir() {
@@ -1817,12 +1591,17 @@ func collectArchive(path string, set *EvidenceSet, cfg BinaryConfig) error {
 		if kind != KindELF && kind != KindPickle {
 			continue
 		}
-		if decompressed+int64(member.UncompressedSize64) > cfg.MaxArchiveMemberBytes {
-			set.markStructural(fmt.Sprintf("member byte budget %d reached at %s", cfg.MaxArchiveMemberBytes, member.Name))
-			break
+		// The declared size is checked before the member is opened, because it is
+		// the declaration a zip bomb lies with: a 250 KiB archive can name a member
+		// of terabytes, and both readers below materialise what they are given.
+		// The comparison is on the unsigned field, so a declared size with the high
+		// bit set is caught here rather than wrapping negative - that case is what
+		// makes a signed comparison the wrong guard.
+		if member.UncompressedSize64 > uint64(cfg.MaxArchiveMemberBytes) {
+			set.markStructural(fmt.Sprintf("member %s declares %d bytes, past the %d-byte member budget",
+				member.Name, member.UncompressedSize64, cfg.MaxArchiveMemberBytes))
+			continue
 		}
-		decompressed += int64(member.UncompressedSize64)
-
 		switch kind {
 		case KindELF:
 			if err := collectELFMember(set, member, cfg); err != nil {
@@ -1861,9 +1640,13 @@ func readMemberHead(member *zip.File, n int) ([]byte, error) {
 // container member.
 //
 // debug/elf needs random access and a member is a stream, so the member is
-// materialised first, bounded by the archive's byte budget. That is the cost of
-// reading a nested ELF at all, and it is why the budget above is checked before
-// this is called rather than inside it.
+// materialised first, bounded by MaxArchiveMemberBytes. That is the cost of
+// reading a nested ELF at all: unlike the streaming paths, this one cannot stop
+// at the budget and keep what it read, because a truncated ELF does not parse.
+//
+// collectArchive has already refused a member whose declared size is past the
+// budget, so the LimitReader here only has to cover a header that lied about a
+// size it understated.
 func collectELFMember(set *EvidenceSet, member *zip.File, cfg BinaryConfig) error {
 	rc, err := member.Open()
 	if err != nil {
@@ -1871,12 +1654,15 @@ func collectELFMember(set *EvidenceSet, member *zip.File, cfg BinaryConfig) erro
 	}
 	defer rc.Close()
 
-	data, err := io.ReadAll(io.LimitReader(rc, cfg.MaxArchiveMemberBytes))
+	data, err := io.ReadAll(io.LimitReader(rc, cfg.MaxArchiveMemberBytes+1))
 	if err != nil {
 		return err
 	}
-	if int64(len(data)) >= cfg.MaxArchiveMemberBytes {
-		set.markStructural(fmt.Sprintf("member %s truncated at the byte budget", member.Name))
+	// The declared size was checked above, so this can only fire on a member whose
+	// header lied. It is still the read that decides what was kept.
+	if int64(len(data)) > cfg.MaxArchiveMemberBytes {
+		set.markStructural(fmt.Sprintf("member %s read past the byte budget", member.Name))
+		return nil
 	}
 
 	// The strings pass runs over the member as well as the structural parse
@@ -1905,22 +1691,19 @@ func collectELFMember(set *EvidenceSet, member *zip.File, cfg BinaryConfig) erro
 	return collectELFReader(bytes.NewReader(data), set, cfg, member.Name)
 }
 
-// streamReaderEvidence runs the byte extractors over a stream, stopping after
-// budget bytes and recording the cut as a structural bound. A budget of zero or
-// less means the stream is read to the end. The strings pass always runs; the
-// pickle interpreter runs only when pickleScan is true.
+// streamReaderEvidence runs the byte extractors over a stream, reading every
+// byte up to budget and recording a cut past it as a structural bound. A budget
+// of zero means the stream is read to the end; that is what a whole file gets,
+// because a file's size is the filesystem's to declare and reading it costs what
+// it costs. A decompressed stream and a container member get a budget, because
+// their size is the attacker's to declare: a 250 KiB zip can expand to terabytes,
+// and the bound is what turns that into a recorded gap instead of an OOM. The
+// strings pass always runs; the pickle interpreter runs only when pickleScan is
+// true.
 //
-// It is the only implementation of this loop, because the bound has to be
-// enforced identically everywhere it applies: four call sites reach it - a whole
-// file, a pickle member, an ELF member, and a decompressed gzip stream. The bound
-// is what sets Bound.Structural, Bound.Structural is what withholds a clean
-// verdict from a stream whose tail was never read, and a call site that enforced
-// it slightly differently would be a hole in the fail-closed rule rather than a
-// style difference.
-//
-// A whole file arrives through streamEvidence, which owns the handle and records
-// the cut from the file's size before entering here; the probe byte below is what
-// covers the sites that cannot know a size up front.
+// It is the only implementation of this loop, so the two passes see exactly the
+// same bytes: a pickle member gets the same read the file around it got, not a
+// second, differently chunked one.
 //
 // pickleScan is a parameter rather than a read of set.Kind because a member's
 // kind is the member's, not the set's: the set is the archive, and every member
@@ -1931,16 +1714,6 @@ func collectELFMember(set *EvidenceSet, member *zip.File, cfg BinaryConfig) erro
 // parse with a structural bound, and a structural bound on an executable kind
 // blocks the import - so an interpreter run over anything but a claimed pickle is
 // a bound on a file that is not malformed at all.
-//
-// The budget is applied inside the read rather than between reads, for the same
-// reason it is in streamEvidence: checking it at the top of the loop lets one 64
-// KiB read walk past a much smaller budget. When the budget is spent, one probe
-// byte decides whether it actually cut anything - a stream that ends exactly at
-// the budget was read completely, and marking it bounded would fail a clean scan
-// for no reason.
-//
-// bounded is the caller's wording for the cut, because the four sites name
-// different budgets in their reasons.
 func streamReaderEvidence(rc io.Reader, set *EvidenceSet, cfg BinaryConfig, budget int64, bounded string, pickleScan bool) error {
 	scanner := newStringScanner(set, cfg)
 	var pickles *pickleScanner
@@ -1951,11 +1724,15 @@ func streamReaderEvidence(rc io.Reader, set *EvidenceSet, cfg BinaryConfig, budg
 	var read int64
 	buf := make([]byte, evidenceReadChunk)
 	for {
-		limit := len(buf)
-		if budget > 0 && int64(limit) > budget-read {
-			limit = int(budget - read)
+		limit := int64(len(buf))
+		if budget > 0 && budget-read < limit {
+			limit = budget - read
 		}
 		if limit <= 0 {
+			// The budget is spent. One probe byte decides whether it cut
+			// anything: a stream that ends exactly at the budget was read
+			// completely, and marking it bounded would withhold a clean verdict
+			// for no reason.
 			var probe [1]byte
 			if n, err := rc.Read(probe[:]); n > 0 || (err != nil && err != io.EOF) {
 				set.markStructural(bounded)
@@ -2011,11 +1788,11 @@ func collectPickleMember(set *EvidenceSet, member *zip.File, cfg BinaryConfig) e
 // path with no evidence behind it.
 func collectCompressed(path string, set *EvidenceSet, cfg BinaryConfig) error {
 	// Resolve a zero config to the defaults, and this is the collector where it
-	// matters most: streamReaderEvidence reads a budget of zero as "unlimited", so
-	// an unresolved zero here would silently disable the decompression bound - the
-	// one guard between a small .gz and an unbounded scan. That is fail-open in the
-	// single direction this design refuses, rather than the merely-wrong fail-closed
-	// a zero config produces elsewhere.
+	// matters most: a zero MaxArchiveMemberBytes would read as "unlimited" in
+	// streamReaderEvidence, and that would silently remove the one guard between a
+	// 250 KiB .gz and a decompressed stream of any size. Fail-open is the single
+	// direction this design refuses, rather than the merely-wrong fail-closed a
+	// zero config produces elsewhere.
 	cfg = normalizeBinaryConfig(cfg)
 	f, err := os.Open(path)
 	if err != nil {
@@ -2047,10 +1824,10 @@ func collectCompressed(path string, set *EvidenceSet, cfg BinaryConfig) error {
 	head, _ := br.Peek(sniffBytes)
 	pickleScan := isPickleStream(head, "")
 
-	// The decompressed length is attacker-controlled, so the budget is what keeps
-	// a small .gz from expanding into an unbounded scan - the same guard the
-	// archive path uses, and enforced through the same helper so the two cannot
-	// drift.
+	// The decompressed stream is read up to the member budget. The decompressed size
+	// is the file's to declare, not the filesystem's, so this is the bound the
+	// bomb guard exists for; a stream that reaches it is recorded as a structural
+	// bound, which on KindCompressed - an executable kind - withholds the pass.
 	if err := streamReaderEvidence(br, set, cfg, cfg.MaxArchiveMemberBytes,
 		fmt.Sprintf("decompressed stream exceeds %d bytes", cfg.MaxArchiveMemberBytes), pickleScan); err != nil {
 		return fmt.Errorf("read gzip %s: %w", path, err)
@@ -2087,23 +1864,15 @@ func CollectEvidence(path string, kind BinaryKind, cfg BinaryConfig) *EvidenceSe
 	case KindELF:
 		err = collectELF(path, set, cfg)
 	case KindArchive:
-		// The head and tail pass runs over the archive's own bytes as well as
-		// its members. A payload appended after the last member is outside
-		// everything the zip directory describes, and reading only the members
-		// would leave exactly that region unexamined.
-		//
-		// No size switch here: this path is already the head and tail pass, and
-		// the members behind it are bounded by MaxArchiveMemberBytes rather than
-		// by the file's own size. A 200 MiB .zip and a 92 MiB .pth both take this
-		// route today.
-		err = streamHeadAndTail(path, set, cfg)
+		// The archive's own bytes are read as well as its members. A payload
+		// appended after the last member is outside everything the zip directory
+		// describes, and reading only the members would leave exactly that region
+		// unexamined.
+		err = streamEvidence(path, set, cfg)
 		if err == nil {
 			err = collectArchive(path, set, cfg)
 		}
 	case KindCompressed:
-		// Also no size switch: the stream was decompressed on purpose, and
-		// skipping its middle would defeat the only reason to have opened it.
-		// MaxArchiveMemberBytes is the bound that applies.
 		err = collectCompressed(path, set, cfg)
 	case KindNumpy, KindPickle, KindRaw:
 		// No entropy verdict for these, deliberately. A raw blob is most of what
@@ -2112,7 +1881,7 @@ func CollectEvidence(path string, kind BinaryKind, cfg BinaryConfig) *EvidenceSe
 		// the operator to ignore the family. It is also unnecessary here, because
 		// nothing on this platform executes a raw blob - a payload that runs
 		// arrives as an ELF or a pickle, and both carry precise evidence.
-		err = streamWithSizeSwitch(path, set, cfg)
+		err = streamEvidence(path, set, cfg)
 	default:
 		return evidenceError(path, kind, fmt.Errorf("unsupported binary kind %q", kind))
 	}

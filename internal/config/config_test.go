@@ -1366,9 +1366,9 @@ func TestBinaryAuditConfigDefaultsAndOverrides(t *testing.T) {
 		if !cfg.BinaryAuditEnabled {
 			t.Error("BinaryAuditEnabled = false when the section is absent; the default must be on")
 		}
-		if cfg.BinaryAuditMaxArchiveMembers != 0 {
-			t.Errorf("BinaryAuditMaxArchiveMembers = %d, want 0 (meaning \"use the codeaudit default\")",
-				cfg.BinaryAuditMaxArchiveMembers)
+		if cfg.BinaryAuditMaxFindings != 0 {
+			t.Errorf("BinaryAuditMaxFindings = %d, want 0 (meaning \"use the codeaudit default\")",
+				cfg.BinaryAuditMaxFindings)
 		}
 	})
 
@@ -1387,13 +1387,13 @@ func TestBinaryAuditConfigDefaultsAndOverrides(t *testing.T) {
 	t.Run("limits are read", func(t *testing.T) {
 		path := filepath.Join(t.TempDir(), DefaultFileName)
 		writeTestConfig(t, path,
-			`{"codeAudit":{"binaryAudit":{"maxArchiveMembers":17,"highEntropyThreshold":7.25}}}`)
+			`{"codeAudit":{"binaryAudit":{"maxFindings":17,"highEntropyThreshold":7.25}}}`)
 		cfg, err := LoadStartupConfig(path)
 		if err != nil {
 			t.Fatalf("LoadStartupConfig: %v", err)
 		}
-		if cfg.BinaryAuditMaxArchiveMembers != 17 {
-			t.Errorf("BinaryAuditMaxArchiveMembers = %d, want 17", cfg.BinaryAuditMaxArchiveMembers)
+		if cfg.BinaryAuditMaxFindings != 17 {
+			t.Errorf("BinaryAuditMaxFindings = %d, want 17", cfg.BinaryAuditMaxFindings)
 		}
 		if cfg.BinaryAuditHighEntropyThreshold != 7.25 {
 			t.Errorf("BinaryAuditHighEntropyThreshold = %v, want 7.25", cfg.BinaryAuditHighEntropyThreshold)
@@ -1409,15 +1409,13 @@ func TestBinaryAuditConfigDefaultsAndOverrides(t *testing.T) {
 		//
 		// Every guard is driven rather than one of them: they are separate
 		// branches, and a test that named only the first stays green with the
-		// other five deleted.
+		// other two deleted. The coverage limits are no longer configurable, so
+		// the three that remain are the whole set.
 		for _, tc := range []struct {
 			name  string
 			audit string
 		}{
-			{"a negative member count", `"maxArchiveMembers":-1`},
 			{"a negative finding budget", `"maxFindings":-1`},
-			{"a negative full-scan budget", `"maxFullScanBytes":-1`},
-			{"a negative stream budget", `"maxStreamBytes":-1`},
 			{"an entropy threshold below zero", `"highEntropyThreshold":-0.5`},
 			{"an entropy threshold above eight", `"highEntropyThreshold":8.5`},
 		} {
@@ -1428,18 +1426,6 @@ func TestBinaryAuditConfigDefaultsAndOverrides(t *testing.T) {
 					t.Errorf("%s was accepted; it would be normalised to the default and the operator would never know", tc.audit)
 				}
 			})
-		}
-	})
-
-	t.Run("the full-scan threshold is carried through", func(t *testing.T) {
-		path := filepath.Join(t.TempDir(), DefaultFileName)
-		writeTestConfig(t, path, `{"codeAudit":{"binaryAudit":{"maxFullScanBytes":134217728}}}`)
-		cfg, err := LoadStartupConfig(path)
-		if err != nil {
-			t.Fatalf("LoadStartupConfig: %v", err)
-		}
-		if cfg.BinaryAuditMaxFullScanBytes != 134217728 {
-			t.Errorf("BinaryAuditMaxFullScanBytes = %d, want 134217728", cfg.BinaryAuditMaxFullScanBytes)
 		}
 	})
 }
@@ -1528,6 +1514,21 @@ func TestLoadStartupConfigRejectsRemovedKeys(t *testing.T) {
 			name:    "the removed llm expectedMeasurements key",
 			content: `{"codeAudit":{"llm":{"expectedMeasurements":["deadbeef"]}}}`,
 			want:    []string{`"codeAudit.llm.expectedMeasurements"`, `"codeAudit.llm.attestation.measurement"`},
+		},
+		{
+			name:    "the removed binaryAudit maxArchiveMembers key",
+			content: `{"codeAudit":{"binaryAudit":{"maxArchiveMembers":4096}}}`,
+			want:    []string{`"codeAudit.binaryAudit.maxArchiveMembers"`, "every container member is examined"},
+		},
+		{
+			name:    "the removed binaryAudit maxFullScanBytes key",
+			content: `{"codeAudit":{"binaryAudit":{"maxFullScanBytes":67108864}}}`,
+			want:    []string{`"codeAudit.binaryAudit.maxFullScanBytes"`, "every file is read end to end"},
+		},
+		{
+			name:    "the removed binaryAudit maxStreamBytes key",
+			content: `{"codeAudit":{"binaryAudit":{"maxStreamBytes":3221225472}}}`,
+			want:    []string{`"codeAudit.binaryAudit.maxStreamBytes"`, "every file is read end to end"},
 		},
 		{
 			name: "the whole old block, reported together",

@@ -419,92 +419,50 @@ func TestBinaryScannerCapIsSilentWhenTheBudgetIsNotReached(t *testing.T) {
 	}
 }
 
-// TestBinaryScannerSplitsStructuralBoundsByKind pins the one branch in
-// ScanDirectory that decides, per file, whether a bounded read was a look that
-// did not finish or a look that finished on as much as there was reason to read.
-// Task 10's ProvesCleanScan reads that split - BoundedExecutable withholds a
-// clean verdict, BoundedData does not - and the two mistakes available here run
-// in opposite directions, which is why both are named.
+// TestBinaryScannerCountsAStructuralBoundAsBoundedExecutable pins the branch in
+// ScanDirectory that decides, per file, whether a bound was a look that did not
+// finish or a look that finished on as much as there was reason to read.
+// ProvesCleanScan reads that split - BoundedExecutable withholds a clean verdict,
+// BoundedData does not - and the mistake available here runs one way: counting a
+// structural bound on an executable kind as BoundedData would pass a package
+// holding an unread .so as clean, and an unread .so is exactly the shape whose
+// missing part could hold the payload this channel exists to catch.
 //
-// A scanner that exchanged the arms would pass a package holding a truncated .so
-// as clean: the executable kind would land in BoundedData, BoundedExecutable
-// would stay zero, nothing would withhold the verdict, and a truncated ELF is
-// exactly the shape whose unread part could hold the payload this channel exists
-// to catch. The same exchange would withhold a legitimate package whose only
-// bound was a data file, because a large .bin windowed at its ends would be
-// recorded as BoundedExecutable. That is why the split is tested here rather
-// than left to Task 10: every other test in this file would stay green through
-// either mistake, because nothing else reads either counter.
+// The structural bound is made rather than found. The file has no budgets left to
+// reach, so the bound comes from the ELF itself: .text declares more bytes than
+// the file holds, which the section reader reports as a shortfall.
 //
-// The bound is made deliberately rather than found: MaxFullScanBytes and
-// HeadTailBytes are set to 64 and 16, so the head-and-tail window is taken on
-// files far above that budget and streamWithSizeSwitch records the structural
-// bound - the ELF fixture is 632 bytes and the raw one is 4101.
-//
-// Each arm asserts the whole pair rather than a single counter. A single counter
-// already catches the exchange, since the expected field reads 0 where the
-// swapped scanner writes 1; what only the pair catches is double counting, a
-// scanner that incremented both fields for one file reading (1, 1) while either
-// field taken alone would look right.
-func TestBinaryScannerSplitsStructuralBoundsByKind(t *testing.T) {
-	tinyWindow := func() BinaryConfig {
-		cfg := DefaultBinaryConfig()
-		cfg.MaxFullScanBytes = 64
-		cfg.HeadTailBytes = 16
-		return cfg
+// The data arm of the same branch is pinned by the listing-cap test above, which
+// is the only kind of bound a raw blob can now produce.
+func TestBinaryScannerCountsAStructuralBoundAsBoundedExecutable(t *testing.T) {
+	dir := t.TempDir()
+	writeTestBytes(t, dir, "libevil.so", elfFixtureBytes(t, elfSpec{
+		imports:  []string{"socket"},
+		text:     uniformBytes(256),
+		textExec: true,
+		overrun:  4096,
+	}))
+
+	s, err := newTestBinaryScanner(DefaultBinaryConfig())
+	if err != nil {
+		t.Fatal(err)
 	}
-
-	t.Run("an executable kind is counted BoundedExecutable", func(t *testing.T) {
-		dir := t.TempDir()
-		writeTestBytes(t, dir, "libevil.so", elfFixtureBytes(t, elfSpec{imports: []string{"socket"}}))
-
-		s, err := newTestBinaryScanner(tinyWindow())
-		if err != nil {
-			t.Fatal(err)
-		}
-		res, err := s.ScanDirectory(dir)
-		if err != nil {
-			t.Fatalf("ScanDirectory: %v", err)
-		}
-		if res.Summary.Kinds[string(KindELF)] != 1 {
-			t.Fatalf("Kinds[elf] = %d, want 1: the fixture is not the executable kind this arm is about",
-				res.Summary.Kinds[string(KindELF)])
-		}
-		if res.Summary.Incomplete != 0 {
-			t.Fatalf("Incomplete = %d, want 0: a structural bound is a look that stopped short, not one that failed",
-				res.Summary.Incomplete)
-		}
-		if res.Summary.BoundedExecutable != 1 || res.Summary.BoundedData != 0 {
-			t.Errorf("BoundedExecutable = %d, BoundedData = %d, want 1 and 0: a bounded ELF is the kind that can carry an executed payload",
-				res.Summary.BoundedExecutable, res.Summary.BoundedData)
-		}
-	})
-
-	t.Run("a data kind is counted BoundedData", func(t *testing.T) {
-		dir := t.TempDir()
-		writeTestBytes(t, dir, "weights.bin", append([]byte("data\x00"), make([]byte, 4096)...))
-
-		s, err := newTestBinaryScanner(tinyWindow())
-		if err != nil {
-			t.Fatal(err)
-		}
-		res, err := s.ScanDirectory(dir)
-		if err != nil {
-			t.Fatalf("ScanDirectory: %v", err)
-		}
-		if res.Summary.Kinds[string(KindRaw)] != 1 {
-			t.Fatalf("Kinds[raw] = %d, want 1: the fixture is not the data kind this arm is about",
-				res.Summary.Kinds[string(KindRaw)])
-		}
-		if res.Summary.Incomplete != 0 {
-			t.Fatalf("Incomplete = %d, want 0: a structural bound is a look that stopped short, not one that failed",
-				res.Summary.Incomplete)
-		}
-		if res.Summary.BoundedData != 1 || res.Summary.BoundedExecutable != 0 {
-			t.Errorf("BoundedData = %d, BoundedExecutable = %d, want 1 and 0: a bounded raw blob cannot run on this platform",
-				res.Summary.BoundedData, res.Summary.BoundedExecutable)
-		}
-	})
+	res, err := s.ScanDirectory(dir)
+	if err != nil {
+		t.Fatalf("ScanDirectory: %v", err)
+	}
+	if res.Summary.Kinds[string(KindELF)] != 1 {
+		t.Fatalf("Kinds[elf] = %d, want 1: the fixture is not the executable kind this test is about",
+			res.Summary.Kinds[string(KindELF)])
+	}
+	if res.Summary.Incomplete != 0 {
+		t.Fatalf("Incomplete = %d, want 0: a structural bound is a look that stopped short, not one that failed",
+			res.Summary.Incomplete)
+	}
+	if res.Summary.BoundedExecutable != 1 || res.Summary.BoundedData != 0 {
+		t.Errorf("BoundedExecutable = %d, BoundedData = %d, want 1 and 0: a bounded ELF is the kind that can carry an executed payload",
+			res.Summary.BoundedExecutable, res.Summary.BoundedData)
+	}
 }
 
 // TestBinaryScannerCapKeepsLowFindingsWithinTheBudget pins the half of the cap's

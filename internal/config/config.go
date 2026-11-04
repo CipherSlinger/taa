@@ -61,9 +61,6 @@ type StartupConfig struct {
 	// defaults to true; turning it off is the rollback of this feature and leaves
 	// an audit byte-identical to the one produced before the channel existed.
 	BinaryAuditEnabled bool
-	// BinaryAuditMaxArchiveMembers bounds how many members of a container are
-	// examined. Zero means the codeaudit default.
-	BinaryAuditMaxArchiveMembers int
 	// BinaryAuditHighEntropyThreshold is the bits-per-byte above which an
 	// executable section is called packed. Zero means the codeaudit default
 	// (7.5).
@@ -82,44 +79,15 @@ type StartupConfig struct {
 	// findings_capped, and it never withholds a pass. Zero means the codeaudit
 	// default.
 	BinaryAuditMaxFindings int
-	// BinaryAuditMaxFullScanBytes is the size above which a file is read at its
-	// two ends instead of end to end. Zero means the codeaudit default. It is
-	// exposed rather than fixed because it is the one limit whose right value
-	// depends on the deployment's package sizes: raising it buys a complete pass
-	// over a large pickle at a cost of about 3 microseconds per kibibyte.
-	//
-	// Lowering it costs completeness only for a file longer than the two windows
-	// together (2 MiB): a file at or below that is covered end to end by the
-	// windows, so no bound is recorded and nothing is refused, while a longer one
-	// still has its middle unread - still recorded, and still a refusal on an
-	// executable kind. On the windowed route the pickle interpreter, which is
-	// gated to the head window, stops seeing the middle.
-	BinaryAuditMaxFullScanBytes int
-	// BinaryAuditMaxStreamBytes bounds how much of one file the end-to-end
-	// streaming pass reads. Zero means the codeaudit default (3 GiB).
-	//
-	// It is exposed because it is the twin of MaxFullScanBytes: the stream budget
-	// is only reachable by a file that MaxFullScanBytes let through, so an
-	// operator who raises MaxFullScanBytes past the stream ceiling makes the
-	// stream ceiling bind - and its breach records a structural bound, which on
-	// an executable kind blocks the import. Leaving it fixed while its twin is
-	// exposed would turn that into an unactionable block.
-	//
-	// The pairing is a constraint on the operator, not on the loader: nothing
-	// checks the two against each other, and a value below MaxFullScanBytes is
-	// accepted without complaint. Keep it at or above MaxFullScanBytes, and above
-	// anything the deployment imports, or every file in the gap between the two
-	// records a bound and an executable one refuses the import.
-	BinaryAuditMaxStreamBytes int
-	ModelDir                  string
-	EnableResultCheck         bool
-	DataDir                   string
-	ResultDir                 string
-	ModelInputDir             string
-	ModelOutputDir            string
-	ModelLogDir               string
-	ModelProgressDir          string
-	KeysDir                   string
+	ModelDir               string
+	EnableResultCheck      bool
+	DataDir                string
+	ResultDir              string
+	ModelInputDir          string
+	ModelOutputDir         string
+	ModelLogDir            string
+	ModelProgressDir       string
+	KeysDir                string
 	// LLM bundles the inference service the audit arbitrates findings with. It is
 	// nested because every one of these settings exists for the code audit and
 	// nothing else: TAA has no other use for a model.
@@ -372,11 +340,13 @@ func (s *startupCodeScanConfigFile) UnmarshalJSON(data []byte) error {
 // normalizeBinaryConfig exactly as an absent field does.
 type startupBinaryAuditConfigFile struct {
 	Enabled              *bool    `json:"enabled"`
-	MaxArchiveMembers    *int     `json:"maxArchiveMembers"`
 	HighEntropyThreshold *float64 `json:"highEntropyThreshold"`
 	MaxFindings          *int     `json:"maxFindings"`
-	MaxFullScanBytes     *int64   `json:"maxFullScanBytes"`
-	MaxStreamBytes       *int64   `json:"maxStreamBytes"`
+	// The coverage limits are declared only so their presence is detectable. See
+	// rejectRemovedKeys.
+	RemovedMaxArchiveMembers json.RawMessage `json:"maxArchiveMembers"`
+	RemovedMaxFullScanBytes  json.RawMessage `json:"maxFullScanBytes"`
+	RemovedMaxStreamBytes    json.RawMessage `json:"maxStreamBytes"`
 }
 
 type startupResultCheckConfigFile struct {
@@ -607,6 +577,15 @@ func rejectRemovedKeys(path string, fileCfg startupConfigFile) error {
 	if hasJSONValue(fileCfg.CodeAudit.ResultCheck.RemovedMaxFileBytes) {
 		found = append(found, `"codeAudit.resultCheck.maxFileBytes" (removed: downloads and exports are no longer size-capped)`)
 	}
+	if hasJSONValue(fileCfg.CodeAudit.BinaryAudit.RemovedMaxArchiveMembers) {
+		found = append(found, `"codeAudit.binaryAudit.maxArchiveMembers" (removed: every container member is examined)`)
+	}
+	if hasJSONValue(fileCfg.CodeAudit.BinaryAudit.RemovedMaxFullScanBytes) {
+		found = append(found, `"codeAudit.binaryAudit.maxFullScanBytes" (removed: every file is read end to end)`)
+	}
+	if hasJSONValue(fileCfg.CodeAudit.BinaryAudit.RemovedMaxStreamBytes) {
+		found = append(found, `"codeAudit.binaryAudit.maxStreamBytes" (removed: every file is read end to end)`)
+	}
 	if hasJSONValue(fileCfg.CodeAudit.RemovedCodeScanEngine) {
 		found = append(found, `"codeAudit.codeScanEngine" (move to "codeAudit.codeScan.engine")`)
 	}
@@ -805,17 +784,8 @@ func listenAddrPort(addr string) (string, error) {
 // production: the only production construction of StartupConfig goes through
 // LoadStartupConfig.
 func validateBinaryAudit(cfg StartupConfig) error {
-	if cfg.BinaryAuditMaxArchiveMembers < 0 {
-		return fmt.Errorf("codeAudit.binaryAudit.maxArchiveMembers must not be negative, got %d", cfg.BinaryAuditMaxArchiveMembers)
-	}
 	if cfg.BinaryAuditMaxFindings < 0 {
 		return fmt.Errorf("codeAudit.binaryAudit.maxFindings must not be negative, got %d", cfg.BinaryAuditMaxFindings)
-	}
-	if cfg.BinaryAuditMaxFullScanBytes < 0 {
-		return fmt.Errorf("codeAudit.binaryAudit.maxFullScanBytes must not be negative, got %d", cfg.BinaryAuditMaxFullScanBytes)
-	}
-	if cfg.BinaryAuditMaxStreamBytes < 0 {
-		return fmt.Errorf("codeAudit.binaryAudit.maxStreamBytes must not be negative, got %d", cfg.BinaryAuditMaxStreamBytes)
 	}
 	if cfg.BinaryAuditHighEntropyThreshold < 0 || cfg.BinaryAuditHighEntropyThreshold > 8 {
 		return fmt.Errorf("codeAudit.binaryAudit.highEntropyThreshold must be within [0,8] bits per byte, got %v",
@@ -1047,20 +1017,11 @@ func applyStartupConfigFile(cfg *StartupConfig, fileCfg startupConfigFile) {
 		if ba.Enabled != nil {
 			cfg.BinaryAuditEnabled = *ba.Enabled
 		}
-		if ba.MaxArchiveMembers != nil {
-			cfg.BinaryAuditMaxArchiveMembers = *ba.MaxArchiveMembers
-		}
 		if ba.HighEntropyThreshold != nil {
 			cfg.BinaryAuditHighEntropyThreshold = *ba.HighEntropyThreshold
 		}
 		if ba.MaxFindings != nil {
 			cfg.BinaryAuditMaxFindings = *ba.MaxFindings
-		}
-		if ba.MaxFullScanBytes != nil {
-			cfg.BinaryAuditMaxFullScanBytes = int(*ba.MaxFullScanBytes)
-		}
-		if ba.MaxStreamBytes != nil {
-			cfg.BinaryAuditMaxStreamBytes = int(*ba.MaxStreamBytes)
 		}
 	}
 

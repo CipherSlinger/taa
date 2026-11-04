@@ -201,34 +201,31 @@ func TestEndToEndUncorroboratedPresenceStillPasses(t *testing.T) {
 // could see, and the input that was not examined is reported as a follow-up
 // item.
 //
-// The limit the fixture reaches is MaxStreamBytes, the per-file read budget,
-// rather than a per-section cap - there is no per-section cap any more (see
-// BinaryConfig), and a section that declares more than the file holds is caught
-// by the read-versus-declared comparison instead.
+// The limit the fixture reaches is structural and comes from the file, not from
+// the configuration: .text declares more bytes than the file holds, so the section
+// reader reports a shortfall. There is no byte budget left to reach - every
+// section is read to its declared end.
 //
-// The absence assertion is what makes this test about the budget rather than
+// The absence assertion is what makes this test about the shortfall rather than
 // about the file being large: .text here is high-entropy and executable, so if
-// the section reader ignored the budget and read the section anyway, BIN_001
-// would fire and the file would carry a blocking finding instead. Both outcomes
-// reach the report, so only the absence of the entropy verdict distinguishes a
-// scan that stopped short from one that measured everything.
+// the section reader measured it anyway, BIN_001 would fire and the file would
+// carry a blocking finding instead. Both outcomes reach the report, so only the
+// absence of the entropy verdict distinguishes a section that could not be read
+// in full from one that was measured.
 func TestEndToEndBoundedExecutableReportsAScanGap(t *testing.T) {
 	dir := t.TempDir()
 	writeTestBytes(t, dir, "native/libbig.so", elfFixtureBytes(t, elfSpec{
 		imports:  []string{"malloc"},
 		text:     uniformBytes(4096),
 		textExec: true,
+		overrun:  4096,
 	}))
 
 	cfg := endToEndConfig()
-	// Only MaxStreamBytes is set: normalizeBinaryConfig resolves every other zero
-	// to its default, and Enabled is the one field it cannot touch, so it is
-	// spelled out. A zero-valued BinaryConfig would run the channel disabled and
+	// Enabled is the one field normalizeBinaryConfig cannot resolve, so it is
+	// spelled out: a zero-valued BinaryConfig would run the channel disabled and
 	// this test would then assert a bound nothing produced.
-	cfg.Binary = BinaryConfig{
-		Enabled:        true,
-		MaxStreamBytes: 16, // smaller than the file, so neither pass can finish reading it
-	}
+	cfg.Binary = BinaryConfig{Enabled: true}
 
 	audit, err := GenerateAuditReport(context.Background(), dir, DefaultEngine(), cfg, nil)
 	if err != nil {
@@ -244,8 +241,8 @@ func TestEndToEndBoundedExecutableReportsAScanGap(t *testing.T) {
 		t.Errorf("recommendation does not report the bounded executable: %s", audit.Conclusion.Recommendation)
 	}
 	if _, ok := endToEndFinding(audit, "native/libbig.so", "BIN_001"); ok {
-		t.Error("BIN_001 fired on a file the budget was supposed to stop the section reader from measuring; " +
-			"the bound is recorded but the read it bounds did not happen")
+		t.Error("BIN_001 fired on a section the reader could not read in full; " +
+			"the bound is recorded but the measurement it stands for did not happen")
 	}
 }
 

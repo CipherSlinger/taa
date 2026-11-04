@@ -114,11 +114,8 @@ func TestBuildSecurityConfig(t *testing.T) {
 			FailClosed:              true,
 		},
 		BinaryAuditEnabled:              true,
-		BinaryAuditMaxArchiveMembers:    17,
 		BinaryAuditHighEntropyThreshold: 7.25,
 		BinaryAuditMaxFindings:          23,
-		BinaryAuditMaxFullScanBytes:     134217728,
-		BinaryAuditMaxStreamBytes:       268435456,
 	}
 
 	sec, err := buildSecurityConfig(cfg)
@@ -240,16 +237,13 @@ func TestBuildSecurityConfig(t *testing.T) {
 	// resolver here would be a second place for the two to disagree about what
 	// the default is. The resolution itself is proven at the codeaudit level.
 	//
-	// All six are compared, and each carries a different value, because the
+	// All four are compared, and each carries a different value, because the
 	// failure this guards against is a pair swapped in the literal or a field
-	// left at zero - both of which a check on one or two of them survives.
+	// left at zero - both of which a check on one or two of them survives. The
+	// coverage limits are no longer configurable, so these four are the set.
 	if sec.Binary.Enabled != cfg.BinaryAuditEnabled {
 		t.Errorf("SecurityConfig.Binary.Enabled = %t, want the value carried from BinaryAuditEnabled",
 			sec.Binary.Enabled)
-	}
-	if sec.Binary.MaxArchiveMembers != cfg.BinaryAuditMaxArchiveMembers {
-		t.Errorf("SecurityConfig.Binary.MaxArchiveMembers = %d, want the raw config value %d",
-			sec.Binary.MaxArchiveMembers, cfg.BinaryAuditMaxArchiveMembers)
 	}
 	if sec.Binary.HighEntropyThreshold != cfg.BinaryAuditHighEntropyThreshold {
 		t.Errorf("SecurityConfig.Binary.HighEntropyThreshold = %v, want the raw config value %v",
@@ -259,13 +253,9 @@ func TestBuildSecurityConfig(t *testing.T) {
 		t.Errorf("SecurityConfig.Binary.MaxFindings = %d, want the raw config value %d",
 			sec.Binary.MaxFindings, cfg.BinaryAuditMaxFindings)
 	}
-	if sec.Binary.MaxFullScanBytes != int64(cfg.BinaryAuditMaxFullScanBytes) {
-		t.Errorf("SecurityConfig.Binary.MaxFullScanBytes = %d, want the raw config value %d",
-			sec.Binary.MaxFullScanBytes, cfg.BinaryAuditMaxFullScanBytes)
-	}
-	if sec.Binary.MaxStreamBytes != int64(cfg.BinaryAuditMaxStreamBytes) {
-		t.Errorf("SecurityConfig.Binary.MaxStreamBytes = %d, want the raw config value %d",
-			sec.Binary.MaxStreamBytes, cfg.BinaryAuditMaxStreamBytes)
+	if sec.Binary.MaxEvidenceLines != 0 {
+		t.Errorf("SecurityConfig.Binary.MaxEvidenceLines = %d, want 0 (meaning \"use the codeaudit default\")",
+			sec.Binary.MaxEvidenceLines)
 	}
 
 	// The enabled flag is checked in both directions. A single case with the
