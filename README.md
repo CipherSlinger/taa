@@ -866,42 +866,6 @@ go vet ./...
 
 ---
 
-## Changelog
-
-For a full historical record of changes, see [CHANGELOG.md](CHANGELOG.md).
-
-### Recent Iterations & Milestones
-
-- **2026-09-19: Architecture Decoupling, Supervisor Integration & Advanced UI/UX**
-  - **Container Supervisor**: Extracted container autostart daemon (`deploy/taa-supervisor.sh`) for TAA with retry backoff and manual debug override (`manual`).
-  - **Platform-Mock UI/UX Overhaul**: Interactive pipeline stage stepper, visual audit dashboard with expandable findings accordion, live dual-log viewer with level filtering and instant search, and global stacked toast notification system.
-  - **Microservice Decoupling**: Decoupled `teellm` into an independent repository and embedded as a recursive git submodule; isolated backend inference lifecycle from TAA core.
-  - **Toolchain Organization**: Reorganized auxiliary tools into top-level `tools/` directory (`tools/platform-mock` and `tools/sdk`).
-  - **CipherFlow Specification Alignment**: Enforced 3-tier output directory isolation (`/opt/taa/output/{result,log,progress}`) and aligned Python SDK contracts.
-
-- **2026-09-18: Operational Telemetry & RFC 8998 TEE-TLS Decoupling**
-  - **Active Operational Logging**: Implemented `/v1/taa/taaLog` proactive streaming with monotonic sequence IDs and ring-buffer deduplication.
-  - **TEE-TLS Protocol Decoupling**: Extracted `teetls` into a dedicated repository supporting RFC 8998 TLS 1.3 ShangMi with Hygon CSV hardware attestation evidence X.509 extensions.
-  - **Platform-Mock Modularization**: Decomposed mock platform into modular API handlers, separated config/state stores, and embedded static web assets via `embed.FS`.
-  - **Audit Benchmark Suite**: Automated matrix evaluation for static vs. LLM vs. hybrid code security auditing, including the offline Semgrep AST/taint and CPG inter-procedural engines.
-
-- **2026-09-17: RFC 8998 ShangMi Channel & Offline Semgrep Taint Engine**
-  - **Confidential TEE-TLS 1.3**: Implemented TLS 1.3 ShangMi cipher suites (`TLS_SM4_GCM_SM3`) with SM2 certificates cryptographically bound to Hygon CSV hardware attestation reports.
-  - **Decoupled TEE-LLM Service**: Introduced standalone `teellm-service` over TEE-TLS 1.3 with circuit breakers, exponential jitter retries, and strict SSRF defenses.
-  - **Semgrep Deep Semantic & Taint Engine (offline benchmark harness only)**: Added 22 AST and taint analysis rules across Python, Go, and Shell under `models/audit/` with fail-closed scan gates in the evaluation runner. The TAA runtime audit path still uses the built-in static rule scanner.
-  - **Dynamic Export Thresholds**: Supported configurable `maxFileBytes` (default 3 GB) for export leakage inspection.
-
-- **2026-09-16: Certificate Self-Verification & Three-Track Benchmark**
-  - **Dynamic Attestation Verification**: Integrated Hygon CSV certificate chain (HRK/HSK/CEK) self-verification and runtime dynamic configuration.
-  - **Three-Track Audit Benchmark**: Developed orthogonal benchmark suite evaluating rule-only, pure-LLM, and hybrid audit tracks with bootstrap confidence intervals.
-
-- **2026-09-15: Initial Core Framework Release**
-  - Initial implementation of TAA daemon inside Hygon CSV TEE, ephemeral SM2 keypair generation, hardware attestation injection (`/dev/csv-guest`), and GM/T SM2/SM3/SM4-GCM digital envelope packaging.
-  - Three-tier runtime output directory isolation (`/opt/taa/output/{result,log,progress}`).
-  - Lifecycle phase state transitions (`Phase 1` Debug, `Phase 2` Test, `Phase 3` Train) and graceful process tree termination (`/v1/taa/stopTraining`).
-
----
-
 ## License & Security Notices
 
 TAA is designed for authorized, privacy-preserving computation and dual-use secure enclaves. All cryptographic algorithms follow GM/T national standards (SM2/SM3/SM4). Ensure proper key management and hardware attestation verification before running in production multi-tenant environments.
