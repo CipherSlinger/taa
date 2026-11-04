@@ -11,6 +11,11 @@ function getTaaAddr() {
 // in one module-level variable so polling functions keep their existing shape.
 let currentInstanceDockerId = '';
 
+// True once the operator edits the TAA address by hand. Automatic detection
+// (page load, instance switch, a registration landing while the page is open)
+// must never overwrite a value that was typed.
+let taaAddrUserEdited = false;
+
 function currentDockerId() {
   return currentInstanceDockerId;
 }
@@ -73,6 +78,7 @@ async function loadInstances() {
     const payload = await res.json();
     const result = (payload && payload.result) || {};
     applyInstanceList(result.instances || [], result.defaultDockerId || '');
+    maybeAutoDetectTAAAddr(result);
   } catch (_) {
     // Ignore transient errors; the next poll retries.
   } finally {
@@ -80,8 +86,31 @@ async function loadInstances() {
   }
 }
 
+// maybeAutoDetectTAAAddr fills the address as soon as the selected instance
+// reports a target. The instance list is polled, so a registration that lands
+// while the page is open is picked up without a reload; without this the input
+// kept whichever value page load produced (the fallback host:6001) and every
+// call failed until the operator reloaded the console.
+function maybeAutoDetectTAAAddr(result) {
+  if (taaAddrUserEdited || typeof detectTAAProxy !== 'function') return;
+  const el = document.getElementById('taaAddr');
+  if (!el || el.value === location.origin + '/taa') return;
+  const list = (result && result.instances) || [];
+  const id = currentDockerId() || (result && result.defaultDockerId) || '';
+  const current = list.find((item) => item.dockerId === id)
+    || list.find((item) => item.default)
+    || null;
+  if (!current || !current.taaTarget) return;
+  detectTAAProxy();
+}
+
 function initInstanceSelector() {
   const sel = document.getElementById('instanceSelect');
+  const addrInput = document.getElementById('taaAddr');
+  if (addrInput) {
+    // Programmatic fills do not fire 'input', so this fires only for edits.
+    addrInput.addEventListener('input', () => { taaAddrUserEdited = true; });
+  }
   if (sel) {
     sel.addEventListener('change', () => {
       currentInstanceDockerId = sel.value;
@@ -95,10 +124,9 @@ function initInstanceSelector() {
       if (typeof refreshDashboardStatus === 'function') refreshDashboardStatus();
       if (typeof fetchModelLogs === 'function') fetchModelLogs();
       if (typeof fetchTaaLogs === 'function') fetchTaaLogs();
-      // Refresh the proxy badge only when the address still auto-detected; a
-      // manually typed address must survive an instance switch.
-      const addr = document.getElementById('taaAddr');
-      if (addr && addr.value === location.origin + '/taa' && typeof detectTAAProxy === 'function') {
+      // Refresh the proxy badge only while the address is still auto-detected;
+      // a manually typed address must survive an instance switch.
+      if (!taaAddrUserEdited && typeof detectTAAProxy === 'function') {
         detectTAAProxy();
       }
     });
