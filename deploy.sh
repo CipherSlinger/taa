@@ -2156,7 +2156,11 @@ wait_for_remote_taa_ready() {
     # TCP inside the Pod's network namespace: its /v1/taa/health now requires an
     # SM2 envelope that a local probe cannot produce. The Pod netns is the
     # guest's, so 127.0.0.1 here is the daemon.
-    if remote_ssh "$(container_exec) sh -lc '</dev/tcp/127.0.0.1/$CON_PORT' >/dev/null 2>&1"; then
+    #
+    # bash, not sh: /dev/tcp is a bash feature, and the image's /bin/sh is dash,
+    # where the redirection fails with "cannot open /dev/tcp/..." no matter what
+    # is listening. deploy-taa-vm.sh carries the same probe and the same reason.
+    if remote_ssh "$(container_exec) bash -c 'exec 3<>/dev/tcp/127.0.0.1/$CON_PORT' >/dev/null 2>&1"; then
       taa_ready=true
       break
     fi

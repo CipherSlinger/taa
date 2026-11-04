@@ -144,7 +144,10 @@ case "$verb" in
       *"pgrep -x taa"*) exit 1 ;;
       *"manual"*|*"pkill"*|*"chmod"*|*"ls -l"*) exit 0 ;;
       *"tail -n"*) echo "2026-11-03T10:00:00Z taa service listening on :6001"; exit 0 ;;
-      *"/dev/tcp/"*) exit 0 ;;
+      # /dev/tcp is bash-only and the image's /bin/sh is dash, where the same
+      # probe fails however healthy the daemon is. Mirror that here so a probe
+      # that regresses to sh cannot pass this suite.
+      *"/dev/tcp/"*) case "$*" in *"bash -c"*) exit 0 ;; *) exit 1 ;; esac ;;
       *) exit 0 ;;
     esac
     ;;
