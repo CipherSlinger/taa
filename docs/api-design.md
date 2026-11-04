@@ -1792,7 +1792,7 @@ TEELLM_MODEL={family}:{tag} # 暂只支持 qwen-coder2.5:7b
 | `digest` | `string` | hex | 报告中的 `DIGEST`（32 字节） |
 | `chipId` | `string` | **ASCII** | 报告中的 `CHIP_ID`，去掉尾部 `NUL` 填充 |
 
-> **与 TAA 的差异**：TAA 的 `getAttestation` 会把 `userdata` 转成 PEM，LLM **两处都保持 hex**。平台的公钥一律从 `taaPublicKey` / `certificate` 字段取，不依赖 `userdata` 的编码。
+> **与 TAA 的差异**：TAA 的 `getAttestation` 会把 `userdata` 转成 PEM，LLM 的注册报文保持报告里的 hex 原值（LLM 的 `getAttestation` 响应则把 `userdata` 回填为请求的 `requestId`，见 [7.3.1](#731-获取远程证明报告v1llmgetattestation)）。平台的公钥一律从 `taaPublicKey` / `certificate` 字段取，不依赖 `userdata` 的编码。
 
 **请求示例**：
 
@@ -1904,25 +1904,11 @@ curl -X POST "http://${PLATFORM_ADDR}/v1/llm/register" \
 
 ### 7.3 平台 → LLM
 
-平台访问 LLM 只有一个接口，走**明文 HTTP**，不加密、不握手：
-
-| 监听 | 路径 | 方法 | 传输 | 用途 |
-| --- | --- | --- | --- | --- |
-| `:8444` | `/v1/llm/getAttestation` | `POST` | 明文 HTTP | 平台获取远程证明报告与对应证书 |
-
-平台没有任何 TEE-TLS（RFC 8998）客户端，因此这条方向不启用 TEE-TLS：普通 HTTP 客户端直接 `POST` 即可。`:8443` 上的 TEE-TLS 只服务 TAA 的推理与审计调用。
-
-两个监听共用同一份证书缓存，因此明文接口返回的 `certificate` 与 `:8443` 握手中出示的证书是**同一张**。
-
-报告的可信度不依赖传输：`certificate` 的公钥与报告 `userdata` 的前 32 字节做 SM3 比对，再由报告里的 PEK 签名、最终链到 HRK 背书。明文端口只承载这一条取数通道，不提供推理。
-
-#### 7.3.1 获取远程证明报告（/v1/llm/getAttestation，明文 :8444）
+#### 7.3.1 获取远程证明报告（/v1/llm/getAttestation）
 
 **请求**：`POST http://{llm-host}:8444/v1/llm/getAttestation`
 
 **请求内容类型**：`application/json`
-
-**触发时机**：每次请求都从**当前缓存证书**里取证据扩展反解报告，**不重新访问 `/dev/csv-guest`**。证书本身就是从设备取来的，报告里的 `userdata` 绑定的正是这张证书的公钥；重取一份会引入"报告与证书不是一对"的可能，而平台要验的恰恰是这条链。
 
 **参数**：
 
@@ -1941,9 +1927,9 @@ curl -X POST "http://${PLATFORM_ADDR}/v1/llm/register" \
 | 参数 | 类型 | 说明 |
 | --- | --- | --- |
 | `requestId` | `string` | 与请求中的 `requestId` 一致 |
-| `verifiedPass` | `bool` | 自检结果：HRK/HSK-CEK 链验通过 **且** `userdata[:32] == SM3(证书公钥)` |
+| `verifiedPass` | `bool` | 自检结果：HRK/HSK-CEK 链验通过 **且** 报告自身 USERDATA 的前 32 字节 == `SM3(证书公钥)` |
 | `attestation` | `string` | 远程证明报告，Base64 编码（`0x9F4` = 2548 字节），二进制格式见 [4.1.1](#411-远程证明报告二进制格式) |
-| `attestationValues` | `string` (JSON) | 报告核心字段的 JSON **字符串**，字段同 [7.2.1](#721-llm-启动注册v1llmregister)：**`userdata` 为 hex** |
+| `attestationValues` | `string` (JSON) | 报告核心字段的 JSON **字符串**，字段同 [7.2.1](#721-llm-启动注册v1llmregister)：`mnonce`/`digest` 为 hex，`chipId` 为 ASCII；**`userdata` 的值回填为请求里的 `requestId`** |
 | `certificate` | `string` | **本实例当前的 TEE-TLS 证书，PEM 编码**。该字段是 LLM 侧独有的 |
 
 **与 TAA `/v1/taa/getAttestation` 的差异**：
@@ -1952,9 +1938,9 @@ curl -X POST "http://${PLATFORM_ADDR}/v1/llm/register" \
 | --- | --- | --- |
 | 传输与信封 | 明文 HTTP，请求/响应都套信封 | 明文 HTTP（`:8444`），报文本身**无信封** |
 | 报告来源 | 每次重新生成（30s 超时，进程内互斥） | 当前缓存证书里的那一份，不重新 IOCTL |
-| `attestationValues.userdata` | PEM（TAA 自己的 SM2 公钥） | **hex**（前 32 字节 = `SM3(证书公钥 SPKI)`） |
+| `attestationValues.userdata` | PEM（TAA 自己的 SM2 公钥） | **请求里的 `requestId` 原值**（不回填报告里的 userdata） |
 | `certificate` | 无 | **有**，PEM |
-| 调用方认证 | 信封验签 | 无传输层认证；报告自证（PEK 签名 + `userdata` 绑定证书公钥） |
+| 调用方认证 | 信封验签 | 无传输层认证；报告自证（PEK 签名 + 报告 USERDATA 绑定证书公钥） |
 
 **为什么单独开明文端口**：平台没有任何 TEE-TLS 客户端，收在 `:8443` 上平台就取不到报告；而报告本身已带认证性，传输层加密对它没有增量。响应仍保留 `certificate`：证书缓存（默认 1 小时）可能在生成与返回之间轮换，用响应里的证书才能确认"这份报告 ↔ 这把公钥"，同时让报文自包含，便于存档与离线核验。明文端口只挂这一个接口，不提供推理，也不承载 TAA 的审计流量。
 
@@ -1967,7 +1953,7 @@ curl -X POST "http://${PLATFORM_ADDR}/v1/llm/register" \
     "requestId": "req-att-001",
     "verifiedPass": true,
     "attestation": "base64-encoded-attestation-report...",
-    "attestationValues": "{\"userdata\":\"0c1f11fd...\",\"mnonce\":\"0123...\",\"digest\":\"0123...\",\"chipId\":\"CSV-CHIP-0123456789\"}",
+    "attestationValues": "{\"userdata\":\"req-att-001\",\"mnonce\":\"0123...\",\"digest\":\"0123...\",\"chipId\":\"CSV-CHIP-0123456789\"}",
     "certificate": "-----BEGIN CERTIFICATE-----\n...\n-----END CERTIFICATE-----\n"
   },
   "error": 0
