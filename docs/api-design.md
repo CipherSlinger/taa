@@ -1851,7 +1851,7 @@ curl -X POST "http://${PLATFORM_ADDR}/v1/llm/register" \
 { "dockerId": "taa-teellm", "timestamp": "1730000030" }
 ```
 
-**平台响应**：单向通道，平台**无需返回任何内容**——LLM 不解析响应 body，也不校验状态码，返回 `500` 同样算上报成功。只有请求根本发不出去（连接失败、超时等网络错误）才算失败。
+**平台响应**：单向通道，平台**无需返回任何内容**——LLM 不解析响应 body，也不校验状态码。只有请求根本发不出去（连接失败、超时等网络错误）才算失败，发送失败后触发重新注册。
 
 #### 7.2.3 LLM 上报运行日志（/v1/llm/log）
 
@@ -1859,15 +1859,15 @@ curl -X POST "http://${PLATFORM_ADDR}/v1/llm/register" \
 
 **请求内容类型**：`application/json`
 
-接口路径是 LLM 自己的命名，**不沿用 TAA 的 `/v1/taa/taaLog`**；只有报文结构与 [3.6 TAA 上报运行日志](#36-taa-上报运行日志v1taataalog)逐字段相同，且只有两个取值固定：
+报文结构与 [3.6 TAA 上报运行日志](#36-taa-上报运行日志v1taataalog) 逐字段相同，只是 `requestId`、`taskId` 两个字段均可省略：
 
 **参数**：
 
 | 参数 | 类型 | 必填 | 说明 |
 | --- | --- | --- | --- |
 | `dockerId` | `string` | 是 | 配置 `platform.dockerId`（可由环境变量 `DOCKER_ID` 覆盖） |
-| `requestId` | `string` | 是 | **恒为 `"system"`**：LLM 没有任务概念 |
-| `taskId` | `string` | 否 | **恒省略**（`omitempty`）：与 TAA 空闲期上报的形状一致 |
+| `requestId` | `string` | 否 | （预留）可为空（`omitempty`）；LLM 当前填 `"system"`，平台不应依赖该字段 |
+| `taskId` | `string` | 否 | 可为空（`omitempty`）；LLM 恒省略，与 TAA 空闲期上报的形状一致 |
 | `seqStart` | `uint64` | 是 | 本批日志的起始序号 |
 | `entries` | `array` | 是 | 日志条目数组，不应为空，单批上限 100 条 |
 
