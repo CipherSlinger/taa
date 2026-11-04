@@ -14,10 +14,10 @@
 #    NODE_NAME        spec.nodeName          (TAA_POD_NODE)
 #    RUNTIME_CLASS    runtimeClassName       (TAA_POD_RUNTIME_CLASS)
 #    CPU, MEMORY      container resources    (TAA_POD_CPU, TAA_POD_MEMORY)
-#    CC_INIT_DATA     cc_init_data annotation, read from a running CoCo Pod
+#    CC_INIT_DATA     cc_init_data annotation, read from a running CoCo Pod or rendered from TAA_POD_INITDATA_FILE
 #    DOCKER_ID        env DOCKER_ID          (TAA_POD_DOCKER_ID, default Pod name)
 #    PLATFORM_IP      env PLATFORM_IP        (REMOTE_PLATFORM_IP)
-#    PLATFORM_PUBLIC_KEY env PLATFORM_PUBLIC_KEY (TAA_POD_PLATFORM_PUBLIC_KEY or PLATFORM_PUBLIC_KEY)
+#    PLATFORM_PUBLIC_KEY env PLATFORM_PUBLIC_KEY (TAA_POD_PLATFORM_PUBLIC_KEY, PLATFORM_PUBLIC_KEY, or read from the host)
 #    CONTRACT_ID      env CONTRACT_ID        (CONTRACT_ID)
 #
 #  The LLM endpoint is deliberately not an env var here: an env value outlives every deployment
@@ -81,7 +81,8 @@ spec:
         - name: PLATFORM_IP
           value: "__PLATFORM_IP__"
         # TAA seals every message it sends and exits at startup without this key. The remote
-        # config path drops the platform block, so the Pod environment is its only source.
+        # config path drops the platform block, so the Pod environment is its only source;
+        # deploy.sh reads it from the host's key file when the operator did not export one.
         - name: PLATFORM_PUBLIC_KEY
           value: "__PLATFORM_PUBLIC_KEY__"
         - name: CONTRACT_ID

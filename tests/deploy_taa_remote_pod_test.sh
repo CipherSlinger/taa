@@ -61,7 +61,10 @@ while [[ $i -lt ${#args[@]} ]]; do
   esac
 done
 host="${args[$i]}"; i=$((i+1))
-cmd="${args[$i]}"
+# The rest is the command, exactly as ssh joins it: deploy.sh passes positional arguments
+# (`bash -s -- <path>`) as separate argv entries, and dropping them would make those paths
+# disappear only in the mock.
+cmd="${args[*]:$i}"
 cmd="${cmd//\/root\/taa/$MOCK_REMOTE_ROOT\/root\/taa}"
 echo "SSH[$host] $cmd" >> "$MOCK_LOG"
 exec sh -c "$cmd"
@@ -103,7 +106,12 @@ verb="${args[$i]}"
 echo "KUBECTL $verb ${args[*]:$((i+1))}" >> "$MOCK_LOG"
 case "$verb" in
   get)
-    if [[ "$*" == *"-A"* ]]; then echo "DERIVED_CC_INIT_DATA"; exit 0; fi
+    if [[ "$*" == *"-A"* ]]; then
+      # A host with no CoCo Pod answers with nothing; the flag makes that state reachable while
+      # the other cases keep the simpler "a Pod carries the annotation" behaviour.
+      [[ -f "$MOCK_STATE_DIR/no_cc_init_data" ]] && exit 0
+      echo "DERIVED_CC_INIT_DATA"; exit 0
+    fi
     [[ -f "$MOCK_STATE_DIR/pod" ]] && exit 0 || exit 1
     ;;
   wait)
@@ -154,6 +162,10 @@ DEFAULT_IMAGE="172.16.10.178:31313/taa-env:slim-v2"
 # here; what is pinned is that it reaches the Pod environment, since TAA refuses to start without
 # it and the remote config path has no platform block to carry it.
 TEST_PLATFORM_KEY="04$(printf 'ab%.0s' {1..64})"
+# The deployment reads the key off the host when it is not exported, so the fixture stands in for
+# the platform-mock's state directory (its default state dir is the remote deployment directory).
+printf '{\n  "privateKeyPem": "not-a-real-key",\n  "publicKeyHex": "%s"\n}\n' "$TEST_PLATFORM_KEY" \
+  > "$MOCK_REMOTE_ROOT/root/taa/platform-key.json"
 
 REPO="$TMP_DIR/repo"
 mkdir -p "$REPO/deploy/manifest/k8s" "$REPO/configs" "$REPO/cmd/taa"
@@ -176,10 +188,12 @@ RUN_ENV=()
 run_deploy() {
   set +e
   # TAA_POD_IMAGE is pinned so the lifecycle cases do not build and push a production image;
-  # the auto-build path is exercised against the real registry, not by this mock harness.
+  # the auto-build path is exercised against the real registry, not by this mock harness. The
+  # platform key is deliberately not exported: it is read from the host, which is the path a real
+  # operator takes, and every case here would otherwise stop proving that.
   output="$(PATH="$MOCK_BIN:$PATH" env -u TARGET_POD -u TAA_POD_NAME -u TAA_POD_IMAGE \
+    -u PLATFORM_PUBLIC_KEY -u TAA_POD_PLATFORM_PUBLIC_KEY -u TAA_POD_CC_INIT_DATA \
     TAA_POD_IMAGE="$DEFAULT_IMAGE" \
-    PLATFORM_PUBLIC_KEY="$TEST_PLATFORM_KEY" \
     "${RUN_ENV[@]}" \
     READY_TIMEOUT=2 \
     READY_INTERVAL=1 \
@@ -251,6 +265,8 @@ grep -q 'name: PLATFORM_PUBLIC_KEY' "$APPLIED" \
   || fail "the Pod environment does not carry PLATFORM_PUBLIC_KEY"
 grep -q "value: \"$TEST_PLATFORM_KEY\"" "$APPLIED" \
   || fail "the platform public key did not reach the Pod environment"
+grep -q "platform public key read from" <<<"$output" \
+  || fail "the platform public key was not read from the host when it was not exported"
 # Requests must equal limits: CSV2 memory is resident from boot, so an overcommit is a permanent
 # host cost, not a burst.
 cpu_limits="$(grep -cE '^          cpu: "' "$APPLIED")"
@@ -353,25 +369,84 @@ rm -f "$MOCK_STATE_DIR/exec_fails"
 # TAA seals every message it sends and exits at startup when the platform's SM2 key is missing,
 # and the remote config path has no platform block to carry one. Creating the Pod anyway would
 # spend a whole guest boot to reach a crash loop, so the gate has to fire before the manifest.
+# Both sources are removed here: the exported variable and the host's key file.
 
+KEY_FILE="$MOCK_REMOTE_ROOT/root/taa/platform-key.json"
+mv "$KEY_FILE" "$TMP_DIR/platform-key.json"
 rm -f "$MOCK_STATE_DIR/pod" "$MOCK_STATE_DIR/apply-count"
 before="$(wc -l < "$MOCK_LOG")"
 set +e
 output="$(PATH="$MOCK_BIN:$PATH" env -u TARGET_POD -u TAA_POD_NAME -u TAA_POD_IMAGE \
-  -u PLATFORM_PUBLIC_KEY -u TAA_POD_PLATFORM_PUBLIC_KEY \
+  -u PLATFORM_PUBLIC_KEY -u TAA_POD_PLATFORM_PUBLIC_KEY -u TAA_POD_CC_INIT_DATA \
   TAA_POD_IMAGE="$DEFAULT_IMAGE" \
   READY_TIMEOUT=2 READY_INTERVAL=1 TAA_POD_READY_TIMEOUT=5 \
   TAA_SCAN_ENGINE_PROVISION=skip \
   timeout 300 "$REPO/deploy.sh" taa start 2>&1)"
 status=$?
 set -e
+mv "$TMP_DIR/platform-key.json" "$KEY_FILE"
 [[ $status -ne 0 ]] || fail "a new Pod was accepted without PLATFORM_PUBLIC_KEY"
 grep -q "PLATFORM_PUBLIC_KEY is not set" <<<"$output" \
   || fail "the missing platform key was not named in the error"
+grep -q "/root/taa/platform-key.json" <<<"$output" \
+  || fail "the error did not say which key file was looked for"
 tail -n +"$((before + 1))" "$MOCK_LOG" > "$TMP_DIR/missing-key.log"
 if grep -q "KUBECTL create" "$TMP_DIR/missing-key.log"; then
   fail "a Pod was created without the platform public key"
 fi
 [[ -f "$MOCK_STATE_DIR/pod" ]] && fail "a Pod exists after the refused creation"
+
+# ── 9. cc_init_data comes from the host's initdata file when nothing carries it ─
+#
+# The usual source is a running CoCo Pod, but requiring an unrelated Pod to exist just to create
+# this one is not a dependency worth having: the vendor initdata file is the same input, and
+# compressing it here is what the vendor's own Pod template does.
+
+rm -f "$MOCK_STATE_DIR/pod" "$MOCK_STATE_DIR/apply-count"
+touch "$MOCK_STATE_DIR/no_cc_init_data"
+printf 'policy.rego = "package agent_policy"\n' > "$TMP_DIR/initdata.v1.toml"
+set +e
+output="$(PATH="$MOCK_BIN:$PATH" env -u TARGET_POD -u TAA_POD_NAME -u TAA_POD_IMAGE \
+  -u PLATFORM_PUBLIC_KEY -u TAA_POD_PLATFORM_PUBLIC_KEY -u TAA_POD_CC_INIT_DATA \
+  TAA_POD_IMAGE="$DEFAULT_IMAGE" \
+  TAA_POD_INITDATA_FILE="$TMP_DIR/initdata.v1.toml" \
+  READY_TIMEOUT=2 READY_INTERVAL=1 TAA_POD_READY_TIMEOUT=5 \
+  TAA_SCAN_ENGINE_PROVISION=skip \
+  timeout 300 "$REPO/deploy.sh" taa start 2>&1)"
+status=$?
+set -e
+[[ $status -eq 0 ]] || fail "the deployment did not fall back to the initdata file (exit $status)"
+expected_blob="$(gzip -c "$TMP_DIR/initdata.v1.toml" | base64 -w0)"
+grep -q "cc_init_data: $expected_blob$" "$MOCK_STATE_DIR/applied.yaml" \
+  || fail "the cc_init_data annotation was not rendered from the initdata file"
+grep -q "cc_init_data rendered from" <<<"$output" \
+  || fail "the fallback source was not reported"
+rm -f "$MOCK_STATE_DIR/no_cc_init_data"
+
+# ── 10. A malformed platform key is refused before creation ──────────────────
+#
+# A PEM block, a truncated hex string or a stray quote parses nowhere, and TAA would only say so
+# after the guest had booted. The exported value wins over the key file, so the check has to run
+# on it rather than trust that the file is the only source.
+
+rm -f "$MOCK_STATE_DIR/pod" "$MOCK_STATE_DIR/apply-count"
+before="$(wc -l < "$MOCK_LOG")"
+set +e
+output="$(PATH="$MOCK_BIN:$PATH" env -u TARGET_POD -u TAA_POD_NAME -u TAA_POD_IMAGE \
+  -u TAA_POD_PLATFORM_PUBLIC_KEY -u TAA_POD_CC_INIT_DATA \
+  TAA_POD_IMAGE="$DEFAULT_IMAGE" \
+  PLATFORM_PUBLIC_KEY="-----BEGIN PUBLIC KEY-----" \
+  READY_TIMEOUT=2 READY_INTERVAL=1 TAA_POD_READY_TIMEOUT=5 \
+  TAA_SCAN_ENGINE_PROVISION=skip \
+  timeout 300 "$REPO/deploy.sh" taa start 2>&1)"
+status=$?
+set -e
+[[ $status -ne 0 ]] || fail "a malformed platform key was accepted"
+grep -q "not in the expected wire format" <<<"$output" \
+  || fail "the malformed platform key was not named"
+tail -n +"$((before + 1))" "$MOCK_LOG" > "$TMP_DIR/bad-key.log"
+if grep -q "KUBECTL create" "$TMP_DIR/bad-key.log"; then
+  fail "a Pod was created with a malformed platform key"
+fi
 
 echo "PASS: TAA Pod creation, reuse, device gate and stop-deletion behave as specified"

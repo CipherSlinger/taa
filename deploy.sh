@@ -138,6 +138,14 @@ TAA_POD_DOCKER_ID="${TAA_POD_DOCKER_ID:-}"
 # receive it through its environment. PLATFORM_PUBLIC_KEY is read too: that is the name TAA itself
 # uses, and the one the platform-mock tells the operator to set.
 TAA_POD_PLATFORM_PUBLIC_KEY="${TAA_POD_PLATFORM_PUBLIC_KEY:-${PLATFORM_PUBLIC_KEY:-}}"
+# Where the key is read from when the operator did not supply it. The platform-mock persists it in
+# its state directory (whose default is the remote deployment directory), and that file is the
+# same one the mock's startup banner points at.
+TAA_POD_PLATFORM_KEY_FILE="${TAA_POD_PLATFORM_KEY_FILE:-$REMOTE_DIR/platform-key.json}"
+# Fallback source for the CoCo initdata blob when no running Pod carries it: the vendor initdata
+# file on the host. It is compressed and base64-encoded exactly as the vendor's own Pod template
+# does, so the guest sees the same value whether the blob was copied from a Pod or rendered here.
+TAA_POD_INITDATA_FILE="${TAA_POD_INITDATA_FILE:-/root/test/deployment/tools/build-and-install/test-hygon-coco/initdata.v1.toml}"
 TAA_POD_TEMPLATE="${TAA_POD_TEMPLATE:-$PROJECT_DIR/deploy/manifest/k8s/taa-pod.yaml.tmpl}"
 TEMP_TAA_POD_MANIFEST=""
 
@@ -449,6 +457,39 @@ remote_pod_exists() {
   remote_ssh "kubectl $K_NS get pod '$TARGET_POD' >/dev/null 2>&1"
 }
 
+# True when the value is the platform's published wire format: 04 || X(32B) || Y(32B), hex.
+is_platform_public_key() {
+  [[ "$1" =~ ^04[[:xdigit:]]{128}$ ]]
+}
+
+# Fills TAA_POD_PLATFORM_PUBLIC_KEY when the operator did not supply it, from the key file the
+# platform keeps on the remote host. The value is public material, so reading it from the host is
+# not a secret-handling problem; what it removes is a copy-paste step that, when skipped, produced
+# a Pod that booted into a crash loop. A value that does not parse is refused here rather than at
+# TAA's first startup, because the failure would otherwise only surface after a full guest boot.
+resolve_platform_public_key() {
+  if [[ -z "$TAA_POD_PLATFORM_PUBLIC_KEY" ]]; then
+    TAA_POD_PLATFORM_PUBLIC_KEY="$(remote_ssh bash -s -- "$TAA_POD_PLATFORM_KEY_FILE" <<'REMOTE_KEY' || true
+set -euo pipefail
+file="$1"
+[ -r "$file" ] || exit 1
+sed -n 's/.*"publicKeyHex"[[:space:]]*:[[:space:]]*"\([0-9a-fA-F]*\)".*/\1/p' "$file" | head -n 1
+REMOTE_KEY
+)"
+    TAA_POD_PLATFORM_PUBLIC_KEY="${TAA_POD_PLATFORM_PUBLIC_KEY//$'\r'/}"
+    TAA_POD_PLATFORM_PUBLIC_KEY="${TAA_POD_PLATFORM_PUBLIC_KEY//$'\n'/}"
+    if [[ -n "$TAA_POD_PLATFORM_PUBLIC_KEY" ]]; then
+      info "platform public key read from ${REMOTE_HOST}:$TAA_POD_PLATFORM_KEY_FILE"
+    fi
+  fi
+  if [[ -n "$TAA_POD_PLATFORM_PUBLIC_KEY" ]] && ! is_platform_public_key "$TAA_POD_PLATFORM_PUBLIC_KEY"; then
+    err "the platform SM2 public key is not in the expected wire format"
+    detail "Expected 130 hex characters: 04 followed by X and Y (32 bytes each)."
+    detail "Source: ${TAA_POD_PLATFORM_KEY_FILE} on ${REMOTE_HOST}, or PLATFORM_PUBLIC_KEY / TAA_POD_PLATFORM_PUBLIC_KEY."
+    exit 1
+  fi
+}
+
 # Reads the cc_init_data annotation off a CoCo Pod that already runs on the remote host. The
 # guest's CDH needs it to trust the local registry's self-signed certificate when it pulls the
 # image -- the host's own trust does not carry into the guest -- and a Pod without it stops in
@@ -473,9 +514,30 @@ REMOTE_DERIVE
   derived="${derived//$'\r'/}"
   derived="${derived//$'\n'/}"
   if [[ -z "$derived" ]]; then
-    err "no Pod on ${REMOTE_USER}@${REMOTE_HOST} carries the cc_init_data annotation"
+    # Nothing to copy from. The vendor initdata file on the host is the same input the vendor's
+    # own Pod template compresses, so rendering it here yields the value the guest needs without
+    # requiring an unrelated CoCo Pod to exist first.
+    derived="$(remote_ssh bash -s -- "$TAA_POD_INITDATA_FILE" <<'REMOTE_INITDATA' || true
+set -euo pipefail
+file="$1"
+[ -r "$file" ] || exit 1
+gzip -c "$file" | base64 -w0
+REMOTE_INITDATA
+)"
+    derived="${derived//$'\r'/}"
+    derived="${derived//$'\n'/}"
+    if [[ -n "$derived" ]]; then
+      # stderr, not stdout: this function's stdout is the annotation value itself, and a progress
+      # line in it would land inside the rendered manifest.
+      printf "   ${GREEN}✓${NC} cc_init_data rendered from %s:%s (no running CoCo Pod to copy it from)\n" \
+        "$REMOTE_HOST" "$TAA_POD_INITDATA_FILE" >&2
+    fi
+  fi
+  if [[ -z "$derived" ]]; then
+    err "could not obtain the cc_init_data annotation on ${REMOTE_USER}@${REMOTE_HOST}"
     detail "Without it the guest's CDH cannot pull the image and the new Pod stops in StartError."
-    detail "Bring up any CoCo Pod once (deploy-taa-vm.sh up) or pass TAA_POD_CC_INIT_DATA=<base64>."
+    detail "Looked for a running CoCo Pod and for $TAA_POD_INITDATA_FILE on the host."
+    detail "Bring up any CoCo Pod once (deploy-taa-vm.sh up), pass TAA_POD_CC_INIT_DATA=<base64>, or point TAA_POD_INITDATA_FILE at the initdata file."
     exit 1
   fi
   printf '%s' "$derived"
@@ -613,11 +675,14 @@ create_taa_pod() {
     warn "CONTRACT_ID is empty; the Pod will register without a contract id"
   fi
   # Refused before the manifest is applied: TAA validates the key at startup and exits, so a Pod
-  # created without it would boot, crash-loop, and cost a full guest boot to diagnose.
+  # created without it would boot, crash-loop, and cost a full guest boot to diagnose. The key is
+  # read from the host when the operator did not export it, so in the common case nothing is left
+  # for them to remember.
+  resolve_platform_public_key
   if [[ -z "$TAA_POD_PLATFORM_PUBLIC_KEY" ]]; then
     err "PLATFORM_PUBLIC_KEY is not set, so the new TAA Pod could not start"
     detail "TAA seals every platform message and refuses to start without the platform's SM2 public key."
-    detail "The platform-mock prints it at startup and keeps it in <state-dir>/platform-key.json (publicKeyHex)."
+    detail "It was not found in ${REMOTE_HOST}:$TAA_POD_PLATFORM_KEY_FILE either."
     detail "Export it first: PLATFORM_PUBLIC_KEY=<hex starting with 04> $(basename "$0") remote start"
     exit 1
   fi
@@ -1121,13 +1186,18 @@ Environment overrides:
   TAA_POD_READY_TIMEOUT=${TAA_POD_READY_TIMEOUT}
       等待新建 Pod Ready 的秒数（默认 600）。
   TAA_POD_CC_INIT_DATA=<base64>
-      cc_init_data 注解；置空时从宿主上已有 CoCo Pod 推导。
+      cc_init_data 注解；置空时先取宿主上已有 CoCo Pod 的注解，取不到再用 TAA_POD_INITDATA_FILE
+      渲染（与厂商 Pod 模板同一做法），都拿不到才报错。
+  TAA_POD_INITDATA_FILE=${TAA_POD_INITDATA_FILE}
+      宿主机上的 initdata 文件，作为 cc_init_data 的兜底来源（gzip + base64 后写入注解）。
   TAA_POD_DOCKER_ID=<id>
       注册到平台的 DOCKER_ID；置空时使用 Pod 名称。
   TAA_POD_PLATFORM_PUBLIC_KEY=<hex>
-      平台 SM2 公钥（04||X||Y 的 hex），新建 Pod 时必填；也可直接用 PLATFORM_PUBLIC_KEY。
-      远端配置不写 platform 块，它只能由 Pod 环境变量下发；缺失时 TAA 启动即 FATAL，脚本会在
-      创建 Pod 之前拒绝。mock 的启动日志和 <state-dir>/platform-key.json（publicKeyHex）里有。
+      平台 SM2 公钥（04||X||Y 的 hex）；也可直接用 PLATFORM_PUBLIC_KEY。两者都未设置时，
+      从 TAA_POD_PLATFORM_KEY_FILE 自动读取；仍读不到才拒绝创建（TAA 缺它会启动即 FATAL）。
+  TAA_POD_PLATFORM_KEY_FILE=${TAA_POD_PLATFORM_KEY_FILE}
+      宿主机上保存平台公钥的文件（读 publicKeyHex 字段，默认 <REMOTE_DIR>/platform-key.json，
+      即 platform-mock 的默认状态目录）。
 
   # Remote host / SSH
   REMOTE_USER=${REMOTE_USER}
