@@ -30,7 +30,7 @@
       "enabled": true
     },
     "binaryAudit": {
-      "enabled": true
+      "enabled": false
     },
     "llm": {
       "enabled": true,
