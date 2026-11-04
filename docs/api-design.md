@@ -1851,11 +1851,7 @@ curl -X POST "http://${PLATFORM_ADDR}/v1/llm/register" \
 { "dockerId": "taa-teellm", "timestamp": "1730000030" }
 ```
 
-**响应结果字段**：
-
-| 字段 | 类型 | 说明 |
-| --- | --- | --- |
-| `received` | `bool` | 平台是否成功接收本次心跳 |
+**平台响应**：单向通道，平台**无需返回任何内容**——LLM 不解析响应 body，也不校验状态码，返回 `500` 同样算上报成功。只有请求根本发不出去（连接失败、超时等网络错误）才算失败。
 
 #### 7.2.3 LLM 上报运行日志（/v1/llm/log）
 
@@ -1882,7 +1878,7 @@ curl -X POST "http://${PLATFORM_ADDR}/v1/llm/register" \
 | `seq` | `uint64` | 是 | 从 `1` 起单调递增，同一批内连续 |
 | `message` | `string` | 是 | 格式为 `[timestamp] [LEVEL] [component] message`，与 TAA 同一格式，平台展示代码零改动 |
 
-**缓冲与重发**：内存环形缓冲容量 2000 条，每 5 秒排空一次批量推送（配置 `platform.logFlushSeconds`）。推送失败时整批**放回队首**，下个周期重发，因此平台看到的 `seq` 不会倒退或跳批。缓冲与待发队列都受 2000 条上限约束，超出丢最旧。
+**缓冲与重发**：内存环形缓冲容量 2000 条，每 5 秒排空一次批量推送（配置 `platform.logFlushSeconds`）。**请求发不出去**（网络错误）时整批**放回队首**，下个周期重发，因此平台看到的 `seq` 不会倒退或跳批；平台正常应答（无论状态码）即视为已送达。缓冲与待发队列都受 2000 条上限约束，超出丢最旧。
 
 **请求示例**：
 
@@ -1904,7 +1900,7 @@ curl -X POST "http://${PLATFORM_ADDR}/v1/llm/register" \
 }
 ```
 
-**响应结果字段**：同 [3.6](#36-taa-上报运行日志v1taataalog)，`result.received` 为 `true` 才算本批送达。
+**平台响应**：单向通道，同 [7.2.2](#722-llm-上报心跳v1llmheartbeat)——平台无需返回内容，LLM 不解析 body、不校验状态码。
 
 ### 7.3 平台 → LLM
 
