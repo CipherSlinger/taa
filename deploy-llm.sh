@@ -1125,6 +1125,10 @@ qemus=$(pgrep -c -f '[q]emu-system' 2>/dev/null || true)
 printf 'kata_pods=%s\nsbs=%s\nqemus=%s\n' "${kata_pods:-0}" "${sbs:-0}" "${qemus:-0}"
 if [ "${kata_pods:-0}" != "${sbs:-0}" ] || [ "${sbs:-0}" != "${qemus:-0}" ]; then
   echo "ORPHANS"
+  # The leftover sandboxes are named first: the directory name is the prefix the operator has to
+  # match in `crictl pods` below, and an unmatched count with no qemu process left (the common
+  # case) is otherwise a number with nothing to act on.
+  ls -lt /run/vc/sbs 2>/dev/null | tail -n +2 | head -12 | sed 's/^/  sbs: /'
   pgrep -a -f '[q]emu-system' 2>/dev/null | while read -r pid rest; do
     rss=$(awk '/VmRSS/{printf "%.1f GiB", $2/1048576}' "/proc/$pid/status" 2>/dev/null)
     m=$(tr '\0' ' ' <"/proc/$pid/cmdline" 2>/dev/null | grep -o '\-m [0-9]*' | head -1)
@@ -1139,7 +1143,10 @@ REMOTE_ORPHANS
   qemus="$(sed -n 's/^qemus=//p' <<<"$report")"
   detail "kata Pods: ${kata_pods:-?}   /run/vc/sbs: ${sbs:-?}   qemu-system: ${qemus:-?}"
   if grep -q '^ORPHANS$' <<<"$report"; then
-    warn "the counts disagree: a sandbox outlived its Pod and its memory has not come back"
+    warn "the counts disagree: a sandbox record outlived its Pod"
+    if [[ "${qemus:-0}" == 0 && "${sbs:-0}" != 0 ]]; then
+      detail "no qemu is left, so the guest memory is already free; the leftover is a directory and shim record"
+    fi
     while IFS= read -r line; do
       detail "$line"
     done < <(sed -n '/^ORPHANS$/,$p' <<<"$report" | tail -n +2)
@@ -1148,6 +1155,9 @@ REMOTE_ORPHANS
     detail "  2) sudo crictl stopsandbox <sandbox-id>"
     detail "  3) sudo crictl rmp <sandbox-id>"
     detail "  4) re-run $(basename "$0") pod-down to recheck"
+    # The two leaks seen on these hosts, neither caused by deleting the Pod itself.
+    detail "Known causes here: containerd restarted during the guest's boot window (the operator's"
+    detail "pre-install daemon), or a failed RunPodSandbox retry that left a qemu behind."
   else
     info "no leftover sandboxes"
   fi
