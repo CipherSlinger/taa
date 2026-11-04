@@ -604,14 +604,22 @@ build_teellm_pod_image() {
   fi
   info "source image ready: $base_image"
 
+  # The stripped base is cached by date, so a source image swapped during the day would otherwise
+  # be ignored: the tag exists, the derivation is skipped, and every later layer is built on the
+  # old base while the fingerprint (which reads this derived image) stays put. The source ID is
+  # recorded as a label for exactly that comparison.
+  local source_base_id clean_base_source
+  source_base_id="$(docker image inspect --format '{{.Id}}' "$base_image")"
+  clean_base_source="$(docker image inspect --format '{{if .Config.Labels}}{{index .Config.Labels "tee-llm.base-source"}}{{end}}' "$clean_base" 2>/dev/null || true)"
+
   # The TAA images carry /root/taa (the taa binary and its autostart wrapper); an inference image
   # must contain neither. An empty build context keeps docker from packing the multi-GB archives
   # that sit in deploy/ into the build.
-  if ! docker image inspect "$clean_base" >/dev/null 2>&1; then
+  if [[ "$clean_base_source" != "$source_base_id" ]]; then
     step "building the TAA-free base image: $clean_base"
     local clean_ctx
     clean_ctx="$(mktemp -d /tmp/teellm-clean-base.XXXXXX)"
-    docker build -q -t "$clean_base" -f - "$clean_ctx" >/dev/null <<EOF
+    docker build -q -t "$clean_base" --label "tee-llm.base-source=$source_base_id" -f - "$clean_ctx" >/dev/null <<EOF
 FROM $base_image
 USER root
 RUN rm -rf /root/taa
@@ -679,9 +687,18 @@ PY
     'EXPOSE 8443 6001'
   )
   local fingerprint existing_fingerprint
+  # The build instructions themselves are an input: the copies, the soname-link fixup and the
+  # .teellm-model write all run as shell text inside this function, so editing them changes the
+  # image without changing a single file on disk. Hashing the function's own definition is what
+  # keeps that edit from being deployed as the previous image. It covers this block too, so a
+  # change to the fingerprint's own inputs forces one rebuild -- the safe direction.
+  local build_logic
+  build_logic="$(declare -f build_teellm_pod_image | sha256sum | cut -d' ' -f1)"
   fingerprint="$(
     {
+      printf 'build-logic %s\n' "$build_logic"
       printf 'base %s\n' "$(docker image inspect --format '{{.Id}}' "$base_image")"
+      printf 'base-source %s\n' "$source_base_id"
       printf 'model %s\n' "$OLLAMA_MODEL"
       for p in "$TEELLM_DIR/bin/teellm-service" "$TEELLM_SUPERVISOR_SCRIPT" \
                "$TEELLM_DIR/configs/teellm-production.json" "$TEELLM_DIR/configs/models.json"; do
@@ -698,12 +715,33 @@ PY
   )"
 
   existing_fingerprint="$(docker image inspect --format '{{if .Config.Labels}}{{index .Config.Labels "tee-llm.payload-fingerprint"}}{{end}}' "$local_image" 2>/dev/null || true)"
-  if [[ "$TEELLM_IMAGE_FORCE_REBUILD" != true &&
-        -n "$existing_fingerprint" && "$existing_fingerprint" == "$fingerprint" ]]; then
-    step "reusing the local image $local_image: its inputs are unchanged since it was built"
+  local reuse_image=""
+  if [[ "$TEELLM_IMAGE_FORCE_REBUILD" != true && -n "$existing_fingerprint" && "$existing_fingerprint" == "$fingerprint" ]]; then
+    reuse_image="$local_image"
+  elif [[ "$TEELLM_IMAGE_FORCE_REBUILD" != true ]]; then
+    # The tag is the build date, so identical content built on an earlier day sits under another
+    # tag and a naive lookup by name would rebuild it from scratch. The fingerprint is content
+    # based, so any image that carries this exact one holds the same bytes; retagging it is the
+    # same image, not an approximation of it.
+    reuse_image="$(docker images --filter "label=tee-llm.payload-fingerprint=$fingerprint" \
+        --format '{{.CreatedAt}}\t{{.Repository}}:{{.Tag}}' 2>/dev/null |
+      grep -v $'\t<none>' | sort -r | head -n 1 | cut -f 2)" || true
+    if [[ -n "$reuse_image" ]]; then
+      docker tag "$reuse_image" "$local_image"
+      step "reusing $reuse_image as $local_image: its inputs are unchanged since it was built"
+    fi
+  fi
+  if [[ -n "$reuse_image" ]]; then
+    [[ "$reuse_image" == "$local_image" ]] &&
+      step "reusing the local image $local_image: its inputs are unchanged since it was built"
     detail "no payload import and no commit; TEELLM_IMAGE_FORCE_REBUILD=true rebuilds it anyway"
     rm -f "$file_list"
   else
+    # A rebuild minutes long should never be mysterious: name the stored fingerprint when there
+    # is one, so an operator can tell a deliberate input change from a broken check.
+    if [[ -n "$existing_fingerprint" && "$existing_fingerprint" != "$fingerprint" ]]; then
+      detail "the existing $local_image was built from different inputs (fingerprint $existing_fingerprint, inputs now $fingerprint)"
+    fi
     # The builder container is removed on every exit path by cleanup_display unless the operator
     # asked to keep it; TEELLM_IMAGE_KEEP_BUILDER is what makes a failed build inspectable.
     local builder_container="taa-teellm-builder-$$"
@@ -2393,7 +2431,11 @@ Environment overrides:
       failed to build. Removed on success by default.
   TEELLM_IMAGE_FORCE_REBUILD=${TEELLM_IMAGE_FORCE_REBUILD}
       Rebuild and recommit even when the local image carries the fingerprint of the current
-      inputs. Normally the builder phase is skipped when nothing it would import has changed.
+      inputs. Normally the builder phase is skipped when nothing it would import has changed:
+      the fingerprint covers the source image, the model, every copied file, the exact payload
+      stream, the commit instructions and the build instructions themselves, and it is looked up
+      across every local tag -- the tag is the build date, so an image committed on an earlier day
+      is retagged rather than rebuilt.
   TEELLM_POD_NODE=${TEELLM_POD_NODE}
       Node the dedicated TEE-LLM Pod is pinned to.
   TEELLM_POD_RUNTIME_CLASS=${TEELLM_POD_RUNTIME_CLASS}

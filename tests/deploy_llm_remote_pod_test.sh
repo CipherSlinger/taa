@@ -228,6 +228,12 @@ case "$1" in
         [[ -n "${MOCK_IMAGE_LABEL_FILE:-}" && -s "${MOCK_IMAGE_LABEL_FILE}" ]] && cat "$MOCK_IMAGE_LABEL_FILE"
         exit 0
         ;;
+      # The derived base records the source image it was built from. An empty value means "no
+      # label", which is what an image predating the label looks like.
+      *tee-llm.base-source*)
+        printf '%s\n' "${MOCK_BASE_SOURCE_LABEL:-}"
+        exit 0
+        ;;
       *teellm-base:*)
         case "$*" in
           *".Id"*|*".Size"*) ;;
@@ -252,6 +258,13 @@ case "$1" in
     exit 0
     ;;
   build) cat >/dev/null; exit 0 ;;
+  # A cross-tag reuse lookup answers with whatever MOCK_REUSE_IMAGE names; without it the lookup
+  # finds nothing, which is what a host that has never built the image sees.
+  images)
+    [[ -n "${MOCK_REUSE_IMAGE:-}" ]] && printf '%s\n' "$MOCK_REUSE_IMAGE"
+    exit 0
+    ;;
+  tag) exit 0 ;;
   cp)
     for a in "$@"; do
       case "$a" in
@@ -866,5 +879,79 @@ if grep -q "reusing the local image" <<<"$output"; then
 fi
 [[ "$(grep -c '^DOCKER commit ' "$MOCK_LOG" || true)" == "$((commit_before + 1))" ]] \
   || fail "a changed payload did not cause a new commit"
+
+# ── 11. Identical content under an earlier day's tag is reused ──────────────
+# The tag is the build date, so the first deployment of a new day would otherwise re-import and
+# re-commit an image the host already holds under a different name. The fingerprint is over the
+# content, not over the tag, so a match under another tag is the same image.
+commit_before="$(grep -c '^DOCKER commit ' "$MOCK_LOG" || true)"
+rm -f "$MOCK_STATE_DIR/pod"
+RUN_ENV=(MOCK_REUSE_IMAGE="teellm:20250101")
+run_deploy --create-pod start --model qwen2.5-coder:0.5b
+RUN_ENV=()
+[[ $status -eq 0 ]] || fail "the cross-tag reuse run exited $status"
+grep -q "reusing teellm:20250101 as teellm:$TODAY_TAG" <<<"$output" \
+  || fail "an identical image under an earlier day's tag was not reused"
+grep -q "^DOCKER tag teellm:20250101 teellm:$TODAY_TAG" "$MOCK_LOG" \
+  || fail "the reused image was not retagged to today's name"
+[[ "$(grep -c '^DOCKER commit ' "$MOCK_LOG" || true)" == "$commit_before" ]] \
+  || fail "the image was committed even though an identical one already existed"
+
+# ── 12. A changed source image invalidates the cached stripped base ─────────
+# The stripped base is cached under a date tag, so an unchanged existence test would keep serving
+# a base derived from an older source for the rest of the day. The source image ID is recorded on
+# the derived image; a mismatch rebuilds the derivation, a match skips it.
+rm -f "$MOCK_STATE_DIR/pod"
+RUN_ENV=(MOCK_IMAGE_LABEL_FILE="$LABEL_FILE" MOCK_BASE_SOURCE_LABEL="sha256:stale")
+run_deploy --create-pod start --model qwen2.5-coder:0.5b
+RUN_ENV=()
+[[ $status -eq 0 ]] || fail "the stale-base run exited $status"
+grep -q "building the TAA-free base image" <<<"$output" \
+  || fail "a derived base built from another source image was reused"
+
+rm -f "$MOCK_STATE_DIR/pod"
+RUN_ENV=(MOCK_IMAGE_LABEL_FILE="$LABEL_FILE" \
+         MOCK_BASE_SOURCE_LABEL="sha256:1111111111111111111111111111111111111111111111111111111111111111")
+run_deploy --create-pod start --model qwen2.5-coder:0.5b
+RUN_ENV=()
+[[ $status -eq 0 ]] || fail "the current-base run exited $status"
+if grep -q "building the TAA-free base image" <<<"$output"; then
+  fail "the derived base was rebuilt even though it already came from this source image"
+fi
+
+# ── 13. Editing the build instructions invalidates the image ────────────────
+# The copies, the soname-link fixup and the .teellm-model write run as shell text inside the
+# build function, so editing them changes the image while leaving every file on disk untouched.
+# Hashing that text is what stops such an edit from being deployed as the previous image.
+FUNC_LABEL_FILE="$TMP_DIR/image-fingerprint-func"
+rm -f "$FUNC_LABEL_FILE" "$MOCK_STATE_DIR/pod"
+RUN_ENV=(MOCK_COMMIT_LABEL_FILE="$FUNC_LABEL_FILE")
+run_deploy --create-pod start --model qwen2.5-coder:0.5b
+RUN_ENV=()
+[[ $status -eq 0 ]] || fail "the instruction-fingerprint recording run exited $status"
+
+commit_before="$(grep -c '^DOCKER commit ' "$MOCK_LOG" || true)"
+rm -f "$MOCK_STATE_DIR/pod"
+RUN_ENV=(MOCK_IMAGE_LABEL_FILE="$FUNC_LABEL_FILE")
+run_deploy --create-pod start --model qwen2.5-coder:0.5b
+RUN_ENV=()
+[[ $status -eq 0 ]] || fail "the unchanged-instructions run exited $status"
+grep -q "reusing the local image" <<<"$output" \
+  || fail "identical instructions were not recognized as already built"
+
+cp "$REPO/deploy-llm.sh" "$TMP_DIR/deploy-llm.sh.pristine"
+awk '{ print } /^build_teellm_pod_image\(\) \{$/ && !done { print "  : # test-only edit of the build instructions"; done = 1 }' \
+  "$TMP_DIR/deploy-llm.sh.pristine" > "$REPO/deploy-llm.sh"
+rm -f "$MOCK_STATE_DIR/pod"
+RUN_ENV=(MOCK_IMAGE_LABEL_FILE="$FUNC_LABEL_FILE")
+run_deploy --create-pod start --model qwen2.5-coder:0.5b
+RUN_ENV=()
+[[ $status -eq 0 ]] || fail "the edited-instructions run exited $status"
+if grep -q "reusing the local image" <<<"$output"; then
+  fail "an image built by different instructions was reused"
+fi
+[[ "$(grep -c '^DOCKER commit ' "$MOCK_LOG" || true)" == "$((commit_before + 1))" ]] \
+  || fail "editing the build instructions did not cause a new commit"
+cp "$TMP_DIR/deploy-llm.sh.pristine" "$REPO/deploy-llm.sh"
 
 echo "PASS: the dedicated TEE-LLM Pod is created once, refused when it already exists, gated on its CSV device, and is what the bare invocation deploys into"
