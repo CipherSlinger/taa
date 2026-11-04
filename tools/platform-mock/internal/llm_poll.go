@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"strconv"
 	"strings"
@@ -89,6 +90,10 @@ func newLLMPoller(cfg Config, state *llmStateStore, logs *taaLogStore) *llmPolle
 		state:  state,
 		logs:   logs,
 		client: &http.Client{Timeout: llmRequestTimeout},
+		// Resume from the identity that was persisted with the last poll. Without
+		// this a mock restart would forget the run and stop treating a restart that
+		// happened meanwhile as a new instance.
+		runID: state.get().DockerID,
 	}
 }
 
@@ -226,10 +231,13 @@ func (p *llmPoller) pullLogs(ctx context.Context, addr, dockerID string, uptimeS
 
 	cursor := p.state.get().LogCursor
 	if previousRun != "" && previousRun != runID {
-		// The instance restarted: its seq numbering started over, so the old
-		// cursor would either stall the pull or make the new run's records look
-		// like duplicates.
+		// The instance restarted: its seq numbering started over, so the records
+		// collected so far belong to a process that no longer exists. Drop them
+		// along with the cursor; keeping them would show several runs' seq numbers
+		// interleaved in one list and read as duplicates.
 		p.state.resetLogCursor()
+		p.logs.reset()
+		log.Printf("TEE-LLM 实例已更换（%s → %s），已清空此前收集的日志", previousRun, runID)
 		cursor = 0
 	}
 
@@ -247,8 +255,10 @@ func (p *llmPoller) pullLogs(ctx context.Context, addr, dockerID string, uptimeS
 		return fmt.Errorf("解析日志结果失败: %w", err)
 	}
 	if result.LatestSeq < cursor {
-		// Belt and braces for a restart the run id could not tell apart.
+		// Belt and braces for a restart the run id could not tell apart: the seq
+		// numbering moved backwards, so the stored records are from another run.
 		p.state.resetLogCursor()
+		p.logs.reset()
 		cursor = 0
 	}
 

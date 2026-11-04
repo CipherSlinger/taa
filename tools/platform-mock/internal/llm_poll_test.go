@@ -175,7 +175,6 @@ func TestLLMPollerResetsCursorWhenDockerIDChanges(t *testing.T) {
 	fake, poller, state, logs := newPollTestRig(t)
 	fake.setEntries([]llmLogPullEntry{{Seq: 1, Message: "old one"}, {Seq: 2, Message: "old two"}})
 	poller.PollOnce(context.Background())
-	before := len(logs.get().Entries)
 
 	// A rebuild: same address, same uptime shape, a new process id.
 	fake.setDockerID("teellm-2000000002")
@@ -188,8 +187,14 @@ func TestLLMPollerResetsCursorWhenDockerIDChanges(t *testing.T) {
 	if lastSince != 1 {
 		t.Errorf("pull after rebuild used sinceSeq=%d, want 1 (cursor 0 plus one)", lastSince)
 	}
-	if got := len(logs.get().Entries); got != before+2 {
-		t.Errorf("stored %d entries, want %d", got, before+2)
+	// The old run's records are gone: its seq numbering no longer exists, so
+	// keeping them would interleave two runs in one list.
+	entries := logs.get().Entries
+	if len(entries) != 2 {
+		t.Fatalf("stored %d entries after the restart, want only the new run's 2", len(entries))
+	}
+	if entries[0].Message != "new one" || entries[1].Message != "new two" {
+		t.Errorf("stored entries = %+v, want the new run's records", entries)
 	}
 	if got := state.get().DockerID; got != "teellm-2000000002" {
 		t.Errorf("dockerId = %q, want the new instance id", got)
@@ -203,7 +208,6 @@ func TestLLMPollerResetsCursorWhenTheInstanceRestarted(t *testing.T) {
 	fake.setDockerID("")
 	fake.setEntries([]llmLogPullEntry{{Seq: 1, Message: "old one"}, {Seq: 2, Message: "old two"}})
 	poller.PollOnce(context.Background())
-	before := len(logs.get().Entries)
 
 	// A restart: the same seq numbering starts over and the uptime is small.
 	// Truncating the derived start time can land on either side of a boundary,
@@ -218,8 +222,9 @@ func TestLLMPollerResetsCursorWhenTheInstanceRestarted(t *testing.T) {
 	if lastSince != 1 {
 		t.Errorf("pull after restart used sinceSeq=%d, want 1 (cursor 0 plus one)", lastSince)
 	}
-	if got := len(logs.get().Entries); got != before+2 {
-		t.Errorf("stored %d entries, want %d", got, before+2)
+	entries := logs.get().Entries
+	if len(entries) != 2 || entries[0].Message != "new one" {
+		t.Errorf("stored entries = %+v, want only the restarted run's records", entries)
 	}
 	if got := state.get().LogCursor; got != 2 {
 		t.Errorf("cursor = %d, want 2", got)

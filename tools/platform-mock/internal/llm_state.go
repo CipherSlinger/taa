@@ -179,6 +179,17 @@ func (s *llmStateStore) resetLogCursor() {
 	s.persist(snapshot)
 }
 
+// clearLogDropped forgets the "records were dropped" flag without moving the
+// read position. Clearing the collected records makes a stale flag the only
+// thing left claiming they are incomplete.
+func (s *llmStateStore) clearLogDropped() {
+	s.mu.Lock()
+	s.state.LogDropped = false
+	snapshot := s.state
+	s.mu.Unlock()
+	s.persist(snapshot)
+}
+
 func (s *llmStateStore) setAttestation(state llmAttestationState) {
 	s.mu.Lock()
 	s.state.Attestation = state

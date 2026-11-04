@@ -72,6 +72,29 @@ func llmResetHandler(state *llmStateStore, logs *taaLogStore) http.HandlerFunc {
 	}
 }
 
+// llmLogsClearHandler drops the collected log records. Unlike the full reset it
+// keeps the instance identity and the read position, so the panel stays empty
+// until the instance writes new records instead of re-reading its whole buffer
+// on the next poll.
+func llmLogsClearHandler(state *llmStateStore, logs *taaLogStore) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		setCORS(w)
+		if r.Method == http.MethodOptions {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		if r.Method != http.MethodPost {
+			w.Header().Set("Allow", http.MethodPost)
+			writeLLMResponse(w, http.StatusMethodNotAllowed, "仅支持 POST 方法", nil, http.StatusMethodNotAllowed)
+			return
+		}
+		cleared := len(logs.get().Entries)
+		logs.reset()
+		state.clearLogDropped()
+		writeLLMResponse(w, http.StatusOK, "success", map[string]any{"cleared": cleared}, 0)
+	}
+}
+
 // llmPollNowHandler runs one poll on demand, so the panel's refresh button does
 // not have to wait for the next tick.
 func llmPollNowHandler(poller *llmPoller) http.HandlerFunc {

@@ -195,6 +195,22 @@ async function fetchLLMAttestation() {
   refreshLLMStatus();
 }
 
+async function clearLLMLogs() {
+  try {
+    const res = await fetch('/api/llm/logs/clear', { method: 'POST' });
+    const data = await res.json();
+    const cleared = data && data.result ? data.result.cleared : 0;
+    if (typeof showToast === 'function') {
+      showToast({ type: 'success', title: '已清空', message: `已清空 ${cleared} 条日志` });
+    }
+  } catch (_) {
+    if (typeof showToast === 'function') {
+      showToast({ type: 'warning', title: '清空失败', message: '请求未完成' });
+    }
+  }
+  refreshLLMStatus();
+}
+
 async function resetLLMStatus() {
   try {
     await fetch('/api/llm/reset', { method: 'POST' });

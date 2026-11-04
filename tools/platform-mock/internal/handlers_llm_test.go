@@ -63,6 +63,38 @@ func TestLLMResetClearsStateAndLogs(t *testing.T) {
 	}
 }
 
+// Clearing the log panel must not reset the read position: a cleared panel that
+// immediately refills from the instance's buffer would look like the button did
+// nothing.
+func TestLLMLogsClearKeepsTheCursor(t *testing.T) {
+	fake, state, logs, poller := newLLMHandlerRig(t)
+	fake.setEntries([]llmLogPullEntry{{Seq: 1, Message: "hello"}, {Seq: 2, Message: "world"}})
+	poller.PollOnce(context.Background())
+
+	rec := httptest.NewRecorder()
+	llmLogsClearHandler(state, logs)(rec, httptest.NewRequest(http.MethodPost, "/api/llm/logs/clear", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body %s", rec.Code, rec.Body.String())
+	}
+	var body struct {
+		Result struct {
+			Cleared int `json:"cleared"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if body.Result.Cleared != 2 {
+		t.Errorf("cleared = %d, want 2", body.Result.Cleared)
+	}
+	if entries := logs.get().Entries; len(entries) != 0 {
+		t.Errorf("logs after clear = %+v", entries)
+	}
+	if got := state.get(); got.LogCursor != 2 || !got.Reachable {
+		t.Errorf("state after clear = %+v, want the instance identity and cursor kept", got)
+	}
+}
+
 func TestLLMPollHandlerRunsOnePoll(t *testing.T) {
 	fake, state, _, poller := newLLMHandlerRig(t)
 	fake.setEntries([]llmLogPullEntry{{Seq: 1, Message: "hello"}})
@@ -94,6 +126,7 @@ func TestLLMHandlersRejectTheWrongMethod(t *testing.T) {
 	_, state, logs, poller := newLLMHandlerRig(t)
 	cases := map[string]http.HandlerFunc{
 		"/api/llm/reset":       llmResetHandler(state, logs),
+		"/api/llm/logs/clear":  llmLogsClearHandler(state, logs),
 		"/api/llm/poll":        llmPollNowHandler(poller),
 		"/api/llm/attestation": llmAttestationHandler(poller),
 	}
