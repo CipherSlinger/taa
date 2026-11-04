@@ -1746,6 +1746,10 @@ PLATFORM_IP=172.16.10.181:18081
 # 实例身份：覆盖配置文件的 platform.dockerId（不填即调试模式，用配置文件的值）
 DOCKER_ID=taa-teellm
 
+# 上报节奏（秒）：覆盖配置文件的 heartbeatSeconds / logFlushSeconds
+HEARTBEAT_SECONDS=30
+LOG_FLUSH_SECONDS=5
+
 TEELLM_MODEL={family}:{tag} # 暂只支持 qwen-coder2.5:7b
 ```
 
@@ -1753,10 +1757,10 @@ TEELLM_MODEL={family}:{tag} # 暂只支持 qwen-coder2.5:7b
 | --- | --- | --- |
 | `PLATFORM_IP` | 是 | 平台地址，覆盖配置文件的 `platform.addr`。可写裸 `host:port`（自动补 `http://`）或完整 URL。值写成 `off` / `none` / `disabled`（大小写不敏感、忽略两端空白）时表示**关闭上报**——不注册、不发心跳、不推日志；这三个词同样可以写进配置文件的 `platform.addr`。**不填即调试模式**：回落到配置文件的 `platform.addr`（模板里指向 platform-mock） |
 | `DOCKER_ID` | 是 | 实例身份，覆盖配置文件的 `platform.dockerId`。**环境变量优先于配置文件**；空白值视为未设置。**不填即调试模式**：回落到配置文件的 `platform.dockerId`，缺省 `taa-teellm` |
+| `HEARTBEAT_SECONDS` | 否 | 心跳周期（秒），覆盖配置文件的 `platform.heartbeatSeconds`，缺省 30。环境变量优先；非正整数的值忽略并记日志，仍用配置文件的值 |
+| `LOG_FLUSH_SECONDS` | 否 | 日志推送周期（秒），覆盖配置文件的 `platform.logFlushSeconds`，缺省 5。取值规则同上 |
 | `TEELLM_MODEL` | 否 | 推理使用的模型（`family:tag`），缺省取配置文件的 `backend.defaultModel` |
 
-> 心跳周期（30 秒）与日志推送周期（5 秒）没有环境变量，只能写在配置文件里。
->
 > 报告里的 `USERDATA` 由 TEE-LLM 取证据时写入 `SM3(证书公钥)`，`ATTESTATION_USERDATA` 即使设置也不生效。
 
 ### 7.2 LLM → 平台
