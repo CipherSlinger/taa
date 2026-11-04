@@ -583,6 +583,14 @@ Inside Docker containers, TAA runs under the supervision of `deploy/taa-supervis
 > `./deploy-llm.sh update`, which only updates a Pod that already exists and never creates or
 > deletes one. The old `--pod <name> start` spelling is refused.
 
+> **The created Pod publishes a host port.** Container port `8443` is mapped to the node's
+> `18443` (`TEELLM_POD_HOST_PORT`; `0` publishes nothing), so the service answers at
+> `https://<node>:18443` with its self-signed certificate — an address that survives recreating
+> the Pod, unlike the Pod IP the deployment records for TAA. The container also runs in
+> `Asia/Shanghai`, matching the host. A host port that is already listening fails the creation
+> preflight, before the image build. None of this changes how TAA connects: it keeps dialling the
+> Pod IP.
+
 > **The platform reporting target is one switch.** `teellm-service` resolves the platform it
 > registers with, heartbeats to and pushes logs to as **`PLATFORM_IP` in the environment, then
 > `platform.addr` in the config file**. The shipped configs name the platform-mock

@@ -192,9 +192,16 @@ platform-mock 的构建、启动、停止和就绪检查统一由仓库根目录
 只是想更新一个已存在 Pod 时用 `--pod <名字>`，那条路径不创建也不删除 Pod。
 
 **建之前先预检**：`--create-pod start` 在**构建镜像之前**确认 API server 可达、Pod 名是合法
-DNS label（≤63 字符）、命名空间与 RuntimeClass 存在，任一不满足立即退出 —— 命名空间写错不该
-先花几十分钟编译推送镜像。镜像选定之后再 best-effort 查一次 registry 的 `tags/list`
-（这次运行自己构建并推送过就跳过）；查不到只告警。
+DNS label（≤63 字符）、命名空间与 RuntimeClass 存在、宿主端口空闲，任一不满足立即退出 ——
+命名空间写错或端口被占不该先花几十分钟编译推送镜像。端口检查分两处：宿主 `ss` 看是否已有监听
+（运行时是在宿主网络命名空间里开这个端口的），集群里看有没有别的 Pod 声明了同一个 `hostPort`
+（只告警：不在运行的 Pod 不会阻塞调度）。镜像选定之后再 best-effort 查一次 registry 的
+`tags/list`（这次运行自己构建并推送过就跳过）；查不到只告警。
+
+**对外端口与时间**：Pod 把 teellm 的 `8443` 同时映射到节点的 `18443`（`TEELLM_POD_HOST_PORT`，
+设 `0` 则不映射），所以不依赖随时会变的 Pod IP 也能访问：`curl -k https://<节点>:18443`。
+TAA 自己仍拨 Pod IP，这个映射是给人的、给集群外调用方的，也是重建 Pod 后唯一不变的地址。
+容器里另设 `TZ=Asia/Shanghai`，guest 日志与宿主、平台记录按同一时区读。
 
 **平台怎么连上实例**：方向已经反过来 —— 平台调用 teellm，teellm 不主动上报。teellm-service
 在明文 `:6001` 上提供三个接口：`/v1/llm/getAttestation`（取远程证明报告）、

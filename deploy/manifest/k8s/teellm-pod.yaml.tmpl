@@ -15,6 +15,7 @@
 #    PULL_POLICY      imagePullPolicy        (TEELLM_POD_PULL_POLICY; Always after a build)
 #    RUNTIME_CLASS    runtimeClassName       (TEELLM_POD_RUNTIME_CLASS)
 #    CPU, MEMORY      container resources    (TEELLM_POD_CPU, TEELLM_POD_MEMORY)
+#    HOST_PORT        ports[0].hostPort       (TEELLM_POD_HOST_PORT; 0 publishes none)
 #    MODEL            env TEELLM_MODEL       (the model selected for the deployment)
 #    CC_INIT_DATA     cc_init_data annotation, read from a running CoCo Pod
 #
@@ -86,6 +87,16 @@ spec:
       # Always when this deployment built the image: the tag is the build date, so a rebuilt image
       # replaces a previous one under the same name and a cached copy would defeat the rebuild.
       imagePullPolicy: __PULL_POLICY__
+      # teellm-service's TLS port, also published on the node. TAA keeps reaching the Pod by its
+      # Pod IP -- the endpoint it writes is that address -- so the host port exists for everything
+      # else: curl -k https://<node>:18443 works without knowing a cluster-internal IP, and that
+      # address survives deleting and recreating the Pod, which the Pod IP does not. Kubernetes
+      # reads hostPort 0 as "not published", so one substitution serves both settings.
+      ports:
+        - name: teellm
+          containerPort: 8443
+          protocol: TCP
+          hostPort: __HOST_PORT__
       # The supervisor's own defaults match these paths; naming them here keeps the Pod's runtime
       # contract in one place. TEELLM_MODEL is the fallback when .teellm-model is absent -- an
       # image that does not bake the model, or a Pod before the deployment has written the file
@@ -101,6 +112,12 @@ spec:
           value: "/opt/teellm/configs/teellm-production.json"
         - name: TEELLM_MODEL
           value: "__MODEL__"
+        # The supervisor, the service and the model server stamp their logs in local time, and
+        # those logs are read next to the host's and the platform's records. Without it the
+        # container runs in UTC and every timestamp is eight hours off. Same value as the
+        # reference create script.
+        - name: TZ
+          value: "Asia/Shanghai"
       # Overrides the image ENTRYPOINT and hands PID 1 to the TEE-LLM supervisor, which owns
       # teellm-service and ollama inside this container. The shape is the reference create
       # script's: prepare the device, then exec the supervisor, so the container's lifetime is

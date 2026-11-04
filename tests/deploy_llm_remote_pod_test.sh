@@ -122,6 +122,17 @@ mkdir -p "$(dirname "$path")"
 cp "$src" "$path"
 MOCK
 
+# ss, standing in for the host's listener table. The remote commands run locally through the ssh
+# mock, so without this the preflight would consult the test machine's real ports.
+cat > "$MOCK_BIN/ss" <<'MOCK'
+#!/usr/bin/env bash
+# MOCK_HOST_PORT_BUSY answers as a host that already listens on the requested port.
+if [[ -n "${MOCK_HOST_PORT_BUSY:-}" ]]; then
+  echo "LISTEN 0 4096 0.0.0.0:18443 0.0.0.0:*"
+fi
+exit 0
+MOCK
+
 # kubectl, standing in for the cluster. The Pod lives in $MOCK_STATE_DIR: `apply` creates it and
 # keeps the manifest it was handed, which is how the test inspects what would have been submitted.
 # The device node is a separate flag, so a Pod can exist and be Ready while lacking the one thing
@@ -148,6 +159,12 @@ case "$verb" in
       exit 0
     fi
     if [[ "${args[$((i+1))]:-}" == "runtimeclass" ]]; then exit 0; fi
+    # The host port preflight asks every Pod what it publishes. MOCK_HOST_PORT_TAKEN_BY answers as
+    # a cluster where that Pod already claims 18443.
+    if [[ "$*" == *"hostPort"* ]]; then
+      [[ -n "${MOCK_HOST_PORT_TAKEN_BY:-}" ]] && echo "$MOCK_HOST_PORT_TAKEN_BY 18443"
+      exit 0
+    fi
     if [[ "$*" == *"-A"* ]]; then
       # MOCK_NO_CC_INIT_DATA stands for a host with no CoCo Pod at all: the annotation lookup
       # finds nothing, which is what makes the file fallback reachable.
@@ -458,6 +475,15 @@ memory_gi="$(grep -oE '^          memory: "[0-9]+Gi"' "$APPLIED" | grep -oE '[0-
 # count is a further permanent claim on a host whose CPU requests are already nearly accounted for.
 cpu_limits="$(grep -oE '^          cpu: "[0-9]+"' "$APPLIED" | grep -oE '[0-9]+' | sort -u)"
 [[ "$cpu_limits" == "2" ]] || fail "the TEE-LLM Pod CPU default is $cpu_limits, expected 2"
+# The service's TLS port is published on the node as well, at the reference script's 18443, so the
+# Pod is reachable without knowing a Pod IP that changes on every recreation.
+grep -q '^          containerPort: 8443$' "$APPLIED" \
+  || fail "the manifest does not expose teellm-service's 8443"
+grep -q '^          hostPort: 18443$' "$APPLIED" \
+  || fail "the manifest does not publish the host port"
+# Logs from inside the guest are read next to the host's, so the container keeps the host's zone.
+grep -q '^        - name: TZ$' "$APPLIED" || fail "the manifest does not set TZ"
+grep -q '^          value: "Asia/Shanghai"$' "$APPLIED" || fail "TZ is not Asia/Shanghai"
 # The overlay check only proves the image fits. What the service and the model have left over is a
 # separate number, and it is the one that shows up as a cgroup OOM long after the Pod went Ready.
 grep -qE 'business memory available: [0-9]+MiB \(cgroup limit 16384MiB, physical [0-9]+MiB\)' <<<"$output" \
@@ -699,6 +725,49 @@ grep -q "available and this confidential VM needs" <<<"$output" \
   || fail "the host memory refusal does not explain itself"
 [[ "$(cat "$MOCK_STATE_DIR/apply-count")" == "$apply_before" ]] \
   || fail "the Pod was applied despite failing the host memory check"
+
+# ── 3f. Negative control: the host port is already listening ─────────────────
+# A host port that something already holds makes the Pod unschedulable, and on a path that builds
+# an image first the operator would learn that tens of minutes later. The check runs in the
+# preflight, before any build, and refuses.
+
+rm -f "$MOCK_STATE_DIR/pod"
+apply_before="$(cat "$MOCK_STATE_DIR/apply-count")"
+RUN_ENV=(MOCK_HOST_PORT_BUSY=yes)
+run_deploy --create-pod start --model qwen2.5-coder:0.5b
+RUN_ENV=()
+[[ $status -ne 0 ]] || fail "a taken host port was accepted"
+grep -q "host port 18443 is already in use" <<<"$output" \
+  || fail "the port refusal does not name the port"
+grep -q "TEELLM_POD_HOST_PORT" <<<"$output" || fail "the port refusal does not name the override"
+[[ "$(cat "$MOCK_STATE_DIR/apply-count")" == "$apply_before" ]] \
+  || fail "the Pod was applied despite a taken host port"
+
+# ── 3g. Another Pod's declaration is a warning, not a refusal ────────────────
+# A declared hostPort on a Pod that is not running does not block scheduling, so the deployment
+# proceeds and says what it found. Refusing here would make a stopped Pod of the same name a
+# permanent obstacle to replacing it.
+
+rm -f "$MOCK_STATE_DIR/pod"
+RUN_ENV=(MOCK_HOST_PORT_TAKEN_BY="default/old-teellm")
+run_deploy --create-pod start --model qwen2.5-coder:0.5b
+RUN_ENV=()
+[[ $status -eq 0 ]] || fail "another Pod's hostPort declaration blocked the creation"
+grep -q "declares host port 18443" <<<"$output" || fail "the declaration was not reported"
+grep -q "default/old-teellm" <<<"$output" || fail "the declaration does not name the Pod"
+
+# ── 3h. TEELLM_POD_HOST_PORT=0 publishes nothing ─────────────────────────────
+# The escape hatch for a host that cannot spare the port. Kubernetes reads hostPort 0 as unset, so
+# the Pod is reachable at its Pod IP only, which is how every earlier Pod behaved.
+
+rm -f "$MOCK_STATE_DIR/pod"
+RUN_ENV=(TEELLM_POD_HOST_PORT=0)
+run_deploy --create-pod start --model qwen2.5-coder:0.5b
+RUN_ENV=()
+[[ $status -eq 0 ]] || fail "TEELLM_POD_HOST_PORT=0 exited $status"
+grep -q '^          hostPort: 0$' "$APPLIED" || fail "TEELLM_POD_HOST_PORT=0 was not rendered"
+grep -q "no host port published" <<<"$output" || fail "the disabled port was not reported"
+rm -f "$MOCK_STATE_DIR/pod"
 
 # Put a Pod back for the cases below: the two refusals above removed it to reach the creation path,
 # and stop/pod-down need something to act on.

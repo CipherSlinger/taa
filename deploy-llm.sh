@@ -319,6 +319,11 @@ TEELLM_POD_IMAGE_BUILT=false
 TEELLM_POD_IMAGE="${TEELLM_POD_IMAGE:-$TEELLM_IMAGE_REGISTRY/$TEELLM_IMAGE_REPO:$(date +%Y%m%d)}"
 TEELLM_POD_NODE="${TEELLM_POD_NODE:-hygon-master}"
 TEELLM_POD_RUNTIME_CLASS="${TEELLM_POD_RUNTIME_CLASS:-kata-qemu-csv2}"
+# Host port that publishes the service's 8443 on the node. TAA keeps dialling the Pod IP, so this
+# is for everything that cannot route a cluster address -- a person with curl, a script on another
+# host -- and it is the one address that survives recreating the Pod. 18443 is the reference create
+# script's number. 0 publishes nothing, which is how this Pod behaved before the port was mapped.
+TEELLM_POD_HOST_PORT="${TEELLM_POD_HOST_PORT:-18443}"
 # Kata sizes the guest as default_memory + limits.memory and default_vcpus + limits.cpu, and
 # encrypted memory is resident from boot, so these two numbers are a permanent host cost. Two vCPUs
 # is the reference create script's figure, kept so both paths ask the host for the same thing.
@@ -1071,6 +1076,11 @@ confirm_pod_creation() {
   echo "      image    $TEELLM_POD_IMAGE"
   echo "      cpu      $TEELLM_POD_CPU"
   echo "      memory   $TEELLM_POD_MEMORY (the VM is larger and resident on the host)"
+  if [[ "$TEELLM_POD_HOST_PORT" -gt 0 ]]; then
+    echo "      hostPort $TEELLM_POD_HOST_PORT (also at https://${TEELLM_POD_NODE}:$TEELLM_POD_HOST_PORT)"
+  else
+    echo "      hostPort none (reachable at the Pod IP only)"
+  fi
   echo ""
   local answer=""
   read -r -p "    Continue? [y/N] " answer || true
@@ -1187,12 +1197,56 @@ REMOTE_ORPHANS
   fi
 }
 
-# The creation preflight of the reference create script, minus its hostPort checks: this Pod
-# publishes no host port, TAA reaches it by Pod IP. Everything here is answered by the cluster
-# before a build that takes tens of minutes starts, so a wrong namespace or RuntimeClass costs a
-# second rather than half an hour.
+# Whether the host port the Pod publishes is free. The runtime opens it in the host's network
+# namespace, so `ss` sees a live one, and a Pod that declares the same hostPort without running is
+# read from the cluster. Both are answered before the build, because a taken port only shows up as
+# a scheduling failure after tens of minutes of image work. No jq: the cluster query runs through a
+# bash -s heredoc and kubectl jsonpath answers the same question.
+preflight_pod_host_port() {
+  local port="$TEELLM_POD_HOST_PORT" report busy declared
+  if [[ ! "$port" =~ ^[0-9]+$ ]] || [[ "$port" -gt 65535 ]]; then
+    err "TEELLM_POD_HOST_PORT='$port' is not a TCP port number between 0 and 65535"
+    exit 1
+  fi
+  if [[ "$port" -eq 0 ]]; then
+    info "no host port published (TEELLM_POD_HOST_PORT=0); the Pod is reachable at its Pod IP only"
+    return 0
+  fi
+  report="$(remote_ssh "PORT=$port bash -s" <<'REMOTE_PORT'
+set -u
+busy=$(ss -H -ltn "sport = :$PORT" 2>/dev/null | head -1)
+declared=$(kubectl get pods -A -o jsonpath='{range .items[*]}{.metadata.namespace}{"/"}{.metadata.name}{" "}{range .spec.containers[*]}{range .ports[*]}{.hostPort}{" "}{end}{end}{"\n"}{end}' 2>/dev/null \
+  | awk -v p="$PORT" '{ for (i = 2; i <= NF; i++) if ($i == p) print $1 }')
+printf 'busy=%s\n' "$( [ -n "$busy" ] && echo yes || echo no )"
+[ -z "$declared" ] || printf 'declared=%s\n' "$declared"
+REMOTE_PORT
+)"
+  busy="$(sed -n 's/^busy=//p' <<<"$report")"
+  declared="$(sed -n 's/^declared=//p' <<<"$report")"
+  if [[ "$busy" == yes ]]; then
+    err "host port $port is already in use on ${REMOTE_USER}@${REMOTE_HOST}"
+    remote_ssh "ss -H -ltnp 'sport = :$port' 2>/dev/null | head -5" || true
+    detail "Free it, or publish a different port: TEELLM_POD_HOST_PORT=<port> $(basename "$0") --create-pod start"
+    detail "0 creates the Pod without a host port; TAA reaches it by Pod IP either way."
+    exit 1
+  fi
+  if [[ -n "$declared" ]]; then
+    warn "another Pod declares host port $port:"
+    while IFS= read -r line; do
+      detail "  $line"
+    done <<<"$declared"
+    detail "The new Pod only fails to schedule if that Pod is running on ${TEELLM_POD_NODE} when"
+    detail "it schedules; pick a different port with TEELLM_POD_HOST_PORT if that is a risk."
+  else
+    info "host port $port is free"
+  fi
+}
+
+# The creation preflight of the reference create script, host port checks included. Everything here
+# is answered by the cluster before a build that takes tens of minutes starts, so a wrong namespace,
+# RuntimeClass or port costs a second rather than half an hour.
 preflight_pod_cluster() {
-  step "preflight: cluster, Pod name, namespace and RuntimeClass"
+  step "preflight: cluster, Pod name, namespace, RuntimeClass and host port"
 
   if ! remote_ssh "kubectl get --raw /version >/dev/null 2>&1"; then
     err "kubectl on ${REMOTE_USER}@${REMOTE_HOST} cannot reach the cluster"
@@ -1216,6 +1270,8 @@ preflight_pod_cluster() {
     exit 1
   fi
   info "RuntimeClass $TEELLM_POD_RUNTIME_CLASS exists"
+
+  preflight_pod_host_port
 }
 
 # Whether the registry already answers for the image this Pod will run. Best effort, exactly as in
@@ -1303,6 +1359,7 @@ pod_up() {
         -e "s|__CPU__|$TEELLM_POD_CPU|g" \
         -e "s|__MEMORY__|$TEELLM_POD_MEMORY|g" \
         -e "s|__MODEL__|$OLLAMA_MODEL|g" \
+        -e "s|__HOST_PORT__|$TEELLM_POD_HOST_PORT|g" \
         -e "s|__CC_INIT_DATA__|$cc_init_data|g" \
         "$TEELLM_POD_TEMPLATE" > "$TEMP_POD_MANIFEST"
     confirm_pod_creation
@@ -1340,6 +1397,9 @@ pod_up() {
     exit 1
   fi
   info "TEE-LLM Pod ready with a real CSV device: $TARGET_POD at $TEELLM_POD_IP"
+  if [[ "$TEELLM_POD_HOST_PORT" -gt 0 ]]; then
+    info "also published at https://${TEELLM_POD_NODE}:$TEELLM_POD_HOST_PORT (self-signed)"
+  fi
 }
 
 # Deletes the dedicated TEE-LLM Pod. Destructive by design: the guest's writable layer -- the
@@ -2453,6 +2513,11 @@ Environment overrides:
       TEELLM_POD_CPU) and CSV2 encrypted memory is resident from boot, so the memory figure is a
       permanent cost on the host rather than a ceiling. It has to fit the served model as well as
       teellm-service: 8Gi OOM-killed llama-server while it loaded a 7B model.
+  TEELLM_POD_HOST_PORT=${TEELLM_POD_HOST_PORT}
+      Host port that publishes the service's 8443 on the node, so it can be reached at
+      https://<node>:<port> without a cluster-internal address. TAA itself keeps using the Pod
+      IP. The port is checked for a listener and for another Pod's declaration before the image
+      is built. 0 publishes nothing.
   TEELLM_POD_IMAGE_SIZE_GIB / TEELLM_POD_FORCE_MEMORY
       Size the Pod is checked against, and the escape hatch for that check. Before creating
       anything the deployment verifies that the image fits the guest's overlayfs (whose cap is
