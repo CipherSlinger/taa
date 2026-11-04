@@ -1743,15 +1743,19 @@ PLATFORM_IP=172.16.10.181:18081
 # 关闭上报：整条值就是 off（none、disabled 等价）
 # PLATFORM_IP=off
 
+# 实例身份：覆盖配置文件的 platform.dockerId（不设则用配置文件，缺省 taa-teellm）
+DOCKER_ID=taa-teellm
+
 TEELLM_MODEL={family}:{tag}
 ```
 
 | 变量 | 必填 | 说明 |
 | --- | --- | --- |
-| `PLATFORM_IP` | 否 | 平台地址，覆盖配置文件的 `platform.addr`。可写裸 `host:port`（自动补 `http://`）或完整 URL。值写成 `off` / `none` / `disabled`（大小写不敏感、忽略两端空白）时表示**关闭上报**——不注册、不发心跳、不推日志|
+| `PLATFORM_IP` | 否 | 平台地址，覆盖配置文件的 `platform.addr`。可写裸 `host:port`（自动补 `http://`）或完整 URL。值写成 `off` / `none` / `disabled`（大小写不敏感、忽略两端空白）时表示**关闭上报**——不注册、不发心跳、不推日志；这三个词同样可以写进配置文件的 `platform.addr`。不设时以配置文件的 `platform.addr` 为准 |
+| `DOCKER_ID` | 否 | 实例身份，覆盖配置文件的 `platform.dockerId`。**环境变量优先于配置文件**；空白值视为未设置。不设时以配置文件为准，缺省 `taa-teellm` |
 | `TEELLM_MODEL` | 否 | 推理使用的模型（`family:tag`），缺省取配置文件的 `backend.defaultModel` |
 
-> **没有 `DOCKER_ID` 环境变量**（这一点与 TAA 不同）：实例身份只由配置文件的 `platform.dockerId` 决定，缺省 `taa-teellm`。心跳周期（30 秒）与日志推送周期（5 秒）同样只能写在配置文件里。
+> 心跳周期（30 秒）与日志推送周期（5 秒）没有环境变量，只能写在配置文件里。
 >
 > 报告里的 `USERDATA` 由 TEE-LLM 取证据时写入 `SM3(证书公钥)`，`ATTESTATION_USERDATA` 即使设置也不生效。
 
@@ -1767,7 +1771,7 @@ TEELLM_MODEL={family}:{tag}
 
 | 参数 | 类型 | 必填 | 说明 |
 | --- | --- | --- | --- |
-| `dockerId` | `string` | 是 | 配置 `platform.dockerId`，缺省 `taa-teellm` |
+| `dockerId` | `string` | 是 | 配置 `platform.dockerId`（可由环境变量 `DOCKER_ID` 覆盖），缺省 `taa-teellm` |
 | `authInfo` | `object/null` | 否 | 当前固定传 `null` |
 | `taaPublicKey` | `string` | 是 | **TEE-TLS 证书公钥的 PEM**（证书的 `RawSubjectPublicKeyInfo`）。格式与 TAA 的同名字段一致，平台解析代码可直接复用 |
 | `attestation` | `string` | 是 | 远程证明报告，Base64 编码（原始 `0x9F4` = 2548 字节） |
@@ -1832,7 +1836,7 @@ curl -X POST "http://${PLATFORM_ADDR}/v1/llm/register" \
 
 | 参数 | 类型 | 必填 | 说明 |
 | --- | --- | --- | --- |
-| `dockerId` | `string` | 是 | 配置 `platform.dockerId` |
+| `dockerId` | `string` | 是 | 配置 `platform.dockerId`（可由环境变量 `DOCKER_ID` 覆盖） |
 | `timestamp` | `string` | 是 | Unix 时间戳（秒），字符串形式 |
 
 心跳**只报存活**，不携带健康状态、模型信息或度量值。平台连续 3 个周期（90 秒）未收到即可判离线。失败不重试、不补发，下一个周期照常发送。
@@ -1861,7 +1865,7 @@ curl -X POST "http://${PLATFORM_ADDR}/v1/llm/register" \
 
 | 参数 | 类型 | 必填 | 说明 |
 | --- | --- | --- | --- |
-| `dockerId` | `string` | 是 | 配置 `platform.dockerId` |
+| `dockerId` | `string` | 是 | 配置 `platform.dockerId`（可由环境变量 `DOCKER_ID` 覆盖） |
 | `requestId` | `string` | 是 | **恒为 `"system"`**：LLM 没有任务概念 |
 | `taskId` | `string` | 否 | **恒省略**（`omitempty`）：与 TAA 空闲期上报的形状一致 |
 | `seqStart` | `uint64` | 是 | 本批日志的起始序号 |
