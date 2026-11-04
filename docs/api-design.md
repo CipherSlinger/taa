@@ -37,12 +37,13 @@
   - [6.1 连通性检查（/v1/taa/health）](#61-连通性检查v1taahealth)
   - [6.2 查询 TAA 完整状态（/v1/taa/status）](#62-查询-taa-完整状态v1taastatus)
 - [7. TEE-LLM（LLM 侧）与平台](#7-tee-llmllm-侧与平台)
-  - [7.1 LLM → 平台](#71-llm--平台)
-    - [7.1.1 LLM 启动注册（/v1/llm/register）](#711-llm-启动注册v1llmregister)
-    - [7.1.2 LLM 上报心跳（/v1/llm/heartbeat）](#712-llm-上报心跳v1llmheartbeat)
-    - [7.1.3 LLM 上报运行日志（/v1/llm/log）](#713-llm-上报运行日志v1llmlog)
-  - [7.2 平台 → LLM](#72-平台--llm)
-    - [7.2.1 获取远程证明报告（/v1/llm/getAttestation，TEE-TLS :8443）](#721-获取远程证明报告v1llmgetattestationtee-tls-8443)
+  - [7.1 前置要求（TEE-LLM Pod 环境变量）](#71-前置要求tee-llm-pod-环境变量)
+  - [7.2 LLM → 平台](#72-llm--平台)
+    - [7.2.1 LLM 启动注册（/v1/llm/register）](#721-llm-启动注册v1llmregister)
+    - [7.2.2 LLM 上报心跳（/v1/llm/heartbeat）](#722-llm-上报心跳v1llmheartbeat)
+    - [7.2.3 LLM 上报运行日志（/v1/llm/log）](#723-llm-上报运行日志v1llmlog)
+  - [7.3 平台 → LLM](#73-平台--llm)
+    - [7.3.1 获取远程证明报告（/v1/llm/getAttestation，TEE-TLS :8443）](#731-获取远程证明报告v1llmgetattestationtee-tls-8443)
 
 ---
 
@@ -1730,9 +1731,69 @@ curl -X POST "http://{TAA_ADDR}/v1/taa/export" \
 
 ## 7. TEE-LLM（LLM 侧）与平台
 
-### 7.1 LLM → 平台
+### 7.1 前置要求（TEE-LLM Pod 环境变量）
 
-#### 7.1.1 LLM 启动注册（/v1/llm/register）
+TEE-LLM 跑在自己的 Kata CSV2 Pod 里（`deploy-llm.sh --create-pod` 按
+`deploy/manifest/k8s/teellm-pod.yaml.tmpl` 渲染，默认名 `taa-teellm`），与 TAA 的 Pod 是两个不同的
+容器。它的环境变量分四层、作用在**不同的进程**上，同名变量不会跨层生效。
+
+#### 7.1.1 Pod 容器环境变量（模板内置，supervisor 读取）
+
+下面五个由 Pod 模板写死在 `spec.containers[0].env`，`teellm-service` 本身不读它们：
+
+| 变量 | 缺省值 | 作用 |
+| --- | --- | --- |
+| `TEELLM_WORKDIR` | `/opt/teellm` | supervisor 的工作目录；`teellm-service` 二进制、`configs/`、日志、`.teellm-model` 都在其下 |
+| `OLLAMA_DIR` | `$TEELLM_WORKDIR/ollama` | ollama 离线包目录，supervisor 从这里执行 `start-ollama.sh` 拉起后端 |
+| `OLLAMA_HOST` | `127.0.0.1:11434` | ollama 监听地址；supervisor 用它做后端健康探测，`start-ollama.sh` 用它监听。必须与配置文件里的 `backend.endpoint` 指向同一地址（默认都是 `http://127.0.0.1:11434`） |
+| `TEELLM_CONFIG` | `$TEELLM_WORKDIR/configs/teellm-production.json` | 传给 `teellm-service -config`。除 7.1.2 的 `PLATFORM_IP` 外，所有协议字段只在这个文件里（见下方说明） |
+| `TEELLM_MODEL` | 无 | 仅当 `.teellm-model` 不存在时作为 `-model` 的兜底。切换模型要由部署脚本书写 `.teellm-model`；复用的 Pod 保留创建时的 env，改这个变量对已存在的 Pod 无效 |
+
+> **没有环境变量的字段**：`platform.dockerId`（缺省 `taa-teellm`）、`platform.heartbeatSeconds`（30）、
+> `platform.logFlushSeconds`（5），以及 `server.*`、`backend.*`、`attestation.*` 全部只能写在配置文件里。
+> 改实例身份或上报节奏要重新渲染并拷入 `/opt/teellm/configs/teellm-production.json`，注入环境变量无效。
+
+#### 7.1.2 teellm-service 自己读取的环境变量
+
+| 变量 | 缺省值 | 作用 |
+| --- | --- | --- |
+| `PLATFORM_IP` | 空（以配置文件的 `platform.addr` 为准） | 覆盖 `platform.addr`。**环境变量优先于配置文件**——这条规则与 TAA 的 `tee` 实例相反（那边是文件优先）。取值规则与配置文件相同：裸 `host:port` 自动补 `http://`；`off` / `none` / `disabled`（大小写不敏感、忽略两端空白）清空地址，等于关闭注册、心跳、日志推送三条出站通道。部署脚本创建的 Pod 不注入该变量，所以默认以渲染进容器的配置文件为准；要在运行时改指向才注入它 |
+
+> **`ATTESTATION_USERDATA` 在这个 Pod 里不起作用。** `teetls` 底层的 `csvattest` 客户端支持用该变量
+> （64 字节 hex，即 128 个字符）指定报告里的 `USERDATA`，但 TEE-LLM 取证据时会显式写入
+> 「前 32 字节 = `SM3(证书公钥)`」，显式值优先于该变量，设了也不会改变报告内容。
+
+#### 7.1.3 supervisor 可选环境变量
+
+| 变量 | 缺省值 | 作用 |
+| --- | --- | --- |
+| `TEELLM_SUPERVISOR_CHECK_INTERVAL` | `5` | 两次守护检查之间的秒数 |
+| `TEELLM_SUPERVISOR_RESTART_DELAY` | `10` | 守护的进程退出后，重启前的等待秒数 |
+| `TEELLM_SUPERVISOR_OLLAMA_WAIT` | `30` | 拉起 `teellm-service` 前等待 ollama 应答的最长秒数 |
+| `TEELLM_SUPERVISOR_CSV_DEVICE_WAIT` | `0` | 等待 `csv-guest` 设备注册的秒数；`0` 表示不等 |
+
+#### 7.1.4 ollama 启动脚本读取的环境变量
+
+`start-ollama.sh` 以 `exec ollama serve` 结束，以下变量在脚本内取默认值（已有值不覆盖）：
+
+| 变量 | 缺省值 | 作用 |
+| --- | --- | --- |
+| `OLLAMA_HOST` | `127.0.0.1:11434` | 与 7.1.1 的同名变量是同一个值，两层都读 |
+| `OLLAMA_MODELS` | `$OLLAMA_DIR/models/models` | 模型仓库目录 |
+| `OLLAMA_LIBRARY_PATH` | `$OLLAMA_DIR/lib/ollama` | 推理 runner 的动态库目录 |
+
+> **除环境变量外还有两条硬前置**：Pod 必须用 `runtimeClassName: kata-qemu-csv2` 启动，并在容器内建出
+> `/dev/csv-guest` 节点（`/dev` 是空 tmpfs，节点不会自己出现；模板的启动命令按 `/proc/misc` 里的次设备号
+> `mknod`）。缺任何一条，`teellm-service` 回落到 mock 证据提供方：报告仍会生成、TEE-TLS 握手照常完成
+> （TAA 只验报告内嵌的 PEK 签名，不校验证书链），但这份证明不再来自硬件。`deploy-llm.sh` 在创建 Pod
+> 前检查该设备，就是为了不发布这样的实例。
+>
+> **TAA 侧的对应配置不在这个 Pod 里**：TAA 的 `TAA_LLM_ENDPOINT`（或配置文件 `codeAudit.llm.endpoint`，
+> 见 [1. 前置要求](#1-前置要求)）要指向这个 Pod 的 `https://<Pod IP>:8443`。
+
+### 7.2 LLM → 平台
+
+#### 7.2.1 LLM 启动注册（/v1/llm/register）
 
 **请求**：`POST http://{platform.addr}/v1/llm/register`
 
@@ -1795,7 +1856,7 @@ curl -X POST "http://${PLATFORM_ADDR}/v1/llm/register" \
 }
 ```
 
-#### 7.1.2 LLM 上报心跳（/v1/llm/heartbeat）
+#### 7.2.2 LLM 上报心跳（/v1/llm/heartbeat）
 
 **请求**：`POST http://{platform.addr}/v1/llm/heartbeat`
 
@@ -1824,7 +1885,7 @@ curl -X POST "http://${PLATFORM_ADDR}/v1/llm/register" \
 | --- | --- | --- |
 | `received` | `bool` | 平台是否成功接收本次心跳 |
 
-#### 7.1.3 LLM 上报运行日志（/v1/llm/log）
+#### 7.2.3 LLM 上报运行日志（/v1/llm/log）
 
 **请求**：`POST http://{platform.addr}/v1/llm/log`
 
@@ -1873,7 +1934,7 @@ curl -X POST "http://${PLATFORM_ADDR}/v1/llm/register" \
 
 **响应结果字段**：同 [3.6](#36-taa-上报运行日志v1taataalog)，`result.received` 为 `true` 才算本批送达。
 
-### 7.2 平台 → LLM
+### 7.3 平台 → LLM
 
 平台访问 LLM 只有一个接口，与另外两个接口同在 `:8443`：
 
@@ -1889,7 +1950,7 @@ LLM 只把提示词转给模型并返回原始文本。
 
 普通 `curl` 无法与这个端口握手（需要 RFC 8998 的 ShangMi TLS），平台侧必须用 `teetls` 或等价实现作为客户端。
 
-#### 7.2.1 获取远程证明报告（/v1/llm/getAttestation，TEE-TLS :8443）
+#### 7.3.1 获取远程证明报告（/v1/llm/getAttestation，TEE-TLS :8443）
 
 **请求**：`POST https://{llm-host}:8443/v1/llm/getAttestation`（TEE-TLS 1.3）
 
@@ -1916,7 +1977,7 @@ LLM 只把提示词转给模型并返回原始文本。
 | `requestId` | `string` | 与请求中的 `requestId` 一致 |
 | `verifiedPass` | `bool` | 自检结果：HRK/HSK-CEK 链验通过 **且** `userdata[:32] == SM3(证书公钥)` |
 | `attestation` | `string` | 远程证明报告，Base64 编码（`0x9F4` = 2548 字节），二进制格式见 [4.1.1](#411-远程证明报告二进制格式) |
-| `attestationValues` | `string` (JSON) | 报告核心字段的 JSON **字符串**，字段同 [7.1.1](#711-llm-启动注册v1llmregister)：**`userdata` 为 hex** |
+| `attestationValues` | `string` (JSON) | 报告核心字段的 JSON **字符串**，字段同 [7.2.1](#721-llm-启动注册v1llmregister)：**`userdata` 为 hex** |
 | `certificate` | `string` | **本实例当前出示的 TEE-TLS 证书，PEM 编码**。该字段是 LLM 侧独有的 |
 
 **与 TAA `/v1/taa/getAttestation` 的差异**：
