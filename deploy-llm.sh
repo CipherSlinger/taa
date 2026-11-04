@@ -381,6 +381,9 @@ TEELLM_SUPERVISOR_START_WAIT="${TEELLM_SUPERVISOR_START_WAIT:-5}"
 # Optional escape hatch for hosts with no CoCo Pod to copy the annotation from; leave empty to
 # derive it (see derive_cc_init_data).
 TEELLM_POD_CC_INIT_DATA="${TEELLM_POD_CC_INIT_DATA:-}"
+# Where a host that has no running CoCo Pod keeps the same value. The path is a convention of the
+# CoCo install on these hosts, not part of the protocol, so it is configurable.
+TEELLM_POD_CC_INIT_DATA_FILE="${TEELLM_POD_CC_INIT_DATA_FILE:-/root/cc_init_data.txt}"
 TEELLM_POD_IP=""
 CREATE_POD=false
 TEMP_POD_MANIFEST=""
@@ -941,9 +944,22 @@ REMOTE_DERIVE
   derived="${derived//$'\r'/}"
   derived="${derived//$'\n'/}"
   if [[ -z "$derived" ]]; then
+    # Nothing is running to borrow from. These hosts also keep the same value in a file written
+    # when the CoCo runtime was set up -- it carries the registry CA the guest's CDH needs -- so
+    # read that instead of failing and asking the operator to paste a multi-kilobyte blob whenever
+    # the cluster happens to be empty. A file that is missing or empty falls through to the error.
+    derived="$(remote_ssh "cat '$TEELLM_POD_CC_INIT_DATA_FILE' 2>/dev/null" || true)"
+    derived="${derived//$'\r'/}"
+    derived="${derived//$'\n'/}"
+    if [[ -n "$derived" ]]; then
+      # stderr: this function's stdout is captured and becomes the annotation value.
+      info "cc_init_data read from ${TEELLM_POD_CC_INIT_DATA_FILE} (no running CoCo Pod carries it)" >&2
+    fi
+  fi
+  if [[ -z "$derived" ]]; then
     err "no Pod on ${REMOTE_USER}@${REMOTE_HOST} carries the cc_init_data annotation"
     detail "Without it the guest's CDH cannot pull the image and the new Pod stops in StartError."
-    detail "Bring up any CoCo Pod once (deploy-taa-vm.sh up) or pass TEELLM_POD_CC_INIT_DATA=<base64>."
+    detail "Bring up any CoCo Pod once (deploy-taa-vm.sh up), put the value in ${TEELLM_POD_CC_INIT_DATA_FILE}, or pass TEELLM_POD_CC_INIT_DATA=<base64>."
     exit 1
   fi
   printf '%s' "$derived"
@@ -2370,9 +2386,12 @@ Environment overrides:
       has not been returned.
   TEELLM_POD_CC_INIT_DATA=<base64>
       cc_init_data annotation for the new Pod. Left empty it is read from a CoCo Pod that already
-      runs on the remote host; without it the guest cannot pull the image. Only this value is
-      borrowed from another Pod: the runtime-handler and kernel_params annotations the manifest
-      carries are fixed in the template.
+      runs on the remote host, and when no such Pod is running, from TEELLM_POD_CC_INIT_DATA_FILE
+      there; without it the guest cannot pull the image. Only this value is borrowed from another
+      Pod: the runtime-handler and kernel_params annotations the manifest carries are fixed in the
+      template.
+  TEELLM_POD_CC_INIT_DATA_FILE=${TEELLM_POD_CC_INIT_DATA_FILE}
+      Remote file holding that value when no CoCo Pod is running to copy it from.
   REMOTE_HOST=${REMOTE_HOST}
       Remote SSH host IP or hostname.
   REMOTE_USER=${REMOTE_USER}

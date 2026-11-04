@@ -70,6 +70,9 @@ host="${args[$i]}"; i=$((i+1))
 # for the image push (`bash -s -- <args>`) that reads its arguments from the joined form.
 cmd="${args[*]:$i}"
 cmd="${cmd//\/root\/teellm/$MOCK_REMOTE_ROOT\/root\/teellm}"
+# The host's fallback copy of the cc_init_data value lives at /root/cc_init_data.txt; redirect it
+# into the mock remote root so the fallback case reads a file this test owns.
+cmd="${cmd//\/root\/cc_init_data.txt/$MOCK_REMOTE_ROOT\/root\/cc_init_data.txt}"
 echo "SSH[$host] $cmd" >> "$MOCK_LOG"
 case "$cmd" in
   *"command -v rsync"*) exit 1 ;;
@@ -143,7 +146,12 @@ case "$verb" in
       exit 0
     fi
     if [[ "${args[$((i+1))]:-}" == "runtimeclass" ]]; then exit 0; fi
-    if [[ "$*" == *"-A"* ]]; then echo "DERIVED_CC_INIT_DATA"; exit 0; fi
+    if [[ "$*" == *"-A"* ]]; then
+      # MOCK_NO_CC_INIT_DATA stands for a host with no CoCo Pod at all: the annotation lookup
+      # finds nothing, which is what makes the file fallback reachable.
+      [[ -n "${MOCK_NO_CC_INIT_DATA:-}" ]] && exit 0
+      echo "DERIVED_CC_INIT_DATA"; exit 0
+    fi
     if [[ "$*" == *"status.podIP"* ]]; then printf '%s' "$MOCK_POD_IP"; exit 0; fi
     # The creation path polls the phase and the container's readiness rather than using
     # `kubectl wait`, and the teardown reads the memory limit to report what the host gets back.
@@ -814,5 +822,21 @@ grep -q "namespace" <<<"$output" || fail "the missing namespace was not named in
   || fail "an image was built before the preflight had vetted the target namespace"
 [[ "$(cat "$MOCK_STATE_DIR/apply-count")" == "$apply_before" ]] \
   || fail "the manifest was applied even though the target namespace does not exist"
+
+# ── 9. No running CoCo Pod: cc_init_data comes from the host's file ──────────
+# A freshly booted cluster has only runc system Pods, and the guest still needs the annotation to
+# trust the local registry's certificate. The host keeps the same value in a file written when the
+# CoCo runtime was set up, so creation reads it instead of failing and asking for an export.
+
+mkdir -p "$MOCK_REMOTE_ROOT/root"
+printf 'FILE_CC_INIT_DATA' > "$MOCK_REMOTE_ROOT/root/cc_init_data.txt"
+RUN_ENV=(MOCK_NO_CC_INIT_DATA=true)
+run_deploy --create-pod start --model qwen2.5-coder:0.5b
+RUN_ENV=()
+[[ $status -eq 0 ]] || fail "--create-pod start with no CoCo Pod running exited $status"
+grep -q "cc_init_data read from /root/cc_init_data.txt" <<<"$output" \
+  || fail "the deployment did not report reading cc_init_data from the host file"
+grep -q 'cc_init_data: "FILE_CC_INIT_DATA"$' "$MOCK_STATE_DIR/applied.yaml" \
+  || fail "the cc_init_data read from the file did not reach the manifest"
 
 echo "PASS: the dedicated TEE-LLM Pod is created once, refused when it already exists, gated on its CSV device, and is what the bare invocation deploys into"
