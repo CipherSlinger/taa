@@ -23,6 +23,66 @@ func registerUploadDeleteRoutes(mux *http.ServeMux, uploadDir string) {
 	mux.HandleFunc("/api/uploads/delete", deleteH)
 }
 
+// uploadMetaDir holds one sidecar per uploaded file. The data key envelope exists
+// only at upload time -- it is sealed to TAA's key, so it cannot be recovered from
+// the ciphertext afterwards -- and the download URL is the only place that carries
+// it. Rebuilding a URL from the directory listing (which is what the console and
+// the drag-to-fill widget do) therefore lost it: the console handed out a bare
+// /files/<name>.sm4, TAA found no dataKeyCipher parameter, and fell back to
+// interpreting the raw ciphertext as a whole-file envelope.
+//
+// A dot-directory is used because listUploadedFiles already skips directories, so
+// the sidecars never show up as uploads themselves.
+const uploadMetaDir = ".uploadmeta"
+
+// dataKeyCipherQueryParam is the parameter TAA reads the SM2 data key envelope
+// from (resource.SplitDataKeyCipher). Spelled here rather than imported because
+// the mock is a separate module from the daemon's internals.
+const dataKeyCipherQueryParam = "dataKeyCipher"
+
+type uploadMeta struct {
+	DataKeyCipher string `json:"dataKeyCipher,omitempty"`
+	Encrypted     bool   `json:"encrypted,omitempty"`
+}
+
+func uploadMetaPath(uploadDir, filename string) string {
+	return filepath.Join(uploadDir, uploadMetaDir, filename+".json")
+}
+
+func writeUploadMeta(uploadDir, filename string, meta uploadMeta) error {
+	dir := filepath.Join(uploadDir, uploadMetaDir)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+	data, err := json.Marshal(meta)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(uploadMetaPath(uploadDir, filename), data, 0o644)
+}
+
+// readUploadMeta reports (meta, true) only when a sidecar exists and parses. A
+// missing or unreadable sidecar is not an error: files uploaded before the
+// sidecar existed, or dropped into the directory by hand, simply have no extra
+// metadata.
+func readUploadMeta(uploadDir, filename string) (uploadMeta, bool) {
+	data, err := os.ReadFile(uploadMetaPath(uploadDir, filename))
+	if err != nil {
+		return uploadMeta{}, false
+	}
+	var meta uploadMeta
+	if err := json.Unmarshal(data, &meta); err != nil {
+		return uploadMeta{}, false
+	}
+	return meta, true
+}
+
+func removeUploadMeta(uploadDir, filename string) {
+	// Best effort: the file itself is already gone, and a leftover sidecar only
+	// costs an entry nobody can reach.
+	_ = os.Remove(uploadMetaPath(uploadDir, filename))
+}
+
 func listUploadedFiles(uploadDir, addr string) ([]uploadedFileRecord, error) {
 	entries, err := os.ReadDir(uploadDir)
 	if err != nil {
@@ -53,14 +113,24 @@ func listUploadedFiles(uploadDir, addr string) ([]uploadedFileRecord, error) {
 				originalName = rest
 			}
 		}
-		files = append(files, uploadedFileRecord{
+		rec := uploadedFileRecord{
 			Filename:     filename,
 			OriginalName: originalName,
 			Size:         info.Size(),
 			URL:          baseURL + filename,
 			UploadedAt:   uploadedAt,
 			Encrypted:    strings.HasSuffix(strings.ToLower(originalName), ".enc"),
-		})
+		}
+		// The envelope has to be rejoined here: this list is how the console
+		// re-offers the file, and without it a URL-key upload looks like a plain
+		// link to bare ciphertext.
+		if meta, ok := readUploadMeta(uploadDir, filename); ok {
+			rec.Encrypted = rec.Encrypted || meta.Encrypted
+			if meta.DataKeyCipher != "" {
+				rec.URL += "?" + dataKeyCipherQueryParam + "=" + meta.DataKeyCipher
+			}
+		}
+		files = append(files, rec)
 	}
 
 	sort.Slice(files, func(i, j int) bool {
@@ -194,6 +264,7 @@ func uploadDeleteHandler(uploadDir string) http.HandlerFunc {
 		}
 
 		log.Printf("file deleted: %s", baseName)
+		removeUploadMeta(uploadDir, baseName)
 		writeEnvelope(w, http.StatusOK, "文件删除成功", map[string]any{
 			"filename": baseName,
 		}, 0)
@@ -376,7 +447,21 @@ func uploadHandler(addr, uploadDir string, mgr *instanceManager) http.HandlerFun
 		host := platformIP(addr)
 		fileURL := fmt.Sprintf("http://%s/files/%s", host, filename)
 		if dataKeyCipher != "" {
-			fileURL += "?dataKeyCipher=" + dataKeyCipher
+			fileURL += "?" + dataKeyCipherQueryParam + "=" + dataKeyCipher
+		}
+
+		// Persist what the URL carried. The listing is the console's source for
+		// every later import, so an envelope that lives only in this one response
+		// is an envelope the operator can never use again.
+		if shouldEncrypt {
+			if err := writeUploadMeta(uploadDir, filename, uploadMeta{DataKeyCipher: dataKeyCipher, Encrypted: true}); err != nil {
+				// A file whose envelope cannot be re-offered is worse than no
+				// file: the operator would import it and get an opaque decrypt
+				// failure. Drop the payload and report the real cause.
+				_ = os.Remove(filePath)
+				writeEnvelope(w, http.StatusInternalServerError, "保存上传元数据失败: "+err.Error(), nil, http.StatusInternalServerError)
+				return
+			}
 		}
 
 		log.Printf("file uploaded: %s → %s (mode=%s)", originalName, fileURL, encryptMode)
