@@ -1988,7 +1988,15 @@ curl -X POST "http://${PLATFORM_ADDR}/v1/llm/register" \
 
 **平台侧校验步骤**（拿到响应后必做，否则报告只是一段自说自话的 Base64）。
 
-响应用平台侧的 ShangMi TLS 客户端取得（`teellm` 的 `teetls` 或等价实现），保存为 `/tmp/att.json` 后：
+响应直接用普通 HTTP 客户端取得（明文 `:8444`，不需要任何握手），保存为 `/tmp/att.json`：
+
+```sh
+curl -s -X POST "http://{llm-host}:8444/v1/llm/getAttestation" \
+  -H 'Content-Type: application/json' \
+  -d '{"requestId":"req-att-001"}' -o /tmp/att.json
+```
+
+拿到响应后：
 
 ```sh
 jq -r '.result.attestation' /tmp/att.json | base64 -d > /tmp/report.bin
