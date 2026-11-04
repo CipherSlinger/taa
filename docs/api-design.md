@@ -1,9 +1,5 @@
 # TAA 接口设计文档
 
-> **文档分为两半，不要混读：**
-> 第 1～6 章是 **TAA 与平台**之间的接口；第 7 章是 **TEE-LLM 与平台**之间的接口。
-> 两者语义相近但报文形态完全不同（TAA 套 SM2 信封，LLM 用明文 JSON），**任何一方的样例都不能照搬到另一方**。
-
 ## 目录
 
 - [1. 前置要求](#1-前置要求)
@@ -53,33 +49,30 @@ TAA 所在 Pod 容器需提供以下运行参数：
 ```env
 PLATFORM_IP={IP}:{PORT}
 DOCKER_ID=xxxxxxxxx
-CONTRACT_TYPE=1                            # 实例角色：1 tee 训练、2 tee 推理、3 数据分析、4 fhe；可选，优先于配置文件 server.type
-CONTRACT_ID=合约ID（预留）
-TAA_LLM_ENDPOINT={IP}:{PORT}               # TEE-LLM 推理服务。可写裸 IP 或完整 URL：没有 `://` 补 `https://`，写成 `http://` 改写为 `https://`，没有端口补 `:8443`。
+CONTRACT_TYPE=1                            # 实例角色：1 tee 训练、2 tee 推理、3 数据分析、4 fhe 推理
+CONTRACT_ID=合约ID（预留）  
+TAA_LLM_ENDPOINT={IP}:{PORT}               # TEE-LLM 推理服务。可写裸 IP 或完整 URL：没有 `://` 补 `https://`，写成 `http://` 自动改写为 `https://`，没有端口补 `:8443`。
 PLATFORM_PUBLIC_KEY=04||X||Y 的 hex        # 平台 SM2 公钥，必填（见 2.1）
 PLATFORM_SM2_ID=1234567812345678           # 可选，签名用 ID_A，缺省即该值
 ```
 
-`TAA_LLM_ENDPOINT` 只连 TEE-TLS：网关（`teellm-service`）没有明文监听，所以 `http://` 开头的地址会被改写成 `https://`，而不是按原样拨号后在握手阶段失败。裸 IP 同样补成 `https://`，缺省端口为 `8443`。
 ```env
-# 路径约定（默认模板；以配置文件为准）
+# 路径约定
 /opt/taa/input/           # 输入目录（只读权限路径 READ_ONLY）
 /opt/taa/output/result/   # 训练代码结果输出目录（写权限路径 READ_WRITE）
 /opt/taa/output/log       # 模型终端日志目录（写权限路径 READ_WRITE）
 /opt/taa/output/progress  # 训练进度目录（写权限路径 READ_WRITE）
 ```
 
-**实例类型**（环境变量 `CONTRACT_TYPE` 优先，配置文件 `server.type` 次之，两者都没有则 `tee`）：同一份二进制按该值走不同链路，本文各接口都会标注类型差异。
+| `CONTRACT_TYPE` | 说明 |
+| --- | --- |
+| `1` | CSV 客户机里的训练实例：导入模型与数据、代码审计、训练、加密导出 |
+| `2` | tee 推理实例，与 `1` 是同一个角色、走同一条链路；训练还是推理由平台下发的请求决定，不由该值决定 |
+| `3` | 数据落盘实例：只解密并保存数据，不训练、不审计、不接受模型 |
+| `4` | GPU 宿主机上的 FHE 编排实例：数据下发即提交 FHE 任务，无训练、无审计，导出为明文结果包 |
 
-| `CONTRACT_TYPE` | `server.type` | 说明 |
-| --- | --- | --- |
-| `1` | `tee`（默认） | CSV 客户机里的训练实例：导入模型与数据、代码审计、训练、加密导出 |
-| `2` | `tee` | tee 推理实例，与 `1` 是同一个角色、走同一条链路；训练还是推理由平台下发的请求决定，不由该值决定 |
-| `3` | `data-anaylsis` | 数据落盘实例：只解密并保存数据（注意该字面值就是拼错的 `anaylsis`），不训练、不审计、不接受模型 |
-| `4` | `fhe` | GPU 宿主机上的 FHE 编排实例：数据下发即提交 FHE 任务，无训练、无审计，导出为明文结果包 |
-
-- `CONTRACT_TYPE` 首尾空白会被忽略；取值不是 `1`–`4` 时 TAA **拒绝启动**并报 `unsupported CONTRACT_TYPE ...`，不会静默回退到 `tee`。
-- 环境变量一旦设置就完全覆盖 `server.type`，两者不做合并；`server.type` 同样只接受上表右列的字面值。
+- `CONTRACT_TYPE` 首尾空白会被忽略；取值不是 `1`–`4` 时 TAA **拒绝启动**并报 `unsupported CONTRACT_TYPE ...`，不会静默回退到 `1`。
+- 未设置 `CONTRACT_TYPE` 时按 `1` 处理。
 
 ## 2. 公共返回格式
 
@@ -137,7 +130,7 @@ TAA **主动发起**的请求是另一个方向（注册与 6 类上报，见 [3
 }
 ```
 
-- **密钥归属**：TAA 与平台**各持一对 SM2 密钥**，不是共用一对。TAA 知道平台的公钥——部署时由 `PLATFORM_PUBLIC_KEY`（或配置文件 `platform.publicKey`）下发；平台知道 TAA 的公钥——由 `/v1/taa/register` 的 `taaPublicKey` 上报。所以请求加密到 **TAA 公钥**、用 **平台私钥** 签名；响应加密到 **平台公钥**、用 **TAA 私钥** 签名。
+- **密钥归属**：TAA 与平台**各持一对 SM2 密钥**，不是共用一对。TAA 知道平台的公钥——部署时由 `PLATFORM_PUBLIC_KEY` 下发；平台知道 TAA 的公钥——由 `/v1/taa/register` 的 `taaPublicKey` 上报。所以请求加密到 **TAA 公钥**、用 **平台私钥** 签名；响应加密到 **平台公钥**、用 **TAA 私钥** 签名。
 - `dockerId` 不在签名范围内（签名只覆盖 `cipher` 解密后的明文）。平台按请求端点定位实例，所以请求方向它可以填也可以不填；响应方向 TAA 一律不填。
 - `cipher` 是 SM2 **C1C3C2 原始密文字节**的 base64，不是 hex 再 base64；`sign` 是 SM2 签名 DER 字节的 base64。
 - **签名对象是明文，不是 `cipher`**。TAA 的顺序固定为：解 base64 → SM2 解密 → 验签（对解密后的明文）→ 才交给业务处理；验签失败即拒绝，业务代码永远看不到未验签的请求体。
@@ -459,13 +452,13 @@ curl -X POST "http://${PLATFORM_IP}/v1/taa/register" \
 
 目录为空或扫描失败时省略该字段，报告其余部分照常生成。
 
-**关于结果被拒（`code=2`）**：训练结束时若 `codeAudit.resultCheck.enabled` 为 `true` 且检查在结果目录里查出了原始训练数据，TAA 把这次运行按失败上报：
+**关于结果被拒（`code=2`）**：训练结束时若结果泄露检查已开启（默认开启）且检查在结果目录里查出了原始训练数据，TAA 把这次运行按失败上报：
 
 - `code` 为 `2`（区别于 `1`——训练进程本身跑完了，是产物被拒），`msg` 为 `结果目录包含原始训练数据，训练结果拒绝提供目录清单与预览: <高危明细>`；
 - 报告体内 `training_task.status` 为 `failed`、`failure_reason` 为同样的原因、**`exit_code` 仍为 `0`**（训练进程正常退出），且不带 `result_files`；
 - 随后 `/v1/taa/export` 对该任务一律返回 `400`（见 [4.7 节](#47-请求-taa-导出结果v1taaexport)）。
 
-检查自身没跑起来（裁决里 `error` 非空）不算被拒：报告照常给出、`code` 仍为 `0`，只有导出闸门在 `codeAudit.llm.failClosed` 为 `true` 时会拦。
+检查自身没跑起来（裁决里 `error` 非空）不算被拒：报告照常给出、`code` 仍为 `0`，只有导出闸门处于 fail-closed 模式（默认）时才会拦。
 
 ### 3.3 TAA 上报模型导入结果（/v1/taa/reportModelImport）
 
@@ -1035,15 +1028,15 @@ TAA 在任务执行过程中通过该接口向平台上报当前任务的数值�
 | `evalKeyUrl` | `string` | 否* | 仅 `fhe` 实例：FHE 求值密钥（`eval_context.bin`）的下载地址。与 `evalKeyFileHash` 必须同时提供；密钥已缓存时不下载，但字段仍必须存在（它同时声明了任务类型与期望的 `userId`） |
 | `evalKeyFileHash` | `string` | 否* | 仅 `fhe` 实例：求值密钥的 SM3 摘要，64 位小写十六进制。同时作为 FHE 侧的 `userId` 与密钥缓存目录名 |
 
-> **`fhe` 实例的数据下发**：`server.type=fhe` 时本接口不走训练链路——数据包与求值密钥落盘后直接提交 FHE 任务，任务结果仍通过 `/v1/taa/reportRes` 上报。该类型下 `evalKeyUrl`、`evalKeyFileHash` 与 `taskId` 均为必填：FHE 服务以 `taskId` 命名任务、输入目录与结果目录。`tee` 实例不接受 FHE 字段，携带任一字段返回 400。
+> **`fhe` 实例的数据下发**：`fhe` 实例上本接口不走训练链路——数据包与求值密钥落盘后直接提交 FHE 任务，任务结果仍通过 `/v1/taa/reportRes` 上报。该类型下 `evalKeyUrl`、`evalKeyFileHash` 与 `taskId` 均为必填：FHE 服务以 `taskId` 命名任务、输入目录与结果目录。`tee` 实例不接受 FHE 字段，携带任一字段返回 400。
 
-> **`data-anaylsis` 实例的数据下发**（`server.type` 的字面值就是 `data-anaylsis`）：该类型只做解密落盘，不训练、不审计、不写导入索引。它用的是另一套 URL 参数，三个都必填：
+> **`data-anaylsis` 实例的数据下发**：该类型只做解密落盘，不训练、不审计、不写导入索引。它用的是另一套 URL 参数，三个都必填：
 >
 > | 参数 | 说明 |
 > | --- | --- |
 > | `dataKeyCipher` | SM2 数据密钥信封 hex，与 `fhe`/`tee` 同格式 |
 > | `fileName` | 原始上传文件名，需 URL 编码；解码后必须是单个路径元素 |
-> | `dataResourceCode` | 资源编号，需 URL 编码；决定落盘子目录 `<storage.data>/<dataResourceCode>/` |
+> | `dataResourceCode` | 资源编号，需 URL 编码；决定落盘位置为数据存储目录下的 `<dataResourceCode>/` 子目录 |
 >
 > 三个参数都会从下载 URL 中剥离后再发起下载（签名链接因此保持有效）。`fileName`/`dataResourceCode` 解码后不能为空、不能为空白、不能是 `.`/`..`、不能含 `/`、`\`、`NUL`，也不能是绝对路径。资源包（按魔数判定）解压到该目录；Office/EPUB 这类本质是 zip 的文档容器按单文件保存。`evalKeyUrl`/`evalKeyFileHash` 在该类型下被忽略（记日志），不报错。落盘结果仍经 `/v1/taa/reportRes` 上报（成功 `code=0`，`msg` 为 `数据导入成功`）。
 
@@ -1389,7 +1382,7 @@ TAA 在任务执行过程中通过该接口向平台上报当前任务的数值�
 
 > 注意：该接口与其他 TAA 接口不同，**成功响应不是公共 JSON 格式**；只有失败响应继续遵循 [2. 公共返回格式](#2-公共返回格式)。
 
-> **结果泄露检查在训练结束时执行，导出只读结论**：`codeAudit.resultCheck.enabled` 打开时（默认打开），TAA 在训练产物收集完成之后、写 `training_report.json` 之前，对结果目录执行一次明文泄露检查，并把裁决（是否通过、高危项、执行时间）写进 `{RESULT_DIR}/import-index.json` 中该任务的记录。导出接口读取这份裁决、**不再扫描结果目录**，因此收到请求后立即开始传输字节。代价是 fail-closed：裁决不通过、检查自身执行失败、或该记录根本没有裁决（例如由引入该字段之前的版本提交），导出都会被拒绝，其中后两种状态由 `codeAudit.llm.failClosed` 控制——设为 `false` 时它们只记警告并放行，而"裁决不通过"不受该开关影响，始终 400。检查本身不阻断训练——不通过只记日志，训练报告照常上报给平台。
+> **结果泄露检查在训练结束时执行，导出只读结论**：结果泄露检查默认开启，TAA 在训练产物收集完成之后、写 `training_report.json` 之前，对结果目录执行一次明文泄露检查，并把裁决（是否通过、高危项、执行时间）写进 `{RESULT_DIR}/import-index.json` 中该任务的记录。导出接口读取这份裁决、**不再扫描结果目录**，因此收到请求后立即开始传输字节。代价是 fail-closed：裁决不通过、检查自身执行失败、或该记录根本没有裁决（例如由引入该字段之前的版本提交），导出都会被拒绝；其中后两种状态在关闭 fail-closed 后只记警告并放行，而"裁决不通过"不受影响，始终 400。检查本身不阻断训练——不通过只记日志，训练报告照常上报给平台。
 
 **请求**：`POST /v1/taa/export`
 
@@ -1564,7 +1557,7 @@ curl -X POST "http://{TAA_ADDR}/v1/taa/export" \
 }
 ```
 
-> 上面两条 500 只在 `codeAudit.llm.failClosed` 为 `true` 时返回；设为 `false` 时这两种状态记警告后照常导出，只有第一条"未通过"的 400 与开关无关。
+> 上面两条 500 只在 fail-closed 模式（默认）下返回；关闭该模式时这两种状态记警告后照常导出，只有第一条"未通过"的 400 与这个模式无关。
 
 其余失败场景：请求体 JSON 解析失败、`requestId` 与 `taskId` 命中了不同记录（均为 400）；加载导入索引失败、检查结果文件失败（`training_report.json` 存在但无法 stat）、加密失败（均为 500）。结果目录不存在时不会走到压缩这一步——入口的文件检查会先返回 404。`fhe` 实例上还有一条 `500 读取 FHE 结果包失败: ...`：记录里没有 `output.zip`，或它读不出来。
 
@@ -1576,7 +1569,7 @@ curl -X POST "http://{TAA_ADDR}/v1/taa/export" \
 
 ### 5.1 FHE 服务终态回调（/v1/taa/fheCallback）
 
-只有 `server.type=fhe` 的实例提供该接口：FHE 服务用它通知某个任务的终态（成功/失败）。TAA 收到后据此结束等待、取回 `output.zip` 并通过 `/v1/taa/reportRes` 上报。平台不调用它。
+只有 `fhe` 实例提供该接口：FHE 服务用它通知某个任务的终态（成功/失败）。TAA 收到后据此结束等待、取回 `output.zip` 并通过 `/v1/taa/reportRes` 上报。平台不调用它。
 
 **请求**：`POST /v1/taa/fheCallback`
 
@@ -1744,9 +1737,7 @@ TEELLM_MODEL={family}:{tag} # （预留，可不填）
 
 | 变量 | 必填 | 说明 |
 | --- | --- | --- |
-| `TEELLM_MODEL` | 否 | 推理使用的模型（`family:tag`），覆盖配置文件的 `backend.defaultModel`；不填则用配置文件的值 |
-
-> 报告里的 `USERDATA` 由 TEE-LLM 取证据时写入 `SM3(证书公钥)`，`ATTESTATION_USERDATA` 即使设置也不生效。
+| `TEELLM_MODEL` | 否 | 推理使用的模型（`family:tag`）；不填时使用服务默认模型 |
 
 #### 7.1.1 端口
 
@@ -1774,7 +1765,7 @@ TEE-LLM 同时起两个监听：TEE-TLS 给 TAA 用，明文端口给平台用�
 | 参数 | 类型 | 说明 |
 | --- | --- | --- |
 | `alive` | `bool` | 进程存活时为 `true` |
-| `model` | `string` | 当前默认模型（`backend.defaultModel`） |
+| `model` | `string` | 当前默认模型 |
 | `uptimeSeconds` | `int64` | 进程已运行秒数 |
 
 心跳只回答「活着 + 基本状态」，**不返回 `dockerId`**——平台通过调用地址区分实例，不需要实例自报身份。
