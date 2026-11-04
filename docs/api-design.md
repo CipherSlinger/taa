@@ -53,6 +53,7 @@ TAA 所在 Pod 容器需提供以下运行参数：
 ```env
 PLATFORM_IP={IP}:{PORT}
 DOCKER_ID=xxxxxxxxx
+CONTRACT_TYPE=1                            # 实例角色：1 tee 训练、2 tee 推理、3 数据分析、4 fhe；可选，优先于配置文件 server.type
 CONTRACT_ID=合约ID（预留）
 TAA_LLM_ENDPOINT={IP}:{PORT}
 PLATFORM_PUBLIC_KEY=04||X||Y 的 hex        # 平台 SM2 公钥，必填（见 2.1）
@@ -69,13 +70,17 @@ PLATFORM_SM2_ID=1234567812345678           # 可选，签名用 ID_A，缺省即
 /opt/taa/output/progress  # 训练进度目录（写权限路径 READ_WRITE）
 ```
 
-**实例类型**（配置项 `server.type`，可由环境变量 `CONTRACT_TYPE` 覆盖：`1` tee 训练、`2` tee 推理、`3` 数据分析、`4` fhe；环境变量优先，两者都没有则 `tee`）：同一份二进制按该值走不同链路，本文各接口都会标注类型差异。
+**实例类型**（环境变量 `CONTRACT_TYPE` 优先，配置文件 `server.type` 次之，两者都没有则 `tee`）：同一份二进制按该值走不同链路，本文各接口都会标注类型差异。
 
-| 取值 | 说明 |
-| --- | --- |
-| `tee`（默认） | CSV 客户机里的训练实例：导入模型与数据、代码审计、训练、加密导出 |
-| `fhe` | GPU 宿主机上的 FHE 编排实例：数据下发即提交 FHE 任务，无训练、无审计，导出为明文结果包 |
-| `data-anaylsis` | 数据落盘实例：只解密并保存数据（注意该字面值就是拼错的 `anaylsis`），不训练、不审计、不接受模型 |
+| `CONTRACT_TYPE` | `server.type` | 说明 |
+| --- | --- | --- |
+| `1` | `tee`（默认） | CSV 客户机里的训练实例：导入模型与数据、代码审计、训练、加密导出 |
+| `2` | `tee` | tee 推理实例，与 `1` 是同一个角色、走同一条链路；训练还是推理由平台下发的请求决定，不由该值决定 |
+| `3` | `data-anaylsis` | 数据落盘实例：只解密并保存数据（注意该字面值就是拼错的 `anaylsis`），不训练、不审计、不接受模型 |
+| `4` | `fhe` | GPU 宿主机上的 FHE 编排实例：数据下发即提交 FHE 任务，无训练、无审计，导出为明文结果包 |
+
+- `CONTRACT_TYPE` 首尾空白会被忽略；取值不是 `1`–`4` 时 TAA **拒绝启动**并报 `unsupported CONTRACT_TYPE ...`，不会静默回退到 `tee`。
+- 环境变量一旦设置就完全覆盖 `server.type`，两者不做合并；`server.type` 同样只接受上表右列的字面值。
 
 ## 2. 公共返回格式
 
