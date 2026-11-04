@@ -1853,7 +1853,7 @@ TEE-LLM 同时起两个监听：TEE-TLS 给 TAA 用，明文端口给平台用�
 | 参数 | 类型 | 说明 |
 | --- | --- | --- |
 | `requestId` | `string` | 与请求中的 `requestId` 一致 |
-| `verifiedPass` | `bool` | 自检结果：HRK/HSK-CEK 链验通过 **且** 报告自身 USERDATA 的前 32 字节 == `SM3(证书公钥)` |
+| `verifiedPass` | `bool` | 自检结果：报告内嵌的 PEK 证书签发了报告本体。**不校验** HRK/HSK-CEK 证书链与 USERDATA 绑定（证书按机器签发，校验会让镜像与设备绑定） |
 | `attestation` | `string` | 远程证明报告，Base64 编码（`0x9F4` = 2548 字节），二进制格式见 [4.1.1](#411-远程证明报告二进制格式) |
 | `attestationValues` | `string` (JSON) | 报告核心字段的 JSON **字符串**：`userdata`/`mnonce`/`digest` 为 hex，`chipId` 为 ASCII；**`userdata` 的值回填为请求里的 `requestId`** |
 
@@ -1864,7 +1864,7 @@ TEE-LLM 同时起两个监听：TEE-TLS 给 TAA 用，明文端口给平台用�
 | 传输与信封 | 明文 HTTP，请求/响应都套信封 | 明文 HTTP（`:6001`），报文本身**无信封** |
 | 报告来源 | 每次重新生成（30s 超时，进程内互斥） | 当前缓存证书里的那一份，不重新 IOCTL |
 | `attestationValues.userdata` | PEM（TAA 自己的 SM2 公钥） | **请求里的 `requestId` 原值**（不回填报告里的 userdata） |
-| 调用方认证 | 信封验签 | 无传输层认证；报告自证（PEK 签名 + 报告 USERDATA 绑定证书公钥） |
+| 调用方认证 | 信封验签 | 无传输层认证；报告自证（内嵌 PEK 证书对报告本体的签名） |
 
 **成功响应示例**（200 OK）：
 
