@@ -1908,7 +1908,9 @@ curl -X POST "http://${PLATFORM_ADDR}/v1/llm/register" \
 
 #### 7.3.1 获取远程证明报告（/v1/llm/getAttestation）
 
-**请求**：`POST http://{llm-host}:8444/v1/llm/getAttestation`
+**请求**：`POST http://{llm-host}:6001/v1/llm/getAttestation`
+
+**说明**：明文端口固定为 `6001`，与 TAA 的平台对接端口一致——平台侧访问所有实例都用 `6001`。该端口只挂这一个接口，TEE-TLS 推理仍在 `:8443`。
 
 **请求内容类型**：`application/json`
 
@@ -1938,13 +1940,13 @@ curl -X POST "http://${PLATFORM_ADDR}/v1/llm/register" \
 
 | 项 | TAA `/v1/taa/getAttestation` | LLM `/v1/llm/getAttestation` |
 | --- | --- | --- |
-| 传输与信封 | 明文 HTTP，请求/响应都套信封 | 明文 HTTP（`:8444`），报文本身**无信封** |
+| 传输与信封 | 明文 HTTP，请求/响应都套信封 | 明文 HTTP（`:6001`），报文本身**无信封** |
 | 报告来源 | 每次重新生成（30s 超时，进程内互斥） | 当前缓存证书里的那一份，不重新 IOCTL |
 | `attestationValues.userdata` | PEM（TAA 自己的 SM2 公钥） | **请求里的 `requestId` 原值**（不回填报告里的 userdata） |
 | `certificate` | 无 | **有**，PEM |
 | 调用方认证 | 信封验签 | 无传输层认证；报告自证（PEK 签名 + 报告 USERDATA 绑定证书公钥） |
 
-**为什么单独开明文端口**：平台没有任何 TEE-TLS 客户端，收在 `:8443` 上平台就取不到报告；而报告本身已带认证性，传输层加密对它没有增量。响应仍保留 `certificate`：证书缓存（默认 1 小时）可能在生成与返回之间轮换，用响应里的证书才能确认"这份报告 ↔ 这把公钥"，同时让报文自包含，便于存档与离线核验。明文端口只挂这一个接口，不提供推理，也不承载 TAA 的审计流量。
+**为什么单独开明文端口**：平台没有任何 TEE-TLS 客户端，收在 `:8443` 上平台就取不到报告；而报告本身已带认证性，传输层加密对它没有增量。端口选 `6001` 是为了与 TAA 保持一致：平台访问任何实例都固定用 `6001`，不需要按实例类型区分端口。响应仍保留 `certificate`：证书缓存（默认 1 小时）可能在生成与返回之间轮换，用响应里的证书才能确认"这份报告 ↔ 这把公钥"，同时让报文自包含，便于存档与离线核验。明文端口只挂这一个接口，不提供推理，也不承载 TAA 的审计流量。
 
 **成功响应示例**（200 OK）：
 
@@ -1976,10 +1978,10 @@ curl -X POST "http://${PLATFORM_ADDR}/v1/llm/register" \
 
 **平台侧校验步骤**（拿到响应后必做，否则报告只是一段自说自话的 Base64）。
 
-响应直接用普通 HTTP 客户端取得（明文 `:8444`，不需要任何握手），保存为 `/tmp/att.json`：
+响应直接用普通 HTTP 客户端取得（明文 `:6001`，不需要任何握手），保存为 `/tmp/att.json`：
 
 ```sh
-curl -s -X POST "http://{llm-host}:8444/v1/llm/getAttestation" \
+curl -s -X POST "http://{llm-host}:6001/v1/llm/getAttestation" \
   -H 'Content-Type: application/json' \
   -d '{"requestId":"req-att-001"}' -o /tmp/att.json
 ```
