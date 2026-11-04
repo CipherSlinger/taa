@@ -1768,15 +1768,10 @@ TEELLM_MODEL={family}:{tag} # 暂只支持 qwen-coder2.5:7b
 
 TEE-LLM 同时起两个监听：TEE-TLS 给 TAA 用，明文端口给平台用，两者互不重叠。
 
-| 端口 | 配置项 | 用途 | 访问方 |
-| --- | --- | --- | --- |
-| `:8443`（缺省） | `server.addr`，可被命令行 `-addr` 覆盖 | TEE-TLS 1.3（RFC 8998）：`/v1/llm/generate`、`/v1/llm/healthz` | TAA |
-| `:6001`（缺省） | `server.attestationAddr` | 明文 HTTP：`/v1/llm/getAttestation` | 平台 |
-
-- 明文端口固定用 `6001`，与 TAA 的平台对接端口一致——平台侧访问所有实例都用 `6001`。
-- 明文监听只挂 `/v1/llm/getAttestation` 一条路由，推理与健康检查仍只在 `8443` 上。
-- `attestationAddr` 只能改配置文件，没有环境变量；`-addr` 只影响 TEE-TLS 监听，两者相互独立。
-- 两个端口都要能从 Pod 外访问，否则平台注册、心跳或取证明报告会失败。
+| 端口 | 用途 | 访问方 |
+| --- | --- | --- |
+| `:8443`（缺省） | TEE-TLS 1.3（RFC 8998）：`/v1/llm/generate`、`/v1/llm/healthz` | TAA |
+| `:6001`（缺省） | 明文 HTTP：`/v1/llm/getAttestation` | 平台 |
 
 ### 7.2 LLM → 平台
 
