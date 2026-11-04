@@ -1704,6 +1704,33 @@ func TestLoadStartupConfigLLMEndpointEnvOverride(t *testing.T) {
 		}
 	})
 
+	t.Run("a plain-http LLM_IP is rewritten to https", func(t *testing.T) {
+		// The gateway only speaks TEE-TLS. An http:// endpoint would fail the
+		// handshake at the far end; rewriting it here keeps a stale deployment
+		// script pointing at the same instance instead of at a dead transport.
+		for envValue, want := range map[string]string{
+			"http://from-env-llm-ip:8443": "https://from-env-llm-ip:8443",
+			"http://from-env-llm-ip":      "https://from-env-llm-ip:8443",
+			"HTTP://from-env-llm-ip":      "https://from-env-llm-ip:8443",
+		} {
+			path := filepath.Join(t.TempDir(), DefaultFileName)
+			writeTestConfig(t, path, `{
+				"codeAudit": {
+					"llm": { "endpoint": "https://from-file:8443" }
+				}
+			}`)
+			t.Setenv("LLM_IP", envValue)
+
+			cfg, err := LoadStartupConfig(path)
+			if err != nil {
+				t.Fatalf("LoadStartupConfig() error = %v", err)
+			}
+			if cfg.LLM.Endpoint != want {
+				t.Errorf("LLM_IP %q: endpoint = %q, want %q", envValue, cfg.LLM.Endpoint, want)
+			}
+		}
+	})
+
 	t.Run("an explicit port in LLM_IP is kept", func(t *testing.T) {
 		path := filepath.Join(t.TempDir(), DefaultFileName)
 		writeTestConfig(t, path, `{

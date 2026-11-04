@@ -55,13 +55,12 @@ PLATFORM_IP={IP}:{PORT}
 DOCKER_ID=xxxxxxxxx
 CONTRACT_TYPE=1                            # 实例角色：1 tee 训练、2 tee 推理、3 数据分析、4 fhe；可选，优先于配置文件 server.type
 CONTRACT_ID=合约ID（预留）
-TAA_LLM_ENDPOINT={IP}:{PORT}
+TAA_LLM_ENDPOINT={IP}:{PORT}               # TEE-LLM 推理服务。可写裸 IP 或完整 URL：没有 `://` 补 `https://`，写成 `http://` 改写为 `https://`，没有端口补 `:8443`。
 PLATFORM_PUBLIC_KEY=04||X||Y 的 hex        # 平台 SM2 公钥，必填（见 2.1）
 PLATFORM_SM2_ID=1234567812345678           # 可选，签名用 ID_A，缺省即该值
 ```
 
-`TAA_LLM_ENDPOINT` 指向 TEE-LLM 推理服务，覆盖配置文件的 `codeAudit.llm.endpoint`。可写裸 IP 或完整 URL：没有 `://` 补 `https://`，没有端口补 `:8443`。旧名 `LLM_IP` 仍被读取，但 `LLM_IP` 优先于 `TAA_LLM_ENDPOINT`——两个都设时以 `LLM_IP` 为准。
-
+`TAA_LLM_ENDPOINT` 只连 TEE-TLS：网关（`teellm-service`）没有明文监听，所以 `http://` 开头的地址会被改写成 `https://`，而不是按原样拨号后在握手阶段失败。裸 IP 同样补成 `https://`，缺省端口为 `8443`。
 ```env
 # 路径约定（默认模板；以配置文件为准）
 /opt/taa/input/           # 输入目录（只读权限路径 READ_ONLY）

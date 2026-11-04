@@ -522,12 +522,18 @@ func applyLLMEndpointOverride(cfg *StartupConfig) {
 
 // completeLLMEndpoint fills in what a deployment environment is likely to
 // leave out: the scheme, so a bare IP still names a URL, and the port, which
-// defaults to the TEE-LLM gateway's internal port. A value that already has
-// both is returned with only its formatting normalized.
+// defaults to the TEE-LLM gateway's internal port. A plain-http scheme is
+// rewritten to https: the gateway only speaks TEE-TLS, so an http:// endpoint
+// names the right instance over a transport that cannot complete a handshake.
+// A value that already has both a usable scheme and a port is returned with
+// only its formatting normalized.
 func completeLLMEndpoint(raw string) string {
 	endpoint := strings.TrimSpace(raw)
 	if endpoint == "" {
 		return ""
+	}
+	if len(endpoint) >= len("http://") && strings.EqualFold(endpoint[:len("http://")], "http://") {
+		endpoint = "https://" + endpoint[len("http://"):]
 	}
 	if !strings.Contains(endpoint, "://") {
 		endpoint = "https://" + endpoint
