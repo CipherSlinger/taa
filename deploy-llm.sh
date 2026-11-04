@@ -788,14 +788,27 @@ du -sh /opt/teellm/ollama /opt/teellm/teellm-service
 
   step "uploading the image to ${REMOTE_USER}@${REMOTE_HOST} and updating $registry_image"
   local remote_archive="/tmp/$(basename "$archive")"
-  sshpass -p "$PASSWORD" scp "${SSH_OPTS[@]}" "$archive" "${REMOTE_USER}@${REMOTE_HOST}:$remote_archive"
+  # The archive is many gigabytes, and this is the slowest step of a rebuild, so show the transfer
+  # rather than leave the terminal silent for minutes. rsync updates one line in place with the
+  # percentage, speed and remaining time; scp cannot report progress, so the fallback says so
+  # instead of looking hung.
+  info "uploading $(du -h "$archive" | cut -f1) to ${REMOTE_HOST}:$remote_archive"
+  if command -v rsync >/dev/null 2>&1 && remote_ssh "command -v rsync >/dev/null 2>&1"; then
+    sshpass -p "$PASSWORD" rsync -a --partial --info=progress2 \
+      -e "ssh -q -o LogLevel=ERROR -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=$HOME/.ssh/known_hosts" \
+      "$archive" "${REMOTE_USER}@${REMOTE_HOST}:$remote_archive"
+  else
+    warn "rsync is not available on both ends; scp cannot report progress"
+    sshpass -p "$PASSWORD" scp "${SSH_OPTS[@]}" "$archive" "${REMOTE_USER}@${REMOTE_HOST}:$remote_archive"
+  fi
   if ! remote_ssh bash -s -- "$remote_archive" "$local_image" "$registry_image" "$TEELLM_IMAGE_REGISTRY" "$TEELLM_IMAGE_REPO" "$date_tag" <<'REMOTE_PUSH'
 set -euo pipefail
 archive="$1"; local_image="$2"; registry_image="$3"
 registry="$4"; repo="$5"; tag="$6"
 trap 'rm -f "$archive"' EXIT
 
-docker load -i "$archive" >/dev/null
+echo "     loading $(basename "$archive") into the remote docker daemon..."
+docker load -i "$archive" | sed 's/^/     /'
 docker tag "$local_image" "$registry_image"
 
 manifest_url="https://$registry/v2/$repo/manifests/$tag"
@@ -807,7 +820,10 @@ old_digest="$(curl -skI --max-time 10 -H "$accept" "$manifest_url" 2>/dev/null |
 if [ -n "$old_digest" ]; then
   curl -sk -X DELETE --max-time 15 "$registry/v2/$repo/manifests/$old_digest" >/dev/null 2>&1 || true
 fi
-docker push "$registry_image" >/dev/null
+# docker reports one line per layer once that layer is uploaded, which is the only progress the
+# registry client offers. Keep it rather than discarding it, so a slow push does not look stuck.
+echo "     pushing $registry_image to $registry..."
+docker push "$registry_image" | sed 's/^/     /'
 REMOTE_PUSH
   then
     err "failed to upload or push the TEE-LLM Pod image to $registry_image"
