@@ -200,10 +200,9 @@ func (p *llmPoller) fetchHeartbeat(ctx context.Context, addr string) (llmHeartbe
 	return out, nil
 }
 
-// pullLogs reads everything the instance has beyond the stored cursor. The
-// cursor advances to latestSeq, not to the last entry returned, so a page limit
-// does not skip records: they are older than latestSeq and will be read next
-// time.
+// pullLogs reads what the instance has beyond the stored cursor. sinceSeq is
+// the first seq to return, so the request carries cursor+1; the stored cursor
+// then advances to the instance's latestSeq.
 func (p *llmPoller) pullLogs(ctx context.Context, addr string, uptimeSeconds int64) error {
 	runID := llmRunID(time.Now(), uptimeSeconds)
 	p.mu.Lock()
@@ -221,7 +220,9 @@ func (p *llmPoller) pullLogs(ctx context.Context, addr string, uptimeSeconds int
 	}
 
 	raw, err := p.post(ctx, addr, "/v1/llm/log", map[string]any{
-		"sinceSeq": cursor,
+		// sinceSeq is inclusive: the cursor stores the last seq consumed, so the
+		// next record to ask for is the one immediately after it.
+		"sinceSeq": cursor + 1,
 		"limit":    llmLogPageSize,
 	})
 	if err != nil {

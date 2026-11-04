@@ -39,9 +39,9 @@ type llmState struct {
 	// panel can show why an instance went offline instead of only that it did.
 	LastError string `json:"lastError"`
 
-	// LogCursor is the highest seq the mock has consumed; the next pull starts
-	// after it. LogDropped reports that the instance's ring aged out records
-	// before this poll read them.
+	// LogCursor is the highest seq the mock has consumed. sinceSeq is inclusive,
+	// so the next pull asks from LogCursor+1. LogDropped reports that the
+	// instance's ring aged out records before this poll read them.
 	LogCursor  uint64 `json:"logCursor"`
 	LogDropped bool   `json:"logDropped"`
 	LogEntries uint64 `json:"logEntries"`

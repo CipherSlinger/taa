@@ -1783,16 +1783,16 @@ TEE-LLM 同时起两个监听：TEE-TLS 给 TAA 用，明文端口给平台用�
 
 | 参数 | 类型 | 必填 | 说明 |
 | --- | --- | --- | --- |
-| `sinceSeq` | `uint64` | 否 | 平台上次收到的最大 `seq`；缺省 `0` 表示从缓冲区最旧的记录开始 |
+| `sinceSeq` | `uint64` | 否 | 平台下次要拉取的第一条 `seq`，即**上次收到的最大 `seq` + 1**；缺省 `0` 等价于从 `1` 开始，即缓冲区最旧的记录 |
 | `limit` | `int` | 否 | 本次最多返回多少条，缺省 100，上限 1000 |
 
 **响应结果字段**：
 
 | 参数 | 类型 | 说明 |
 | --- | --- | --- |
-| `entries` | `array` | `seq` **大于** `sinceSeq` 的日志条目，按 `seq` 升序 |
-| `latestSeq` | `uint64` | 缓冲区当前最大 `seq`；没有新记录时与上次相同。平台下次调用把它作为 `sinceSeq` |
-| `dropped` | `bool` | `true` 表示 `sinceSeq` 之前的记录已被环形缓冲淘汰，中间有缺口 |
+| `entries` | `array` | `seq` **大于等于** `sinceSeq` 的日志条目，按 `seq` 升序 |
+| `latestSeq` | `uint64` | 缓冲区当前最大 `seq`；没有新记录时与上次相同。平台下次调用把它 **+ 1** 作为 `sinceSeq` |
+| `dropped` | `bool` | `true` 表示从 `sinceSeq` 起的记录已被环形缓冲淘汰，中间有缺口 |
 
 **`entries` 字段**：
 

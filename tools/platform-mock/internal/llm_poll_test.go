@@ -59,7 +59,8 @@ func (f *fakeLLM) handler() http.Handler {
 		var out []llmLogPullEntry
 		var latest uint64
 		for _, entry := range f.entries {
-			if entry.Seq > req.SinceSeq {
+			// sinceSeq is inclusive: return it and everything newer.
+			if entry.Seq >= req.SinceSeq {
 				out = append(out, entry)
 			}
 			if entry.Seq > latest {
@@ -148,8 +149,8 @@ func TestLLMPollerResumesFromStoredCursor(t *testing.T) {
 	if pulls != 2 {
 		t.Fatalf("log pulls = %d, want 2", pulls)
 	}
-	if lastSince != 2 {
-		t.Errorf("second pull used sinceSeq=%d, want the stored cursor 2", lastSince)
+	if lastSince != 3 {
+		t.Errorf("second pull used sinceSeq=%d, want the stored cursor 2 plus one", lastSince)
 	}
 }
 
@@ -169,8 +170,8 @@ func TestLLMPollerResetsCursorWhenTheInstanceRestarted(t *testing.T) {
 	fake.mu.Lock()
 	lastSince := fake.lastSinceSeq
 	fake.mu.Unlock()
-	if lastSince != 0 {
-		t.Errorf("pull after restart used sinceSeq=%d, want 0", lastSince)
+	if lastSince != 1 {
+		t.Errorf("pull after restart used sinceSeq=%d, want 1 (cursor 0 plus one)", lastSince)
 	}
 	if got := len(logs.get().Entries); got != before+2 {
 		t.Errorf("stored %d entries, want %d", got, before+2)
