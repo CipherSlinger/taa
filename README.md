@@ -331,7 +331,7 @@ TAA reads its configuration from `taa-config.json` located in its working direct
     "addr": ":6001"
   },
   "platform": {
-    "ip": "127.0.0.1:18080",
+    "ip": "127.0.0.1:18081",
     "dockerID": "taa-env-slim-v2",
     "contract": "",
     "publicKey": ""
@@ -779,8 +779,8 @@ are replaced atomically, and the wrapper restarts it).
 TAA includes a full-featured management platform emulator with an embedded Web GUI console:
 
 - **Source Code**: `tools/platform-mock/cmd/platform-mock/main.go`, `tools/platform-mock/internal/static/`
-- **Default Port**: `18080`
-- **Web Console**: `http://127.0.0.1:18080`
+- **Default Port**: `18081` (18080 is where the real control plane listens on the shared hosts)
+- **Web Console**: `http://127.0.0.1:18081`
 
 ```bash
 # Start locally (builds bin/platform-mock, then runs it detached)
@@ -797,7 +797,7 @@ TAA includes a full-featured management platform emulator with an embedded Web G
 ./deploy-platform-mock.sh remote status --host 172.16.10.178
 
 # Run in the foreground without the lifecycle wrapper
-go run ./tools/platform-mock/cmd/platform-mock -addr 0.0.0.0:18080 -taa-target http://127.0.0.1:6001
+go run ./tools/platform-mock/cmd/platform-mock -addr 0.0.0.0:18081 -taa-target http://127.0.0.1:6001
 ```
 
 `deploy-platform-mock.sh` is the single owner of the mock lifecycle: `deploy.sh` and

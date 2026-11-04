@@ -101,7 +101,7 @@ platform-mock 的构建、启动、停止和就绪检查统一由仓库根目录
 |---|---|
 | `--binary PATH` | 本地构建产物，默认 `bin/platform-mock` |
 | `--binary-name NAME` | 进程名与远端安装名，默认 `platform-mock` |
-| `--addr ADDR` / `--port N` | 监听地址，默认 `0.0.0.0:18080` |
+| `--addr ADDR` / `--port N` | 监听地址，默认 `0.0.0.0:18081`（18080 留给宿主上的真实平台 ccs-node-agent） |
 | `--state-dir DIR` / `--upload-dir DIR` | 为空时不传对应参数，沿用二进制自身默认目录 |
 | `--log-file PATH` / `--pid-file PATH` | 默认分别在 `.local/logs/`、`.local/run/`（远端在 `--remote-dir` 下） |
 | `--taa-target URL` | 固定到单个 TAA 地址；不传时按注册信息推导每个实例的地址 |

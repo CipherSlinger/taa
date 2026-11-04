@@ -21,7 +21,11 @@ PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # ── Defaults ────────────────────────────────────────────────────────────────
 BINARY_PATH="${PLATFORM_MOCK_BINARY_PATH:-${MOCK_BINARY_PATH:-$PROJECT_DIR/bin/platform-mock}}"
 BINARY_NAME="${PLATFORM_MOCK_BINARY_NAME:-platform-mock}"
-PORT="${PLATFORM_PORT:-${LOCAL_PLATFORM_PORT:-18080}}"
+# 18081, not 18080: on the shared hosts 18080 is where the real control plane
+# listens (ccs-node-agent), and the mock exists to stand in for it, not to
+# contend with it. `deploy.sh` still defaults to 18080 because that is the real
+# platform; point it here with PLATFORM_PORT=18081 when debugging against the mock.
+PORT="${PLATFORM_PORT:-${LOCAL_PLATFORM_PORT:-18081}}"
 ADDR="${PLATFORM_ADDR:-${LOCAL_PLATFORM_BIND:-}}"
 STATE_DIR="${PLATFORM_MOCK_STATE_DIR-__unset__}"
 UPLOAD_DIR="${PLATFORM_MOCK_UPLOAD_DIR-__unset__}"
@@ -81,7 +85,7 @@ Common options:
   --binary PATH              Local build output (default: bin/platform-mock)
   --binary-name NAME         Binary name used for pkill and the remote install
   --addr ADDR                Listen address (default: 0.0.0.0:<port>)
-  --port N                   Listen/probe port (default: 18080)
+  --port N                   Listen/probe port (default: 18081)
   --state-dir DIR            Persisted state directory (empty = omit the flag)
   --upload-dir DIR           Uploaded-files directory (empty = omit the flag)
   --log-file PATH            Log file (local default: .local/logs/platform-mock.log)
