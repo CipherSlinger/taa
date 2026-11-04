@@ -19,6 +19,7 @@ type fakeLLM struct {
 	mu           sync.Mutex
 	model        string
 	uptime       int64
+	dockerID     string
 	entries      []llmLogPullEntry
 	lastSinceSeq uint64
 	heartbeats   int
@@ -29,6 +30,12 @@ type fakeLLM struct {
 func (f *fakeLLM) setUptime(seconds int64) {
 	f.mu.Lock()
 	f.uptime = seconds
+	f.mu.Unlock()
+}
+
+func (f *fakeLLM) setDockerID(id string) {
+	f.mu.Lock()
+	f.dockerID = id
 	f.mu.Unlock()
 }
 
@@ -43,9 +50,9 @@ func (f *fakeLLM) handler() http.Handler {
 	mux.HandleFunc("/v1/llm/heartbeat", func(w http.ResponseWriter, r *http.Request) {
 		f.mu.Lock()
 		f.heartbeats++
-		model, uptime := f.model, f.uptime
+		model, uptime, dockerID := f.model, f.uptime, f.dockerID
 		f.mu.Unlock()
-		writeFakeEnvelope(w, map[string]any{"alive": true, "model": model, "uptimeSeconds": uptime})
+		writeFakeEnvelope(w, dockerID, map[string]any{"alive": true, "model": model, "uptimeSeconds": uptime})
 	})
 	mux.HandleFunc("/v1/llm/log", func(w http.ResponseWriter, r *http.Request) {
 		var req struct {
@@ -56,6 +63,7 @@ func (f *fakeLLM) handler() http.Handler {
 		f.mu.Lock()
 		f.logPulls++
 		f.lastSinceSeq = req.SinceSeq
+		dockerID := f.dockerID
 		var out []llmLogPullEntry
 		var latest uint64
 		for _, entry := range f.entries {
@@ -71,13 +79,14 @@ func (f *fakeLLM) handler() http.Handler {
 		if out == nil {
 			out = []llmLogPullEntry{}
 		}
-		writeFakeEnvelope(w, map[string]any{"entries": out, "latestSeq": latest, "dropped": false})
+		writeFakeEnvelope(w, dockerID, map[string]any{"entries": out, "latestSeq": latest, "dropped": false})
 	})
 	mux.HandleFunc("/v1/llm/getAttestation", func(w http.ResponseWriter, r *http.Request) {
 		f.mu.Lock()
 		f.attestations++
+		dockerID := f.dockerID
 		f.mu.Unlock()
-		writeFakeEnvelope(w, map[string]any{
+		writeFakeEnvelope(w, dockerID, map[string]any{
 			"requestId":         "req-1",
 			"verifiedPass":      true,
 			"attestation":       base64.StdEncoding.EncodeToString([]byte("report-bytes")),
@@ -87,14 +96,19 @@ func (f *fakeLLM) handler() http.Handler {
 	return mux
 }
 
-func writeFakeEnvelope(w http.ResponseWriter, result any) {
+func writeFakeEnvelope(w http.ResponseWriter, dockerID string, result any) {
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]any{"msg": "success", "result": result, "error": 0})
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"msg":      "success",
+		"result":   result,
+		"error":    0,
+		"dockerId": dockerID,
+	})
 }
 
 func newPollTestRig(t *testing.T) (*fakeLLM, *llmPoller, *llmStateStore, *taaLogStore) {
 	t.Helper()
-	fake := &fakeLLM{model: "qwen2.5-coder:3b", uptime: 600}
+	fake := &fakeLLM{model: "qwen2.5-coder:3b", uptime: 600, dockerID: "teellm-1000000001"}
 	srv := httptest.NewServer(fake.handler())
 	t.Cleanup(srv.Close)
 
@@ -120,6 +134,9 @@ func TestLLMPollerRecordsHeartbeatAndLogs(t *testing.T) {
 	}
 	if got.Model != "qwen2.5-coder:3b" || got.UptimeSeconds != 600 {
 		t.Errorf("model/uptime = %q/%d", got.Model, got.UptimeSeconds)
+	}
+	if got.DockerID != "teellm-1000000001" {
+		t.Errorf("dockerId = %q, want the id from the heartbeat envelope", got.DockerID)
 	}
 	if got.Heartbeats != 1 || got.LastHeartbeatAt == "" {
 		t.Errorf("heartbeats = %d, at %q", got.Heartbeats, got.LastHeartbeatAt)
@@ -154,8 +171,36 @@ func TestLLMPollerResumesFromStoredCursor(t *testing.T) {
 	}
 }
 
+func TestLLMPollerResetsCursorWhenDockerIDChanges(t *testing.T) {
+	fake, poller, state, logs := newPollTestRig(t)
+	fake.setEntries([]llmLogPullEntry{{Seq: 1, Message: "old one"}, {Seq: 2, Message: "old two"}})
+	poller.PollOnce(context.Background())
+	before := len(logs.get().Entries)
+
+	// A rebuild: same address, same uptime shape, a new process id.
+	fake.setDockerID("teellm-2000000002")
+	fake.setEntries([]llmLogPullEntry{{Seq: 1, Message: "new one"}, {Seq: 2, Message: "new two"}})
+	poller.PollOnce(context.Background())
+
+	fake.mu.Lock()
+	lastSince := fake.lastSinceSeq
+	fake.mu.Unlock()
+	if lastSince != 1 {
+		t.Errorf("pull after rebuild used sinceSeq=%d, want 1 (cursor 0 plus one)", lastSince)
+	}
+	if got := len(logs.get().Entries); got != before+2 {
+		t.Errorf("stored %d entries, want %d", got, before+2)
+	}
+	if got := state.get().DockerID; got != "teellm-2000000002" {
+		t.Errorf("dockerId = %q, want the new instance id", got)
+	}
+}
+
+// An instance that does not report a dockerId still gets restart detection from
+// the uptime-quantized fallback.
 func TestLLMPollerResetsCursorWhenTheInstanceRestarted(t *testing.T) {
 	fake, poller, state, logs := newPollTestRig(t)
+	fake.setDockerID("")
 	fake.setEntries([]llmLogPullEntry{{Seq: 1, Message: "old one"}, {Seq: 2, Message: "old two"}})
 	poller.PollOnce(context.Background())
 	before := len(logs.get().Entries)

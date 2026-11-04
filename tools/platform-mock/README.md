@@ -101,11 +101,12 @@ The platform mock provides an embedded single-page Web console accessible by ope
 - **Model Ingress & Audit**: Upload model packages, inspect static AST rule violations, and observe Ollama LLM semantic verification outcomes.
 - **Real-Time Progress & Logs**: Displays real-time progress bars, streamed terminal logs (`modelLog`), and TAA daemon operational logs (`taaLog`).
 - **Execution Control**: Send graceful stop commands (`/v1/taa/stopTraining`) to interrupt running workloads.
-- **TEE-LLM Instance**: the LLM reports on its own plaintext `/v1/llm/*` routes, so the console
-  gives it a dedicated card (TEE mode only): registration, self-check, heartbeat liveness and the
-  batched run logs from `/v1/llm/log`. A separate card below it lists the `dockerId`s that have
-  reported, including ones the single registration record has already overwritten. Reset clears
-  the registration, the sources and the LLM log store.
+- **TEE-LLM Instance**: the mock polls the instance's plaintext `/v1/llm/*` routes, so the console
+  gives it a dedicated card (TEE mode only): the address discovered, the instance's per-process
+  `dockerId` (`teellm-<10 digits>`; a change means the instance was restarted or rebuilt, and the
+  log cursor resets with it), model and uptime, heartbeat liveness, the batched run logs from
+  `/v1/llm/log`, and the report fetched from `/v1/llm/getAttestation` on demand. Reset clears the
+  polled state and the LLM log store.
 
 ## Multiple Instances
 

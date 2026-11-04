@@ -26,19 +26,23 @@ const (
 	llmLogPageSize = 500
 	// llmRequestTimeout bounds one platform→LLM call.
 	llmRequestTimeout = 5 * time.Second
-	// llmRunIDResolution quantizes the start time the run id is derived from.
-	// Uptime is an integer and the poll instant moves by up to a second between
-	// calls, so the start time must be rounded or the id would flip every poll
-	// and reset the log cursor each time.
+	// llmRunIDResolution quantizes the start time the fallback run id is derived
+	// from. It only applies when the instance does not report a dockerId: uptime
+	// is an integer and the poll instant moves by up to a second between calls,
+	// so the start time must be rounded or the id would flip every poll and
+	// reset the log cursor each time.
 	llmRunIDResolution = 10 * time.Second
 )
 
 // llmEnvelope is the {msg, result, error} wrapper every teellm platform
-// endpoint answers with.
+// endpoint answers with. DockerID is the instance's per-process identity: the
+// mock stores the last value it saw and reads a change as "the instance was
+// restarted or rebuilt".
 type llmEnvelope struct {
-	Msg    string          `json:"msg"`
-	Result json.RawMessage `json:"result"`
-	Error  int             `json:"error"`
+	Msg      string          `json:"msg"`
+	Result   json.RawMessage `json:"result"`
+	Error    int             `json:"error"`
+	DockerID string          `json:"dockerId"`
 }
 
 type llmHeartbeatResult struct {
@@ -126,7 +130,7 @@ func (p *llmPoller) PollOnce(ctx context.Context) {
 		return
 	}
 
-	hb, err := p.fetchHeartbeat(ctx, addr)
+	hb, dockerID, err := p.fetchHeartbeat(ctx, addr)
 	if err != nil {
 		// A stale Pod IP is the most common cause; drop it and rediscover next
 		// poll instead of hammering an address nothing answers.
@@ -134,9 +138,9 @@ func (p *llmPoller) PollOnce(ctx context.Context) {
 		p.state.recordPollError("心跳失败: " + err.Error())
 		return
 	}
-	p.state.recordHeartbeat(hb.Model, hb.UptimeSeconds)
+	p.state.recordHeartbeat(hb.Model, hb.UptimeSeconds, dockerID)
 
-	if err := p.pullLogs(ctx, addr, hb.UptimeSeconds); err != nil {
+	if err := p.pullLogs(ctx, addr, dockerID, hb.UptimeSeconds); err != nil {
 		p.state.recordLogError("日志拉取失败: " + err.Error())
 	}
 }
@@ -185,26 +189,36 @@ func normalizeLLMBaseURL(target string) string {
 	return target
 }
 
-func (p *llmPoller) fetchHeartbeat(ctx context.Context, addr string) (llmHeartbeatResult, error) {
+// fetchHeartbeat asks for liveness and also returns the instance id the answer
+// carried, which is what the panel displays and what the log pull keys restarts
+// on.
+func (p *llmPoller) fetchHeartbeat(ctx context.Context, addr string) (llmHeartbeatResult, string, error) {
 	var out llmHeartbeatResult
-	raw, err := p.post(ctx, addr, "/v1/llm/heartbeat", struct{}{})
+	env, err := p.post(ctx, addr, "/v1/llm/heartbeat", struct{}{})
 	if err != nil {
-		return out, err
+		return out, "", err
 	}
-	if err := json.Unmarshal(raw, &out); err != nil {
-		return out, fmt.Errorf("解析心跳结果失败: %w", err)
+	if err := json.Unmarshal(env.Result, &out); err != nil {
+		return out, env.DockerID, fmt.Errorf("解析心跳结果失败: %w", err)
 	}
 	if !out.Alive {
-		return out, errors.New("实例报告 alive=false")
+		return out, env.DockerID, errors.New("实例报告 alive=false")
 	}
-	return out, nil
+	return out, env.DockerID, nil
 }
 
 // pullLogs reads what the instance has beyond the stored cursor. sinceSeq is
 // the first seq to return, so the request carries cursor+1; the stored cursor
 // then advances to the instance's latestSeq.
-func (p *llmPoller) pullLogs(ctx context.Context, addr string, uptimeSeconds int64) error {
-	runID := llmRunID(time.Now(), uptimeSeconds)
+func (p *llmPoller) pullLogs(ctx context.Context, addr, dockerID string, uptimeSeconds int64) error {
+	// The instance's dockerId is an exact run identity: it changes on every
+	// process start and nowhere else. Fall back to the uptime-quantized id only
+	// for an instance that does not report one, so an older teellm still gets
+	// restart detection.
+	runID := dockerID
+	if runID == "" {
+		runID = llmRunID(time.Now(), uptimeSeconds)
+	}
 	p.mu.Lock()
 	previousRun := p.runID
 	p.runID = runID
@@ -219,7 +233,7 @@ func (p *llmPoller) pullLogs(ctx context.Context, addr string, uptimeSeconds int
 		cursor = 0
 	}
 
-	raw, err := p.post(ctx, addr, "/v1/llm/log", map[string]any{
+	env, err := p.post(ctx, addr, "/v1/llm/log", map[string]any{
 		// sinceSeq is inclusive: the cursor stores the last seq consumed, so the
 		// next record to ask for is the one immediately after it.
 		"sinceSeq": cursor + 1,
@@ -229,7 +243,7 @@ func (p *llmPoller) pullLogs(ctx context.Context, addr string, uptimeSeconds int
 		return err
 	}
 	var result llmLogPullResult
-	if err := json.Unmarshal(raw, &result); err != nil {
+	if err := json.Unmarshal(env.Result, &result); err != nil {
 		return fmt.Errorf("解析日志结果失败: %w", err)
 	}
 	if result.LatestSeq < cursor {
@@ -259,12 +273,12 @@ func (p *llmPoller) FetchAttestation(ctx context.Context) (llmAttestationState, 
 		return llmAttestationState{}, errors.New("未发现 TEE-LLM 地址")
 	}
 	requestID := "mock-" + time.Now().UTC().Format("20060102T150405")
-	raw, err := p.post(ctx, addr, "/v1/llm/getAttestation", map[string]any{"requestId": requestID})
+	env, err := p.post(ctx, addr, "/v1/llm/getAttestation", map[string]any{"requestId": requestID})
 	if err != nil {
 		return llmAttestationState{}, err
 	}
 	var result llmAttestationResult
-	if err := json.Unmarshal(raw, &result); err != nil {
+	if err := json.Unmarshal(env.Result, &result); err != nil {
 		return llmAttestationState{}, fmt.Errorf("解析证明结果失败: %w", err)
 	}
 	state := llmAttestationState{
@@ -289,44 +303,45 @@ func (p *llmPoller) FetchAttestation(ctx context.Context) (llmAttestationState, 
 	return state, nil
 }
 
-// post calls one platform→LLM endpoint and unwraps the envelope.
-func (p *llmPoller) post(ctx context.Context, addr, path string, payload any) (json.RawMessage, error) {
+// post calls one platform→LLM endpoint and returns the whole envelope: the
+// caller needs the result body and the instance id that rides beside it.
+func (p *llmPoller) post(ctx context.Context, addr, path string, payload any) (llmEnvelope, error) {
+	var env llmEnvelope
 	body, err := json.Marshal(payload)
 	if err != nil {
-		return nil, fmt.Errorf("编码请求失败: %w", err)
+		return env, fmt.Errorf("编码请求失败: %w", err)
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, addr+path, bytes.NewReader(body))
 	if err != nil {
-		return nil, err
+		return env, err
 	}
 	req.Header.Set("Content-Type", "application/json")
 
 	resp, err := p.client.Do(req)
 	if err != nil {
-		return nil, err
+		return env, err
 	}
 	defer resp.Body.Close()
 
 	raw, err := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
 	if err != nil {
-		return nil, fmt.Errorf("读取响应失败: %w", err)
+		return env, fmt.Errorf("读取响应失败: %w", err)
 	}
-	var env llmEnvelope
 	if err := json.Unmarshal(raw, &env); err != nil {
-		return nil, fmt.Errorf("响应不是 {msg,result,error}: HTTP %d", resp.StatusCode)
+		return env, fmt.Errorf("响应不是 {msg,result,error}: HTTP %d", resp.StatusCode)
 	}
 	if resp.StatusCode != http.StatusOK || env.Error != 0 {
 		msg := env.Msg
 		if strings.TrimSpace(msg) == "" {
 			msg = strings.TrimSpace(string(raw))
 		}
-		return nil, fmt.Errorf("HTTP %d: %s", resp.StatusCode, msg)
+		return env, fmt.Errorf("HTTP %d: %s", resp.StatusCode, msg)
 	}
-	return env.Result, nil
+	return env, nil
 }
 
-// llmRunID identifies one run of the instance by when it started. Uptime is the
-// only start-time signal the heartbeat carries and it is deliberately not an
+// llmRunID identifies one run of the instance by when it started. It is the
+// fallback for an instance whose response carries no dockerId; uptime is not an
 // identity, so the value is quantized into a change detector, not a name.
 func llmRunID(now time.Time, uptimeSeconds int64) string {
 	if uptimeSeconds < 0 {

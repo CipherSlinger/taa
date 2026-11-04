@@ -30,7 +30,7 @@ func decodeLLMStatus(t *testing.T, rec *httptest.ResponseRecorder) (llmState, ta
 func TestLLMStatusReportsPolledState(t *testing.T) {
 	fake, state, logs, poller := newLLMHandlerRig(t)
 	fake.setEntries([]llmLogPullEntry{{Seq: 1, Message: "hello"}})
-	state.recordHeartbeat("m", 42)
+	state.recordHeartbeat("m", 42, "teellm-3000000003")
 	logs.addEntries("http://tt:6001", "run", "", []taaLogEntry{{Seq: 1, Message: "hello"}})
 
 	rec := httptest.NewRecorder()

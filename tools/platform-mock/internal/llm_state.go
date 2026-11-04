@@ -31,6 +31,11 @@ type llmState struct {
 	// Model and UptimeSeconds come from the heartbeat's result.
 	Model         string `json:"model"`
 	UptimeSeconds int64  `json:"uptimeSeconds"`
+	// DockerID is the instance id carried by the heartbeat's envelope:
+	// teellm-<10 digits>, generated when the instance's process starts. A change
+	// means the instance was restarted or rebuilt, and the poller treats it as a
+	// new run (cursor reset) rather than as the same instance with a new uptime.
+	DockerID string `json:"dockerId"`
 
 	Heartbeats      uint64 `json:"heartbeats"`
 	LastHeartbeatAt string `json:"lastHeartbeatAt"`
@@ -105,13 +110,17 @@ func (s *llmStateStore) recordAddress(addr string) {
 	s.persist(snapshot)
 }
 
-// recordHeartbeat records one successful liveness answer.
-func (s *llmStateStore) recordHeartbeat(model string, uptimeSeconds int64) {
+// recordHeartbeat records one successful liveness answer, including the instance
+// id the envelope carried (empty from an instance that predates it).
+func (s *llmStateStore) recordHeartbeat(model string, uptimeSeconds int64, dockerID string) {
 	s.mu.Lock()
 	now := s.now().Format(time.RFC3339)
 	s.state.Reachable = true
 	s.state.Model = model
 	s.state.UptimeSeconds = uptimeSeconds
+	if dockerID != "" {
+		s.state.DockerID = dockerID
+	}
 	s.state.Heartbeats++
 	s.state.LastHeartbeatAt = now
 	s.state.LastPollAt = now

@@ -79,6 +79,9 @@ function renderLLMStatus(payload) {
     if (el) el.textContent = value;
   };
   setText('llmAddress', state.address || '—');
+  // The instance id changes exactly when the instance's process starts, so the
+  // panel shows it as reported rather than inferring a run from uptime.
+  setText('llmDockerId', state.dockerId || '—');
   setText('llmModel', state.model || '—');
   setText('llmUptime', state.address && state.reachable ? llmDuration(state.uptimeSeconds) : '—');
   setText('llmLastPoll', state.lastPollAt ? llmTimeOfDay(state.lastPollAt) : '—');
