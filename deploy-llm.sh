@@ -319,6 +319,9 @@ TEELLM_IMAGE_BASE_ARCHIVE="${TEELLM_IMAGE_BASE_ARCHIVE:-$PROJECT_DIR/deploy/base
 # Keep the builder container after the image is committed, for inspecting a payload that failed to
 # build. The container is removed on success by default.
 TEELLM_IMAGE_KEEP_BUILDER="${TEELLM_IMAGE_KEEP_BUILDER:-false}"
+# Rebuild and recommit even when the local image already carries the fingerprint of the current
+# inputs. The escape hatch for a corrupt image or a suspected fingerprint, not a normal setting.
+TEELLM_IMAGE_FORCE_REBUILD="${TEELLM_IMAGE_FORCE_REBUILD:-false}"
 # Captured before the default below, so resolution can tell "the operator named an image" from
 # "the script guessed one from today's date". Only a guess is replaced by a tag the registry
 # actually has; an explicit name is the operator's decision, and a registry whose tag listing is
@@ -674,32 +677,80 @@ PY
   payload_mb="$(awk -v b="$payload_bytes" 'BEGIN {printf "%.0f", b/1048576}')"
   info "payload: $(wc -l < "$file_list") files, ${payload_mb}MB"
 
-  # The builder container is removed on every exit path by cleanup_display unless the operator
-  # asked to keep it; TEELLM_IMAGE_KEEP_BUILDER is what makes a failed build inspectable.
-  local builder_container="taa-teellm-builder-$$"
-  step "starting the builder container"
-  docker rm -f "$builder_container" >/dev/null 2>&1 || true
-  docker run -d --name "$builder_container" --user root --entrypoint bash "$base_image" -c 'sleep infinity' >/dev/null
-  TEMP_BUILDER_CONTAINER="$builder_container"
-  # /opt/teellm, not $CON_WORKDIR: this is the path baked into the image, and the Pod manifest and
-  # the supervisor both name it literally.
-  docker exec -i "$builder_container" sh -c 'mkdir -p /opt/teellm/configs /opt/teellm/ollama'
+  # The committed image is a pure function of what is put into it, and importing the ollama
+  # payload into a container plus committing the multi-gigabyte layer takes minutes. Fingerprint
+  # every input the commit depends on -- the base image actually used, the model name, the four
+  # files copied in, every file streamed from the ollama tree (path, mode, size and content, with
+  # a symlink by its target) and the commit instructions themselves -- and store it as a label on
+  # the image. A matching label means a rebuild would produce the identical image, so the builder
+  # phase is skipped entirely. The fingerprint is taken over the exact list the payload step
+  # streams, not over a directory timestamp or a subset: anything left out here would let a
+  # changed tree be deployed as the old image, which is worse than a needless rebuild.
+  local commit_changes=(
+    'ENTRYPOINT ["bash", "/opt/teellm/teellm-supervisor.sh"]'
+    'CMD []'
+    'USER root'
+    'WORKDIR /opt/teellm'
+    'EXPOSE 8443'
+  )
+  local fingerprint existing_fingerprint
+  fingerprint="$(
+    {
+      printf 'base %s\n' "$(docker image inspect --format '{{.Id}}' "$base_image")"
+      printf 'model %s\n' "$OLLAMA_MODEL"
+      for p in "$TEELLM_DIR/bin/teellm-service" "$TEELLM_SUPERVISOR_SCRIPT" \
+               "$TEELLM_DIR/configs/teellm-production.json" "$TEELLM_DIR/configs/models.json"; do
+        printf 'source %s %s %s\n' "${p##*/}" "$(stat -c '%u:%g %a %s' "$p")" \
+          "$(sha256sum "$p" | cut -d' ' -f1)"
+      done
+      printf 'commit %s\n' "${commit_changes[@]}"
+      (
+        cd "$OLLAMA_LOCAL_DIR"
+        while IFS= read -r f; do
+          if [[ -L "$f" ]]; then
+            printf 'link %s %s\n' "$f" "$(readlink "$f")"
+          else
+            printf 'file %s %s %s\n' "$f" "$(stat -c '%u:%g %a %s' "$f")" \
+              "$(sha256sum "$f" | cut -d' ' -f1)"
+          fi
+        done < "$file_list"
+      )
+    } | sha256sum | cut -d' ' -f1
+  )"
 
-  step "copying teellm-service, supervisor and configs"
-  docker cp "$TEELLM_DIR/bin/teellm-service" "$builder_container:/opt/teellm/teellm-service"
-  docker cp "$TEELLM_SUPERVISOR_SCRIPT" "$builder_container:/opt/teellm/teellm-supervisor.sh"
-  docker cp "$TEELLM_DIR/configs/teellm-production.json" "$builder_container:/opt/teellm/configs/teellm-production.json"
-  docker cp "$TEELLM_DIR/configs/models.json" "$builder_container:/opt/teellm/configs/models.json"
+  existing_fingerprint="$(docker image inspect --format '{{if .Config.Labels}}{{index .Config.Labels "tee-llm.payload-fingerprint"}}{{end}}' "$local_image" 2>/dev/null || true)"
+  if [[ "$TEELLM_IMAGE_FORCE_REBUILD" != true &&
+        -n "$existing_fingerprint" && "$existing_fingerprint" == "$fingerprint" ]]; then
+    step "reusing the local image $local_image: its inputs are unchanged since it was built"
+    detail "no payload import and no commit; TEELLM_IMAGE_FORCE_REBUILD=true rebuilds it anyway"
+    rm -f "$file_list"
+  else
+    # The builder container is removed on every exit path by cleanup_display unless the operator
+    # asked to keep it; TEELLM_IMAGE_KEEP_BUILDER is what makes a failed build inspectable.
+    local builder_container="taa-teellm-builder-$$"
+    step "starting the builder container"
+    docker rm -f "$builder_container" >/dev/null 2>&1 || true
+    docker run -d --name "$builder_container" --user root --entrypoint bash "$base_image" -c 'sleep infinity' >/dev/null
+    TEMP_BUILDER_CONTAINER="$builder_container"
+    # /opt/teellm, not $CON_WORKDIR: this is the path baked into the image, and the Pod manifest and
+    # the supervisor both name it literally.
+    docker exec -i "$builder_container" sh -c 'mkdir -p /opt/teellm/configs /opt/teellm/ollama'
 
-  step "streaming the ollama runtime and model into the image (${payload_mb}MB)"
-  tar -C "$OLLAMA_LOCAL_DIR" -cf - -T "$file_list" |
-    docker exec -i "$builder_container" tar -xf - -C /opt/teellm/ollama
-  rm -f "$file_list"
+    step "copying teellm-service, supervisor and configs"
+    docker cp "$TEELLM_DIR/bin/teellm-service" "$builder_container:/opt/teellm/teellm-service"
+    docker cp "$TEELLM_SUPERVISOR_SCRIPT" "$builder_container:/opt/teellm/teellm-supervisor.sh"
+    docker cp "$TEELLM_DIR/configs/teellm-production.json" "$builder_container:/opt/teellm/configs/teellm-production.json"
+    docker cp "$TEELLM_DIR/configs/models.json" "$builder_container:/opt/teellm/configs/models.json"
 
-  step "finishing the payload inside the image"
-  # llama-server links against the soname forms of its libraries and carries RUNPATH=$ORIGIN, while
-  # the bundle ships versioned files only; without these links it exits 127 and ollama answers 500.
-  docker exec -i -e MODEL="$OLLAMA_MODEL" "$builder_container" sh -c '
+    step "streaming the ollama runtime and model into the image (${payload_mb}MB)"
+    tar -C "$OLLAMA_LOCAL_DIR" -cf - -T "$file_list" |
+      docker exec -i "$builder_container" tar -xf - -C /opt/teellm/ollama
+    rm -f "$file_list"
+
+    step "finishing the payload inside the image"
+    # llama-server links against the soname forms of its libraries and carries RUNPATH=$ORIGIN, while
+    # the bundle ships versioned files only; without these links it exits 127 and ollama answers 500.
+    docker exec -i -e MODEL="$OLLAMA_MODEL" "$builder_container" sh -c '
 set -e
 d=/opt/teellm/ollama/lib/ollama
 chmod +x /opt/teellm/teellm-service /opt/teellm/teellm-supervisor.sh \
@@ -718,8 +769,8 @@ printf %s "$MODEL" > /opt/teellm/.teellm-model
 printf "model file: "; cat /opt/teellm/.teellm-model; echo
 '
 
-  step "verifying the payload inside the image"
-  docker exec -i -e MODEL="$OLLAMA_MODEL" "$builder_container" sh -c '
+    step "verifying the payload inside the image"
+    docker exec -i -e MODEL="$OLLAMA_MODEL" "$builder_container" sh -c '
 set -e
 for p in /opt/teellm/teellm-service /opt/teellm/teellm-supervisor.sh \
          /opt/teellm/configs/teellm-production.json /opt/teellm/configs/models.json \
@@ -734,19 +785,20 @@ done
 du -sh /opt/teellm/ollama /opt/teellm/teellm-service
 '
 
-  step "committing the image: $local_image"
-  docker commit \
-    -c 'ENTRYPOINT ["bash", "/opt/teellm/teellm-supervisor.sh"]' \
-    -c 'CMD []' \
-    -c 'USER root' \
-    -c 'WORKDIR /opt/teellm' \
-    -c 'EXPOSE 8443' \
-    -m "TEE-LLM image: base $base_image + teellm-service + ollama $OLLAMA_MODEL at $(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-    "$builder_container" "$local_image" >/dev/null
-  cleanup_builder_container
+    step "committing the image: $local_image"
+    local commit_arg commit_args=()
+    for commit_arg in "${commit_changes[@]}"; do commit_args+=(-c "$commit_arg"); done
+    docker commit "${commit_args[@]}" \
+      -c "LABEL tee-llm.payload-fingerprint=$fingerprint" \
+      -m "TEE-LLM image: base $base_image + teellm-service + ollama $OLLAMA_MODEL at $(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+      "$builder_container" "$local_image" >/dev/null
+    cleanup_builder_container
+    info "image committed: $local_image"
+  fi
+
   local image_bytes
   image_bytes="$(docker image inspect --format '{{.Size}}' "$local_image")"
-  info "image committed: $local_image ($(awk -v b="$image_bytes" 'BEGIN {printf "%.0f", b/1048576}')MB uncompressed)"
+  info "image ready: $local_image ($(awk -v b="$image_bytes" 'BEGIN {printf "%.0f", b/1048576}')MB uncompressed)"
 
   # The memory guard downstream sizes the guest against the image, so give it the real figure
   # rather than making it guess: the registry name is not what is local, and the operator may not
@@ -2374,6 +2426,9 @@ Environment overrides:
   TEELLM_IMAGE_KEEP_BUILDER=${TEELLM_IMAGE_KEEP_BUILDER}
       Keep the builder container after the image is committed, for inspecting a payload that
       failed to build. Removed on success by default.
+  TEELLM_IMAGE_FORCE_REBUILD=${TEELLM_IMAGE_FORCE_REBUILD}
+      Rebuild and recommit even when the local image carries the fingerprint of the current
+      inputs. Normally the builder phase is skipped when nothing it would import has changed.
   TEELLM_POD_NODE=${TEELLM_POD_NODE}
       Node the dedicated TEE-LLM Pod is pinned to.
   TEELLM_POD_RUNTIME_CLASS=${TEELLM_POD_RUNTIME_CLASS}

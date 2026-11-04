@@ -221,6 +221,13 @@ case "$1" in
   info) exit 0 ;;
   image)
     case "$*" in
+      # The reuse gate asks the image for the fingerprint it recorded when it was committed. The
+      # mock replays whatever the last case recorded, which is what a rerun over the same inputs
+      # sees in production.
+      *tee-llm.payload-fingerprint*)
+        [[ -n "${MOCK_IMAGE_LABEL_FILE:-}" && -s "${MOCK_IMAGE_LABEL_FILE}" ]] && cat "$MOCK_IMAGE_LABEL_FILE"
+        exit 0
+        ;;
       *teellm-base:*)
         case "$*" in
           *".Id"*|*".Size"*) ;;
@@ -232,6 +239,16 @@ case "$1" in
       *".Id"*) printf '%s\n' "${MOCK_IMAGE_ID:-sha256:1111111111111111111111111111111111111111111111111111111111111111}" ;;
       *".Size"*) printf '%s\n' "${MOCK_IMAGE_SIZE:-6550000000}" ;;
     esac
+    exit 0
+    ;;
+  commit)
+    for a in "$@"; do
+      case "$a" in
+        LABEL\ tee-llm.payload-fingerprint=*)
+          [[ -n "${MOCK_COMMIT_LABEL_FILE:-}" ]] && printf '%s\n' "${a#*=}" > "$MOCK_COMMIT_LABEL_FILE"
+          ;;
+      esac
+    done
     exit 0
     ;;
   build) cat >/dev/null; exit 0 ;;
@@ -838,5 +855,50 @@ grep -q "cc_init_data read from /root/cc_init_data.txt" <<<"$output" \
   || fail "the deployment did not report reading cc_init_data from the host file"
 grep -q 'cc_init_data: "FILE_CC_INIT_DATA"$' "$MOCK_STATE_DIR/applied.yaml" \
   || fail "the cc_init_data read from the file did not reach the manifest"
+
+# ── 10. Unchanged inputs reuse the committed image ──────────────────────────
+# The builder phase imports the ollama payload into a container and commits a multi-gigabyte
+# layer, which is minutes of work. A rerun whose inputs are identical must not repeat it: the
+# image records a fingerprint of everything the commit depends on, and the mock replays it on the
+# next inspect. The negative control matters more than the positive one -- a fingerprint that
+# misses an input would silently deploy the old image as the new tree.
+
+LABEL_FILE="$TMP_DIR/image-fingerprint"
+rm -f "$LABEL_FILE" "$MOCK_STATE_DIR/pod"
+RUN_ENV=(MOCK_COMMIT_LABEL_FILE="$LABEL_FILE")
+run_deploy --create-pod start --model qwen2.5-coder:0.5b
+RUN_ENV=()
+[[ $status -eq 0 ]] || fail "the fingerprint-recording run exited $status"
+[[ -s "$LABEL_FILE" ]] || fail "the committed image does not record a payload fingerprint"
+
+commit_before="$(grep -c '^DOCKER commit ' "$MOCK_LOG" || true)"
+rm -f "$MOCK_STATE_DIR/pod"
+RUN_ENV=(MOCK_IMAGE_LABEL_FILE="$LABEL_FILE")
+run_deploy --create-pod start --model qwen2.5-coder:0.5b
+RUN_ENV=()
+[[ $status -eq 0 ]] || fail "the unchanged-input rerun exited $status"
+grep -q "reusing the local image teellm:$TODAY_TAG" <<<"$output" \
+  || fail "an unchanged tree was not recognized as already built"
+if grep -q "streaming the ollama runtime" <<<"$output"; then
+  fail "the payload was imported again even though nothing changed"
+fi
+[[ "$(grep -c '^DOCKER commit ' "$MOCK_LOG" || true)" == "$commit_before" ]] \
+  || fail "the image was committed again even though nothing changed"
+
+# A streamed payload file is the input a check is most likely to miss, and changing one must
+# defeat the reuse or the previous bundle would be deployed as the new tree. The ollama launcher is
+# used rather than a model blob because the blob resolver rejects a blob whose size no longer
+# matches the manifest, which would fail the run before the fingerprint is ever compared.
+rm -f "$MOCK_STATE_DIR/pod"
+printf '\n# changed\n' >> "$OLLAMA_DIR/ollama"
+RUN_ENV=(MOCK_IMAGE_LABEL_FILE="$LABEL_FILE")
+run_deploy --create-pod start --model qwen2.5-coder:0.5b
+RUN_ENV=()
+[[ $status -eq 0 ]] || fail "the changed-input run exited $status"
+if grep -q "reusing the local image" <<<"$output"; then
+  fail "a changed payload was reused as the previous image"
+fi
+[[ "$(grep -c '^DOCKER commit ' "$MOCK_LOG" || true)" == "$((commit_before + 1))" ]] \
+  || fail "a changed payload did not cause a new commit"
 
 echo "PASS: the dedicated TEE-LLM Pod is created once, refused when it already exists, gated on its CSV device, and is what the bare invocation deploys into"
