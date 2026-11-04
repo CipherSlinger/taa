@@ -43,7 +43,7 @@
     - [7.2.2 LLM 上报心跳（/v1/llm/heartbeat）](#722-llm-上报心跳v1llmheartbeat)
     - [7.2.3 LLM 上报运行日志（/v1/llm/log）](#723-llm-上报运行日志v1llmlog)
   - [7.3 平台 → LLM](#73-平台--llm)
-    - [7.3.1 获取远程证明报告（/v1/llm/getAttestation，TEE-TLS :8443）](#731-获取远程证明报告v1llmgetattestationtee-tls-8443)
+    - [7.3.1 获取远程证明报告（/v1/llm/getAttestation，明文 :8444）](#731-获取远程证明报告v1llmgetattestation明文-8444)
 
 ---
 
@@ -1866,8 +1866,8 @@ curl -X POST "http://${PLATFORM_ADDR}/v1/llm/register" \
 | 参数 | 类型 | 必填 | 说明 |
 | --- | --- | --- | --- |
 | `dockerId` | `string` | 是 | 配置 `platform.dockerId`（可由环境变量 `DOCKER_ID` 覆盖） |
-| `requestId` | `string` | 否 | （预留）可为空（`omitempty`）；LLM 当前填 `"system"`，平台不应依赖该字段 |
-| `taskId` | `string` | 否 | 可为空（`omitempty`）；LLM 恒省略，与 TAA 空闲期上报的形状一致 |
+| `requestId` | `string` | 否 | 可为空（`omitempty`）；LLM 当前无任务概念 |
+| `taskId` | `string` | 否 | 可为空（`omitempty`）；LLM 当前无任务概念 |
 | `seqStart` | `uint64` | 是 | 本批日志的起始序号 |
 | `entries` | `array` | 是 | 日志条目数组，不应为空，单批上限 100 条 |
 
@@ -1904,23 +1904,21 @@ curl -X POST "http://${PLATFORM_ADDR}/v1/llm/register" \
 
 ### 7.3 平台 → LLM
 
-平台访问 LLM 只有一个接口，与另外两个接口同在 `:8443`：
+平台访问 LLM 只有一个接口，走**明文 HTTP**，不加密、不握手：
 
 | 监听 | 路径 | 方法 | 传输 | 用途 |
 | --- | --- | --- | --- | --- |
-| `:8443` | `/v1/llm/getAttestation` | `POST` | TEE-TLS（RFC 8998） | 平台获取远程证明报告与出示的证书 |
+| `:8444` | `/v1/llm/getAttestation` | `POST` | 明文 HTTP | 平台获取远程证明报告与对应证书 |
 
-同端口上的 `/v1/llm/generate`（通用推理）与 `/v1/llm/healthz`（就绪检查）是 **TAA 调 LLM** 的接口，
-平台不参与，不在本文范围内。审计提示词、裁决解析与 fail-closed 判定全部位于 TAA 侧；
-LLM 只把提示词转给模型并返回原始文本。
+平台没有任何 TEE-TLS（RFC 8998）客户端，因此这条方向不启用 TEE-TLS：普通 HTTP 客户端直接 `POST` 即可。`:8443` 上的 TEE-TLS 只服务 TAA 的推理与审计调用。
 
-三个路由共用同一份证书缓存，因此握手时出示的证书与响应里的 `certificate` 是**同一张**。
+两个监听共用同一份证书缓存，因此明文接口返回的 `certificate` 与 `:8443` 握手中出示的证书是**同一张**。
 
-普通 `curl` 无法与这个端口握手（需要 RFC 8998 的 ShangMi TLS），平台侧必须用 `teetls` 或等价实现作为客户端。
+报告的可信度不依赖传输：`certificate` 的公钥与报告 `userdata` 的前 32 字节做 SM3 比对，再由报告里的 PEK 签名、最终链到 HRK 背书。明文端口只承载这一条取数通道，不提供推理。
 
-#### 7.3.1 获取远程证明报告（/v1/llm/getAttestation，TEE-TLS :8443）
+#### 7.3.1 获取远程证明报告（/v1/llm/getAttestation，明文 :8444）
 
-**请求**：`POST https://{llm-host}:8443/v1/llm/getAttestation`（TEE-TLS 1.3）
+**请求**：`POST http://{llm-host}:8444/v1/llm/getAttestation`
 
 **请求内容类型**：`application/json`
 
@@ -1946,21 +1944,19 @@ LLM 只把提示词转给模型并返回原始文本。
 | `verifiedPass` | `bool` | 自检结果：HRK/HSK-CEK 链验通过 **且** `userdata[:32] == SM3(证书公钥)` |
 | `attestation` | `string` | 远程证明报告，Base64 编码（`0x9F4` = 2548 字节），二进制格式见 [4.1.1](#411-远程证明报告二进制格式) |
 | `attestationValues` | `string` (JSON) | 报告核心字段的 JSON **字符串**，字段同 [7.2.1](#721-llm-启动注册v1llmregister)：**`userdata` 为 hex** |
-| `certificate` | `string` | **本实例当前出示的 TEE-TLS 证书，PEM 编码**。该字段是 LLM 侧独有的 |
+| `certificate` | `string` | **本实例当前的 TEE-TLS 证书，PEM 编码**。该字段是 LLM 侧独有的 |
 
 **与 TAA `/v1/taa/getAttestation` 的差异**：
 
 | 项 | TAA `/v1/taa/getAttestation` | LLM `/v1/llm/getAttestation` |
 | --- | --- | --- |
-| 传输与信封 | 明文 HTTP，请求/响应都套信封 | TEE-TLS，报文本身**无信封** |
+| 传输与信封 | 明文 HTTP，请求/响应都套信封 | 明文 HTTP（`:8444`），报文本身**无信封** |
 | 报告来源 | 每次重新生成（30s 超时，进程内互斥） | 当前缓存证书里的那一份，不重新 IOCTL |
 | `attestationValues.userdata` | PEM（TAA 自己的 SM2 公钥） | **hex**（前 32 字节 = `SM3(证书公钥 SPKI)`） |
 | `certificate` | 无 | **有**，PEM |
-| 调用方认证 | 信封验签 | TEE-TLS 服务端认证；服务端不校验证书客户端（LLM 只出证、不验证） |
+| 调用方认证 | 信封验签 | 无传输层认证；报告自证（PEK 签名 + `userdata` 绑定证书公钥） |
 
-**为什么与另外两个接口同端口**：平台作为消费方本来就必须先和 LLM 完成证明握手，才能确认对端身份；单独开一个无认证的明文端口，等于为同一组事实留了第二条取数通道，Pod 网络内任何人都能拿到报告的度量值与 ChipID。收在 `:8443` 上，能取到证明的人就是已经能完成证明握手的人，Service、NetworkPolicy 与端口审计也只维护一条规则。
-
-代价是**普通 HTTP 客户端取不到它**，平台侧必须使用 ShangMi TLS 栈。响应仍保留 `certificate`：证书缓存（默认 1 小时）可能在握手与 handler 之间轮换，用响应里的证书才能确认"这份报告 ↔ 这把公钥"，同时让报文自包含，便于存档与离线核验。报告本身的可信度不依赖传输——`certificate` 的公钥与报告 `userdata` 的前 32 字节做 SM3 比对，再由报告里的 PEK 签名、最终链到 HRK 来背书。
+**为什么单独开明文端口**：平台没有任何 TEE-TLS 客户端，收在 `:8443` 上平台就取不到报告；而报告本身已带认证性，传输层加密对它没有增量。响应仍保留 `certificate`：证书缓存（默认 1 小时）可能在生成与返回之间轮换，用响应里的证书才能确认"这份报告 ↔ 这把公钥"，同时让报文自包含，便于存档与离线核验。明文端口只挂这一个接口，不提供推理，也不承载 TAA 的审计流量。
 
 **成功响应示例**（200 OK）：
 

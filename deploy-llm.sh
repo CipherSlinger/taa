@@ -691,7 +691,7 @@ PY
     'CMD []'
     'USER root'
     'WORKDIR /opt/teellm'
-    'EXPOSE 8443'
+    'EXPOSE 8443 8444'
   )
   local fingerprint existing_fingerprint
   fingerprint="$(
