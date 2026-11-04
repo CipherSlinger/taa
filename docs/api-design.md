@@ -33,8 +33,7 @@
   - [6.1 连通性检查（/v1/taa/health）](#61-连通性检查v1taahealth)
   - [6.2 查询 TAA 完整状态（/v1/taa/status）](#62-查询-taa-完整状态v1taastatus)
 - [7. TEE-LLM（LLM 侧）与平台](#7-tee-llmllm-侧与平台)
-  - [7.1 前置要求（环境变量与端口）](#71-前置要求环境变量与端口)
-    - [7.1.1 端口](#711-端口)
+  - [7.1 前置要求（端口）](#71-前置要求端口)
   - [7.2 平台 → LLM](#72-平台--llm)
     - [7.2.1 LLM 心跳（/v1/llm/heartbeat）](#721-llm-心跳v1llmheartbeat)
     - [7.2.2 LLM 运行日志（/v1/llm/log）](#722-llm-运行日志v1llmlog)
@@ -1727,19 +1726,9 @@ curl -X POST "http://{TAA_ADDR}/v1/taa/export" \
 
 ## 7. TEE-LLM（LLM 侧）与平台
 
-### 7.1 前置要求（环境变量与端口）
+### 7.1 前置要求（端口）
 
 TEE-LLM 是独立于 TAA 的实例。平台主动调用 TEE-LLM 的接口获取状态，TEE-LLM 不注册、不主动上报，也不需要知道平台地址。
-
-```env
-TEELLM_MODEL={family}:{tag} # （预留，可不填）
-```
-
-| 变量 | 必填 | 说明 |
-| --- | --- | --- |
-| `TEELLM_MODEL` | 否 | 推理使用的模型（`family:tag`）；不填时使用服务默认模型 |
-
-#### 7.1.1 端口
 
 TEE-LLM 同时起两个监听：TEE-TLS 给 TAA 用，明文端口给平台用，两者互不重叠。
 
@@ -1767,8 +1756,6 @@ TEE-LLM 同时起两个监听：TEE-TLS 给 TAA 用，明文端口给平台用�
 | `alive` | `bool` | 进程存活时为 `true` |
 | `model` | `string` | 当前默认模型 |
 | `uptimeSeconds` | `int64` | 进程已运行秒数 |
-
-心跳只回答「活着 + 基本状态」，**不返回 `dockerId`**——平台通过调用地址区分实例，不需要实例自报身份。
 
 **成功响应示例**（200 OK）：
 
