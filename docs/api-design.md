@@ -43,7 +43,7 @@
     - [7.2.2 LLM 上报心跳（/v1/llm/heartbeat）](#722-llm-上报心跳v1llmheartbeat)
     - [7.2.3 LLM 上报运行日志（/v1/llm/log）](#723-llm-上报运行日志v1llmlog)
   - [7.3 平台 → LLM](#73-平台--llm)
-    - [7.3.1 获取远程证明报告（/v1/llm/getAttestation，明文 :8444）](#731-获取远程证明报告v1llmgetattestation明文-8444)
+    - [7.3.1 获取远程证明报告（/v1/llm/getAttestation）](#731-获取远程证明报告v1llmgetattestation)
 
 ---
 
@@ -1759,7 +1759,7 @@ TEELLM_MODEL={family}:{tag} # 暂只支持 qwen-coder2.5:7b
 | `DOCKER_ID` | 是 | 实例身份，覆盖配置文件的 `platform.dockerId`。**环境变量优先于配置文件**；空白值视为未设置。**不填**：回落到配置文件的 `platform.dockerId`，缺省 `taa-teellm` |
 | `HEARTBEAT_SECONDS` | 否 | 心跳周期（秒），覆盖配置文件的 `platform.heartbeatSeconds`，缺省 30。环境变量优先；非正整数的值忽略并记日志，仍用配置文件的值 |
 | `LOG_FLUSH_SECONDS` | 否 | 日志推送周期（秒），覆盖配置文件的 `platform.logFlushSeconds`，缺省 5。取值规则同上 |
-| `TEELLM_MODEL` | 否 | 推理使用的模型（`family:tag`），缺省取配置文件的 `backend.defaultModel` |
+| `TEELLM_MODEL` | 否 | 推理使用的模型（`family:tag`），覆盖配置文件的 `backend.defaultModel`；不填则用配置文件的值 |
 
 > 报告里的 `USERDATA` 由 TEE-LLM 取证据时写入 `SM3(证书公钥)`，`ATTESTATION_USERDATA` 即使设置也不生效。
 
@@ -1812,6 +1812,8 @@ curl -X POST "http://${PLATFORM_ADDR}/v1/llm/register" \
 
 **成功判定**：平台返回 HTTP `200`。
 
+**失败与重试**：单次请求超时 `10s`。失败后在后台退避重试，延迟从 `1s` 翻倍、上限 `60s`，**没有期限**——注册是实例在平台上存在的唯一凭据，重试到平台应答或进程退出为止。注册成功之后，心跳或日志推送遇到连接层失败（连接失败、超时等）会再触发一次注册：平台可能重启过，本进程出示的证书也可能已经轮换。
+
 **响应结果字段**：
 
 | 字段 | 类型 | 说明 |
@@ -1859,14 +1861,14 @@ curl -X POST "http://${PLATFORM_ADDR}/v1/llm/register" \
 
 **请求内容类型**：`application/json`
 
-报文结构与 [3.6 TAA 上报运行日志](#36-taa-上报运行日志v1taataalog) 逐字段相同，只是 `requestId`、`taskId` 两个字段均可省略：
+报文结构与 [3.6 TAA 上报运行日志](#36-taa-上报运行日志v1taataalog) 逐字段相同，只是 `requestId`、`taskId` 两个字段可省略：LLM 当前固定把 `requestId` 填为 `system`，`taskId` 不带。
 
 **参数**：
 
 | 参数 | 类型 | 必填 | 说明 |
 | --- | --- | --- | --- |
 | `dockerId` | `string` | 是 | 配置 `platform.dockerId`（可由环境变量 `DOCKER_ID` 覆盖） |
-| `requestId` | `string` | 否 | 可为空（`omitempty`）；LLM 当前无任务概念 |
+| `requestId` | `string` | 否 | LLM 固定填 `system`；字段本身可省略（`omitempty`），因为 LLM 没有任务概念 |
 | `taskId` | `string` | 否 | 可为空（`omitempty`）；LLM 当前无任务概念 |
 | `seqStart` | `uint64` | 是 | 本批日志的起始序号 |
 | `entries` | `array` | 是 | 日志条目数组，不应为空，单批上限 100 条 |
