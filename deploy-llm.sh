@@ -680,12 +680,11 @@ PY
   # The committed image is a pure function of what is put into it, and importing the ollama
   # payload into a container plus committing the multi-gigabyte layer takes minutes. Fingerprint
   # every input the commit depends on -- the base image actually used, the model name, the four
-  # files copied in, every file streamed from the ollama tree (path, mode, size and content, with
-  # a symlink by its target) and the commit instructions themselves -- and store it as a label on
-  # the image. A matching label means a rebuild would produce the identical image, so the builder
-  # phase is skipped entirely. The fingerprint is taken over the exact list the payload step
-  # streams, not over a directory timestamp or a subset: anything left out here would let a
-  # changed tree be deployed as the old image, which is worse than a needless rebuild.
+  # files copied in, the exact byte stream the payload step imports and the commit instructions
+  # themselves -- and store it as a label on the image. A matching label means a rebuild would
+  # produce the identical image, so the builder phase is skipped entirely. The payload digest is
+  # taken over the tar stream, not over a per-file or timestamped summary: anything left out here
+  # would let a changed tree be deployed as the old image, which is worse than a needless rebuild.
   local commit_changes=(
     'ENTRYPOINT ["bash", "/opt/teellm/teellm-supervisor.sh"]'
     'CMD []'
@@ -704,17 +703,11 @@ PY
           "$(sha256sum "$p" | cut -d' ' -f1)"
       done
       printf 'commit %s\n' "${commit_changes[@]}"
-      (
-        cd "$OLLAMA_LOCAL_DIR"
-        while IFS= read -r f; do
-          if [[ -L "$f" ]]; then
-            printf 'link %s %s\n' "$f" "$(readlink "$f")"
-          else
-            printf 'file %s %s %s\n' "$f" "$(stat -c '%u:%g %a %s' "$f")" \
-              "$(sha256sum "$f" | cut -d' ' -f1)"
-          fi
-        done < "$file_list"
-      )
+      # The payload is hashed as the very stream that is imported later: a tar over the same file
+      # list. That is what makes the check complete -- a listed directory is streamed recursively,
+      # and symlink targets, modes, ownership and names all move the digest, none of which a
+      # per-file content hash would see.
+      tar -C "$OLLAMA_LOCAL_DIR" -cf - -T "$file_list" | sha256sum
     } | sha256sum | cut -d' ' -f1
   )"
 

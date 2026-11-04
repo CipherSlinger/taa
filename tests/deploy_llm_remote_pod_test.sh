@@ -333,6 +333,10 @@ CONFIG_DIGEST="$(printf 'a%.0s' {1..64})"
 LAYER_DIGEST="$(printf 'b%.0s' {1..64})"
 head -c 16 /dev/zero > "$OLLAMA_DIR/models/models/blobs/sha256-$CONFIG_DIGEST"
 head -c 32 /dev/zero > "$OLLAMA_DIR/models/models/blobs/sha256-$LAYER_DIGEST"
+# A directory that the payload file list names directly. The real bundle has models/cache, and tar
+# streams such an entry recursively, so the fingerprint has to cover what is inside it.
+mkdir -p "$OLLAMA_DIR/models/cache"
+printf 'cached' > "$OLLAMA_DIR/models/cache/partial"
 cat > "$OLLAMA_DIR/models/models/manifests/registry.ollama.ai/library/qwen2.5-coder/0.5b" <<JSON
 {
   "config": { "digest": "sha256:$CONFIG_DIGEST", "size": 16 },
@@ -885,12 +889,11 @@ fi
 [[ "$(grep -c '^DOCKER commit ' "$MOCK_LOG" || true)" == "$commit_before" ]] \
   || fail "the image was committed again even though nothing changed"
 
-# A streamed payload file is the input a check is most likely to miss, and changing one must
-# defeat the reuse or the previous bundle would be deployed as the new tree. The ollama launcher is
-# used rather than a model blob because the blob resolver rejects a blob whose size no longer
-# matches the manifest, which would fail the run before the fingerprint is ever compared.
+# A change inside a directory the payload list names is the input a per-file check is most likely
+# to miss, and missing it would deploy the previous bundle as the new tree. The file lives under
+# models/cache, which the list names as a directory; tar streams it recursively.
 rm -f "$MOCK_STATE_DIR/pod"
-printf '\n# changed\n' >> "$OLLAMA_DIR/ollama"
+printf 'more' >> "$OLLAMA_DIR/models/cache/partial"
 RUN_ENV=(MOCK_IMAGE_LABEL_FILE="$LABEL_FILE")
 run_deploy --create-pod start --model qwen2.5-coder:0.5b
 RUN_ENV=()
