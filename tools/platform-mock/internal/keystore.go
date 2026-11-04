@@ -379,9 +379,19 @@ func (s *keystore) openRegister(body []byte) ([]byte, *teecrypto.SM2PublicKey, e
 	if strings.TrimSpace(req.TaaPublicKey) == "" {
 		return nil, nil, fmt.Errorf("register body carries no taaPublicKey")
 	}
-	pub, err := teecrypto.ParseSM2PublicKeyHex(req.TaaPublicKey)
-	if err != nil {
-		return nil, nil, fmt.Errorf("parse register taaPublicKey: %w", err)
+	// TAA registers its own key as PEM (that is the documented field contract
+	// and what app.go sends). The 04||X||Y hex form is what this mock stores
+	// internally and what older fixtures seal, so accept it as a fallback; a
+	// real platform would parse the PEM the request actually carries.
+	pub, pemErr := teecrypto.ParseSM2PublicKeyPEM([]byte(req.TaaPublicKey))
+	if pemErr != nil {
+		var hexErr error
+		pub, hexErr = teecrypto.ParseSM2PublicKeyHex(req.TaaPublicKey)
+		if hexErr != nil {
+			// Report the PEM failure: that is the format the request is
+			// supposed to carry, so it is the one worth naming.
+			return nil, nil, fmt.Errorf("parse register taaPublicKey: %w", pemErr)
+		}
 	}
 
 	if _, err := envelope.OpenFromPlatform(priv, pub, s.userIDBytes(), env); err != nil {

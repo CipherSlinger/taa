@@ -1,6 +1,7 @@
 package mock
 
 import (
+	"encoding/json"
 	"testing"
 
 	"taa/internal/platform/envelope"
@@ -151,6 +152,57 @@ func TestKeystoreOpensRegistrationWithTheCarriedKey(t *testing.T) {
 	}
 	if ks.hasTaaPublicKey() {
 		t.Fatal("openRegister adopted the key; adoption belongs to the caller after validation")
+	}
+}
+
+// TAA registers the key as PEM (app.go sends keyPair.PublicKeyPEM). The hex
+// form is only this mock's internal storage and its older fixtures, so a body
+// in the shape a real TAA sends must open too.
+func TestKeystoreOpensRegistrationWithThePEMKeyTAASends(t *testing.T) {
+	ks, err := newMemoryKeystore(nil)
+	if err != nil {
+		t.Fatalf("create the keystore: %v", err)
+	}
+	taaKey, err := crypto.GenerateSM2KeyPair()
+	if err != nil {
+		t.Fatalf("generate the TAA key pair: %v", err)
+	}
+	pemKey, err := crypto.MarshalSM2PublicKeyPEM(&taaKey.PublicKey)
+	if err != nil {
+		t.Fatalf("encode the TAA public key as PEM: %v", err)
+	}
+	body, err := json.Marshal(map[string]string{
+		"dockerId":     "docker-1",
+		"taaPublicKey": string(pemKey),
+	})
+	if err != nil {
+		t.Fatalf("build the registration body: %v", err)
+	}
+
+	platformPriv := ks.platformPrivate()
+	keys, err := envelope.NewKeys(&platformPriv.PublicKey, taaKey, ks.userIDBytes())
+	if err != nil {
+		t.Fatalf("build the TAA envelope keys: %v", err)
+	}
+	sealed, err := keys.Seal(body, "")
+	if err != nil {
+		t.Fatalf("seal the registration: %v", err)
+	}
+
+	_, pub, err := ks.openRegister(sealed)
+	if err != nil {
+		t.Fatalf("open a PEM registration: %v", err)
+	}
+	want, err := crypto.MarshalSM2PublicKeyHex(&taaKey.PublicKey)
+	if err != nil {
+		t.Fatalf("encode the TAA public key: %v", err)
+	}
+	got, err := crypto.MarshalSM2PublicKeyHex(pub)
+	if err != nil {
+		t.Fatalf("encode the carried TAA public key: %v", err)
+	}
+	if got != want {
+		t.Fatalf("carried TAA public key = %s, want %s", got, want)
 	}
 }
 
