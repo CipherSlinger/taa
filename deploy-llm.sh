@@ -2648,9 +2648,13 @@ build_local_binary() {
   ensure_go_compiler
   require_file "teellm supervisor script missing" "$TEELLM_DIR/deploy/start.sh"
   mkdir -p "$TEELLM_DIR/bin"
-  # The teellm module is a sibling of this script in the go.work workspace, so the package
-  # path resolves from the repository root exactly like ./tools/platform-mock does in deploy.sh.
-  spin_task "compiling teellm-service binary" go build -o "$TEELLM_DIR/bin/teellm-service" ./teellm/cmd/teellm-service
+  # teellm is a module of its own, and a checkout's go.work need not list it (this repository's
+  # does not; the file is local and untracked). Resolving the package through the workspace from
+  # the repository root makes Go look for it in the root module and fail with "main module (taa)
+  # does not contain package", so build inside the module with the workspace switched off.
+  # teellm's go.mod already carries `replace teetls => ./teetls`, so it needs nothing else.
+  spin_task "compiling teellm-service binary" \
+    env GOWORK=off go -C "$TEELLM_DIR" build -o bin/teellm-service ./cmd/teellm-service
   require_file "build verification failed (teellm-service binary missing)" "$TEELLM_DIR/bin/teellm-service"
   LOCAL_BINARY_BUILT=true
   info "teellm-service binary built: $TEELLM_DIR/bin/teellm-service"

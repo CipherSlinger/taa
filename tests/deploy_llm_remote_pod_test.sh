@@ -278,7 +278,7 @@ printf 'default_memory = 2048\ndefault_vcpus = 1\n' > "$KATA_TOML_FILE"
 
 # The teellm module the deployment builds from. A stub keeps the test independent of the
 # submodule, which the deploy script otherwise expects to be checked out next to itself.
-printf 'module teellm-fake\n\ngo 1.22\n' > "$REPO/go.mod"
+printf 'module teellm-fake\n\ngo 1.22\n' > "$REPO/teellm/go.mod"
 printf 'package main\n\nfunc main() {}\n' > "$REPO/teellm/cmd/teellm-service/main.go"
 printf '#!/bin/sh\nexit 0\n' > "$REPO/teellm/deploy/start.sh"
 cat > "$REPO/teellm/configs/teellm-production.json" <<'CFG'
