@@ -1736,13 +1736,19 @@ curl -X POST "http://{TAA_ADDR}/v1/taa/export" \
 TEE-LLM 是独立于 TAA 的实例，容器按以下变量启动即可接入平台：
 
 ```env
-PLATFORM_IP={IP}:{PORT}
+# 指向平台：裸 host:port 自动补 http://，也可以写完整 URL
+PLATFORM_IP=172.16.10.181:18081
+# PLATFORM_IP=https://platform.example.com
+
+# 关闭上报：整条值就是 off（none、disabled 等价）
+# PLATFORM_IP=off
+
 TEELLM_MODEL={family}:{tag}
 ```
 
 | 变量 | 必填 | 说明 |
 | --- | --- | --- |
-| `PLATFORM_IP` | 否 | 平台地址，覆盖配置文件的 `platform.addr`。**环境变量优先于配置文件**——这条规则与 TAA 的 `tee` 实例相反（那边是文件优先）。可写裸 `host:port`（自动补 `http://`）或完整 URL；`off` / `none` / `disabled`（大小写不敏感、忽略两端空白）表示关闭注册、心跳与日志推送三条出站通道。不设时以配置文件的 `platform.addr` 为准 |
+| `PLATFORM_IP` | 否 | 平台地址，覆盖配置文件的 `platform.addr`。可写裸 `host:port`（自动补 `http://`）或完整 URL。值写成 `off` / `none` / `disabled`（大小写不敏感、忽略两端空白）时表示**关闭上报**——不注册、不发心跳、不推日志；这三个词同样可以写进配置文件的 `platform.addr`。不设时以配置文件的 `platform.addr` 为准 |
 | `TEELLM_MODEL` | 否 | 推理使用的模型（`family:tag`），缺省取配置文件的 `backend.defaultModel` |
 
 > 协议相关的其余字段**没有**环境变量：`dockerId`（缺省 `taa-teellm`）、心跳周期（30 秒）、日志推送周期（5 秒）只能写在配置文件里。
