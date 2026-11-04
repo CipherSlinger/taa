@@ -160,7 +160,7 @@ platform-mock 的构建、启动、停止和就绪检查统一由仓库根目录
 ./deploy-llm.sh pod-down && ./deploy-llm.sh --create-pod start
 
 # 只更新一个已存在的 Pod（不创建、不删除）
-./deploy-llm.sh --pod taa-teellm start
+./deploy-llm.sh update
 
 # 其余动作
 ./deploy-llm.sh probe       # 探 RFC 8998 TEE-TLS 就绪

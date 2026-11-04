@@ -15,7 +15,9 @@
 #     copied to the remote host: TAA checks only the report's PEK signature, and the service
 #     errors out if it is told to read a chain that is not there;
 #   * an invocation with no action keyword must reach that same Pod path, since the target keyword
-#     that used to say so is gone -- a bare run is now the only way to start a deployment.
+#     that used to say so is gone -- a bare run is now the only way to start a deployment;
+#   * updating an existing Pod is the `update` action: it never creates or deletes one, and the
+#     retired `--pod <name> start` spelling must be refused rather than quietly do something else.
 #
 # The script is run from a throwaway repository root, which is what makes the last case reachable
 # and keeps the whole test independent of the teellm submodule and of the real ollama bundle.
@@ -738,7 +740,7 @@ has_platform_key() {
   python3 -c 'import json,sys; print("platform" in json.load(open(sys.argv[1])))' "$REMOTE_CFG"
 }
 
-run_deploy --pod "$COPY_POD_NAME"
+run_deploy update
 [[ $status -eq 0 ]] || fail "a deployment with a legacy platform block exited $status"
 [[ "$(has_platform_key)" == "False" ]] \
   || fail "the rendered config still carries the template's platform block"
@@ -954,4 +956,49 @@ fi
   || fail "editing the build instructions did not cause a new commit"
 cp "$TMP_DIR/deploy-llm.sh.pristine" "$REPO/deploy-llm.sh"
 
-echo "PASS: the dedicated TEE-LLM Pod is created once, refused when it already exists, gated on its CSV device, and is what the bare invocation deploys into"
+# ── 14. update: only an existing Pod, and it never creates or deletes one ───
+# The retired spelling `--pod <name> start` used to do this job, which left the target to a flag
+# and the lifecycle to whatever the run happened to do. update names its own target and refuses
+# the cases that would take the Pod's lifecycle out of the operator's hands.
+
+apply_before="$(cat "$MOCK_STATE_DIR/apply-count")"
+delete_before="$(grep -c '^KUBECTL delete ' "$MOCK_LOG" || true)"
+run_deploy update
+[[ $status -eq 0 ]] || fail "update on an existing Pod exited $status"
+[[ "$(cat "$MOCK_STATE_DIR/apply-count")" == "$apply_before" ]] \
+  || fail "update applied a manifest instead of updating the running Pod"
+[[ "$(grep -c '^KUBECTL delete ' "$MOCK_LOG" || true)" == "$delete_before" ]] \
+  || fail "update deleted something"
+grep -q "updating it in place" <<<"$output" || fail "update did not report touching the existing Pod"
+if grep -q "$DEFAULT_POD_NAME" "$MOCK_LOG"; then
+  fail "update was aimed at the default TARGET_POD ($DEFAULT_POD_NAME)"
+fi
+
+# A Pod that is not there is reported as that, and is not created: update's whole contract is that
+# the Pod's lifecycle stays with --create-pod and pod-down.
+rm -f "$MOCK_STATE_DIR/pod"
+run_deploy update
+[[ $status -ne 0 ]] || fail "update accepted a Pod that does not exist"
+grep -q "TEE-LLM Pod '$COPY_POD_NAME' does not exist" <<<"$output" \
+  || fail "update did not name the missing Pod"
+grep -q -- "--create-pod start" <<<"$output" \
+  || fail "the missing-Pod refusal does not say how to create it"
+[[ -f "$MOCK_STATE_DIR/pod" ]] && fail "update created the Pod"
+[[ "$(cat "$MOCK_STATE_DIR/apply-count")" == "$apply_before" ]] \
+  || fail "update applied a manifest for a Pod it then refused to create"
+
+# The retired spelling fails before it touches anything, and points at the action that replaced it.
+before="$(kubectl_lines)"
+run_deploy --pod "$COPY_POD_NAME" start
+[[ $status -ne 0 ]] || fail "'--pod <name> start' was accepted"
+grep -q "no longer supported" <<<"$output" || fail "the refusal does not say the spelling is retired"
+grep -q "deploy-llm.sh update" <<<"$output" || fail "the refusal does not point at the update action"
+[[ "$(kubectl_lines)" == "$before" ]] || fail "the refusal happened only after touching the cluster"
+
+# Creating and updating are different actions; asking for both is refused rather than resolved.
+run_deploy --create-pod update
+[[ $status -ne 0 ]] || fail "'--create-pod update' was accepted"
+grep -q "cannot be combined with --create-pod" <<<"$output" \
+  || fail "the create/update conflict is not explained"
+
+echo "PASS: the dedicated TEE-LLM Pod is created once, refused when it already exists, gated on its CSV device, is what the bare invocation deploys into, and is only ever updated by the update action"

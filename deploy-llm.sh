@@ -2343,7 +2343,7 @@ PY
 
 usage() {
   cat <<EOF
-Usage: $(basename "$0") [start|stop|probe|pod-down] [options]
+Usage: $(basename "$0") [start|update|stop|probe|pod-down] [options]
        $(basename "$0") models [list|info|switch] [args]
 
 Deploy and manage the standalone TEE-LLM inference service and its offline Ollama runtime in a
@@ -2357,6 +2357,10 @@ Model Management Commands:
 Actions:
   start        Build binary, incrementally sync model & runtime, hand the daemons to the Pod
                supervisor, and verify (default).
+  update       Deploy into the existing TEE-LLM Pod named by TEELLM_POD_NAME: build the binary,
+               sync the model & runtime, install the supervisor and configuration, restart the
+               daemons and verify. It only updates a Pod that already exists -- it never creates
+               or deletes one, and it refuses when the Pod is absent.
   stop         Pause the Pod supervisor and stop its services (teellm-service, ollama, llama-server).
   probe        Probe the TEE-LLM HTTPS endpoint for RFC 8998 TEE-TLS 1.3 readiness.
   pod-down     Delete the dedicated TEE-LLM Pod (see --create-pod), then check the host for
@@ -2385,9 +2389,11 @@ Options:
   --config <path> (or --config=<path>)
       Specify path to alternate service JSON configuration template.
   --pod <name> (or --pod=<name>, pod=<name>)
-      Deploy into the existing Pod named <name>; same as setting TARGET_POD, and it wins over the
-      variable. Nothing about the Pod's lifecycle is touched unless --create-pod is also given,
-      and then <name> must equal TEELLM_POD_NAME.
+      Address the Pod named <name> for stop, probe and pod-down; same as setting TARGET_POD, and
+      it wins over the variable. 'start' no longer takes this flag: updating an existing Pod is
+      'update', which is aimed at TEELLM_POD_NAME, and creating one is '--create-pod start'.
+      Setting TARGET_POD in the environment still names the target of a start aimed at some other
+      existing Pod.
   -h, --help, help
       Display this help documentation.
 
@@ -2487,8 +2493,7 @@ Examples:
   $(basename "$0") --create-pod start
   $(basename "$0") --create-pod start --model qwen2.5-coder:7b
   $(basename "$0") start
-  $(basename "$0") --pod taa-teellm start
-  $(basename "$0") pod=taa-teellm start
+  $(basename "$0") update
   $(basename "$0") probe
   $(basename "$0") stop
   $(basename "$0") pod-down
@@ -2505,6 +2510,7 @@ CLI_MODEL=""
 CLI_OLLAMA_DIR=""
 CLI_PORT=""
 CLI_CONFIG=""
+POD_FLAG_WAS_SET=""
 
 while [[ $# -gt 0 ]]; do
   arg="$1"
@@ -2522,6 +2528,14 @@ while [[ $# -gt 0 ]]; do
         exit 1
       fi
       ACTION="start"
+      ;;
+    update)
+      if [[ -n "$ACTION" && "$ACTION" != "update" ]]; then
+        err "cannot specify multiple actions ($ACTION and update)"
+        usage >&2
+        exit 1
+      fi
+      ACTION="update"
       ;;
     stop)
       if [[ -n "$ACTION" && "$ACTION" != "stop" ]]; then
@@ -2600,6 +2614,9 @@ while [[ $# -gt 0 ]]; do
       ;;
     # Names the Pod to install into. Setting TARGET_POD_WAS_SET is what keeps --create-pod honest:
     # the check that refuses a mis-aimed dedicated-Pod command keys off "the operator named a Pod".
+    # POD_FLAG_WAS_SET is narrower: it is what retires the '--pod <name> start' spelling, which is
+    # a change to the command line only. TARGET_POD in the environment still selects a start target
+    # for a deployment into some other existing Pod.
     --pod=*|pod=*)
       TARGET_POD="${arg#*=}"
       if [[ -z "$TARGET_POD" ]]; then
@@ -2608,6 +2625,7 @@ while [[ $# -gt 0 ]]; do
         exit 1
       fi
       TARGET_POD_WAS_SET="set"
+      POD_FLAG_WAS_SET="set"
       ;;
     --pod)
       shift
@@ -2618,6 +2636,7 @@ while [[ $# -gt 0 ]]; do
       fi
       TARGET_POD="$1"
       TARGET_POD_WAS_SET="set"
+      POD_FLAG_WAS_SET="set"
       ;;
     -h|--help|help)
       usage
@@ -2634,7 +2653,22 @@ done
 
 ACTION="${ACTION:-start}"
 
-if [[ "$CREATE_POD" == true || "$ACTION" == "pod-down" ]]; then
+# The --pod/start combination is retired. It used to be how an existing Pod was updated, which
+# left the target to a flag; update names its own target, so the two can no longer disagree.
+if [[ "$ACTION" == "start" && "$POD_FLAG_WAS_SET" == "set" ]]; then
+  err "'--pod <name> start' is no longer supported"
+  detail "To update an existing TEE-LLM Pod, run: $(basename "$0") update"
+  detail "To create it, run: $(basename "$0") --create-pod start"
+  exit 1
+fi
+
+if [[ "$ACTION" == "update" && "$CREATE_POD" == true ]]; then
+  err "update only updates an existing Pod and cannot be combined with --create-pod"
+  detail "To create the Pod, run: $(basename "$0") --create-pod start"
+  exit 1
+fi
+
+if [[ "$CREATE_POD" == true || "$ACTION" == "pod-down" || "$ACTION" == "update" ]]; then
   # An explicitly named Pod wins the argument: overriding it would aim the deployment at a Pod
   # the operator named, which is exactly the silent mis-target these paths have to prevent.
   if [[ "$TARGET_POD_WAS_SET" == "set" && "$TARGET_POD" != "$TEELLM_POD_NAME" ]]; then
@@ -2684,6 +2718,24 @@ if [[ "$ACTION" == "stop" ]]; then
   exit 0
 fi
 
+# ── Update Action Handler ─────────────────────────────────────
+# Only an existing Pod is updated. The existence test is here, before the shared deployment body
+# and its local bundle preflight, so a missing Pod is reported as that -- a preflight failure for
+# an unrelated reason would send the operator looking at the wrong machine.
+
+if [[ "$ACTION" == "update" ]]; then
+  banner "Updating TEE-LLM Service" "Pod: $TARGET_POD (namespace: ${TARGET_NAMESPACE:-default})"
+  step "verifying remote host connectivity"
+  check_remote_connectivity
+  if ! remote_ssh "kubectl $K_NS get pod '$TARGET_POD' >/dev/null 2>&1"; then
+    err "TEE-LLM Pod '$TARGET_POD' does not exist in namespace '${TARGET_NAMESPACE:-default}'"
+    detail "update only updates a Pod that already exists; it never creates or deletes one."
+    detail "Create it first: $(basename "$0") --create-pod start"
+    exit 1
+  fi
+  info "TEE-LLM Pod '$TARGET_POD' found; updating it in place"
+fi
+
 # ── Dedicated Pod Teardown Handler ────────────────────────────
 # Handled before the start path's preflight, which insists on the local offline ollama bundle --
 # a teardown must not depend on the machine that deployed the bundle still having it.
@@ -2698,7 +2750,7 @@ if [[ "$ACTION" == "pod-down" ]]; then
   exit 0
 fi
 
-# ── Deployment Logic (start) ──────────────────────────────────
+# ── Deployment Logic (start / update) ─────────────────────────
 
 OLLAMA_LOCAL_DIR="$(resolve_ollama_local_dir)"
 OLLAMA_MODEL="$(resolve_target_model)"

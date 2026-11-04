@@ -561,7 +561,7 @@ Inside Docker containers, TAA runs under the supervision of `deploy/taa-supervis
 
 # Decoupled TEE-LLM Service (Kata CSV2 Pod on the remote host)
 ./deploy-llm.sh --create-pod start            # Build the Pod image from this tree, create the Pod, deploy
-./deploy-llm.sh start                         # Redeploy into the existing Pod
+./deploy-llm.sh update                        # Update the existing Pod in place (never creates/deletes)
 ./deploy-llm.sh probe                         # Probe the TEE-TLS endpoint inside the Pod
 ./deploy-llm.sh pod-down                      # Delete the dedicated TEE-LLM Pod
 ```
@@ -578,7 +578,8 @@ Inside Docker containers, TAA runs under the supervision of `deploy/taa-supervis
 > Pod. Reusing one would deploy into whatever image it happens to run; replacing it in the same
 > path would silently discard the guest's writable layer (the ollama runtime and the model) and
 > change the Pod IP that TAA's `llm.endpoint` points at. To update an existing Pod instead, run
-> `./deploy-llm.sh start` (or `--pod <name>`), which never creates or deletes a Pod.
+> `./deploy-llm.sh update`, which only updates a Pod that already exists and never creates or
+> deletes one. The old `--pod <name> start` spelling is refused.
 
 > **The platform reporting target is one switch.** `teellm-service` resolves the platform it
 > registers with, heartbeats to and pushes logs to as **`PLATFORM_IP` in the environment, then
