@@ -830,7 +830,7 @@ func TestPrepareAttestationReport(t *testing.T) {
 		ctx := context.Background()
 		userData := make([]byte, 64)
 
-		passed, err := prepareAttestationReport(ctx, userData, "", "")
+		passed, err := prepareAttestationReport(ctx, userData)
 		if err != nil {
 			t.Fatalf("prepareAttestationReport() error = %v, want nil", err)
 		}
@@ -863,7 +863,7 @@ func TestPrepareAttestationReport(t *testing.T) {
 			t.Fatalf("write empty report: %v", err)
 		}
 
-		passed, err := prepareAttestationReport(ctx, userData, "some/hrk.cert", "some/hsk.cert")
+		passed, err := prepareAttestationReport(ctx, userData)
 		if err != nil {
 			t.Fatalf("prepareAttestationReport() error = %v, want nil", err)
 		}
@@ -872,7 +872,7 @@ func TestPrepareAttestationReport(t *testing.T) {
 		}
 	})
 
-	t.Run("returns false when self-verification fails with nonexistent certs", func(t *testing.T) {
+	t.Run("returns false when the report signature cannot be verified", func(t *testing.T) {
 		tempDir := t.TempDir()
 		if err := os.Chdir(tempDir); err != nil {
 			t.Fatalf("chdir: %v", err)
@@ -887,13 +887,14 @@ func TestPrepareAttestationReport(t *testing.T) {
 		ctx := context.Background()
 		userData := make([]byte, 64)
 
-		// With mock report generated, self-verification fails cleanly because certs are missing
-		passed, err := prepareAttestationReport(ctx, userData, "/nonexistent/hrk.cert", "/nonexistent/hsk.cert")
+		// An all-zero mock report carries no valid PEK signature, so
+		// self-verification fails cleanly without touching any certificate file.
+		passed, err := prepareAttestationReport(ctx, userData)
 		if err != nil {
 			t.Fatalf("prepareAttestationReport() error = %v, want nil", err)
 		}
 		if passed {
-			t.Fatal("expected passed = false when cert verification fails")
+			t.Fatal("expected passed = false when report signature verification fails")
 		}
 	})
 
@@ -911,7 +912,7 @@ func TestPrepareAttestationReport(t *testing.T) {
 		ctx := context.Background()
 		userData := make([]byte, 64)
 
-		passed, err := prepareAttestationReport(ctx, userData, "", "")
+		passed, err := prepareAttestationReport(ctx, userData)
 		if err == nil {
 			t.Fatal("expected error when writing empty attestation report fails")
 		}

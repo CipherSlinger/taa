@@ -167,7 +167,7 @@ sequenceDiagram
 | TAA 主服务入口 | `cmd/taa/main.go` | 极简入口：`-config` / `-addr` 解析与 SIGINT/SIGTERM 监听 |
 | 启动编排 | `internal/app/taa/` | 配置加载、密钥解析、证明报告、注册重试、崩溃恢复、HTTP 服务装配 |
 | 控制器 | `internal/controller/` | HTTP 路由、导入/导出/审计/阶段切换、上报、状态与索引 |
-| 远程证明 | `internal/attestation/` + `pkg/csvattest/` | 进程内经 ioctl 读取 CSV 硬件报告，解析与证书链自校验 |
+| 远程证明 | `internal/attestation/` + `pkg/csvattest/` | 进程内经 ioctl 读取 CSV 硬件报告，解析与内嵌 PEK 签名自校验 |
 | 代码安全审计 | `internal/codeaudit/`（含 `cpg/`、`testdata/`） | 静态引擎（regex / semgrep）、二进制审计通道、LLM 语义验证、结果泄露检测 |
 | FHE 编排 | `internal/fhe/` | FHE 服务客户端、任务布局、eval key 缓存、进度轮询与回调 |
 | 运行时 | `internal/runtime/` | `runtimeConfig` 解析、子进程编排、日志/进度遥测 |
@@ -523,11 +523,11 @@ TAA 作为服务端注册的路由（`internal/controller/router.go`）：
 
 1. TAA 启动时派生 64 字节 USERDATA（SM2 公钥 X‖Y，见 §7.2）
 2. 由 `internal/attestation` 的**进程内纯 Go 实现**（`pkg/csvattest`，ioctl 读写 `/dev/csv-guest`）取回 CSV 硬件报告
-3. 报告写入容器工作目录下的 `attestation.report`（同目录另落 `nonce.bin`），随后用 HRK / HSK-CEK 证书链自校验
+3. 报告写入容器工作目录下的 `attestation.report`（同目录另落 `nonce.bin`），随后自校验：只验证报告内嵌的 PEK 证书对报告本体的签名，**不校验证书链**（HRK/HSK/CEK 按机器签发，校验它会让镜像与设备绑定）
 4. 注册时报告以 Base64 编码发送给平台
 5. `/v1/taa/getAttestation` 可重新生成报告（复用启动时的 USERDATA，30s 超时，同一时刻只允许一个）
 
-> 生成失败**不致命**——记 `WARNING` 后写一份空报告继续启动，证书链自校验失败同样只记 `WARNING` 而放行（见 `internal/app/taa/app.go` 的 `prepareAttestationReport`）。
+> 生成失败**不致命**——记 `WARNING` 后写一份空报告继续启动，PEK 签名自校验失败同样只记 `WARNING` 而放行（见 `internal/app/taa/app.go` 的 `prepareAttestationReport`）。
 > `server.type=fhe` 实例不是 TEE：不尝试生成，直接写空报告，`verifiedPass` 保持 `false`，平台不能把 "fhe" 读成 "已证明"。
 
 ### 7.2 USERDATA 构成
@@ -703,7 +703,7 @@ taa/
 ├── internal/
 │   ├── app/taa/                 启动编排、密钥解析、注册重试、崩溃恢复与 HTTP 服务装配
 │   ├── controller/              HTTP 路由、导入/导出/审计/阶段切换、上报、索引
-│   ├── attestation/             远程证明：生成、字段提取、证书链自校验
+│   ├── attestation/             远程证明：生成、字段提取、内嵌 PEK 签名自校验
 │   ├── codeaudit/               代码安全审计（文件清单见 §6.2；含 cpg/ 与 testdata/）
 │   ├── config/                  启动配置加载、校验与环境变量覆盖
 │   ├── fhe/                     FHE 服务客户端、任务布局、eval key 缓存、进度轮询

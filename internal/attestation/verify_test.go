@@ -4,9 +4,6 @@ import (
 	"bytes"
 	"encoding/binary"
 	"errors"
-	"os"
-	"path/filepath"
-	"strings"
 	"testing"
 
 	taacrypto "taa/pkg/crypto"
@@ -57,7 +54,7 @@ func createTestSignedReport(t *testing.T) []byte {
 
 func TestVerifyReport_ShortBuffer(t *testing.T) {
 	shortBuf := make([]byte, csvattest.ReportSize-1)
-	_, err := VerifyReport(shortBuf, "some/hrk.cert", "some/hsk_cek.cert")
+	_, err := VerifyReport(shortBuf)
 	if err == nil {
 		t.Fatal("VerifyReport() with short buffer expected error, got nil")
 	}
@@ -66,70 +63,29 @@ func TestVerifyReport_ShortBuffer(t *testing.T) {
 	}
 }
 
-func TestVerifyReport_MissingCerts(t *testing.T) {
-	// 1. With validly signed report, missing cert files should fail during cert loading.
-	signedReport := createTestSignedReport(t)
-	_, err := VerifyReport(signedReport, "/nonexistent/hrk.cert", "/nonexistent/hsk_cek.cert")
-	if err == nil {
-		t.Fatal("VerifyReport() with nonexistent cert files expected error, got nil")
+// TestVerifyReport_VerifiesWithoutCertificates pins the deliberate absence of a
+// certificate-chain check: the report verifies on its own, using only the PEK
+// certificate it carries. No HRK/HSK/CEK files exist on this machine, which is
+// what an initrd built for one device must also be able to do on another.
+func TestVerifyReport_VerifiesWithoutCertificates(t *testing.T) {
+	res, err := VerifyReport(createTestSignedReport(t))
+	if err != nil {
+		t.Fatalf("VerifyReport() error = %v, want nil", err)
 	}
-	if !strings.Contains(err.Error(), "load certs from files") {
-		t.Fatalf("expected cert loading error, got: %v", err)
+	if !res.ReportVerified {
+		t.Error("ReportVerified = false, want true")
 	}
-
-	// 2. Empty paths should also return an error.
-	_, err = VerifyReport(signedReport, "", "")
-	if err == nil {
-		t.Fatal("VerifyReport() with empty paths expected error, got nil")
-	}
-}
-
-func TestVerifyReport_EmptyCertPaths(t *testing.T) {
-	dummyReport := make([]byte, csvattest.ReportSize)
-	tests := []struct {
-		name       string
-		hrkPath    string
-		hskCekPath string
-	}{
-		{"both empty", "", ""},
-		{"hrk empty", "", "some/hsk_cek.cert"},
-		{"hskCek empty", "some/hrk.cert", ""},
-		{"both whitespace", "   ", "   "},
-		{"hrk whitespace", "\t", "some/hsk_cek.cert"},
-		{"hskCek whitespace", "some/hrk.cert", "  \n  "},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			_, err := VerifyReport(dummyReport, tt.hrkPath, tt.hskCekPath)
-			if err == nil {
-				t.Fatalf("expected error for empty cert path, got nil")
-			}
-			if !strings.Contains(err.Error(), "both HRK and HSK/CEK certificate paths must be specified") {
-				t.Fatalf("expected error requiring both cert paths, got: %v", err)
-			}
-		})
+	if res.ChainVerified {
+		t.Error("ChainVerified = true, want false: the certificate chain must not be walked")
 	}
 }
 
-func TestVerifyReport_ValidCertPaths(t *testing.T) {
-	hrkPath := filepath.Join("..", "..", "deploy", "certs", "hrk.cert")
-	hskCekPath := filepath.Join("..", "..", "deploy", "certs", "hsk_cek.cert")
-	if _, err := os.Stat(hrkPath); err != nil {
-		if _, errRoot := os.Stat("deploy/certs/hrk.cert"); errRoot == nil {
-			hrkPath = "deploy/certs/hrk.cert"
-			hskCekPath = "deploy/certs/hsk_cek.cert"
-		} else {
-			t.Skip("deploy certs not present, skipping test")
-		}
-	}
+func TestVerifyReport_RejectsTamperedReport(t *testing.T) {
+	report := createTestSignedReport(t)
+	// Any byte inside the signed region changes what the PEK signature covers.
+	report[csvattest.OffsetMeasure] ^= 0xFF
 
-	dummyReport := make([]byte, csvattest.ReportSize)
-	res, err := VerifyReport(dummyReport, hrkPath, hskCekPath)
-	if err == nil {
-		t.Fatal("expected parse/signature error with zeroed report, got nil")
-	}
-	if res == nil {
-		t.Log("res is nil as expected on parse failure")
+	if _, err := VerifyReport(report); err == nil {
+		t.Fatal("VerifyReport() with tampered report expected error, got nil")
 	}
 }

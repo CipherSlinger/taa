@@ -215,7 +215,7 @@ func RunWithConfig(ctx context.Context, cfg config.StartupConfig) error {
 		}
 	} else {
 		var err error
-		verifiedPass, err = prepareAttestationReport(ctx, userData, cfg.AttestationHRKCertPath, cfg.AttestationHSKCekCertPath)
+		verifiedPass, err = prepareAttestationReport(ctx, userData)
 		if err != nil {
 			return err
 		}
@@ -258,8 +258,6 @@ func RunWithConfig(ctx context.Context, cfg config.StartupConfig) error {
 		fixedAttestationFile,
 		platformIP,
 		dockerID,
-		cfg.AttestationHRKCertPath,
-		cfg.AttestationHSKCekCertPath,
 		keyPair.PrivateKey,
 		userData,
 		sec,
@@ -671,7 +669,7 @@ func logUserDataSummary(userData []byte) {
 
 // prepareAttestationReport invokes underlying TEE tools to generate attestation report and performs certificate self-verification.
 // In non-TEE environments or upon generation failure, writes an empty report and logs a warning, allowing service to start in degraded mode (verifiedPass=false).
-func prepareAttestationReport(ctx context.Context, userData []byte, hrkCertPath, hskCekCertPath string) (bool, error) {
+func prepareAttestationReport(ctx context.Context, userData []byte) (bool, error) {
 	log.Printf("[INFO] [attestation] generating attestation report: output=%s", fixedAttestationFile)
 	if err := attestation.Generate(ctx, attestation.Config{
 		OutputPath: fixedAttestationFile,
@@ -693,7 +691,7 @@ func prepareAttestationReport(ctx context.Context, userData []byte, hrkCertPath,
 		return false, nil
 	}
 
-	if _, verifyErr := attestation.VerifyReport(reportBytes, hrkCertPath, hskCekCertPath); verifyErr != nil {
+	if _, verifyErr := attestation.VerifyReport(reportBytes); verifyErr != nil {
 		log.Printf("[WARN] [attestation] attestation self-verification failed: %v", verifyErr)
 		return false, nil
 	}

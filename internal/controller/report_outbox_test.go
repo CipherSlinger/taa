@@ -16,7 +16,7 @@ import (
 func newOutboxTestState(t *testing.T, platformAddr string) (*TAAState, *StateStore) {
 	t.Helper()
 	st, _ := createTestStateStore(t)
-	state := NewTAAState("", platformAddr, "docker-outbox", "", "", nil, nil, SecurityConfig{})
+	state := NewTAAState("", platformAddr, "docker-outbox", nil, nil, SecurityConfig{})
 	state.SetStateStore(st)
 	return state, st
 }
@@ -48,7 +48,7 @@ func TestPendingReportsSurviveSealAndRestore(t *testing.T) {
 		t.Fatalf("pending report was not sealed: %+v", persisted.PendingReports)
 	}
 
-	restored := NewTAAState("", "", "", "", "", nil, nil, SecurityConfig{})
+	restored := NewTAAState("", "", "", nil, nil, SecurityConfig{})
 	restored.RestoreFromPersistentState(persisted)
 	if len(restored.pendingReports) != 1 || restored.pendingReports[0].ID != "report-1" {
 		t.Fatalf("pending report was not restored: %+v", restored.pendingReports)
@@ -233,7 +233,7 @@ func TestReportOutboxResumesAfterRestart(t *testing.T) {
 	}))
 	defer down.Close()
 
-	first := NewTAAState("", down.Listener.Addr().String(), "docker-outbox", "", "", nil, nil, SecurityConfig{})
+	first := NewTAAState("", down.Listener.Addr().String(), "docker-outbox", nil, nil, SecurityConfig{})
 	first.SetStateStore(st)
 	ctx1, cancel1 := context.WithCancel(context.Background())
 	firstOutbox := first.startReportOutbox(ctx1, 5*time.Millisecond, 20*time.Millisecond)
@@ -264,7 +264,7 @@ func TestReportOutboxResumesAfterRestart(t *testing.T) {
 	if _, err := st.DetectAndHandleKeyDrift(false); err != nil {
 		t.Fatalf("load sealed state %s: %v", statePath, err)
 	}
-	second := NewTAAState("", up.Listener.Addr().String(), "docker-outbox", "", "", nil, nil, SecurityConfig{})
+	second := NewTAAState("", up.Listener.Addr().String(), "docker-outbox", nil, nil, SecurityConfig{})
 	second.SetStateStore(st)
 	second.RestoreFromPersistentState(st.GetState())
 
