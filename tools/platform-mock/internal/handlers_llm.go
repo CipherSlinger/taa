@@ -2,6 +2,7 @@ package mock
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"time"
 )
@@ -109,9 +110,20 @@ func llmPollNowHandler(poller *llmPoller) http.HandlerFunc {
 			writeLLMResponse(w, http.StatusMethodNotAllowed, "仅支持 POST 方法", nil, http.StatusMethodNotAllowed)
 			return
 		}
+		// An optional {"sinceSeq": n} body overrides the read position for this
+		// pull only. The panel exposes it as a number field so the interface can
+		// be exercised at an arbitrary position without resetting the poller.
+		var req struct {
+			SinceSeq *uint64 `json:"sinceSeq"`
+		}
+		if r.Body != nil {
+			// An empty body is the normal automatic pull, so a decode error is not
+			// worth refusing the poll over; it simply means "no override".
+			_ = json.NewDecoder(r.Body).Decode(&req)
+		}
 		ctx, cancel := context.WithTimeout(r.Context(), 3*llmRequestTimeout)
 		defer cancel()
-		poller.PollOnce(ctx)
-		writeLLMResponse(w, http.StatusOK, "success", map[string]any{"polled": true, "at": time.Now().Format(time.RFC3339)}, 0)
+		poller.PollOnceFrom(ctx, req.SinceSeq)
+		writeLLMResponse(w, http.StatusOK, "success", map[string]any{"polled": true, "sinceSeq": req.SinceSeq, "at": time.Now().Format(time.RFC3339)}, 0)
 	}
 }

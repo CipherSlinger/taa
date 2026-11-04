@@ -1884,46 +1884,36 @@ async function testSwitch(phase) {
 }
 
 async function detectTAAProxy() {
-  const addrInput = document.getElementById('taaAddr');
   const badge = document.getElementById('taaProxyBadge');
   const pill = document.getElementById('taaTargetPill');
   // When nothing is detected, default to the host this page was loaded from rather than a
   // hardcoded loopback: the UI is routinely opened from another machine, and 127.0.0.1 would
   // then point at the reader's own computer instead of the TAA service.
-  const fallbackAddr = 'http://' + (location.hostname || '127.0.0.1') + ':6001';
+  const fallbackAddr = defaultTaaAddr();
   try {
     const res = await mockFetch('/api/taa-target', { cache: 'no-store' });
     const data = await res.json();
     const payload = responseResult(data);
     if (payload.taaTarget) {
-      addrInput.value = location.origin + '/taa';
-      if (pill) {
-        pill.className = 'status-pill ok';
-        pill.style.display = 'inline-flex';
-      }
+      setTaaAddr(location.origin + '/taa');
+      if (pill) pill.className = 'status-pill ok';
       if (badge) {
-        badge.textContent = 'TAA 代理: ' + payload.taaTarget;
+        badge.textContent = '代理 ' + payload.taaTarget;
         badge.style.color = 'var(--ok)';
       }
     } else {
-      addrInput.value = fallbackAddr;
-      if (pill) {
-        pill.className = 'status-pill pending';
-        pill.style.display = 'inline-flex';
-      }
+      setTaaAddr(fallbackAddr);
+      if (pill) pill.className = 'status-pill pending';
       if (badge) {
-        badge.textContent = '未检测到 TAA Pod，请手动填写 TAA 地址';
+        badge.textContent = '未检测到 TAA Pod，直连 ' + fallbackAddr;
         badge.style.color = 'var(--bad)';
       }
     }
   } catch {
-    addrInput.value = fallbackAddr;
-    if (pill) {
-      pill.className = 'status-pill bad';
-      pill.style.display = 'inline-flex';
-    }
+    setTaaAddr(fallbackAddr);
+    if (pill) pill.className = 'status-pill bad';
     if (badge) {
-      badge.textContent = '检测失败，请手动填写 TAA 地址';
+      badge.textContent = '检测失败，直连 ' + fallbackAddr;
       badge.style.color = 'var(--bad)';
     }
   }

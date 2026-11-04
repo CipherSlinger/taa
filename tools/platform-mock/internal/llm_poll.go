@@ -129,6 +129,14 @@ func (p *llmPoller) pollSeconds() int {
 // failure is recorded in the state, not returned, because the panel is the
 // consumer and there is no caller to fail.
 func (p *llmPoller) PollOnce(ctx context.Context) {
+	p.PollOnceFrom(ctx, nil)
+}
+
+// PollOnceFrom is PollOnce with the log read position overridden for this pull.
+// A non-nil sinceSeq is sent exactly as given and the records below the stored
+// cursor are kept, which is what makes it a probe: the operator is asking what
+// the interface answers at that position, not advancing the poller.
+func (p *llmPoller) PollOnceFrom(ctx context.Context, sinceSeq *uint64) {
 	addr := p.resolveAddr()
 	if addr == "" {
 		p.state.recordPollError("未发现 TEE-LLM 地址：设置 LLM_POD/LLM_NS 供 kubectl 自动发现，或用 LLM_TARGET 直接指定")
@@ -145,7 +153,7 @@ func (p *llmPoller) PollOnce(ctx context.Context) {
 	}
 	p.state.recordHeartbeat(hb.Model, hb.UptimeSeconds, dockerID)
 
-	if err := p.pullLogs(ctx, addr, dockerID, hb.UptimeSeconds); err != nil {
+	if err := p.pullLogs(ctx, addr, dockerID, hb.UptimeSeconds, sinceSeq); err != nil {
 		p.state.recordLogError("日志拉取失败: " + err.Error())
 	}
 }
@@ -214,8 +222,10 @@ func (p *llmPoller) fetchHeartbeat(ctx context.Context, addr string) (llmHeartbe
 
 // pullLogs reads what the instance has beyond the stored cursor. sinceSeq is
 // the first seq to return, so the request carries cursor+1; the stored cursor
-// then advances to the instance's latestSeq.
-func (p *llmPoller) pullLogs(ctx context.Context, addr, dockerID string, uptimeSeconds int64) error {
+// then advances to the instance's latestSeq. A non-nil override is used as the
+// request's sinceSeq instead, and the response is not filtered against the
+// stored cursor, so a probe can inspect records that were already consumed.
+func (p *llmPoller) pullLogs(ctx context.Context, addr, dockerID string, uptimeSeconds int64, sinceSeq *uint64) error {
 	// The instance's dockerId is an exact run identity: it changes on every
 	// process start and nowhere else. Fall back to the uptime-quantized id only
 	// for an instance that does not report one, so an older teellm still gets
@@ -241,10 +251,17 @@ func (p *llmPoller) pullLogs(ctx context.Context, addr, dockerID string, uptimeS
 		cursor = 0
 	}
 
+	// sinceSeq is inclusive: the cursor stores the last seq consumed, so the
+	// next record to ask for is the one immediately after it. An override is
+	// sent as typed, including 0, which the instance answers from its oldest
+	// retained record.
+	from := cursor + 1
+	probe := sinceSeq != nil
+	if probe {
+		from = *sinceSeq
+	}
 	env, err := p.post(ctx, addr, "/v1/llm/log", map[string]any{
-		// sinceSeq is inclusive: the cursor stores the last seq consumed, so the
-		// next record to ask for is the one immediately after it.
-		"sinceSeq": cursor + 1,
+		"sinceSeq": from,
 		"limit":    llmLogPageSize,
 	})
 	if err != nil {
@@ -264,7 +281,9 @@ func (p *llmPoller) pullLogs(ctx context.Context, addr, dockerID string, uptimeS
 
 	entries := make([]taaLogEntry, 0, len(result.Entries))
 	for _, entry := range result.Entries {
-		if entry.Seq <= cursor {
+		// The normal pull only adds what is new to the store; a probe keeps what
+		// the instance returned, which is the whole point of naming sinceSeq.
+		if !probe && entry.Seq <= cursor {
 			continue
 		}
 		entries = append(entries, taaLogEntry{Seq: entry.Seq, Message: entry.Message})

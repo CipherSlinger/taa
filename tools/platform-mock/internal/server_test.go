@@ -1962,7 +1962,10 @@ func TestHealthCheckIntegratedIntoRegistration(t *testing.T) {
 	// Integrated elements and functions should be present
 	for _, want := range []string{
 		`id="card-attestation"`,
-		`id="taaAddr"`,
+		// The service address is no longer a field anyone types into: the
+		// detected target and its reachability are shown there instead.
+		`id="taaTargetPill"`,
+		`id="taaProxyBadge"`,
 		`id="healthDot"`,
 		`id="healthLabel"`,
 		"testHealth()",

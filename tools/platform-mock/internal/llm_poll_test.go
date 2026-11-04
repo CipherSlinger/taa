@@ -231,6 +231,34 @@ func TestLLMPollerResetsCursorWhenTheInstanceRestarted(t *testing.T) {
 	}
 }
 
+// An explicit sinceSeq is a probe, not a pull: it is sent as typed even when the
+// stored cursor already moved past it, and the records the instance returns are kept
+// rather than filtered against that cursor. That is what lets the panel ask what the
+// interface answers at an arbitrary position.
+func TestLLMPollerSendsAnExplicitSinceSeq(t *testing.T) {
+	fake, poller, state, logs := newPollTestRig(t)
+	fake.setEntries([]llmLogPullEntry{{Seq: 1, Message: "one"}, {Seq: 2, Message: "two"}})
+	poller.PollOnce(context.Background())
+
+	logs.reset()
+	fromOne := uint64(1)
+	poller.PollOnceFrom(context.Background(), &fromOne)
+
+	fake.mu.Lock()
+	lastSince := fake.lastSinceSeq
+	fake.mu.Unlock()
+	if lastSince != 1 {
+		t.Errorf("probe used sinceSeq=%d, want the typed 1 even though the cursor is 2", lastSince)
+	}
+	entries := logs.get().Entries
+	if len(entries) != 2 || entries[0].Seq != 1 || entries[1].Seq != 2 {
+		t.Errorf("stored entries = %+v, want both records the probe asked for", entries)
+	}
+	if got := state.get().LogCursor; got != 2 {
+		t.Errorf("cursor = %d, want the instance's latestSeq 2", got)
+	}
+}
+
 func TestLLMPollerRecordsDiscoveryFailure(t *testing.T) {
 	dir := t.TempDir()
 	state := newLLMStateStore(dir)

@@ -168,8 +168,23 @@ async function refreshLLMStatus() {
 }
 
 async function pollLLMNow() {
+  // A filled field sends that sinceSeq verbatim, which is how the log interface is
+  // exercised at an arbitrary position; empty means the stored read position.
+  const seqInput = document.getElementById('llmSinceSeq');
+  const raw = seqInput ? seqInput.value.trim() : '';
+  const opts = { method: 'POST' };
+  if (raw !== '') {
+    if (!/^\d+$/.test(raw)) {
+      if (typeof showToast === 'function') {
+        showToast({ type: 'warning', title: 'sinceSeq 无效', message: '请填写非负整数，或留空自动拉取' });
+      }
+      return;
+    }
+    opts.headers = { 'Content-Type': 'application/json' };
+    opts.body = JSON.stringify({ sinceSeq: Number(raw) });
+  }
   try {
-    await fetch('/api/llm/poll', { method: 'POST' });
+    await fetch('/api/llm/poll', opts);
   } catch (_) {
     // refresh below renders whatever the poll managed to record
   }

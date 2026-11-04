@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -106,6 +107,36 @@ func TestLLMPollHandlerRunsOnePoll(t *testing.T) {
 	}
 	if got := state.get(); got.Heartbeats != 1 || got.LogCursor != 1 {
 		t.Errorf("state = %+v", got)
+	}
+}
+
+// The pull button's sinceSeq field has to reach the interface verbatim; an empty
+// field keeps the stored read position.
+func TestLLMPollHandlerSendsTheTypedSinceSeq(t *testing.T) {
+	fake, _, _, poller := newLLMHandlerRig(t)
+	fake.setEntries([]llmLogPullEntry{{Seq: 1, Message: "one"}, {Seq: 2, Message: "two"}})
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/llm/poll", strings.NewReader(`{"sinceSeq":1}`))
+	llmPollNowHandler(poller)(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body %s", rec.Code, rec.Body.String())
+	}
+	fake.mu.Lock()
+	lastSince := fake.lastSinceSeq
+	fake.mu.Unlock()
+	if lastSince != 1 {
+		t.Errorf("pull used sinceSeq=%d, want the typed 1", lastSince)
+	}
+
+	// No body: the automatic pull resumes after the stored cursor.
+	rec = httptest.NewRecorder()
+	llmPollNowHandler(poller)(rec, httptest.NewRequest(http.MethodPost, "/api/llm/poll", nil))
+	fake.mu.Lock()
+	lastSince = fake.lastSinceSeq
+	fake.mu.Unlock()
+	if lastSince != 3 {
+		t.Errorf("automatic pull used sinceSeq=%d, want the cursor 2 plus one", lastSince)
 	}
 }
 

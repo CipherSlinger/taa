@@ -23,10 +23,6 @@
         TAA 平台模拟器
         <span class="header-badge" id="consoleBadge">TEE Enclave Console</span>
       </h1>
-      <span id="taaTargetPill" class="status-pill pending" style="display:none; font-size:12px; font-family:ui-monospace,SFMono-Regular,Menlo,monospace;">
-        <span class="pill-dot"></span>
-        <span id="taaProxyBadge"></span>
-      </span>
     </div>
   </header>
 
@@ -57,8 +53,14 @@
       <div style="display:flex; align-items:center; gap:10px; flex:1; min-width:280px;">
         <label for="instanceSelect" id="instanceSelectLabel" style="font-size:13px; font-weight:650; white-space:nowrap; margin:0; display:none;">实例</label>
         <select id="instanceSelect" style="display:none; max-width:260px; padding:6px 10px; font-size:13px; border-radius:6px; border:1px solid var(--line); background:var(--bg);" title="选择要查看的 TAA 实例"></select>
-        <label for="taaAddr" style="font-size:13px; font-weight:650; white-space:nowrap; margin:0;">TAA 服务地址</label>
-        <input id="taaAddr" value="" placeholder="自动检测中..." style="flex:1; min-width:180px; padding:6px 10px; font-size:13px; border-radius:6px; border:1px solid var(--line); background:var(--bg);">
+        <span style="font-size:13px; font-weight:650; white-space:nowrap;">TAA 服务地址</span>
+        <!-- Not an input any more: the address is detected from the registration and the
+             console calls whichever target that produced, so the field was a value nobody
+             should have typed over. The pill shows the target and its reachability. -->
+        <span id="taaTargetPill" class="status-pill pending" style="display:inline-flex; font-size:12px; font-family:ui-monospace,SFMono-Regular,Menlo,monospace;">
+          <span class="pill-dot"></span>
+          <span id="taaProxyBadge">自动检测中...</span>
+        </span>
       </div>
       <div style="display:flex; align-items:center; gap:12px; flex-wrap:wrap;">
         <div style="display:flex; align-items:center; gap:8px;">
@@ -103,6 +105,10 @@
       </div>
       <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
         <button type="button" id="llmAttestationBtn" class="secondary" onclick="fetchLLMAttestation()">获取证明报告</button>
+        <label for="llmSinceSeq" style="font-size:12.5px; color:var(--muted); white-space:nowrap;">sinceSeq</label>
+        <input id="llmSinceSeq" type="number" min="0" step="1" placeholder="自动"
+               title="拉取时使用的 sinceSeq；留空则沿用已记录的读取位置。填写后按该值拉取一次，用于测试日志接口。"
+               style="width:88px; padding:4px 8px; font-size:12.5px; border-radius:6px; border:1px solid var(--line); background:var(--bg);">
         <button type="button" class="secondary" onclick="pollLLMNow()">立即拉取</button>
         <button type="button" class="secondary" onclick="refreshLLMStatus()">刷新</button>
         <button type="button" class="secondary" onclick="resetLLMStatus()">重置</button>
