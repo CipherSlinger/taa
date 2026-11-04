@@ -250,28 +250,58 @@ func TestRegisterHandlerAcceptsJSONPayload(t *testing.T) {
 	}
 }
 
-func TestDiscoverTAAAddrUsesConfiguredPort(t *testing.T) {
+// installFakeKubectl puts a kubectl on PATH that runs script.
+func installFakeKubectl(t *testing.T, script string) {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("the fake kubectl is a shell script")
+	}
 	tmpDir := t.TempDir()
 	kubectlPath := filepath.Join(tmpDir, "kubectl")
-	if runtime.GOOS == "windows" {
-		kubectlPath += ".bat"
-	}
-
-	script := "#!/bin/sh\nprintf '10.244.0.49'\n"
-	if runtime.GOOS == "windows" {
-		script = "@echo off\r\necho|set /p=10.244.0.49\r\n"
-	}
 	if err := os.WriteFile(kubectlPath, []byte(script), 0o755); err != nil {
 		t.Fatalf("write fake kubectl: %v", err)
 	}
-
 	oldPath := os.Getenv("PATH")
 	t.Setenv("PATH", tmpDir+string(os.PathListSeparator)+oldPath)
+}
 
-	got := discoverTAAAddr("simple-busybox", "", "9001")
+func TestDiscoverTAAAddrUsesConfiguredPort(t *testing.T) {
+	installFakeKubectl(t, "#!/bin/sh\nprintf '10.244.0.49'\n")
+
+	got := discoverTAAAddr("simple-busybox", "osr", "9001")
 	want := "http://10.244.0.49:9001"
 	if got != want {
 		t.Fatalf("discoverTAAAddr() = %q, want %q", got, want)
+	}
+}
+
+// TestDiscoverTAAAddrFindsPodInAnyNamespaceWhenNamespaceUnset covers the Pod
+// discovery path the mock takes with no LLM_NS configured: the TAA and TEE-LLM
+// Pods live in the platform's namespace (osr), so a lookup confined to "default"
+// found nothing and the panel stayed empty with "未发现 TEE-LLM 地址".
+func TestDiscoverTAAAddrFindsPodInAnyNamespaceWhenNamespaceUnset(t *testing.T) {
+	installFakeKubectl(t, `#!/bin/sh
+case "$*" in
+  *"-A"*) printf 'taa-teellm 10.244.0.73\ntaa-deploy 10.244.0.132\n' ;;
+  *) exit 1 ;;
+esac
+`)
+
+	got := discoverTAAAddr("taa-teellm", "", "6001")
+	want := "http://10.244.0.73:6001"
+	if got != want {
+		t.Fatalf("discoverTAAAddr() = %q, want %q", got, want)
+	}
+}
+
+// TestDiscoverTAAAddrRefusesAmbiguousPodName pins the safety valve: with no
+// namespace given, two Pods carrying the same name must not be silently
+// resolved to either one.
+func TestDiscoverTAAAddrRefusesAmbiguousPodName(t *testing.T) {
+	installFakeKubectl(t, "#!/bin/sh\nprintf 'taa-teellm 10.244.0.73\\ntaa-teellm 10.244.0.99\\n'\n")
+
+	if got := discoverTAAAddr("taa-teellm", "", "6001"); got != "" {
+		t.Fatalf("discoverTAAAddr() = %q, want an empty address for an ambiguous name", got)
 	}
 }
 

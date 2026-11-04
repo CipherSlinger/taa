@@ -97,12 +97,12 @@ Common options:
   --taa-target URL           Single-instance fixed TAA address; omit to derive
                              each instance's address from its registration
   --taa-pod NAME             TAA Pod for kubectl auto-discovery
-  --taa-ns NS                Namespace for --taa-pod
+  --taa-ns NS                Namespace for --taa-pod (omit = search all namespaces)
   --taa-port PORT            Port used for discovery and for per-instance target derivation
   --llm-target URL           TEE-LLM base URL; the platform polls it, so no
                              registration address is needed
   --llm-pod NAME             TEE-LLM Pod for kubectl auto-discovery (default taa-teellm)
-  --llm-ns NS                Namespace for --llm-pod
+  --llm-ns NS                Namespace for --llm-pod (omit = search all namespaces)
   --llm-port PORT            TEE-LLM plaintext platform port (default 6001)
   --sm2-id ID                SM2 ID_A passed to the mock
   --platform-key-file PATH   Platform SM2 key file passed to the mock

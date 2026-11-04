@@ -179,22 +179,49 @@ func discoverTAAAddr(kubectlPod, kubectlNS, port string) string {
 	if kubectlPod == "" {
 		return ""
 	}
-	args := []string{"get", "pod", kubectlPod, "-o", "jsonpath={.status.podIP}"}
-	if kubectlNS != "" {
-		args = append([]string{"-n", kubectlNS}, args[1:]...)
-	}
-	out, err := exec.Command("kubectl", args...).Output()
-	if err != nil || len(out) == 0 {
+	ip := podIPByName(kubectlPod, kubectlNS)
+	if ip == "" {
 		return ""
 	}
 	if port == "" {
 		port = defaultTAAPort
 	}
-	ip := strings.TrimSpace(string(out))
-	if ip == "" {
+	return fmt.Sprintf("http://%s:%s", ip, port)
+}
+
+// podIPByName resolves a Pod's IP. An explicit namespace is queried directly.
+// Without one the Pod may live in any namespace -- the TAA and TEE-LLM Pods
+// are created in the platform's namespace, not "default" -- so the lookup goes
+// cluster-wide and only a unique match is accepted: a duplicate name in two
+// namespaces would otherwise silently point the mock at the other instance.
+func podIPByName(name, namespace string) string {
+	if namespace != "" {
+		out, err := exec.Command("kubectl", "get", "pod", name, "-n", namespace, "-o", "jsonpath={.status.podIP}").Output()
+		if err != nil {
+			return ""
+		}
+		return strings.TrimSpace(string(out))
+	}
+	// A Pending Pod has an empty podIP and is skipped: its address appears on a
+	// later poll, once the guest has booted.
+	out, err := exec.Command("kubectl", "get", "pods", "-A", "-o",
+		`jsonpath={range .items[*]}{.metadata.name}{" "}{.status.podIP}{"\n"}{end}`).Output()
+	if err != nil {
 		return ""
 	}
-	return fmt.Sprintf("http://%s:%s", ip, port)
+	ip := ""
+	for _, line := range strings.Split(string(out), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) != 2 || fields[0] != name || fields[1] == "" {
+			continue
+		}
+		if ip != "" && ip != fields[1] {
+			log.Printf("cannot discover %q without a namespace: more than one Pod carries that name; pass the namespace explicitly", name)
+			return ""
+		}
+		ip = fields[1]
+	}
+	return ip
 }
 
 // dockerIDContextKey carries the instance identity a proxied request belongs
