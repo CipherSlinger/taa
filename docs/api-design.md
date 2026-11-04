@@ -37,7 +37,8 @@
   - [6.1 连通性检查（/v1/taa/health）](#61-连通性检查v1taahealth)
   - [6.2 查询 TAA 完整状态（/v1/taa/status）](#62-查询-taa-完整状态v1taastatus)
 - [7. TEE-LLM（LLM 侧）与平台](#7-tee-llmllm-侧与平台)
-  - [7.1 前置要求（TEE-LLM Pod 环境变量）](#71-前置要求tee-llm-pod-环境变量)
+  - [7.1 前置要求（环境变量与端口）](#71-前置要求环境变量与端口)
+    - [7.1.1 端口](#711-端口)
   - [7.2 LLM → 平台](#72-llm--平台)
     - [7.2.1 LLM 启动注册（/v1/llm/register）](#721-llm-启动注册v1llmregister)
     - [7.2.2 LLM 上报心跳（/v1/llm/heartbeat）](#722-llm-上报心跳v1llmheartbeat)
@@ -1731,7 +1732,7 @@ curl -X POST "http://{TAA_ADDR}/v1/taa/export" \
 
 ## 7. TEE-LLM（LLM 侧）与平台
 
-### 7.1 前置要求（TEE-LLM Pod 环境变量）
+### 7.1 前置要求（环境变量与端口）
 
 TEE-LLM 是独立于 TAA 的实例，容器按以下变量启动即可接入平台：
 
@@ -1762,6 +1763,20 @@ TEELLM_MODEL={family}:{tag} # 暂只支持 qwen-coder2.5:7b
 | `TEELLM_MODEL` | 否 | 推理使用的模型（`family:tag`），覆盖配置文件的 `backend.defaultModel`；不填则用配置文件的值 |
 
 > 报告里的 `USERDATA` 由 TEE-LLM 取证据时写入 `SM3(证书公钥)`，`ATTESTATION_USERDATA` 即使设置也不生效。
+
+#### 7.1.1 端口
+
+TEE-LLM 同时起两个监听：TEE-TLS 给 TAA 用，明文端口给平台用，两者互不重叠。
+
+| 端口 | 配置项 | 用途 | 访问方 |
+| --- | --- | --- | --- |
+| `:8443`（缺省） | `server.addr`，可被命令行 `-addr` 覆盖 | TEE-TLS 1.3（RFC 8998）：`/v1/llm/generate`、`/v1/llm/healthz` | TAA |
+| `:6001`（缺省） | `server.attestationAddr` | 明文 HTTP：`/v1/llm/getAttestation` | 平台 |
+
+- 明文端口固定用 `6001`，与 TAA 的平台对接端口一致——平台侧访问所有实例都用 `6001`。
+- 明文监听只挂 `/v1/llm/getAttestation` 一条路由，推理与健康检查仍只在 `8443` 上。
+- `attestationAddr` 只能改配置文件，没有环境变量；`-addr` 只影响 TEE-TLS 监听，两者相互独立。
+- 两个端口都要能从 Pod 外访问，否则平台注册、心跳或取证明报告会失败。
 
 ### 7.2 LLM → 平台
 
