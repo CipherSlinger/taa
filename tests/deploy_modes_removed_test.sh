@@ -75,19 +75,19 @@ expect_refused() {
 }
 
 expect_refused "deploy.sh TARGET_POD" "TARGET_POD is no longer supported" \
-  TARGET_POD=stale "$DEPLOY" taa start
+  TARGET_POD=stale "$DEPLOY" start
 expect_refused "deploy.sh TARGET_NAMESPACE" "TARGET_NAMESPACE is no longer supported" \
-  TARGET_NAMESPACE=stale "$DEPLOY" taa start
+  TARGET_NAMESPACE=stale "$DEPLOY" start
 expect_refused "deploy-llm.sh TARGET_POD" "TARGET_POD is no longer supported" \
   TARGET_POD=stale "$ROOT_DIR/deploy-llm.sh" stop
 expect_refused "deploy-llm.sh TARGET_NAMESPACE" "TARGET_NAMESPACE is no longer supported" \
   TARGET_NAMESPACE=stale "$ROOT_DIR/deploy-llm.sh" stop
 expect_refused "deploy-fhe.sh TARGET_POD" "TARGET_POD is no longer supported" \
-  TARGET_POD=stale "$ROOT_DIR/deploy-fhe.sh" taa
+  TARGET_POD=stale "$ROOT_DIR/deploy-fhe.sh"
 expect_refused "deploy-fhe.sh POD_NAMESPACE" "namespace environment variables are no longer supported" \
-  POD_NAMESPACE=stale "$ROOT_DIR/deploy-fhe.sh" taa
+  POD_NAMESPACE=stale "$ROOT_DIR/deploy-fhe.sh"
 expect_refused "deploy.sh pod=..." "unknown argument: pod=stale" \
-  "$DEPLOY" taa start pod=stale
+  "$DEPLOY" start pod=stale
 expect_refused "deploy-llm.sh pod=..." "unknown argument: pod=stale" \
   "$ROOT_DIR/deploy-llm.sh" pod=stale start
 expect_refused "deploy-fhe.sh namespace=..." "unknown argument: namespace=stale" \

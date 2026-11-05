@@ -1,178 +1,173 @@
-# taa-fhe 部署命令
+# 部署命令
 
-一个容器同时运行 FHE 服务（redis + api_server + worker，镜像 `latti/latti-server-node:latest`）
-与 TAA。TAA 在容器内经 `127.0.0.1:58996` 访问 FHE，58996 不发布到宿主机；只发布 TAA 的
-6001，供 platform/platform-mock 调用。
+仓库里有 5 个部署脚本，按组件分工：
+
+| 脚本 | 部署对象 |
+|---|---|
+| `deploy.sh` | TEE 训练/推理 Pod 里的 TAA 本体 |
+| `deploy-fhe.sh` | FHE 服务 + TAA 的统一容器，或已有的 FHE Pod |
+| `deploy-dataanaylsis.sh` | 数据分析角色（转发给 `deploy.sh`，换基座与配置） |
+| `deploy-llm.sh` | 独立的 TEE-LLM 推理网关 Pod |
+| `deploy-platform-mock.sh` | 平台 mock，需单独启动 |
+
+平台（mock 或生产控制面）不由 `deploy.sh` / `deploy-fhe.sh` / `deploy-llm.sh` 启动；
+这三个脚本只负责让部署对象找到平台地址。每个脚本的完整选项和环境变量以 `--help` 为准。
+
+## 通用约定
+
+- **目标 Pod**：`--pod <名字>`。不给时的默认行为见各脚本小节。
+- **命名空间**：`--namespace <ns>`，默认 `osr`。
+- **远端主机**：`REMOTE_HOST` / `REMOTE_USER` / `REMOTE_DIR` 环境变量。
+- **SSH 密码**：`--remote-password <密码>`；不给时取脚本内置默认值，口令为空则改用密钥或
+  agent 认证（`deploy.sh` 与 `deploy-llm.sh` 在缺省且为空时会交互式询问）。
+- 能用命令行参数表达的配置一律用参数；只有参数没有对应开关时才用环境变量。
+
+## TAA：`deploy.sh`
 
 ```bash
-# 打包（本地构建 taa-fhe 镜像、导出归档、上传并 load 到远端）
-./deploy-fhe.sh taa save
+# 不指定 --pod：在远端创建或复用脚本自己的 Kata CSV2 Pod（默认名 taa-deploy）
+./deploy.sh start
 
-# 只部署统一容器（FHE + TAA；platform-mock 假定已在运行，平台不在本机时设置 PLATFORM_IP）
-./deploy-fhe.sh taa
+# 指定模型
+./deploy.sh start --model qwen2.5-coder:7b
 
-# 把 TAA 部署进已有 pod（Kubernetes 里的 FHE 实例）
-# 会重渲染配置以匹配 pod 内的 FHE 数据根，重启 pod 内的 supervisor 并等待健康检查
+# 部署进一个已存在的 Pod：脚本只写文件，不创建、不删除该 Pod
+./deploy.sh start --pod <pod 名> --namespace osr
+
+# 停掉服务；Pod 若由本脚本创建，则一并删除（guest 可写层里的数据、密钥、模型都会丢失）
+./deploy.sh stop
+
+# 只打包生产镜像，不部署
+./deploy.sh save
+./deploy.sh save --image taa-train-infer:$(date +%Y%m%d)
+./deploy.sh save --archive /tmp/taa-env-production.tar.gz
+
+# 覆盖默认平台端口（TAA 注册/上报使用的端口，默认 18080）
+PLATFORM_PORT=18081 ./deploy.sh start
+```
+
+**Pod 生命周期**：不给 `--pod` 时，首次 `start` 会先用当前源码构建生产镜像、上传并推送，
+再创建 Pod；后续 `start` 复用该 Pod，`stop` 删除它。`--pod` 指向的 Pod 永远不由本脚本创建
+或删除。已存在的 Pod 不会因为新镜像而重建 —— 要让新镜像生效，先 `stop` 再 `start`。
+
+**镜像**：自动构建的镜像推到 `TAA_IMAGE_REGISTRY/TAA_POD_IMAGE_REPO:<YYYYMMDD>`
+（默认 `172.16.10.178:31313/taa-train-infer:<日期>`），当天 tag 可变，因此 Pod 使用
+`imagePullPolicy: Always`。用 `--image` 指定现成镜像则跳过构建，保留 `IfNotPresent`。
+
+**常用参数**
+
+| 参数 | 说明 |
+|---|---|
+| `--pod <名字>` | 部署进已有 Pod；不给则创建/复用 `TAA_POD_NAME`（默认 `taa-deploy`） |
+| `--namespace <ns>` | 命名空间，默认 `osr` |
+| `--model <名字>` | 写入配置的模型名 |
+| `--port <端口>` | TAA 监听端口（默认 6001） |
+| `--remote-password <密码>` | 远端 SSH 密码 |
+| `--image <镜像>` | 部署指定的现成镜像，不构建 |
+| `save --image` / `--archive` / `--base` / `--save-config` | 打包镜像名、归档路径、基座镜像/归档、配置模板 |
+
+其余可调项（Pod 规格、节点、RuntimeClass、registry、就绪超时、semgrep payload 等）见
+`./deploy.sh --help` 的 Environment overrides 段。
+
+## FHE + TAA：`deploy-fhe.sh`
+
+一个容器同时运行 FHE 服务（redis + api_server + worker，镜像
+`latti/latti-server-node:latest`）与 TAA。TAA 在容器内经 `127.0.0.1:58996` 访问 FHE，
+58996 不发布到宿主机；只发布 TAA 的 6001 供平台调用。
+
+```bash
+# 打包并部署：本地构建 taa-fhe 镜像、导出归档、上传并 load 到远端
+./deploy-fhe.sh save
+
+# 只部署统一容器（FHE + TAA）
+./deploy-fhe.sh
+
+# 在本机 docker 上部署，不上传远端
+./deploy-fhe.sh --mode docker
+
+# 用打包好的镜像部署
+TAA_IMAGE=taa-fhe:20261019 ./deploy-fhe.sh
+
+# 把 TAA 部署进已有 Pod（Kubernetes 里的 FHE 实例）
+# 会重渲染配置以匹配 Pod 内的 FHE 数据根，重启 Pod 内的 supervisor 并等待健康检查
 ./deploy-fhe.sh --pod <pod 名>
+./deploy-fhe.sh --pod <pod 名> --namespace osr
 
-# 默认命名空间 osr；其它命名空间用 --namespace <ns>
-./deploy-fhe.sh --namespace osr --pod <pod 名>
-
-# 同一 pod 里有多个容器时指定容器
+# 同一 Pod 里有多个容器时指定容器
 POD_CONTAINER=<容器名> ./deploy-fhe.sh --pod <pod 名>
 
 # 只看会执行什么
 ./deploy-fhe.sh --pod <pod 名> -n
+./deploy-fhe.sh save -n
 
-# 查当前 pod 名
+# 查当前 Pod 名
 kubectl -n osr get pods | grep taa-fhe
-
-# 默认（只部署统一容器）
-./deploy-fhe.sh
-
-# 用打包好的镜像部署
-TAA_IMAGE=taa-fhe:20261019 ./deploy-fhe.sh taa
-
-# 只看会执行什么
-./deploy-fhe.sh taa save -n
 ```
 
-# taa 部署命令
+**参数**
 
-```bash
-# 将 taa 更新到目标 pod 中
-./deploy.sh taa --pod taa-env-slim-v2-20261016-7104e03003ae0072-f7fbbf8f5-kkdb2
-
-./deploy.sh taa
-./deploy.sh taa stop    # 删除对应的 pod
-./deploy.sh save        # 打包生产镜像（不部署任何东西）
-```
-
-不指定 `--pod` 时，`./deploy.sh taa` 会在远端创建并接管一个 Kata CSV2 Pod
-（默认名 `taa-deploy`），后续部署复用它，`./deploy.sh taa stop` 停止并删除该 Pod
-（连带 guest 可写层里的数据、密钥和模型）。用 `--pod <名字>` 指定 Pod 时脚本只部署进该 Pod，
-既不会创建也不会删除它。`--namespace <ns>` 指定命名空间，默认 `osr`。
-
-新建 Pod 之前，脚本会先用当前源码构建生产镜像、上传到远端并推送到 registry，tag 为当天日期
-（默认 `172.16.10.178:31313/taa-train-infer:<YYYYMMDD>`）。若 registry 上同名当天 tag 已经是
-另一份构建，则先删除旧 manifest 再推送；内容完全相同则跳过推送。该 tag 当天可变，因此自动
-构建的 Pod 使用 `imagePullPolicy: Always`。给出 `TAA_POD_IMAGE` 会跳过构建并固定镜像
-（此时保留 `IfNotPresent`）；仓库名、registry 和拉取策略分别由 `TAA_POD_IMAGE_REPO`、
-`TAA_POD_REGISTRY`、`TAA_POD_PULL_POLICY` 覆盖。
-
-已存在的 Pod 不会被重建，新镜像需要在 `./deploy.sh taa stop` 删除 Pod 之后的下一次启动才会用到。
-
-
-# platform-mock 部署命令
-
-platform-mock 的构建、启动、停止和就绪检查统一由仓库根目录的 `deploy-platform-mock.sh`
-负责。`deploy.sh` 与 `deploy-fhe.sh` 不再部署 platform-mock：两者只配置 TAA 的注册地址
-（`PLATFORM_IP` / `REMOTE_PLATFORM_IP`），平台（mock 或生产平台）需单独启动。
-
-```bash
-./deploy-platform-mock.sh <start|stop|restart|status> [选项]
-```
-
-`remote` 可省略；local 本地模式已移除，传入 `local` 会报错退出；`remote` 参数也已移除。
-
-```bash
-# 远端：静态构建后经 SSH 上传并后台启动
-./deploy-platform-mock.sh start \
-  --host 172.16.10.178 --user root --password 'Osrd@2026' \
-  --remote-dir /root/taa --taa-target http://127.0.0.1:6001
-
-# 查看状态（未运行且端点无应答时退出码非 0）
-./deploy-platform-mock.sh status --host 172.16.10.178
-
-# 重启 / 停止
-./deploy-platform-mock.sh restart --host 172.16.10.178
-./deploy-platform-mock.sh stop --host 172.16.10.178
-
-# 只查看会执行什么，不构建、不连接
-./deploy-platform-mock.sh start --host 172.16.10.178 --dry-run
-```
-
-**常用选项**
-
-| 选项 | 说明 |
+| 参数 | 说明 |
 |---|---|
-| `--binary PATH` | 本地构建产物，默认 `bin/platform-mock` |
-| `--binary-name NAME` | 进程名与远端安装名，默认 `platform-mock` |
-| `--addr ADDR` / `--port N` | 监听地址，默认 `0.0.0.0:18081`（18080 留给宿主上的真实平台 ccs-node-agent） |
-| `--state-dir DIR` / `--upload-dir DIR` | 为空时不传对应参数，沿用二进制自身默认目录 |
-| `--log-file PATH` / `--pid-file PATH` | 默认在 `--remote-dir` 下（`platform-mock.log` / `platform-mock.pid`） |
-| `--taa-target URL` | 固定到单个 TAA 地址；不传时按注册信息推导每个实例的地址 |
-| `--taa-pod` / `--taa-ns` / `--taa-port` | `--taa-target` 为空时的 Kubernetes 发现参数；`--taa-port` 同时用于多实例地址推导 |
-| `--allow-empty-attestation` | 非 TEE 测试环境跳过证明校验 |
-| `--reuse` | 端口已有实例应答时直接复用，不停止、不重启 |
-| `--reset-register` | 就绪后 `POST /api/register/reset` |
-| `--skip-build` | 复用 `--binary` 指向的现有二进制 |
-| `--ready-timeout` / `--ready-interval` | 就绪等待，默认 60s / 2s |
-| `--dry-run` | 只打印计划 |
-| `--host` / `--user` / `--password` / `--remote-dir` / `--remote-binary` | 远端目标、SSH 凭据与安装路径 |
-| `--ssh-port` / `--ssh-opt` | 自定义 SSH 端口与额外选项 |
+| `save` | 打包镜像并导出归档（`--image` 指定镜像名，默认 `taa-fhe:<YYYYMMDD>`） |
+| `--pod <名字>` | 部署进已有 Pod，替代启动 docker 容器；不能与 `save` 同用 |
+| `--namespace <ns>` | Pod 命名空间，默认 `osr` |
+| `--mode remote\|docker` | docker/kubectl 在哪执行：远端（默认）或本机 |
+| `--image <名字>` | `save` 产出的镜像名 |
+| `--remote-password <密码>` | 远端 SSH 密码 |
+| `-n`, `--dry-run` | 只打印命令 |
+| `--skip-build` | 复用 `TAA_BINARY_PATH` 指向的二进制 |
 
-**生命周期语义**
+平台不在 docker 网桥网关时用 `PLATFORM_IP` 指定；其余挂载、端口、GPU、就绪超时等见
+`./deploy-fhe.sh --help`。
 
-- `start` 默认先构建，然后写 pidfile、后台启动并轮询 `GET /api/register/status`；
-  超时会打印日志末尾并以非 0 退出。
-- `stop` 先按 pidfile 终止，再按进程名兜底，未运行时也返回成功。
-- `restart` 等于 `stop` + 构建 + `start`。
-- `status` 打印 pid、日志与端点结果；进程存活或端点应答即返回 0。
-- 远程启动使用 `nohup` 脱离 SSH，二进制上传到 `--remote-binary`（默认
-  `--remote-dir/platform-mock`）。
+## 数据分析角色：`deploy-dataanaylsis.sh`
 
-**多实例模式（deploy-platform-mock.sh 默认行为）**
-
-- platform-mock 二进制默认多实例：不传 `--taa-target` 时，一个进程同时服务多个 TAA 实例，
-  实例身份取注册请求里的 `dockerId`，每个实例在注册时按请求源 IP 推导自己的地址
-  （`http://<源 IP>:<--taa-port>`，默认端口 6001）。
-- 直接调用 `deploy-platform-mock.sh` 时省略 `--taa-target` 即可：
-  ```bash
-  ./deploy-platform-mock.sh start --host 172.16.10.178 --taa-port 6001
-  ```
-- 需要固定单实例地址时传 `--taa-target http://<ip>:6001`（未按注册推导出地址时作为后备）。
-- 限制：反向代理或端口转发会丢失请求源 IP，此时无法按注册推导地址，应退回
-  `--taa-target` 指定固定地址。
-
-**调用方差异**
-
-- `deploy.sh` 与 `deploy-fhe.sh` 不再调用 `deploy-platform-mock.sh`，也不再传入
-  state/upload/`--allow-empty-attestation` 等参数；这些参数只在直接部署 mock 时使用。
-- `deploy-fhe.sh` 末尾的注册检查因此是**告警而非失败**：平台不在本机、或 TAA 尚未重试成功
-  （注册会一直重试到平台应答）都只打印 warning。
-
-
-# taa-teellm 部署命令
+转发给 `deploy.sh`，基座换成 `jupyter-nologin-full:v2.2`，并把数据目录渲染到
+`/home/jovyan/systemAuthData`。参数与 `deploy.sh` 相同：
 
 ```bash
-# 建专用 Pod 并部署（Pod 不存在时先构建镜像；数十分钟）
-./deploy-llm.sh --create-pod start
+./deploy-dataanaylsis.sh start
+./deploy-dataanaylsis.sh save
+```
 
-# 指定模型
-./deploy-llm.sh --create-pod start --model qwen2.5-coder:7b
+`save` 未显式指定时，默认镜像名 `taa-dataanaylsis:<YYYYMMDD>`、归档
+`deploy/out/taa-dataanaylsis-<YYYYMMDD>.tar.gz`。
 
-# Pod 已存在：--create-pod 直接拒绝，先删再建
-./deploy-llm.sh pod-down && ./deploy-llm.sh --create-pod start
+## TEE-LLM 推理网关：`deploy-llm.sh`
 
-# 只更新一个已存在的 Pod（不创建、不删除）
-./deploy-llm.sh update
-
-# 其余动作
-./deploy-llm.sh probe       # 探 RFC 8998 TEE-TLS 就绪
-./deploy-llm.sh stop        # 暂停 supervisor 并停掉 teellm-service / ollama
-./deploy-llm.sh pod-down    # 删 Pod，并核对宿主是否留下 kata 沙箱
-
+```bash
 # 模型管理
 ./deploy-llm.sh models list
 ./deploy-llm.sh models info qwen2.5-coder:7b
 ./deploy-llm.sh models switch qwen2.5-coder:7b
+
+# 建专用 Pod 并部署（Pod 不存在时先构建镜像；数十分钟）
+./deploy-llm.sh create
+
+# 指定模型
+./deploy-llm.sh create --model qwen2.5-coder:7b
+
+# 更新已有 Pod（不创建、不删除 Pod）
+./deploy-llm.sh update
+
+# 重启/停止服务、探测端点
+./deploy-llm.sh stop
+./deploy-llm.sh probe       # 探 RFC 8998 TEE-TLS 就绪
+
+# 删除专用 Pod，并核对宿主是否留下 kata 沙箱
+./deploy-llm.sh delete
 ```
 
-**镜像内建构建**：取 `taa-env:slim-v2` 派生一份
-剥掉 `/root/taa` 的 `teellm-base:<日期>`，把当前工作树编出的 `teellm-service`、两份配置、
-`teellm-supervisor.sh`、ollama 运行库与模型塞进一次性容器，补齐 6 个 soname 软链后
-`docker commit` 成 `teellm:<YYYYMMDD>`。
+**动作**：`start`（默认，向 `TEELLM_POD_NAME` 或 `--pod` 指定的已有 Pod 增量部署）、
+`create`、`update`、`stop`、`probe`、`delete`、`models`。`create`、`update`、`delete`
+恒以专用 Pod `TEELLM_POD_NAME`（默认 `taa-teellm`）为目标，用 `--pod` 指向别的 Pod 会被拒绝。
+
+**常用参数**：`--model <名字>`、`--ollama-dir <路径>`、`--port <端口>`（默认 8443）、
+`--config <路径>`、`--pod <名字>`、`--namespace <ns>`、`--remote-password <密码>`。
+
+**镜像内建构建**：取 `taa-env:slim-v2` 派生一份剥掉 `/root/taa` 的 `teellm-base:<日期>`，
+把当前工作树编出的 `teellm-service`、两份配置、`teellm-supervisor.sh`、ollama 运行库与模型
+塞进一次性容器，补齐 6 个 soname 软链后 `docker commit` 成 `teellm:<YYYYMMDD>`。
 
 **相同构建不上传**：提交镜像只是为了拿到 ID。提交之后先读 registry 上当天 tag 的 schema2
 清单，把 `config.digest` 与本地 `docker image inspect --format '{{.Id}}'` 比对，相同就跳过
@@ -180,23 +175,14 @@ platform-mock 的构建、启动、停止和就绪检查统一由仓库根目录
 `docker load` → `tag` → 推送（推送前先删同 tag 的旧 manifest，当天重建不会冲突）。
 无论有没有推送，这条路径都用 `imagePullPolicy: Always`，因为当天 tag 会被覆盖。
 
-**Pod 已存在时不复用、直接报错**：`--create-pod` 只负责创建。`kubectl get pod` 查到时脚本
-打印该 Pod 的 `-o wide`，说明"这里只创建、不复用也不替换"，然后以非 0 退出，并提示先执行
-`./deploy-llm.sh pod-down` 再重跑。既不构建镜像也不 `apply`。理由：复用一个已有 Pod 会部署进
-它当时碰巧在跑的镜像；而在同一路径里自动"删了重建"会悄悄丢掉 guest 可写层里的 ollama 运行时与
-模型，并换掉 TAA `llm.endpoint` 指向的 Pod IP —— 这两件事都必须由操作者显式决定。
-只是想更新一个已存在 Pod 时用 `--pod <名字>`，那条路径不创建也不删除 Pod。
+**Pod 已存在时不复用、直接报错**：`create` 只负责创建。`kubectl get pod` 查到时脚本打印
+该 Pod 的 `-o wide`，说明"这里只创建、不复用也不替换"，然后以非 0 退出，并提示先执行
+`./deploy-llm.sh delete` 再重跑。既不构建镜像也不 `apply`。理由：复用一个已有 Pod 会部署进
+它当时碰巧在跑的镜像；而在同一路径里自动"删了重建"会悄悄丢掉 guest 可写层里的 ollama 运行时
+与模型，并换掉 TAA `llm.endpoint` 指向的 Pod IP —— 这两件事都必须由操作者显式决定。
+只是想更新一个已存在 Pod 时用 `update`。
 
-**创建后不再往里拷贝**：`--create-pod` 建完 Pod 只做校验，不安装任何文件。镜像本来就是这次运行
-用同一棵工作树构建的（或操作者显式点名的），校验项是 `teellm-service`（存在且可执行）、
-`teellm-supervisor.sh`（存在且可执行）、`configs/teellm-production.json`、`configs/models.json`、
-`.teellm-model`、`ollama`、`start-ollama.sh`、`lib/ollama/libllama-server-impl.so`，以及该模型
-manifest 列出的全部 blob（存在且大小吻合）。任一项缺失就逐条打印缺的是哪个文件、以非 0 退出，
-**不会**用 `kubectl cp` 补进去：补进去等于给 Pod 一批镜像里没有的内容，下次重建又会从坏镜像起来。
-要修就 `TEELLM_IMAGE_FORCE_REBUILD=true` 重建镜像，或用 `update` 往已存在的 Pod 里安装，再用
-`pod-down` 删掉这个建错的 Pod。`update` 与直接 `TARGET_POD=<名字> ./deploy-llm.sh` 仍会安装。
-
-**建之前先预检**：`--create-pod start` 在**构建镜像之前**确认 API server 可达、Pod 名是合法
+**建之前先预检**：`create` 在**构建镜像之前**确认 API server 可达、Pod 名是合法
 DNS label（≤63 字符）、命名空间与 RuntimeClass 存在、宿主端口空闲，任一不满足立即退出 ——
 命名空间写错或端口被占不该先花几十分钟编译推送镜像。端口检查分两处：宿主 `ss` 看是否已有监听
 （运行时是在宿主网络命名空间里开这个端口的），集群里看有没有别的 Pod 声明了同一个 `hostPort`
@@ -223,15 +209,85 @@ DNS label（≤63 字符）、命名空间与 RuntimeClass 存在、宿主端口
 `deploy-llm.sh` 的 `--platform` / `TEELLM_PLATFORM_ADDR` 已删除；重新部署会把旧配置里的
 `platform` 段一并去掉。部署输出的 `Platform` 一行固定打印 `:6001` 上这三个被平台轮询的接口。
 
-**删除后查残留**：`pod-down` 提交 `--grace-period=30 --wait=false`，轮询 180s 后必要时强制删除，
+**删除后查残留**：`delete` 提交 `--grace-period=30 --wait=false`，轮询 180s 后必要时强制删除，
 再比较三个数 —— 集群里的 kata Pod 数、`/run/vc/sbs` 目录数、`qemu-system` 进程数。不等就打印
 每个 qemu 的 RSS 与 `-m`，并给出 `crictl pods` → `stopsandbox` → `rmp` 的顺序（不要直接 kill）。
 
-**相关环境变量**：`TEELLM_POD_IMAGE`（显式指定则不构建也不解析）、
+**相关环境变量**：`TEELLM_IMAGE`（显式指定则不构建也不解析）、
 `TEELLM_BUILD_POD_IMAGE=false`（回到"取 registry 最新日期 tag"的旧行为）、
-`TEELLM_POD_IMAGE_REPO` / `TEELLM_IMAGE_REGISTRY` / `TEELLM_POD_PULL_POLICY`、
+`TEELLM_IMAGE_REPO` / `TEELLM_IMAGE_REGISTRY` / `TEELLM_POD_PULL_POLICY`、
 构建用的 `TEELLM_IMAGE_BASE` / `TEELLM_IMAGE_BASE_ARCHIVE` / `TEELLM_IMAGE_KEEP_BUILDER`。
 `TEELLM_IMAGE_KEEP_BUILDER=true` 会把构建容器留下，便于查 payload 为什么没打进去。
+
+## 平台 mock：`deploy-platform-mock.sh`
+
+构建、启动、停止和就绪检查统一由仓库根目录的 `deploy-platform-mock.sh` 负责。mock 在远端
+主机上以后台进程运行，二进制经 SSH 上传；local 本地模式已移除。
+
+```bash
+./deploy-platform-mock.sh <start|stop|restart|status> [选项]
+```
+
+```bash
+# 启动：静态构建后经 SSH 上传并后台启动
+./deploy-platform-mock.sh start \
+  --host 172.16.10.178 --user root --remote-password 'Osrd@2026' \
+  --remote-dir /root/taa --taa-target http://127.0.0.1:6001
+
+# 查看状态（未运行且端点无应答时退出码非 0）
+./deploy-platform-mock.sh status --host 172.16.10.178
+
+# 重启 / 停止
+./deploy-platform-mock.sh restart --host 172.16.10.178
+./deploy-platform-mock.sh stop --host 172.16.10.178
+
+# 只查看会执行什么，不构建、不连接
+./deploy-platform-mock.sh start --host 172.16.10.178 --dry-run
+```
+
+**常用选项**
+
+| 选项 | 说明 |
+|---|---|
+| `--binary PATH` | 本地构建产物，默认 `bin/platform-mock` |
+| `--binary-name NAME` | 进程名与远端安装名，默认 `platform-mock` |
+| `--addr ADDR` / `--port N` | 监听地址，默认 `0.0.0.0:18081`（18080 留给宿主上的真实平台 ccs-node-agent） |
+| `--state-dir DIR` / `--upload-dir DIR` | 为空时不传对应参数，沿用二进制自身默认目录 |
+| `--log-file PATH` / `--pid-file PATH` | 默认在 `--remote-dir` 下（`platform-mock.log` / `platform-mock.pid`） |
+| `--taa-target URL` | 固定到单个 TAA 地址；不传时按注册信息推导每个实例的地址 |
+| `--pod` / `--namespace` / `--taa-port` | `--taa-target` 为空时的 Kubernetes 发现参数；`--taa-port` 同时用于多实例地址推导 |
+| `--allow-empty-attestation` | 非 TEE 测试环境跳过证明校验 |
+| `--reuse` | 端口已有实例应答时直接复用，不停止、不重启 |
+| `--reset-register` | 就绪后 `POST /api/register/reset` |
+| `--skip-build` | 复用 `--binary` 指向的现有二进制 |
+| `--ready-timeout` / `--ready-interval` | 就绪等待，默认 60s / 2s |
+| `--dry-run` | 只打印计划 |
+| `--host` / `--user` / `--remote-password` / `--remote-dir` / `--remote-binary` | 远端目标、SSH 凭据与安装路径 |
+| `--ssh-port` / `--ssh-opt` | 自定义 SSH 端口与额外选项 |
+
+**生命周期语义**
+
+- `start` 默认先构建，然后写 pidfile、后台启动并轮询 `GET /api/register/status`；
+  超时会打印日志末尾并以非 0 退出。
+- `stop` 先按 pidfile 终止，再按进程名兜底，未运行时也返回成功。
+- `restart` 等于 `stop` + 构建 + `start`。
+- `status` 打印 pid、日志与端点结果；进程存活或端点应答即返回 0。
+- 远程启动使用 `nohup` 脱离 SSH，二进制上传到 `--remote-binary`（默认
+  `--remote-dir/platform-mock`）。
+
+**多实例模式（默认行为）**
+
+- platform-mock 二进制默认多实例：不传 `--taa-target` 时，一个进程同时服务多个 TAA 实例，
+  实例身份取注册请求里的 `dockerId`，每个实例在注册时按请求源 IP 推导自己的地址
+  （`http://<源 IP>:<--taa-port>`，默认端口 6001）。
+- 直接调用 `deploy-platform-mock.sh` 时省略 `--taa-target` 即可：
+  ```bash
+  ./deploy-platform-mock.sh start --host 172.16.10.178 --taa-port 6001
+  ```
+- 需要固定单实例地址时传 `--taa-target http://<ip>:6001`（未按注册推导出地址时作为后备）。
+- 限制：反向代理或端口转发会丢失请求源 IP，此时无法按注册推导地址，应退回
+  `--taa-target` 指定固定地址。
+
 
 ---
 
@@ -249,19 +305,19 @@ DNS label（≤63 字符）、命名空间与 RuntimeClass 存在、宿主端口
 | 打包路径 | 镜像 | 归档 |
 |---|---|---|
 | `deploy.sh save` | `taa-train-infer:<YYYYMMDD>` | `deploy/out/taa-train-infer-<YYYYMMDD>.tar.gz` |
-| `deploy-fhe.sh taa save` | `taa-fhe:<YYYYMMDD>` | `deploy/out/taa-fhe-<YYYYMMDD>.tar.gz` |
+| `deploy-fhe.sh save` | `taa-fhe:<YYYYMMDD>` | `deploy/out/taa-fhe-<YYYYMMDD>.tar.gz` |
 | `deploy-dataanaylsis.sh save` | `taa-dataanaylsis:<YYYYMMDD>` | `deploy/out/taa-dataanaylsis-<YYYYMMDD>.tar.gz` |
-| `deploy-llm.sh --create-pod`（内建构建） | `teellm:<YYYYMMDD>` | `deploy/out/teellm-<YYYYMMDD>.tar.gz` |
+| `deploy-llm.sh create`（内建构建） | `teellm:<YYYYMMDD>` | `deploy/out/teellm-<YYYYMMDD>.tar.gz` |
 
 标签只有打包当天的本地日期，不带基础镜像的标签、不带 commit、不自动打 `latest`；
 归档名与镜像名一一对应，只把 `:` 换成 `-`。推 registry 时加统一前缀
 `172.16.10.178:31313/`，仓库名不变。基础镜像（`taa-env:slim-v2`、
 `jupyter-nologin-full:v2.2`、`latti/latti-server-node:latest`、中间层 `teellm-base:<日期>`）
-不适用本规则。每个名字都能用环境变量或 `--image`/`--tag`、`--archive` 覆盖。
+不适用本规则。每个名字都能用环境变量或 `--image`、`--archive` 覆盖。
 
-**默认构建，不按日期猜**：`deploy-llm.sh --create-pod` 建 Pod 前用当前工作树构建镜像，tag 是
+**默认构建，不按日期猜**：`deploy-llm.sh create` 建 Pod 前用当前工作树构建镜像，tag 是
 当天日期，所以不存在"今天的 tag 没人推过"的问题 —— 这次运行自己推。显式给了
-`TEELLM_POD_IMAGE` 就原样使用，不构建。只有 `TEELLM_BUILD_POD_IMAGE=false` 时才回到旧行为：
+`TEELLM_IMAGE` 就原样使用，不构建。只有 `TEELLM_BUILD_POD_IMAGE=false` 时才回到旧行为：
 查 registry 的 `/v2/teellm/tags/list` 取最新的日期 tag，因为隔天部署时"今天"指向一个没人推过的
 tag，Pod 会在 guest 启动之后停在 ImagePullBackOff；此时查询失败（401、不可达）则退回当天日期
 并告警。
@@ -354,7 +410,7 @@ HOME/WORKDIR = `/home/jovyan`，EXPOSE 8888。
 位置），`codeAudit` 块与生产模板逐字一致。加载器按角色在启动时关闭整个审计（开关、LLM、
 带规则的引擎），所以模板里的 semgrep 选择到不了扫描。真正需要处理的是打包路径：`deploy.sh`
 按模板文本决定是否注入 semgrep payload，脚本因此导出 `TAA_SCAN_ENGINE_PROVISION=skip`，
-让 `save`/`remote` 两条路都不再装这个镜像用不上的 payload。
+让 `save` 打包与远程部署两条路都不再装这个镜像用不上的 payload。
 密封密钥来源不需要渲染：TAA 启动时按 `/dev/csv-guest` 是否存在自动选择硬件密钥或 SM2 派生，
 打包与远端两种路径行为一致。
 

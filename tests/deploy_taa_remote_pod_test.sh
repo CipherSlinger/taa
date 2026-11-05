@@ -190,19 +190,18 @@ status=0
 RUN_ENV=()
 run_deploy() {
   set +e
-  # TAA_POD_IMAGE is pinned so the lifecycle cases do not build and push a production image;
+  # --image is pinned so the lifecycle cases do not build and push a production image;
   # the auto-build path is exercised against the real registry, not by this mock harness. The
   # platform key is deliberately not exported: it is read from the host, which is the path a real
   # operator takes, and every case here would otherwise stop proving that.
-  output="$(PATH="$MOCK_BIN:$PATH" env -u TARGET_POD -u TAA_POD_NAME -u TAA_POD_IMAGE \
+  output="$(PATH="$MOCK_BIN:$PATH" env -u TARGET_POD -u TAA_POD_NAME -u TAA_IMAGE \
     -u PLATFORM_PUBLIC_KEY -u TAA_POD_PLATFORM_PUBLIC_KEY -u TAA_POD_CC_INIT_DATA \
-    TAA_POD_IMAGE="$DEFAULT_IMAGE" \
     "${RUN_ENV[@]}" \
-    READY_TIMEOUT=2 \
-    READY_INTERVAL=1 \
-    TAA_POD_READY_TIMEOUT=5 \
+    TAA_READY_TIMEOUT=2 \
+    TAA_READY_INTERVAL=1 \
+    TAA_POD_TAA_READY_TIMEOUT=5 \
     TAA_SCAN_ENGINE_PROVISION=skip \
-    timeout 300 "$REPO/deploy.sh" "$@" 2>&1)"
+    timeout 300 "$REPO/deploy.sh" --image "$DEFAULT_IMAGE" "$@" 2>&1)"
   status=$?
   set -e
 }
@@ -220,8 +219,8 @@ kubectl_lines() { grep -c '^KUBECTL ' "$MOCK_LOG" || true; }
 rm -f "$MOCK_STATE_DIR/applied.yaml" "$MOCK_STATE_DIR/apply-count"
 touch "$MOCK_STATE_DIR/csv_device"
 
-run_deploy taa start
-[[ $status -eq 0 ]] || fail "taa start exited $status"
+run_deploy start
+[[ $status -eq 0 ]] || fail "start exited $status"
 
 [[ "$(cat "$MOCK_STATE_DIR/apply-count" 2>/dev/null || echo 0)" == "1" ]] \
   || fail "the Pod was applied $(cat "$MOCK_STATE_DIR/apply-count" 2>/dev/null || echo 0) times, expected exactly one"
@@ -284,7 +283,7 @@ grep -q "taa service listening on" <<<"$output" \
 
 # ── 2. Second run: the Pod exists and is reused ─────────────────────────────
 
-run_deploy taa start
+run_deploy start
 [[ $status -eq 0 ]] || fail "the second run exited $status"
 [[ "$(cat "$MOCK_STATE_DIR/apply-count")" == "1" ]] \
   || fail "the second run applied the manifest again instead of reusing the Pod"
@@ -297,8 +296,8 @@ rm -f "$MOCK_STATE_DIR/pod" "$MOCK_STATE_DIR/apply-count"
 before="$(wc -l < "$MOCK_LOG")"
 set +e
 output="$(PATH="$MOCK_BIN:$PATH" \
-  READY_TIMEOUT=2 READY_INTERVAL=1 TAA_SCAN_ENGINE_PROVISION=skip \
-  timeout 300 "$REPO/deploy.sh" taa start --pod operator-pod 2>&1)"
+  TAA_READY_TIMEOUT=2 TAA_READY_INTERVAL=1 TAA_SCAN_ENGINE_PROVISION=skip \
+  timeout 300 "$REPO/deploy.sh" start --pod operator-pod 2>&1)"
 status=$?
 set -e
 [[ $status -ne 0 ]] || fail "a missing explicitly named Pod was accepted"
@@ -311,7 +310,7 @@ fi
 # ── 4. Negative control: a Pod without /dev/csv-guest ───────────────────────
 
 rm -f "$MOCK_STATE_DIR/pod" "$MOCK_STATE_DIR/apply-count" "$MOCK_STATE_DIR/csv_device"
-run_deploy taa start
+run_deploy start
 [[ $status -ne 0 ]] || fail "a Pod without /dev/csv-guest was accepted"
 grep -q "/dev/csv-guest" <<<"$output" || fail "the missing device was not named in the error"
 touch "$MOCK_STATE_DIR/csv_device"
@@ -319,10 +318,10 @@ touch "$MOCK_STATE_DIR/csv_device"
 # ── 5. stop deletes the deployment-owned Pod ────────────────────────────────
 
 rm -f "$MOCK_STATE_DIR/pod" "$MOCK_STATE_DIR/apply-count"
-run_deploy taa start
+run_deploy start
 [[ $status -eq 0 ]] || fail "the setup run for stop exited $status"
 before="$(wc -l < "$MOCK_LOG")"
-run_deploy taa stop
+run_deploy stop
 [[ $status -eq 0 ]] || fail "stop exited $status"
 [[ -f "$MOCK_STATE_DIR/pod" ]] && fail "the deployment-owned Pod survived stop"
 tail -n +"$((before + 1))" "$MOCK_LOG" > "$TMP_DIR/stop.log"
@@ -333,13 +332,13 @@ grep -q "TAA Pod '$POD_NAME' deleted" <<<"$output" || fail "the deletion was not
 # ── 6. stop leaves an explicitly named Pod in place ─────────────────────────
 
 rm -f "$MOCK_STATE_DIR/pod" "$MOCK_STATE_DIR/apply-count"
-run_deploy taa start
+run_deploy start
 [[ $status -eq 0 ]] || fail "the setup run for the explicit stop exited $status"
 before="$(wc -l < "$MOCK_LOG")"
 set +e
 output="$(PATH="$MOCK_BIN:$PATH" \
-  READY_TIMEOUT=2 READY_INTERVAL=1 TAA_SCAN_ENGINE_PROVISION=skip \
-  timeout 300 "$REPO/deploy.sh" taa stop --pod "$POD_NAME" 2>&1)"
+  TAA_READY_TIMEOUT=2 TAA_READY_INTERVAL=1 TAA_SCAN_ENGINE_PROVISION=skip \
+  timeout 300 "$REPO/deploy.sh" stop --pod "$POD_NAME" 2>&1)"
 status=$?
 set -e
 [[ $status -eq 0 ]] || fail "stop with an explicit --pod exited $status"
@@ -355,11 +354,11 @@ fi
 # to delete it because the kill failed would leave tens of GiB behind.
 
 rm -f "$MOCK_STATE_DIR/pod" "$MOCK_STATE_DIR/apply-count" "$MOCK_STATE_DIR/exec_fails"
-run_deploy taa start
+run_deploy start
 [[ $status -eq 0 ]] || fail "the setup run for the wedged stop exited $status"
 touch "$MOCK_STATE_DIR/exec_fails"
 before="$(wc -l < "$MOCK_LOG")"
-run_deploy taa stop
+run_deploy stop
 [[ $status -eq 0 ]] || fail "stop on a Pod it cannot exec into exited $status"
 [[ -f "$MOCK_STATE_DIR/pod" ]] && fail "an owned Pod survived stop only because exec failed"
 tail -n +"$((before + 1))" "$MOCK_LOG" > "$TMP_DIR/stop-wedged.log"
@@ -379,12 +378,11 @@ mv "$KEY_FILE" "$TMP_DIR/platform-key.json"
 rm -f "$MOCK_STATE_DIR/pod" "$MOCK_STATE_DIR/apply-count"
 before="$(wc -l < "$MOCK_LOG")"
 set +e
-output="$(PATH="$MOCK_BIN:$PATH" env -u TARGET_POD -u TAA_POD_NAME -u TAA_POD_IMAGE \
+output="$(PATH="$MOCK_BIN:$PATH" env -u TARGET_POD -u TAA_POD_NAME -u TAA_IMAGE \
   -u PLATFORM_PUBLIC_KEY -u TAA_POD_PLATFORM_PUBLIC_KEY -u TAA_POD_CC_INIT_DATA \
-  TAA_POD_IMAGE="$DEFAULT_IMAGE" \
-  READY_TIMEOUT=2 READY_INTERVAL=1 TAA_POD_READY_TIMEOUT=5 \
+  TAA_READY_TIMEOUT=2 TAA_READY_INTERVAL=1 TAA_POD_TAA_READY_TIMEOUT=5 \
   TAA_SCAN_ENGINE_PROVISION=skip \
-  timeout 300 "$REPO/deploy.sh" taa start 2>&1)"
+  timeout 300 "$REPO/deploy.sh" --image "$DEFAULT_IMAGE" start 2>&1)"
 status=$?
 set -e
 mv "$TMP_DIR/platform-key.json" "$KEY_FILE"
@@ -409,13 +407,12 @@ rm -f "$MOCK_STATE_DIR/pod" "$MOCK_STATE_DIR/apply-count"
 touch "$MOCK_STATE_DIR/no_cc_init_data"
 printf 'policy.rego = "package agent_policy"\n' > "$TMP_DIR/initdata.v1.toml"
 set +e
-output="$(PATH="$MOCK_BIN:$PATH" env -u TARGET_POD -u TAA_POD_NAME -u TAA_POD_IMAGE \
+output="$(PATH="$MOCK_BIN:$PATH" env -u TARGET_POD -u TAA_POD_NAME -u TAA_IMAGE \
   -u PLATFORM_PUBLIC_KEY -u TAA_POD_PLATFORM_PUBLIC_KEY -u TAA_POD_CC_INIT_DATA \
-  TAA_POD_IMAGE="$DEFAULT_IMAGE" \
   TAA_POD_INITDATA_FILE="$TMP_DIR/initdata.v1.toml" \
-  READY_TIMEOUT=2 READY_INTERVAL=1 TAA_POD_READY_TIMEOUT=5 \
+  TAA_READY_TIMEOUT=2 TAA_READY_INTERVAL=1 TAA_POD_TAA_READY_TIMEOUT=5 \
   TAA_SCAN_ENGINE_PROVISION=skip \
-  timeout 300 "$REPO/deploy.sh" taa start 2>&1)"
+  timeout 300 "$REPO/deploy.sh" --image "$DEFAULT_IMAGE" start 2>&1)"
 status=$?
 set -e
 [[ $status -eq 0 ]] || fail "the deployment did not fall back to the initdata file (exit $status)"
@@ -435,13 +432,12 @@ rm -f "$MOCK_STATE_DIR/no_cc_init_data"
 rm -f "$MOCK_STATE_DIR/pod" "$MOCK_STATE_DIR/apply-count"
 before="$(wc -l < "$MOCK_LOG")"
 set +e
-output="$(PATH="$MOCK_BIN:$PATH" env -u TARGET_POD -u TAA_POD_NAME -u TAA_POD_IMAGE \
+output="$(PATH="$MOCK_BIN:$PATH" env -u TARGET_POD -u TAA_POD_NAME -u TAA_IMAGE \
   -u TAA_POD_PLATFORM_PUBLIC_KEY -u TAA_POD_CC_INIT_DATA \
-  TAA_POD_IMAGE="$DEFAULT_IMAGE" \
   PLATFORM_PUBLIC_KEY="-----BEGIN PUBLIC KEY-----" \
-  READY_TIMEOUT=2 READY_INTERVAL=1 TAA_POD_READY_TIMEOUT=5 \
+  TAA_READY_TIMEOUT=2 TAA_READY_INTERVAL=1 TAA_POD_TAA_READY_TIMEOUT=5 \
   TAA_SCAN_ENGINE_PROVISION=skip \
-  timeout 300 "$REPO/deploy.sh" taa start 2>&1)"
+  timeout 300 "$REPO/deploy.sh" --image "$DEFAULT_IMAGE" start 2>&1)"
 status=$?
 set -e
 [[ $status -ne 0 ]] || fail "a malformed platform key was accepted"

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Verifies the dedicated TEE-LLM Pod path (--create-pod / pod-down).
+# Verifies the dedicated TEE-LLM Pod path (create / delete).
 #
 # That Pod is what gives teellm-service a real /dev/csv-guest; without the device it serves mock
 # evidence and TAA rejects every handshake. The traps this test guards are not visible in a
@@ -396,12 +396,12 @@ RUN_ENV=()
 # pinned so the memory guard is arithmetic against a known figure rather than against whatever
 # docker happens to have locally.
 DEFAULT_ENV=(
-  OLLAMA_READY_TIMEOUT=2
+  TEELLM_OLLAMA_READY_TIMEOUT=2
   OLLAMA_READY_INTERVAL=1
   TEELLM_POD_READY_TIMEOUT=5
   TEELLM_SUPERVISOR_START_WAIT=1
   TEELLM_POD_ASSUME_YES=true
-  TEELLM_POD_IMAGE_SIZE_GIB=6.10
+  TEELLM_IMAGE_SIZE_GIB=6.10
   KATA_TOML="$KATA_TOML_FILE"
 )
 run_deploy() {
@@ -426,8 +426,8 @@ kubectl_lines() { grep -c '^KUBECTL ' "$MOCK_LOG" || true; }
 rm -f "$MOCK_STATE_DIR/applied.yaml" "$MOCK_STATE_DIR/apply-count"
 touch "$MOCK_STATE_DIR/csv_device"
 
-run_deploy --create-pod start --model qwen2.5-coder:0.5b
-[[ $status -eq 0 ]] || fail "--create-pod start exited $status"
+run_deploy create --model qwen2.5-coder:0.5b
+[[ $status -eq 0 ]] || fail "create exited $status"
 
 [[ "$(cat "$MOCK_STATE_DIR/apply-count" 2>/dev/null || echo 0)" == "1" ]] \
   || fail "the Pod was applied $(cat "$MOCK_STATE_DIR/apply-count" 2>/dev/null || echo 0) times, expected exactly one"
@@ -587,7 +587,7 @@ grep -q "^      imagePullPolicy: Always$" "$APPLIED" \
 rm -f "$MOCK_STATE_DIR/pod"
 build_before="$(grep -c '^DOCKER commit ' "$MOCK_LOG" || true)"
 RUN_ENV=(TEELLM_BUILD_POD_IMAGE=false)
-run_deploy --create-pod start --model qwen2.5-coder:0.5b
+run_deploy create --model qwen2.5-coder:0.5b
 RUN_ENV=()
 [[ $status -eq 0 ]] || fail "TEELLM_BUILD_POD_IMAGE=false exited $status"
 [[ "$(grep -c '^DOCKER commit ' "$MOCK_LOG" || true)" == "$build_before" ]] \
@@ -610,7 +610,7 @@ rm -f "$MOCK_STATE_DIR/pod"
 scp_before="$(grep -c "^SCP\[.*teellm-$TODAY_TAG.tar.gz" "$MOCK_LOG" || true)"
 push_before="$(grep -c '^DOCKER push ' "$MOCK_LOG" || true)"
 RUN_ENV=(MOCK_REGISTRY_CONFIG=sha256:1111111111111111111111111111111111111111111111111111111111111111)
-run_deploy --create-pod start --model qwen2.5-coder:0.5b
+run_deploy create --model qwen2.5-coder:0.5b
 RUN_ENV=()
 [[ $status -eq 0 ]] || fail "the identical-build path exited $status"
 grep -q "the registry already holds this build; nothing uploaded" <<<"$output" \
@@ -625,24 +625,24 @@ grep -q "^      imagePullPolicy: Always$" "$APPLIED" \
   || fail "the freshly built tag is not pulled unconditionally"
 
 # ── 2. Second run: the Pod exists, so the creation path refuses ───────────────
-# --create-pod creates. Adopting an existing Pod would deploy into whatever image it happens to run,
+# create creates. Adopting an existing Pod would deploy into whatever image it happens to run,
 # and replacing it would discard the guest's writable layer (the ollama runtime and the model) and
 # change the IP TAA's endpoint points at, without the operator ever seeing the choice. The run says
 # so and stops, before anything is built or applied.
 
 apply_before="$(cat "$MOCK_STATE_DIR/apply-count")"
 build_before="$(grep -c '^DOCKER commit ' "$MOCK_LOG" || true)"
-run_deploy --create-pod --model qwen2.5-coder:0.5b
-[[ $status -ne 0 ]] || fail "a second --create-pod run was accepted instead of refusing the existing Pod"
+run_deploy create --model qwen2.5-coder:0.5b
+[[ $status -ne 0 ]] || fail "a second create run was accepted instead of refusing the existing Pod"
 grep -q "already exists" <<<"$output" || fail "the refusal does not say the Pod already exists"
-grep -q "pod-down" <<<"$output" || fail "the refusal does not tell the operator to delete the Pod first"
+grep -q "delete" <<<"$output" || fail "the refusal does not tell the operator to delete the Pod first"
 [[ "$(cat "$MOCK_STATE_DIR/apply-count")" == "$apply_before" ]] \
   || fail "the manifest was applied even though the Pod already exists"
 [[ "$(grep -c '^DOCKER commit ' "$MOCK_LOG" || true)" == "$build_before" ]] \
   || fail "an image was built for a Pod that already exists"
 
 # ── 2b. A plain `start --pod` re-execs the supervisor it just installed ──────
-# `--create-pod` is not the only way in: a plain `--pod <name> start` skips pod_up, so
+# `create` is not the only way in: a plain `--pod <name> start` skips pod_up, so
 # nothing marks the Pod as reused. If the restart request depended on that flag, the deployment
 # would install a new supervisor script and leave the old copy running -- which is how a liveness
 # fix silently failed to take effect once.
@@ -689,7 +689,7 @@ resume_line="$(grep -n "rm -f .*\.teellm-supervisor-pause" "$TMP_DIR/bare.log" |
 # which is the only thing standing between a mock report and a deployment that claims attestation.
 
 rm -f "$MOCK_STATE_DIR/pod" "$MOCK_STATE_DIR/csv_device"
-run_deploy --create-pod start --model qwen2.5-coder:0.5b
+run_deploy create --model qwen2.5-coder:0.5b
 [[ $status -ne 0 ]] || fail "a Pod without /dev/csv-guest was accepted"
 grep -q "/dev/csv-guest" <<<"$output" || fail "the missing device was not named in the error"
 touch "$MOCK_STATE_DIR/csv_device"
@@ -701,14 +701,14 @@ touch "$MOCK_STATE_DIR/csv_device"
 
 rm -f "$MOCK_STATE_DIR/pod"
 build_before="$(grep -c '^DOCKER commit ' "$MOCK_LOG" || true)"
-RUN_ENV=(TEELLM_POD_IMAGE="172.16.10.178:31313/teellm:pinned")
-run_deploy --create-pod start --model qwen2.5-coder:0.5b
+RUN_ENV=(TEELLM_IMAGE="172.16.10.178:31313/teellm:pinned")
+run_deploy create --model qwen2.5-coder:0.5b
 RUN_ENV=()
-[[ $status -eq 0 ]] || fail "an explicit TEELLM_POD_IMAGE exited $status"
+[[ $status -eq 0 ]] || fail "an explicit TEELLM_IMAGE exited $status"
 grep -q "^      image: 172.16.10.178:31313/teellm:pinned$" "$APPLIED" \
-  || fail "an explicit TEELLM_POD_IMAGE was replaced by a registry tag"
+  || fail "an explicit TEELLM_IMAGE was replaced by a registry tag"
 [[ "$(grep -c '^DOCKER commit ' "$MOCK_LOG" || true)" == "$build_before" ]] \
-  || fail "an image was built despite an explicit TEELLM_POD_IMAGE"
+  || fail "an image was built despite an explicit TEELLM_IMAGE"
 grep -q "^      imagePullPolicy: IfNotPresent$" "$APPLIED" \
   || fail "an explicit image was overridden to pull unconditionally"
 
@@ -719,7 +719,7 @@ grep -q "^      imagePullPolicy: IfNotPresent$" "$APPLIED" \
 
 rm -f "$MOCK_STATE_DIR/pod"
 RUN_ENV=(CURL_FAILS=true TEELLM_BUILD_POD_IMAGE=false)
-run_deploy --create-pod start --model qwen2.5-coder:0.5b
+run_deploy create --model qwen2.5-coder:0.5b
 RUN_ENV=()
 [[ $status -eq 0 ]] || fail "an unreadable tag listing failed the deployment"
 grep -q "^      image: 172.16.10.178:31313/teellm:$(date +%Y%m%d)$" "$APPLIED" \
@@ -734,7 +734,7 @@ grep -q "could not list tags of" <<<"$output" || fail "the fallback was not repo
 rm -f "$MOCK_STATE_DIR/pod"
 apply_before="$(cat "$MOCK_STATE_DIR/apply-count")"
 RUN_ENV=(TEELLM_POD_MEMORY=8Gi)
-run_deploy --create-pod start --model qwen2.5-coder:0.5b
+run_deploy create --model qwen2.5-coder:0.5b
 RUN_ENV=()
 [[ $status -ne 0 ]] || fail "an 8Gi Pod was accepted although its overlay cannot hold the image"
 grep -q "cannot start" <<<"$output" || fail "the memory refusal does not explain itself"
@@ -749,7 +749,7 @@ grep -qE "at least 1[0-9]Gi" <<<"$output" || fail "the refusal does not name the
 rm -f "$MOCK_STATE_DIR/pod"
 apply_before="$(cat "$MOCK_STATE_DIR/apply-count")"
 RUN_ENV=(MOCK_FREE_AVAIL_MIB=4096)
-run_deploy --create-pod start --model qwen2.5-coder:0.5b
+run_deploy create --model qwen2.5-coder:0.5b
 RUN_ENV=()
 [[ $status -ne 0 ]] || fail "a VM larger than the host's available memory was accepted"
 grep -q "available and this confidential VM needs" <<<"$output" \
@@ -765,7 +765,7 @@ grep -q "available and this confidential VM needs" <<<"$output" \
 rm -f "$MOCK_STATE_DIR/pod"
 apply_before="$(cat "$MOCK_STATE_DIR/apply-count")"
 RUN_ENV=(MOCK_HOST_PORT_BUSY=yes)
-run_deploy --create-pod start --model qwen2.5-coder:0.5b
+run_deploy create --model qwen2.5-coder:0.5b
 RUN_ENV=()
 [[ $status -ne 0 ]] || fail "a taken host port was accepted"
 grep -q "host port 18443 is already in use" <<<"$output" \
@@ -781,7 +781,7 @@ grep -q "TEELLM_POD_HOST_PORT" <<<"$output" || fail "the port refusal does not n
 
 rm -f "$MOCK_STATE_DIR/pod"
 RUN_ENV=(MOCK_HOST_PORT_TAKEN_BY="default/old-teellm")
-run_deploy --create-pod start --model qwen2.5-coder:0.5b
+run_deploy create --model qwen2.5-coder:0.5b
 RUN_ENV=()
 [[ $status -eq 0 ]] || fail "another Pod's hostPort declaration blocked the creation"
 grep -q "declares host port 18443" <<<"$output" || fail "the declaration was not reported"
@@ -793,7 +793,7 @@ grep -q "default/old-teellm" <<<"$output" || fail "the declaration does not name
 
 rm -f "$MOCK_STATE_DIR/pod"
 RUN_ENV=(TEELLM_POD_HOST_PORT=0)
-run_deploy --create-pod start --model qwen2.5-coder:0.5b
+run_deploy create --model qwen2.5-coder:0.5b
 RUN_ENV=()
 [[ $status -eq 0 ]] || fail "TEELLM_POD_HOST_PORT=0 exited $status"
 grep -q '^          hostPort: 0$' "$APPLIED" || fail "TEELLM_POD_HOST_PORT=0 was not rendered"
@@ -808,7 +808,7 @@ rm -f "$MOCK_STATE_DIR/pod"
 
 rm -f "$MOCK_STATE_DIR/pod"
 RUN_ENV=(TEELLM_POD_ATTESTATION_HOST_PORT=0)
-run_deploy --create-pod start --model qwen2.5-coder:0.5b
+run_deploy create --model qwen2.5-coder:0.5b
 RUN_ENV=()
 [[ $status -eq 0 ]] || fail "TEELLM_POD_ATTESTATION_HOST_PORT=0 exited $status"
 grep -q "container port 6001 is not published" <<<"$output" || fail "the disabled platform port was not reported"
@@ -825,7 +825,7 @@ rm -f "$MOCK_STATE_DIR/pod"
 rm -f "$MOCK_STATE_DIR/pod"
 apply_before="$(cat "$MOCK_STATE_DIR/apply-count")"
 RUN_ENV=(TEELLM_POD_ATTESTATION_HOST_PORT=18443)
-run_deploy --create-pod start --model qwen2.5-coder:0.5b
+run_deploy create --model qwen2.5-coder:0.5b
 RUN_ENV=()
 [[ $status -ne 0 ]] || fail "two container ports sharing one host port were accepted"
 grep -q "cannot publish 8443 and 6001 on the same host port" <<<"$output" \
@@ -842,7 +842,7 @@ rm -f "$MOCK_STATE_DIR/pod"
 apply_before="$(cat "$MOCK_STATE_DIR/apply-count")"
 before="$(wc -l < "$MOCK_LOG")"
 RUN_ENV=(MOCK_POD_MISSING_BINARY=yes)
-run_deploy --create-pod start --model qwen2.5-coder:0.5b
+run_deploy create --model qwen2.5-coder:0.5b
 RUN_ENV=()
 [[ $status -ne 0 ]] || fail "an image without teellm-service was accepted"
 grep -q "does not carry the full TEE-LLM payload" <<<"$output" \
@@ -860,18 +860,18 @@ fi
 rm -f "$MOCK_STATE_DIR/pod"
 
 # Put a Pod back for the cases below: the two refusals above removed it to reach the creation path,
-# and stop/pod-down need something to act on.
+# and stop/delete need something to act on.
 touch "$MOCK_STATE_DIR/pod"
 
-# ── 4. Negative control: --create-pod with a different explicit --pod ───────
+# ── 4. Negative control: create with a different explicit --pod ───────
 
 before="$(kubectl_lines)"
 set +e
 output="$(PATH="$MOCK_BIN:$PATH" \
-  timeout 300 "$REPO/deploy-llm.sh" --create-pod start --pod some-other-pod 2>&1)"
+  timeout 300 "$REPO/deploy-llm.sh" create --pod some-other-pod 2>&1)"
 status=$?
 set -e
-[[ $status -ne 0 ]] || fail "--create-pod overrode an explicit --pod"
+[[ $status -ne 0 ]] || fail "create overrode an explicit --pod"
 grep -q "addresses the TEE-LLM Pod" <<<"$output" || fail "the refusal does not explain the conflict"
 [[ "$(kubectl_lines)" == "$before" ]] || fail "the refusal happened only after touching the cluster"
 
@@ -912,7 +912,7 @@ grep -q "platform reporting" <<<"$output" \
 # only killed processes would quietly do nothing.
 
 before="$(wc -l < "$MOCK_LOG")"
-run_deploy --create-pod stop
+run_deploy stop
 [[ $status -eq 0 ]] || fail "stop exited $status"
 stop_log="$TMP_DIR/stop.log"
 tail -n +"$((before + 1))" "$MOCK_LOG" > "$stop_log"
@@ -924,42 +924,42 @@ stop_kill_line="$(grep -n "teellm-service" "$stop_log" | grep -v supervisor-paus
 [[ -n "$stop_pause_line" && -n "$stop_kill_line" && "$stop_pause_line" -lt "$stop_kill_line" ]] \
   || fail "stop killed the daemons before pausing the supervisor"
 
-# ── 7. pod-down: the Pod is deleted, and nothing else is ─────────────────────
+# ── 7. delete: the Pod is deleted, and nothing else is ─────────────────────
 
 # Pointed at a bundle that does not exist: a teardown must not depend on the machine that deployed
 # the bundle still having it, so this also pins down where the action is handled.
 RUN_OLLAMA_DIR="$TMP_DIR/no-such-bundle"
 before="$(wc -l < "$MOCK_LOG")"
-run_deploy pod-down
-[[ $status -eq 0 ]] || fail "pod-down exited $status"
-[[ -f "$MOCK_STATE_DIR/pod" ]] && fail "the TEE-LLM Pod survived pod-down"
-grep -q "TEE-LLM Pod '$COPY_POD_NAME' deleted" <<<"$output" || fail "pod-down did not report the deletion"
+run_deploy delete
+[[ $status -eq 0 ]] || fail "delete exited $status"
+[[ -f "$MOCK_STATE_DIR/pod" ]] && fail "the TEE-LLM Pod survived delete"
+grep -q "TEE-LLM Pod '$COPY_POD_NAME' deleted" <<<"$output" || fail "delete did not report the deletion"
 if grep -q "$DEFAULT_POD_NAME" "$MOCK_LOG"; then
-  fail "pod-down was aimed at the default target Pod ($DEFAULT_POD_NAME)"
+  fail "delete was aimed at the default target Pod ($DEFAULT_POD_NAME)"
 fi
-pod_down_log="$TMP_DIR/pod-down.log"
-tail -n +"$((before + 1))" "$MOCK_LOG" > "$pod_down_log"
+delete_log="$TMP_DIR/delete.log"
+tail -n +"$((before + 1))" "$MOCK_LOG" > "$delete_log"
 # The delete is submitted without waiting and then polled, the way the reference delete script does
 # it: a kata guest needs its grace period, and a blocking kubectl wait would hide a guest that
 # ignores the signal instead of letting the forced-delete fallback see it.
-grep -q "delete pod $COPY_POD_NAME --grace-period=30 --ignore-not-found --wait=false" "$pod_down_log" \
-  || fail "pod-down did not submit a grace-period delete that it then polls"
-if grep -q "delete pod $COPY_POD_NAME .*--wait=true" "$pod_down_log"; then
-  fail "pod-down still blocks inside kubectl wait instead of polling"
+grep -q "delete pod $COPY_POD_NAME --grace-period=30 --ignore-not-found --wait=false" "$delete_log" \
+  || fail "delete did not submit a grace-period delete that it then polls"
+if grep -q "delete pod $COPY_POD_NAME .*--wait=true" "$delete_log"; then
+  fail "delete still blocks inside kubectl wait instead of polling"
 fi
 # A sandbox can outlive its Pod and keep the whole VM resident, so the deletion is not the end of
 # the teardown: the three counts are read on the remote host afterwards.
 grep -q "checking for leftover kata sandboxes" <<<"$output" \
-  || fail "pod-down did not check for leftover kata sandboxes"
+  || fail "delete did not check for leftover kata sandboxes"
 grep -qE "kata Pods: [0-9?]+ +/run/vc/sbs: [0-9?]+ +qemu-system: [0-9?]+" <<<"$output" \
   || fail "the sandbox counts were not reported"
 
 # Running it again is a no-op, not an error: the second run is also the only way to re-check the
 # sandbox counts once someone has cleaned an orphan by hand.
-run_deploy pod-down
-[[ $status -eq 0 ]] || fail "pod-down on a Pod that is already gone exited $status"
+run_deploy delete
+[[ $status -eq 0 ]] || fail "delete on a Pod that is already gone exited $status"
 grep -q "TEE-LLM Pod '$COPY_POD_NAME' does not exist" <<<"$output" \
-  || fail "pod-down did not say the Pod was already gone"
+  || fail "delete did not say the Pod was already gone"
 grep -q "checking for leftover kata sandboxes" <<<"$output" \
   || fail "the already-gone path skipped the sandbox check"
 
@@ -972,7 +972,7 @@ unset RUN_OLLAMA_DIR
 commit_before="$(grep -c '^DOCKER commit ' "$MOCK_LOG" || true)"
 apply_before="$(cat "$MOCK_STATE_DIR/apply-count")"
 RUN_ENV=(MOCK_NO_NAMESPACE=true)
-run_deploy --create-pod start --model qwen2.5-coder:0.5b
+run_deploy create --model qwen2.5-coder:0.5b
 RUN_ENV=()
 [[ $status -ne 0 ]] || fail "a missing namespace was accepted"
 grep -q "namespace" <<<"$output" || fail "the missing namespace was not named in the error"
@@ -989,9 +989,9 @@ grep -q "namespace" <<<"$output" || fail "the missing namespace was not named in
 mkdir -p "$MOCK_REMOTE_ROOT/root"
 printf 'FILE_CC_INIT_DATA' > "$MOCK_REMOTE_ROOT/root/cc_init_data.txt"
 RUN_ENV=(MOCK_NO_CC_INIT_DATA=true)
-run_deploy --create-pod start --model qwen2.5-coder:0.5b
+run_deploy create --model qwen2.5-coder:0.5b
 RUN_ENV=()
-[[ $status -eq 0 ]] || fail "--create-pod start with no CoCo Pod running exited $status"
+[[ $status -eq 0 ]] || fail "create with no CoCo Pod running exited $status"
 grep -q "cc_init_data read from /root/cc_init_data.txt" <<<"$output" \
   || fail "the deployment did not report reading cc_init_data from the host file"
 grep -q 'cc_init_data: "FILE_CC_INIT_DATA"$' "$MOCK_STATE_DIR/applied.yaml" \
@@ -1007,7 +1007,7 @@ grep -q 'cc_init_data: "FILE_CC_INIT_DATA"$' "$MOCK_STATE_DIR/applied.yaml" \
 LABEL_FILE="$TMP_DIR/image-fingerprint"
 rm -f "$LABEL_FILE" "$MOCK_STATE_DIR/pod"
 RUN_ENV=(MOCK_COMMIT_LABEL_FILE="$LABEL_FILE")
-run_deploy --create-pod start --model qwen2.5-coder:0.5b
+run_deploy create --model qwen2.5-coder:0.5b
 RUN_ENV=()
 [[ $status -eq 0 ]] || fail "the fingerprint-recording run exited $status"
 [[ -s "$LABEL_FILE" ]] || fail "the committed image does not record a payload fingerprint"
@@ -1015,7 +1015,7 @@ RUN_ENV=()
 commit_before="$(grep -c '^DOCKER commit ' "$MOCK_LOG" || true)"
 rm -f "$MOCK_STATE_DIR/pod"
 RUN_ENV=(MOCK_IMAGE_LABEL_FILE="$LABEL_FILE")
-run_deploy --create-pod start --model qwen2.5-coder:0.5b
+run_deploy create --model qwen2.5-coder:0.5b
 RUN_ENV=()
 [[ $status -eq 0 ]] || fail "the unchanged-input rerun exited $status"
 grep -q "reusing the local image teellm:$TODAY_TAG" <<<"$output" \
@@ -1032,7 +1032,7 @@ fi
 rm -f "$MOCK_STATE_DIR/pod"
 printf 'more' >> "$OLLAMA_DIR/models/cache/partial"
 RUN_ENV=(MOCK_IMAGE_LABEL_FILE="$LABEL_FILE")
-run_deploy --create-pod start --model qwen2.5-coder:0.5b
+run_deploy create --model qwen2.5-coder:0.5b
 RUN_ENV=()
 [[ $status -eq 0 ]] || fail "the changed-input run exited $status"
 if grep -q "reusing the local image" <<<"$output"; then
@@ -1048,7 +1048,7 @@ fi
 commit_before="$(grep -c '^DOCKER commit ' "$MOCK_LOG" || true)"
 rm -f "$MOCK_STATE_DIR/pod"
 RUN_ENV=(MOCK_REUSE_IMAGE="teellm:20250101")
-run_deploy --create-pod start --model qwen2.5-coder:0.5b
+run_deploy create --model qwen2.5-coder:0.5b
 RUN_ENV=()
 [[ $status -eq 0 ]] || fail "the cross-tag reuse run exited $status"
 grep -q "reusing teellm:20250101 as teellm:$TODAY_TAG" <<<"$output" \
@@ -1064,7 +1064,7 @@ grep -q "^DOCKER tag teellm:20250101 teellm:$TODAY_TAG" "$MOCK_LOG" \
 # the derived image; a mismatch rebuilds the derivation, a match skips it.
 rm -f "$MOCK_STATE_DIR/pod"
 RUN_ENV=(MOCK_IMAGE_LABEL_FILE="$LABEL_FILE" MOCK_BASE_SOURCE_LABEL="sha256:stale")
-run_deploy --create-pod start --model qwen2.5-coder:0.5b
+run_deploy create --model qwen2.5-coder:0.5b
 RUN_ENV=()
 [[ $status -eq 0 ]] || fail "the stale-base run exited $status"
 grep -q "building the TAA-free base image" <<<"$output" \
@@ -1073,7 +1073,7 @@ grep -q "building the TAA-free base image" <<<"$output" \
 rm -f "$MOCK_STATE_DIR/pod"
 RUN_ENV=(MOCK_IMAGE_LABEL_FILE="$LABEL_FILE" \
          MOCK_BASE_SOURCE_LABEL="sha256:1111111111111111111111111111111111111111111111111111111111111111")
-run_deploy --create-pod start --model qwen2.5-coder:0.5b
+run_deploy create --model qwen2.5-coder:0.5b
 RUN_ENV=()
 [[ $status -eq 0 ]] || fail "the current-base run exited $status"
 if grep -q "building the TAA-free base image" <<<"$output"; then
@@ -1087,14 +1087,14 @@ fi
 FUNC_LABEL_FILE="$TMP_DIR/image-fingerprint-func"
 rm -f "$FUNC_LABEL_FILE" "$MOCK_STATE_DIR/pod"
 RUN_ENV=(MOCK_COMMIT_LABEL_FILE="$FUNC_LABEL_FILE")
-run_deploy --create-pod start --model qwen2.5-coder:0.5b
+run_deploy create --model qwen2.5-coder:0.5b
 RUN_ENV=()
 [[ $status -eq 0 ]] || fail "the instruction-fingerprint recording run exited $status"
 
 commit_before="$(grep -c '^DOCKER commit ' "$MOCK_LOG" || true)"
 rm -f "$MOCK_STATE_DIR/pod"
 RUN_ENV=(MOCK_IMAGE_LABEL_FILE="$FUNC_LABEL_FILE")
-run_deploy --create-pod start --model qwen2.5-coder:0.5b
+run_deploy create --model qwen2.5-coder:0.5b
 RUN_ENV=()
 [[ $status -eq 0 ]] || fail "the unchanged-instructions run exited $status"
 grep -q "reusing the local image" <<<"$output" \
@@ -1105,7 +1105,7 @@ awk '{ print } /^build_teellm_pod_image\(\) \{$/ && !done { print "  : # test-on
   "$TMP_DIR/deploy-llm.sh.pristine" > "$REPO/deploy-llm.sh"
 rm -f "$MOCK_STATE_DIR/pod"
 RUN_ENV=(MOCK_IMAGE_LABEL_FILE="$FUNC_LABEL_FILE")
-run_deploy --create-pod start --model qwen2.5-coder:0.5b
+run_deploy create --model qwen2.5-coder:0.5b
 RUN_ENV=()
 [[ $status -eq 0 ]] || fail "the edited-instructions run exited $status"
 if grep -q "reusing the local image" <<<"$output"; then
@@ -1134,13 +1134,13 @@ if grep -q "$DEFAULT_POD_NAME" "$MOCK_LOG"; then
 fi
 
 # A Pod that is not there is reported as that, and is not created: update's whole contract is that
-# the Pod's lifecycle stays with --create-pod and pod-down.
+# the Pod's lifecycle stays with create and delete.
 rm -f "$MOCK_STATE_DIR/pod"
 run_deploy update
 [[ $status -ne 0 ]] || fail "update accepted a Pod that does not exist"
 grep -q "TEE-LLM Pod '$COPY_POD_NAME' does not exist" <<<"$output" \
   || fail "update did not name the missing Pod"
-grep -q -- "--create-pod start" <<<"$output" \
+grep -q -- "create" <<<"$output" \
   || fail "the missing-Pod refusal does not say how to create it"
 [[ -f "$MOCK_STATE_DIR/pod" ]] && fail "update created the Pod"
 [[ "$(cat "$MOCK_STATE_DIR/apply-count")" == "$apply_before" ]] \
@@ -1170,9 +1170,9 @@ run_deploy pod="$COPY_POD_NAME" start
 [[ "$(kubectl_lines)" == "$before" ]] || fail "a removed spelling reached the cluster"
 
 # Creating and updating are different actions; asking for both is refused rather than resolved.
-run_deploy --create-pod update
-[[ $status -ne 0 ]] || fail "'--create-pod update' was accepted"
-grep -q "cannot be combined with --create-pod" <<<"$output" \
+run_deploy create update
+[[ $status -ne 0 ]] || fail "'create update' was accepted"
+grep -q "cannot specify multiple actions (create and update)" <<<"$output" \
   || fail "the create/update conflict is not explained"
 
 echo "PASS: the dedicated TEE-LLM Pod is created once, refused when it already exists, gated on its CSV device, is what the bare invocation deploys into, and is only ever updated by the update action"

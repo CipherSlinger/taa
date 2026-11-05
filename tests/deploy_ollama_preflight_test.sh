@@ -24,7 +24,7 @@ chmod +x "$pkg/start-ollama.sh"
 set +e
 output=$(OLLAMA_LOCAL_DIR="$pkg" \
   OLLAMA_PRUNE_SYNC=false \
-  OLLAMA_READY_TIMEOUT=1 \
+  TEELLM_OLLAMA_READY_TIMEOUT=1 \
   OLLAMA_READY_INTERVAL=1 \
   "$ROOT_DIR/deploy-llm.sh" start 2>&1)
 status=$?

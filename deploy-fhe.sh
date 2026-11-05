@@ -33,10 +33,8 @@ FHE_IMAGE_ARCHIVE_SHA256="${FHE_IMAGE_ARCHIVE_SHA256:-}"
 # the delivery measured end to end.
 FHE_MODEL_ID="${FHE_MODEL_ID:-resnet20}"
 FHE_MODELS_SRC="${FHE_MODELS_SRC:-$HANDOFF_DIR/data/models}"
-# Container-internal API port. API_HOST_PORT is kept as a compatibility alias
-# from the version that published this port on the host; nothing publishes it
-# now.
-FHE_API_PORT="${FHE_API_PORT:-${API_HOST_PORT:-58996}}"
+# Container-internal API port. Nothing publishes it on the host.
+FHE_PORT="${FHE_PORT:-58996}"
 # Container-internal FHE data root. The FHE entrypoint reads CONTAINER_DATA_DIR
 # (default /data) and renders model_registry.dir = $CONTAINER_DATA_DIR/models,
 # keys_dir = $CONTAINER_DATA_DIR/keys. TAA writes the models, eval-key cache and
@@ -51,13 +49,14 @@ FHE_ACTIVATE_TIMEOUT="${FHE_ACTIVATE_TIMEOUT:-300}"
 # TAA_IMAGE defaults to the handoff image: a deploy run injects TAA into it at
 # start time. A `taa save` run tags its packaged result taa-fhe:<date>, and
 # `TAA_IMAGE=taa-fhe:<date> ./deploy-fhe.sh taa` then runs that image instead.
+TAA_IMAGE_ENV_WAS_SET="${TAA_IMAGE+set}"
 TAA_IMAGE="${TAA_IMAGE:-$FHE_IMAGE}"
 TAA_CONTAINER_NAME="${TAA_CONTAINER_NAME:-taa-fhe}"
 TAA_DOCKER_NETWORK="${TAA_DOCKER_NETWORK:-bridge}"
-TAA_CONTAINER_WORKDIR="${TAA_CONTAINER_WORKDIR:-/root/taa}"
+TAA_WORKDIR="${TAA_WORKDIR:-/root/taa}"
 TAA_CONFIG_FILE="taa-config.json"
 BINARY_NAME="${BINARY_NAME:-taa}"
-TAA_LOG_FILE="${TAA_LOG_FILE:-$TAA_CONTAINER_WORKDIR/taa.log}"
+TAA_LOG_FILE="${TAA_LOG_FILE:-$TAA_WORKDIR/taa.log}"
 # The supervisor's command line as a pgrep/pkill pattern, bracketed in the first
 # letter and in the dot so it matches taa-supervisor.sh without matching the shell that
 # carries the pattern.
@@ -84,7 +83,10 @@ FHE_READY_TIMEOUT="${FHE_READY_TIMEOUT:-180}"
 # ── Where the deployment happens ─────────────────────────────────────────────
 REMOTE_HOST="${REMOTE_HOST:-172.16.10.178}"
 REMOTE_USER="${REMOTE_USER:-root}"
-PASSWORD="${TARGET_PASSWORD:-Osrd@2026}"
+REMOTE_PASSWORD="${REMOTE_PASSWORD:-Osrd@2026}"
+# The environment spelling this replaced. Refused after parsing rather than ignored, so a stale
+# invocation cannot silently authenticate with a different password than it passed.
+TARGET_PASSWORD_ENV_WAS_SET="${TARGET_PASSWORD+set}"
 REMOTE_DIR="${REMOTE_DIR:-/root/taa-fhe}"
 REMOTE_TARGET="${REMOTE_TARGET:-${REMOTE_USER}@${REMOTE_HOST}}"
 
@@ -128,7 +130,11 @@ DOCKER_ID="${DOCKER_ID:-}"
 
 # ── Packaging the taa-fhe image (taa save) ───────────────────────────────────
 SAVE_DATE_TAG="$(date +%Y%m%d)"
-TAA_FHE_SAVE_IMAGE="${TAA_FHE_SAVE_IMAGE:-taa-fhe:${SAVE_DATE_TAG}}"
+# The image save tags its result as. An explicit TAA_IMAGE names it (and then also names the
+# image to run), so one variable covers "package it" and "run the packaged image"; --image
+# overrides it for this run.
+SAVE_IMAGE="${TAA_IMAGE_ENV_WAS_SET:+$TAA_IMAGE}"
+SAVE_IMAGE="${SAVE_IMAGE:-taa-fhe:${SAVE_DATE_TAG}}"
 TAA_FHE_SAVE_ARCHIVE="${TAA_FHE_SAVE_ARCHIVE:-$PROJECT_DIR/deploy/out/taa-fhe-${SAVE_DATE_TAG}.tar.gz}"
 SAVE_ACTION=0
 SAVE_BUILDER_CONTAINER=""
@@ -156,7 +162,7 @@ report_left_running() {
     printf '[deploy-fhe]   pod %s/%s received TAA files in place; a failed run may have left its supervisor paused\n' \
       "$POD_NAMESPACE" "$TARGET_POD" >&2
     printf '[deploy-fhe]     resume: kubectl -n %s exec %s -- rm -f %s/manual\n' \
-      "$POD_NAMESPACE" "$TARGET_POD" "$TAA_CONTAINER_WORKDIR" >&2
+      "$POD_NAMESPACE" "$TARGET_POD" "$TAA_WORKDIR" >&2
     printf '[deploy-fhe]     logs  : kubectl -n %s exec %s -- tail -n 60 %s\n' \
       "$POD_NAMESPACE" "$TARGET_POD" "$TAA_LOG_FILE" >&2
   elif [ "$TAA_CONTAINER_TOUCHED" = 1 ]; then
@@ -176,7 +182,7 @@ pod_unpause() {
   [ "${POD_MODE:-0}" = 1 ] && [ "${POD_PAUSED:-0}" = 1 ] || return 0
   is_dry_run && return 0
   POD_PAUSED=0
-  pod_sh "rm -f $(shell_quote "$TAA_CONTAINER_WORKDIR/manual")" >/dev/null 2>&1 || true
+  pod_sh "rm -f $(shell_quote "$TAA_WORKDIR/manual")" >/dev/null 2>&1 || true
 }
 
 die() { printf '[deploy-fhe] ERROR: %s\n' "$*" >&2; report_left_running "the run failed"; exit 1; }
@@ -264,17 +270,17 @@ shell_quote() {
 setup_remote_ssh() {
   [ -n "$REMOTE_TARGET" ] || return 0
   local -a prefix=()
-  if [ -n "$PASSWORD" ]; then
+  if [ -n "$REMOTE_PASSWORD" ]; then
     command -v sshpass >/dev/null 2>&1 \
-      || die "sshpass is required to reach $REMOTE_TARGET with TARGET_PASSWORD set; install it, or clear TARGET_PASSWORD to use key authentication"
-    prefix=(sshpass -p "$PASSWORD")
+      || die "sshpass is required to reach $REMOTE_TARGET with REMOTE_PASSWORD set; install it, or pass --remote-password='' to use key authentication"
+    prefix=(sshpass -p "$REMOTE_PASSWORD")
   fi
   require_command scp
   require_command rsync
   REMOTE_SSH=("${prefix[@]}" ssh "${SSH_OPTS[@]}")
   REMOTE_SCP=("${prefix[@]}" scp -q "${SSH_COMMON_OPTS[@]}")
   RSYNC_SSH=""
-  [ -n "$PASSWORD" ] && RSYNC_SSH="sshpass -p $(shell_quote "$PASSWORD") "
+  [ -n "$REMOTE_PASSWORD" ] && RSYNC_SSH="sshpass -p $(shell_quote "$REMOTE_PASSWORD") "
   RSYNC_SSH+="ssh $(shell_quote -o LogLevel=ERROR -o StrictHostKeyChecking=accept-new -o "UserKnownHostsFile=$HOME/.ssh/known_hosts")"
 }
 
@@ -497,7 +503,7 @@ activate_pod_models() {
         continue
         ;;
     esac
-    py='import urllib.request; urllib.request.urlopen(urllib.request.Request("http://127.0.0.1:'"$FHE_API_PORT"'/api/v1/models/activate?model_id='"$id"'", data=b"", method="POST"), timeout=60).read(1)'
+    py='import urllib.request; urllib.request.urlopen(urllib.request.Request("http://127.0.0.1:'"$FHE_PORT"'/api/v1/models/activate?model_id='"$id"'", data=b"", method="POST"), timeout=60).read(1)'
     if pod_sh "python3 -c '$py'" >/dev/null 2>&1; then
       log "activated FHE model $id"
     else
@@ -531,7 +537,7 @@ verify_one() {
 
 usage() {
   cat <<EOF
-Usage: $(basename "$0") [taa] [save] [options]
+Usage: $(basename "$0") [save] [options]
 
 Deploy the unified FHE + TAA node. One container is started from the handoff
 image (latti/latti-server-node:latest), which already contains redis, the FHE
@@ -542,23 +548,19 @@ because the platform drives TAA over the host. The deployment host is
 ${REMOTE_USER}@${REMOTE_HOST} by default.
 
 Arguments:
-  taa
+  (no argument)
       Deploy the unified container: prepare/load the image, stage the models,
       create the container, inject TAA, wait for both health endpoints and
       activate the model. The platform TAA registers with is deployed
       separately (./deploy-platform-mock.sh or the production control plane);
       set PLATFORM_IP if it is not reachable at the docker bridge gateway.
-  (no argument)
-      Deploy the unified container, same as taa.
-
   save
-      Package instead of deploy, and only with the taa argument: build
-      TAA into the handoff image (TAA binary, deploy/taa-supervisor.sh, the rendered
-      config and the combined entrypoint), tag the result
-      TAA_FHE_SAVE_IMAGE (taa-fhe:<date>), export it to
-      TAA_FHE_SAVE_ARCHIVE, then upload and docker-load it on the default
-      remote target. Nothing is started. Run the result with
-      TAA_IMAGE=taa-fhe:<date> ./deploy-fhe.sh taa.
+      Package instead of deploy: build TAA into the handoff image (TAA binary,
+      deploy/taa-supervisor.sh, the rendered config and the combined
+      entrypoint), tag the result TAA_IMAGE (default taa-fhe:<date>), export
+      it to TAA_FHE_SAVE_ARCHIVE, then upload and docker-load it on the
+      selected target. Nothing is started. Run the result with
+      TAA_IMAGE=<image> ./deploy-fhe.sh.
 
 Options:
   --pod <name>
@@ -574,8 +576,13 @@ Options:
   --namespace <ns>
       Namespace of the pod (default: osr).
   -n, --dry-run         Print the commands and execute nothing.
-  --remote              Deploy to ${REMOTE_USER}@${REMOTE_HOST} (default).
-  --local               Deploy on the machine running this script.
+  --mode remote|docker  Where docker and kubectl run: on ${REMOTE_USER}@${REMOTE_HOST}
+                        (default) or on the machine running this script.
+  --image <name>        Image save tags its result as (default: TAA_IMAGE when set,
+                        else taa-fhe:<date>). save only.
+  --remote-password <password>
+                        SSH password for the remote target (default: REMOTE_PASSWORD,
+                        empty means key or agent authentication).
   --no-platform-mock    Deprecated no-op: this script never deploys platform-mock.
   --skip-build          Use the binary already at TAA_BINARY_PATH.
   -h, --help            Show this help.
@@ -592,9 +599,8 @@ Environment:
   FHE_MODEL_ID=${FHE_MODEL_ID}
       Model activated after the FHE API answers; its directory must exist at
       HOST_DATA_DIR/models/<model_id>/server.
-  FHE_API_PORT=${FHE_API_PORT}
-      Container-internal FHE API port. Never published. API_HOST_PORT is a
-      deprecated alias.
+  FHE_PORT=${FHE_PORT}
+      Container-internal FHE API port. Never published.
   TAA_IMAGE=${TAA_IMAGE}
       Image the unified container runs. Defaults to FHE_IMAGE (runtime
       injection); set it to taa-fhe:<date> to run a saved image.
@@ -633,27 +639,21 @@ Environment:
       Container to exec in a multi-container pod; required when the pod has
       more than one container.
   REMOTE_HOST=${REMOTE_HOST}, REMOTE_USER=${REMOTE_USER}
-      Remote target; TARGET_PASSWORD is the ssh password (empty means key or
+      Remote target; REMOTE_PASSWORD is the ssh password (empty means key or
       agent authentication). REMOTE_DIR=${REMOTE_DIR} holds uploaded files.
 EOF
 }
 
 # ── Arguments ────────────────────────────────────────────────────────────────
-DEPLOY_MODE="all"
+CLI_MODE=""
+CLI_IMAGE=""
+CLI_PASSWORD=""
 
 while [ $# -gt 0 ]; do
   case "$1" in
     fhe)
       printf '[deploy-fhe] ERROR: the fhe mode was removed: the FHE services now run inside the taa container\n' >&2
       exit 1
-      ;;
-    taa)
-      if [ "$DEPLOY_MODE" != "all" ] && [ "$DEPLOY_MODE" != "$1" ]; then
-        printf '[deploy-fhe] ERROR: the taa argument was given twice\n' >&2
-        usage >&2
-        exit 1
-      fi
-      DEPLOY_MODE="$1"
       ;;
     platform-mock)
       printf '[deploy-fhe] ERROR: platform-mock is no longer deployed by this script; use ./deploy-platform-mock.sh start\n' >&2
@@ -702,8 +702,36 @@ while [ $# -gt 0 ]; do
       POD_NAMESPACE="$1"
       ;;
     -n|--dry-run) DRY_RUN=1 ;;
-    --remote) REMOTE_TARGET="${REMOTE_USER}@${REMOTE_HOST}" ;;
-    --local) REMOTE_TARGET="" ;;
+    --mode=*) CLI_MODE="${1#*=}" ;;
+    --mode)
+      shift
+      if [ $# -eq 0 ] || [ "${1#-}" != "$1" ]; then
+        printf '[deploy-fhe] ERROR: --mode requires remote or docker\n' >&2
+        usage >&2
+        exit 1
+      fi
+      CLI_MODE="$1"
+      ;;
+    --image=*) CLI_IMAGE="${1#*=}" ;;
+    --image)
+      shift
+      if [ $# -eq 0 ] || [ "${1#-}" != "$1" ]; then
+        printf '[deploy-fhe] ERROR: --image requires an image name\n' >&2
+        usage >&2
+        exit 1
+      fi
+      CLI_IMAGE="$1"
+      ;;
+    --remote-password=*) CLI_PASSWORD="${1#*=}" ;;
+    --remote-password)
+      shift
+      if [ $# -eq 0 ]; then
+        printf '[deploy-fhe] ERROR: --remote-password requires a password argument\n' >&2
+        usage >&2
+        exit 1
+      fi
+      CLI_PASSWORD="$1"
+      ;;
     --no-platform-mock) warn "--no-platform-mock is deprecated and now a no-op: this script never deploys platform-mock" ;;
     --skip-build) BUILD_BINARIES=0 ;;
     -h|--help|help) usage; exit 0 ;;
@@ -726,13 +754,36 @@ if [ -n "$POD_NAMESPACE_ENV_WAS_SET" ] || [ -n "$TARGET_NAMESPACE_ENV_WAS_SET" ]
   exit 1
 fi
 
-# TAA is the only thing this script deploys.
-DEPLOY_TAA=1
-if [ "$SAVE_ACTION" = 1 ] && [ "$DEPLOY_MODE" != "taa" ]; then
-  printf '[deploy-fhe] ERROR: save is only valid with the taa argument: deploy-fhe.sh taa save\n' >&2
+if [ -n "$TARGET_PASSWORD_ENV_WAS_SET" ]; then
+  printf '[deploy-fhe] ERROR: TARGET_PASSWORD is no longer supported; pass --remote-password <password> instead\n' >&2
   usage >&2
   exit 1
 fi
+
+case "$CLI_MODE" in
+  "") ;;
+  remote) REMOTE_TARGET="${REMOTE_USER}@${REMOTE_HOST}" ;;
+  docker) REMOTE_TARGET="" ;;
+  *)
+    printf '[deploy-fhe] ERROR: --mode must be remote or docker, not %s\n' "$CLI_MODE" >&2
+    usage >&2
+    exit 1
+    ;;
+esac
+if [ -n "$CLI_IMAGE" ]; then
+  if [ "$SAVE_ACTION" != 1 ]; then
+    printf '[deploy-fhe] ERROR: --image only names the image save builds; it does nothing on a deploy run\n' >&2
+    usage >&2
+    exit 1
+  fi
+  SAVE_IMAGE="$CLI_IMAGE"
+fi
+if [ -n "$CLI_PASSWORD" ]; then
+  REMOTE_PASSWORD="$CLI_PASSWORD"
+fi
+
+# TAA is the only thing this script deploys.
+DEPLOY_TAA=1
 
 # Pod mode replaces the docker container with a pod that the platform already
 # created, so it only makes sense with taa and without save.
@@ -758,7 +809,6 @@ if [ -n "$TARGET_POD" ]; then
     exit 1
   fi
   POD_MODE=1
-  DEPLOY_MODE=taa
   DEPLOY_TAA=1
   log "pod mode enabled by --pod=$TARGET_POD"
   POD_KCTL=(kubectl -n "$POD_NAMESPACE")
@@ -782,7 +832,7 @@ if [ "$POD_MODE" = 1 ]; then
     TAA_RENDERED_CONFIG="${TMPDIR:-/tmp}/taa-fhe.rendered.json"
   fi
 fi
-TAA_CONTAINER_CONFIG_PATH="${TAA_CONTAINER_CONFIG_PATH:-$TAA_CONTAINER_WORKDIR/$TAA_CONFIG_FILE}"
+TAA_CONTAINER_CONFIG_PATH="${TAA_CONTAINER_CONFIG_PATH:-$TAA_WORKDIR/$TAA_CONFIG_FILE}"
 TAA_RENDER_OUT="$TAA_RENDERED_CONFIG"
 if [ "$DEPLOY_TAA" = 1 ] && [ -n "$REMOTE_TARGET" ] && ! is_dry_run && [ "$SAVE_ACTION" != 1 ]; then
   TAA_RENDER_TMPDIR="$(mktemp -d "${TMPDIR:-/tmp}/deploy-fhe-render.XXXXXX")" \
@@ -827,11 +877,11 @@ fi
 case "$TAA_PORT" in
   ''|*[!0-9]*) die "TAA_PORT='$TAA_PORT' is not a number" ;;
 esac
-if [ "$TAA_CONTAINER_WORKDIR" != "/root/taa" ]; then
-  die "TAA_CONTAINER_WORKDIR=$TAA_CONTAINER_WORKDIR, but deploy/taa-supervisor.sh runs taa in /root/taa and taa reads ./$TAA_CONFIG_FILE from its working directory"
+if [ "$TAA_WORKDIR" != "/root/taa" ]; then
+  die "TAA_WORKDIR=$TAA_WORKDIR, but deploy/taa-supervisor.sh runs taa in /root/taa and taa reads ./$TAA_CONFIG_FILE from its working directory"
 fi
-if [ "$TAA_CONTAINER_CONFIG_PATH" != "$TAA_CONTAINER_WORKDIR/$TAA_CONFIG_FILE" ]; then
-  die "TAA_CONTAINER_CONFIG_PATH=$TAA_CONTAINER_CONFIG_PATH, but deploy/taa-supervisor.sh runs taa with no --config, so taa reads $TAA_CONTAINER_WORKDIR/$TAA_CONFIG_FILE"
+if [ "$TAA_CONTAINER_CONFIG_PATH" != "$TAA_WORKDIR/$TAA_CONFIG_FILE" ]; then
+  die "TAA_CONTAINER_CONFIG_PATH=$TAA_CONTAINER_CONFIG_PATH, but deploy/taa-supervisor.sh runs taa with no --config, so taa reads $TAA_WORKDIR/$TAA_CONFIG_FILE"
 fi
 if ! is_dry_run; then
   [ -f "$TAA_ENTRYPOINT_SOURCE" ] || die "combined entrypoint not found: $TAA_ENTRYPOINT_SOURCE"
@@ -851,7 +901,7 @@ render_taa_config() {
   rendered_dir="$(dirname "$TAA_RENDER_OUT")"
   [ -d "$rendered_dir" ] || die "cannot write $TAA_RENDER_OUT: $rendered_dir does not exist"
   jq \
-      --arg endpoint "http://127.0.0.1:${FHE_API_PORT}" \
+      --arg endpoint "http://127.0.0.1:${FHE_PORT}" \
       --arg data "$FHE_CONTAINER_DATA_DIR" \
       --arg state "$HOST_TAA_STATE_DIR" \
       '.fhe.endpoint = $endpoint | .fhe.dataDir = $data
@@ -930,7 +980,7 @@ wait_for_fhe_health() {
     fail_if_container_stopped
     if run docker exec "$TAA_CONTAINER_NAME" python3 -c \
         'import sys,urllib.request; urllib.request.urlopen("http://127.0.0.1:"+sys.argv[1]+"/api/v1/health", timeout=5).read(1)' \
-        "$FHE_API_PORT" >/dev/null 2>&1; then
+        "$FHE_PORT" >/dev/null 2>&1; then
       return 0
     fi
     sleep "$TAA_READY_INTERVAL"
@@ -1075,7 +1125,7 @@ install_taa_files() {
     # after its 10s delay, and the copies below fit well inside that window.
     # .new + mv keeps a running taa from seeing a half-written binary
     # (docker cp directly onto a running executable fails with ETXTBSY).
-    run docker exec -i "$TAA_CONTAINER_NAME" sh -lc "touch '$TAA_CONTAINER_WORKDIR/manual'"
+    run docker exec -i "$TAA_CONTAINER_NAME" sh -lc "touch '$TAA_WORKDIR/manual'"
     run docker exec -i "$TAA_CONTAINER_NAME" \
       sh -lc "pkill -f '$SUPERVISOR_PATTERN' >/dev/null 2>&1 || true; pkill -x '$BINARY_NAME' >/dev/null 2>&1 || true"
     if ! is_dry_run; then
@@ -1086,17 +1136,17 @@ install_taa_files() {
         sleep 0.2
       done
     fi
-    run docker cp "$HOST_START_SH" "$TAA_CONTAINER_NAME:$TAA_CONTAINER_WORKDIR/taa-supervisor.sh.new"
-    run docker cp "$HOST_TAA_BINARY_PATH" "$TAA_CONTAINER_NAME:$TAA_CONTAINER_WORKDIR/$BINARY_NAME.new"
+    run docker cp "$HOST_START_SH" "$TAA_CONTAINER_NAME:$TAA_WORKDIR/taa-supervisor.sh.new"
+    run docker cp "$HOST_TAA_BINARY_PATH" "$TAA_CONTAINER_NAME:$TAA_WORKDIR/$BINARY_NAME.new"
     run docker cp "$TAA_RENDERED_CONFIG" "$TAA_CONTAINER_NAME:$TAA_CONTAINER_CONFIG_PATH.new"
     run docker exec -i "$TAA_CONTAINER_NAME" sh -lc \
-      "mv -f '$TAA_CONTAINER_WORKDIR/taa-supervisor.sh.new' '$TAA_CONTAINER_WORKDIR/taa-supervisor.sh' \
-       && mv -f '$TAA_CONTAINER_WORKDIR/$BINARY_NAME.new' '$TAA_CONTAINER_WORKDIR/$BINARY_NAME' \
+      "mv -f '$TAA_WORKDIR/taa-supervisor.sh.new' '$TAA_WORKDIR/taa-supervisor.sh' \
+       && mv -f '$TAA_WORKDIR/$BINARY_NAME.new' '$TAA_WORKDIR/$BINARY_NAME' \
        && mv -f '$TAA_CONTAINER_CONFIG_PATH.new' '$TAA_CONTAINER_CONFIG_PATH' \
-       && chown root:root '$TAA_CONTAINER_WORKDIR/taa-supervisor.sh' '$TAA_CONTAINER_WORKDIR/$BINARY_NAME' '$TAA_CONTAINER_CONFIG_PATH' \
-       && chmod +x '$TAA_CONTAINER_WORKDIR/taa-supervisor.sh' '$TAA_CONTAINER_WORKDIR/$BINARY_NAME' \
+       && chown root:root '$TAA_WORKDIR/taa-supervisor.sh' '$TAA_WORKDIR/$BINARY_NAME' '$TAA_CONTAINER_CONFIG_PATH' \
+       && chmod +x '$TAA_WORKDIR/taa-supervisor.sh' '$TAA_WORKDIR/$BINARY_NAME' \
        && chmod 600 '$TAA_CONTAINER_CONFIG_PATH' \
-       && rm -f '$TAA_CONTAINER_WORKDIR/manual'"
+       && rm -f '$TAA_WORKDIR/manual'"
     log "refreshed TAA files in the running container; the supervisor restarts taa by itself"
     return 0
   fi
@@ -1109,12 +1159,12 @@ install_taa_files() {
   # so there is no running binary to collide with.
   run docker cp "$HOST_ENTRYPOINT_PATH" "$TAA_CONTAINER_NAME:$TAA_ENTRYPOINT_CONTAINER"
   run docker start "$TAA_CONTAINER_NAME"
-  run docker exec -i "$TAA_CONTAINER_NAME" sh -lc "mkdir -p '$TAA_CONTAINER_WORKDIR'"
-  run docker cp "$HOST_START_SH" "$TAA_CONTAINER_NAME:$TAA_CONTAINER_WORKDIR/taa-supervisor.sh"
-  run docker cp "$HOST_TAA_BINARY_PATH" "$TAA_CONTAINER_NAME:$TAA_CONTAINER_WORKDIR/$BINARY_NAME"
+  run docker exec -i "$TAA_CONTAINER_NAME" sh -lc "mkdir -p '$TAA_WORKDIR'"
+  run docker cp "$HOST_START_SH" "$TAA_CONTAINER_NAME:$TAA_WORKDIR/taa-supervisor.sh"
+  run docker cp "$HOST_TAA_BINARY_PATH" "$TAA_CONTAINER_NAME:$TAA_WORKDIR/$BINARY_NAME"
   run docker cp "$TAA_RENDERED_CONFIG" "$TAA_CONTAINER_NAME:$TAA_CONTAINER_CONFIG_PATH"
   if ! is_dry_run; then
-    host_sh "docker exec -i '$TAA_CONTAINER_NAME' sh -lc \"chown root:root '$TAA_ENTRYPOINT_CONTAINER' '$TAA_CONTAINER_WORKDIR/taa-supervisor.sh' '$TAA_CONTAINER_WORKDIR/$BINARY_NAME' '$TAA_CONTAINER_CONFIG_PATH' && chmod +x '$TAA_ENTRYPOINT_CONTAINER' '$TAA_CONTAINER_WORKDIR/taa-supervisor.sh' '$TAA_CONTAINER_WORKDIR/$BINARY_NAME' && chmod 600 '$TAA_CONTAINER_CONFIG_PATH' && rm -f '$TAA_CONTAINER_WORKDIR/manual'\"" \
+    host_sh "docker exec -i '$TAA_CONTAINER_NAME' sh -lc \"chown root:root '$TAA_ENTRYPOINT_CONTAINER' '$TAA_WORKDIR/taa-supervisor.sh' '$TAA_WORKDIR/$BINARY_NAME' '$TAA_CONTAINER_CONFIG_PATH' && chmod +x '$TAA_ENTRYPOINT_CONTAINER' '$TAA_WORKDIR/taa-supervisor.sh' '$TAA_WORKDIR/$BINARY_NAME' && chmod 600 '$TAA_CONTAINER_CONFIG_PATH' && rm -f '$TAA_WORKDIR/manual'\"" \
       || die "container $TAA_CONTAINER_NAME started but the TAA files are not in place (see docker logs $TAA_CONTAINER_NAME)"
   fi
 }
@@ -1162,7 +1212,7 @@ deploy_into_pod() {
   [ -n "$data_dir" ] || data_dir="$FHE_CONTAINER_DATA_DIR"
   state_base="${state_base%/}"
   [ -n "$state_base" ] || state_base="$HOST_TAA_STATE_DIR"
-  [ -z "$fhe_port" ] || FHE_API_PORT="$fhe_port"
+  [ -z "$fhe_port" ] || FHE_PORT="$fhe_port"
 
   # These are container paths, so they are checked lexically, not against the
   # machine running this script.
@@ -1182,7 +1232,7 @@ deploy_into_pod() {
 
   FHE_CONTAINER_DATA_DIR="$data_dir"
   HOST_TAA_STATE_DIR="$state_base"
-  log "pod layout: data root=$FHE_CONTAINER_DATA_DIR state=$HOST_TAA_STATE_DIR fhe port=$FHE_API_PORT platform=${PLATFORM_IP:-<none>}"
+  log "pod layout: data root=$FHE_CONTAINER_DATA_DIR state=$HOST_TAA_STATE_DIR fhe port=$FHE_PORT platform=${PLATFORM_IP:-<none>}"
 
   step "rendering $TAA_FHE_CONFIG against the pod"
   if is_dry_run; then
@@ -1194,9 +1244,9 @@ deploy_into_pod() {
 
   step "pausing the TAA supervisor in the pod"
   if is_dry_run; then
-    log "would touch $TAA_CONTAINER_WORKDIR/manual, stop $BINARY_NAME and taa-supervisor.sh, and wait up to 30s for $BINARY_NAME to exit"
+    log "would touch $TAA_WORKDIR/manual, stop $BINARY_NAME and taa-supervisor.sh, and wait up to 30s for $BINARY_NAME to exit"
   else
-    pod_sh "touch $(shell_quote "$TAA_CONTAINER_WORKDIR/manual")"
+    pod_sh "touch $(shell_quote "$TAA_WORKDIR/manual")"
     POD_PAUSED=1
     pod_sh "pkill -x $(shell_quote "$BINARY_NAME") >/dev/null 2>&1 || true; pkill -f $(shell_quote "$SUPERVISOR_PATTERN") >/dev/null 2>&1 || true"
     # Killing taa-supervisor.sh makes the pod's entrypoint re-exec the copied taa-supervisor.sh
@@ -1230,32 +1280,32 @@ deploy_into_pod() {
   step "installing the TAA files in the pod"
   local pod_config_src="$TAA_RENDER_OUT"
   [ -z "$REMOTE_TARGET" ] || pod_config_src="$TAA_RENDERED_CONFIG"
-  local bin_new="$TAA_CONTAINER_WORKDIR/$BINARY_NAME.new"
-  local sh_new="$TAA_CONTAINER_WORKDIR/taa-supervisor.sh.new"
+  local bin_new="$TAA_WORKDIR/$BINARY_NAME.new"
+  local sh_new="$TAA_WORKDIR/taa-supervisor.sh.new"
   local cfg_new="$TAA_CONTAINER_CONFIG_PATH.new"
   if is_dry_run; then
-    log "would copy $HOST_TAA_BINARY_PATH, $HOST_START_SH and $pod_config_src into $TARGET_POD:$TAA_CONTAINER_WORKDIR as *.new, then mv them over the live files"
+    log "would copy $HOST_TAA_BINARY_PATH, $HOST_START_SH and $pod_config_src into $TARGET_POD:$TAA_WORKDIR as *.new, then mv them over the live files"
   else
-    pod_sh "mkdir -p $(shell_quote "$TAA_CONTAINER_WORKDIR")"
+    pod_sh "mkdir -p $(shell_quote "$TAA_WORKDIR")"
     pod_cp "$HOST_TAA_BINARY_PATH" "$bin_new"
     pod_cp "$HOST_START_SH" "$sh_new"
     pod_cp "$pod_config_src" "$cfg_new"
     pod_sh "chown root:root $(shell_quote "$bin_new") $(shell_quote "$sh_new") $(shell_quote "$cfg_new") \
       && chmod 755 $(shell_quote "$bin_new") $(shell_quote "$sh_new") \
       && chmod 600 $(shell_quote "$cfg_new") \
-      && mv -f $(shell_quote "$sh_new") $(shell_quote "$TAA_CONTAINER_WORKDIR/taa-supervisor.sh") \
-      && mv -f $(shell_quote "$bin_new") $(shell_quote "$TAA_CONTAINER_WORKDIR/$BINARY_NAME") \
+      && mv -f $(shell_quote "$sh_new") $(shell_quote "$TAA_WORKDIR/taa-supervisor.sh") \
+      && mv -f $(shell_quote "$bin_new") $(shell_quote "$TAA_WORKDIR/$BINARY_NAME") \
       && mv -f $(shell_quote "$cfg_new") $(shell_quote "$TAA_CONTAINER_CONFIG_PATH")"
     log "replaced $BINARY_NAME, taa-supervisor.sh and $TAA_CONFIG_FILE in the pod"
   fi
 
   step "restarting TAA in the pod"
   if is_dry_run; then
-    log "would remove $TAA_CONTAINER_WORKDIR/manual and wait for TCP 127.0.0.1:$TAA_PORT inside the pod"
+    log "would remove $TAA_WORKDIR/manual and wait for TCP 127.0.0.1:$TAA_PORT inside the pod"
     log "dry-run: no files were copied and the pod was not stopped"
     return 0
   fi
-  pod_sh "rm -f $(shell_quote "$TAA_CONTAINER_WORKDIR/manual")"
+  pod_sh "rm -f $(shell_quote "$TAA_WORKDIR/manual")"
   POD_PAUSED=0
   if ! wait_for_pod_taa; then
     pod_sh "tail -n 80 $(shell_quote "$TAA_LOG_FILE")" || true
@@ -1290,7 +1340,7 @@ deploy_into_pod() {
 
 # ── Save path ────────────────────────────────────────────────────────────────
 if [ "$SAVE_ACTION" = 1 ]; then
-step "packaging the taa-fhe image locally ($TAA_FHE_SAVE_IMAGE)"
+step "packaging the taa-fhe image locally ($SAVE_IMAGE)"
 if [ "$BUILD_BINARIES" = 1 ]; then
   build_binary "$TAA_BINARY_PATH" ./cmd/taa
 else
@@ -1332,44 +1382,44 @@ if ! is_dry_run; then
   render_taa_config 0
 else
   log "would verify and load $FHE_IMAGE from $FHE_IMAGE_ARCHIVE, replacing any image already tagged $FHE_IMAGE"
-  log "would render $TAA_FHE_CONFIG -> $TAA_CONTAINER_WORKDIR/$TAA_CONFIG_FILE and bake it into the image"
+  log "would render $TAA_FHE_CONFIG -> $TAA_WORKDIR/$TAA_CONFIG_FILE and bake it into the image"
 fi
 
 builder="taa-fhe-builder-$$"
 SAVE_BUILDER_CONTAINER="$builder"
 run_local docker run -d --name "$builder" --entrypoint tail "$FHE_IMAGE" -f /dev/null
-run_local docker exec -i "$builder" sh -lc "mkdir -p '$TAA_CONTAINER_WORKDIR'"
-run_local docker cp "$PROJECT_DIR/deploy/taa-supervisor.sh" "$builder:$TAA_CONTAINER_WORKDIR/taa-supervisor.sh"
+run_local docker exec -i "$builder" sh -lc "mkdir -p '$TAA_WORKDIR'"
+run_local docker cp "$PROJECT_DIR/deploy/taa-supervisor.sh" "$builder:$TAA_WORKDIR/taa-supervisor.sh"
 run_local docker cp "$TAA_ENTRYPOINT_SOURCE" "$builder:$TAA_ENTRYPOINT_CONTAINER"
-run_local docker cp "$TAA_BINARY_PATH" "$builder:$TAA_CONTAINER_WORKDIR/$BINARY_NAME"
+run_local docker cp "$TAA_BINARY_PATH" "$builder:$TAA_WORKDIR/$BINARY_NAME"
 if is_dry_run; then
   printf '[deploy-fhe] would copy the rendered config -> %s:%s/%s (mode 600)\n' \
-    "$builder" "$TAA_CONTAINER_WORKDIR" "$TAA_CONFIG_FILE"
+    "$builder" "$TAA_WORKDIR" "$TAA_CONFIG_FILE"
 else
-  run_local docker cp "$TAA_RENDER_OUT" "$builder:$TAA_CONTAINER_WORKDIR/$TAA_CONFIG_FILE"
+  run_local docker cp "$TAA_RENDER_OUT" "$builder:$TAA_WORKDIR/$TAA_CONFIG_FILE"
 fi
 run_local docker exec -i "$builder" sh -lc \
-  "chown root:root '$TAA_ENTRYPOINT_CONTAINER' '$TAA_CONTAINER_WORKDIR/taa-supervisor.sh' '$TAA_CONTAINER_WORKDIR/$BINARY_NAME' '$TAA_CONTAINER_WORKDIR/$TAA_CONFIG_FILE' \
-   && chmod +x '$TAA_ENTRYPOINT_CONTAINER' '$TAA_CONTAINER_WORKDIR/taa-supervisor.sh' '$TAA_CONTAINER_WORKDIR/$BINARY_NAME' \
-   && chmod 600 '$TAA_CONTAINER_WORKDIR/$TAA_CONFIG_FILE'"
+  "chown root:root '$TAA_ENTRYPOINT_CONTAINER' '$TAA_WORKDIR/taa-supervisor.sh' '$TAA_WORKDIR/$BINARY_NAME' '$TAA_WORKDIR/$TAA_CONFIG_FILE' \
+   && chmod +x '$TAA_ENTRYPOINT_CONTAINER' '$TAA_WORKDIR/taa-supervisor.sh' '$TAA_WORKDIR/$BINARY_NAME' \
+   && chmod 600 '$TAA_WORKDIR/$TAA_CONFIG_FILE'"
 # /opt/entrypoint.sh is the FHE side the combined entrypoint starts; a base
 # image without it would commit an image that cannot boot.
 run_local docker exec -i "$builder" sh -lc "test -x /opt/entrypoint.sh" \
   || die "$FHE_IMAGE does not contain /opt/entrypoint.sh"
 run_local docker exec -i "$builder" sh -lc \
-  "rm -f '$TAA_CONTAINER_WORKDIR/manual' '$TAA_CONTAINER_WORKDIR/manual-teellm' '$TAA_CONTAINER_WORKDIR/taa.log' '$TAA_CONTAINER_WORKDIR/.taa-supervisor.lock'"
+  "rm -f '$TAA_WORKDIR/manual' '$TAA_WORKDIR/manual-teellm' '$TAA_WORKDIR/taa.log' '$TAA_WORKDIR/.taa-supervisor.lock'"
 run_local docker commit \
   -c 'ENTRYPOINT ["/opt/taa-fhe-supervisor.sh"]' \
   -c 'CMD []' \
   -c 'WORKDIR /root/taa' \
   -c 'EXPOSE 58996 6001' \
   -m "taa-fhe image packaged from $FHE_IMAGE at $(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-  "$builder" "$TAA_FHE_SAVE_IMAGE"
+  "$builder" "$SAVE_IMAGE"
 run_local docker rm -f "$builder"
 SAVE_BUILDER_CONTAINER=""
 
 if ! is_dry_run; then
-  committed="$(docker image inspect --format '{{.Config.Entrypoint}} {{.Config.WorkingDir}} {{json .Config.ExposedPorts}}' "$TAA_FHE_SAVE_IMAGE" 2>/dev/null || true)"
+  committed="$(docker image inspect --format '{{.Config.Entrypoint}} {{.Config.WorkingDir}} {{json .Config.ExposedPorts}}' "$SAVE_IMAGE" 2>/dev/null || true)"
   log "packaged image: $committed"
 fi
 
@@ -1383,10 +1433,10 @@ if ! is_dry_run && command -v pigz >/dev/null 2>&1; then
 fi
 save_tmp="${TAA_FHE_SAVE_ARCHIVE}.tmp.$$"
 if is_dry_run; then
-  log "would run: bash -c set -euo pipefail; docker save $TAA_FHE_SAVE_IMAGE | $compressor -c > $save_tmp && mv -f $save_tmp $TAA_FHE_SAVE_ARCHIVE"
+  log "would run: bash -c set -euo pipefail; docker save $SAVE_IMAGE | $compressor -c > $save_tmp && mv -f $save_tmp $TAA_FHE_SAVE_ARCHIVE"
 else
-  bash -c "set -euo pipefail; docker save $(shell_quote "$TAA_FHE_SAVE_IMAGE") | $compressor -c > $(shell_quote "$save_tmp") && mv -f $(shell_quote "$save_tmp") $(shell_quote "$TAA_FHE_SAVE_ARCHIVE")" \
-    || die "failed to export $TAA_FHE_SAVE_IMAGE to $TAA_FHE_SAVE_ARCHIVE"
+  bash -c "set -euo pipefail; docker save $(shell_quote "$SAVE_IMAGE") | $compressor -c > $(shell_quote "$save_tmp") && mv -f $(shell_quote "$save_tmp") $(shell_quote "$TAA_FHE_SAVE_ARCHIVE")" \
+    || die "failed to export $SAVE_IMAGE to $TAA_FHE_SAVE_ARCHIVE"
   [ -f "$TAA_FHE_SAVE_ARCHIVE" ] || die "docker save reported success but $TAA_FHE_SAVE_ARCHIVE is not there"
 fi
 
@@ -1395,16 +1445,16 @@ if [ -n "$REMOTE_TARGET" ]; then
   host_archive="$REMOTE_DIR/$(basename "$TAA_FHE_SAVE_ARCHIVE")"
   upload_archive "$TAA_FHE_SAVE_ARCHIVE" "$host_archive"
 
-  step "loading $TAA_FHE_SAVE_IMAGE on $REMOTE_TARGET"
+  step "loading $SAVE_IMAGE on $REMOTE_TARGET"
   run docker load -i "$host_archive"
   if ! is_dry_run; then
-    host_sh "docker image inspect $(shell_quote "$TAA_FHE_SAVE_IMAGE") >/dev/null 2>&1" \
-      || die "docker load finished but $TAA_FHE_SAVE_IMAGE is not present on $REMOTE_TARGET"
-    log "image $TAA_FHE_SAVE_IMAGE is present on $REMOTE_TARGET"
+    host_sh "docker image inspect $(shell_quote "$SAVE_IMAGE") >/dev/null 2>&1" \
+      || die "docker load finished but $SAVE_IMAGE is not present on $REMOTE_TARGET"
+    log "image $SAVE_IMAGE is present on $REMOTE_TARGET"
     log "archive $host_archive kept on $REMOTE_TARGET"
   fi
 else
-  log "local run: $TAA_FHE_SAVE_IMAGE was committed into this docker daemon; nothing to upload or load"
+  log "local run: $SAVE_IMAGE was committed into this docker daemon; nothing to upload or load"
 fi
 
 if is_dry_run; then
@@ -1414,17 +1464,17 @@ else
   archive_mb=$(awk -v b="$archive_size" 'BEGIN { printf "%.1f", b / 1048576 }')
   base_id="$(docker image inspect "$FHE_IMAGE" --format '{{.Id}}' 2>/dev/null || true)"
   printf '\n[deploy-fhe] taa-fhe image packaged\n'
-  log "image      : $TAA_FHE_SAVE_IMAGE (base $FHE_IMAGE ${base_id:-unknown})"
-  log "contents   : $TAA_CONTAINER_WORKDIR/{$BINARY_NAME,taa-supervisor.sh,$TAA_CONFIG_FILE} + $TAA_ENTRYPOINT_CONTAINER"
+  log "image      : $SAVE_IMAGE (base $FHE_IMAGE ${base_id:-unknown})"
+  log "contents   : $TAA_WORKDIR/{$BINARY_NAME,taa-supervisor.sh,$TAA_CONFIG_FILE} + $TAA_ENTRYPOINT_CONTAINER"
   log "archive    : $TAA_FHE_SAVE_ARCHIVE (${archive_mb}MB)"
   if [ -n "$REMOTE_TARGET" ]; then
     log "loaded on  : $REMOTE_TARGET"
     log "remote copy: $REMOTE_DIR/$(basename "$TAA_FHE_SAVE_ARCHIVE") (kept)"
   fi
-  log "deploy with: TAA_IMAGE=$TAA_FHE_SAVE_IMAGE ./deploy-fhe.sh taa"
+  log "deploy with: TAA_IMAGE=$SAVE_IMAGE ./deploy-fhe.sh taa"
   log "standalone : docker run -d --gpus all -p $TAA_PORT:$TAA_PORT"
   log "             -v $HOST_DATA_DIR:$FHE_CONTAINER_DATA_DIR -v $HOST_FHE_REDIS_DIR:$FHE_CONTAINER_DATA_DIR/redis -v $HOST_TAA_STATE_DIR:$HOST_TAA_STATE_DIR"
-  log "             -e CONTAINER_DATA_DIR=$FHE_CONTAINER_DATA_DIR -e PLATFORM_IP=<bridge-gateway>:$PLATFORM_PORT $TAA_FHE_SAVE_IMAGE"
+  log "             -e CONTAINER_DATA_DIR=$FHE_CONTAINER_DATA_DIR -e PLATFORM_IP=<bridge-gateway>:$PLATFORM_PORT $SAVE_IMAGE"
 fi
 exit 0
 fi
@@ -1608,7 +1658,7 @@ install_taa_files "$CONTAINER_STATE"
 
 step "waiting for the FHE API inside $TAA_CONTAINER_NAME"
 if is_dry_run; then
-  log "would wait up to ${FHE_READY_TIMEOUT}s for GET http://127.0.0.1:$FHE_API_PORT/api/v1/health via docker exec python3"
+  log "would wait up to ${FHE_READY_TIMEOUT}s for GET http://127.0.0.1:$FHE_PORT/api/v1/health via docker exec python3"
 else
   if ! wait_for_fhe_health; then
     host_sh "docker logs --tail 200 $(shell_quote "$TAA_CONTAINER_NAME") 2>&1" || true
@@ -1619,13 +1669,13 @@ fi
 
 step "activating model $FHE_MODEL_ID"
 if is_dry_run; then
-  log "would POST http://127.0.0.1:$FHE_API_PORT/api/v1/models/activate?model_id=$FHE_MODEL_ID via docker exec python3"
+  log "would POST http://127.0.0.1:$FHE_PORT/api/v1/models/activate?model_id=$FHE_MODEL_ID via docker exec python3"
 else
   run docker exec "$TAA_CONTAINER_NAME" python3 -c '
 import sys, urllib.parse, urllib.request
 url = "http://127.0.0.1:%s/api/v1/models/activate?model_id=%s" % (sys.argv[1], urllib.parse.quote(sys.argv[2]))
 urllib.request.urlopen(urllib.request.Request(url, data=b"", method="POST"), timeout=float(sys.argv[3])).read()
-' "$FHE_API_PORT" "$FHE_MODEL_ID" "$FHE_ACTIVATE_TIMEOUT" \
+' "$FHE_PORT" "$FHE_MODEL_ID" "$FHE_ACTIVATE_TIMEOUT" \
     || die "model activation failed for $FHE_MODEL_ID (expected $STAGED_MODELS_DIR/$FHE_MODEL_ID/server)"
   log "model $FHE_MODEL_ID activated"
 fi
@@ -1695,7 +1745,7 @@ fi
 if [ "$DEPLOY_TAA" = 1 ] && ! is_dry_run; then
   printf '\n[deploy-fhe] unified FHE + TAA node deployed\n'
   log "container      : $TAA_CONTAINER_NAME (image $TAA_IMAGE, network $TAA_DOCKER_NETWORK)"
-  log "FHE API        : http://127.0.0.1:$FHE_API_PORT (container-internal, not published; model $FHE_MODEL_ID activated)"
+  log "FHE API        : http://127.0.0.1:$FHE_PORT (container-internal, not published; model $FHE_MODEL_ID activated)"
   log "TAA            : tcp ${TAA_PROBE_HOST}:${TAA_PORT} (published; /v1/taa/* is sealed)"
   log "FHE data dir   : $HOST_DATA_DIR (mounted at $FHE_CONTAINER_DATA_DIR, shared with TAA's rendered paths)"
   log "TAA state dir  : $HOST_TAA_STATE_DIR (SM2 key pair and sealed state; on a bind of its own)"

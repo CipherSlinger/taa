@@ -242,20 +242,20 @@ TEELLM_DIR="${TEELLM_DIR:-$PROJECT_DIR/teellm}"
 
 # Paths inside the TEE-LLM Pod. The image carries no TAA payload, so the service tree lives under
 # /opt/teellm: /root/taa belongs to the TAA images and must not appear in an inference image.
-CON_WORKDIR="${CON_WORKDIR:-/opt/teellm}"
-CONTAINER_OLLAMA_DIR="${CONTAINER_OLLAMA_DIR:-/opt/teellm/ollama}"
+TEELLM_WORKDIR="${TEELLM_WORKDIR:-/opt/teellm}"
+TEELLM_OLLAMA_DIR="${TEELLM_OLLAMA_DIR:-/opt/teellm/ollama}"
 # Older image revisions ship the same ollama bundle under this name. It carries the identical
 # runtime (only the model set differs), so a container that still has it can be migrated into
-# $CONTAINER_OLLAMA_DIR instead of streaming the runtime in again.
-CONTAINER_LEGACY_OLLAMA_DIR="${CONTAINER_LEGACY_OLLAMA_DIR:-$CON_WORKDIR/ollama-qwen2.5-coder-0.5b}"
+# $TEELLM_OLLAMA_DIR instead of streaming the runtime in again.
+CONTAINER_LEGACY_OLLAMA_DIR="${CONTAINER_LEGACY_OLLAMA_DIR:-$TEELLM_WORKDIR/ollama-qwen2.5-coder-0.5b}"
 
 # TEE-LLM and Ollama ports & endpoints
-TEELLM_PORT="${TEELLM_PORT:-8443}"
-TEELLM_LOG_FILE="${TEELLM_LOG_FILE:-$CON_WORKDIR/teellm-service.log}"
+TEELLM_PORT=8443
+TEELLM_LOG_FILE="${TEELLM_LOG_FILE:-$TEELLM_WORKDIR/teellm-service.log}"
 OLLAMA_HOST="${OLLAMA_HOST:-127.0.0.1:11434}"
 # The supervisor starts ollama and redirects its output here; the readiness failure below dumps it.
-OLLAMA_LOG_FILE="${OLLAMA_LOG_FILE:-$CON_WORKDIR/ollama.log}"
-OLLAMA_READY_TIMEOUT="${OLLAMA_READY_TIMEOUT:-120}"
+OLLAMA_LOG_FILE="${OLLAMA_LOG_FILE:-$TEELLM_WORKDIR/ollama.log}"
+TEELLM_OLLAMA_READY_TIMEOUT="${TEELLM_OLLAMA_READY_TIMEOUT:-120}"
 OLLAMA_READY_INTERVAL="${OLLAMA_READY_INTERVAL:-2}"
 FORCE_QWEN_COPY="${FORCE_QWEN_COPY:-false}"
 OLLAMA_PRUNE_SYNC="${OLLAMA_PRUNE_SYNC:-true}"
@@ -263,18 +263,18 @@ OLLAMA_PRUNE_SYNC="${OLLAMA_PRUNE_SYNC:-true}"
 # Kubernetes & Remote settings
 TARGET_NAMESPACE_ENV_WAS_SET="${TARGET_NAMESPACE+set}"
 TARGET_NAMESPACE="osr"
-# Whether the caller named a Pod with --pod. Captured before the default below, so that
-# --create-pod can tell "the operator asked for this Pod" from "the script filled in a default"
+# Whether the caller named a Pod with --pod. Captured before the fallback below, so that
+# create can tell "the operator asked for this Pod" from "the script filled in a default"
 # and refuse the pairing instead of quietly deploying a TEE-LLM Pod they did not ask for.
 TARGET_POD_ENV_WAS_SET="${TARGET_POD+set}"
 TARGET_POD_WAS_SET=""
-TARGET_POD="taa-env-slim-v2-20260916-b2038037072e1052-54f554445c-n2pnv"
+TARGET_POD=""
 REMOTE_HOST="${REMOTE_HOST:-172.16.10.178}"
 REMOTE_USER="${REMOTE_USER:-root}"
-PASSWORD="${TARGET_PASSWORD:-${PASSWORD:-Osrd@2026}}"
+REMOTE_PASSWORD="${REMOTE_PASSWORD:-Osrd@2026}"
 # Host-side staging directory. Kept out of /root/taa, which is the TAA deployment's tree.
 REMOTE_DIR="${REMOTE_DIR:-/root/teellm}"
-OLLAMA_DIR_NAME="$(basename "$CONTAINER_OLLAMA_DIR")"
+OLLAMA_DIR_NAME="$(basename "$TEELLM_OLLAMA_DIR")"
 REMOTE_OLLAMA_DIR="${REMOTE_OLLAMA_DIR:-$REMOTE_DIR/$OLLAMA_DIR_NAME}"
 K_NS="${TARGET_NAMESPACE:+-n $TARGET_NAMESPACE}"
 
@@ -284,12 +284,14 @@ K_NS="${TARGET_NAMESPACE:+-n $TARGET_NAMESPACE}"
 # signs its own report. TAA verifies only the report's PEK signature and skips the certificate
 # chain, so it cannot tell that mock report from hardware at the handshake -- which is why the
 # deployment itself refuses to run without the device. A kata-qemu-csv2 Pod has it, because its
-# guest init creates it -- which is the whole reason this Pod exists, and why --create-pod
+# guest init creates it -- which is the whole reason this Pod exists, and why create
 # deploys into it rather than into the TAA Pod that a plain start targets by default (that Pod has
 # the device too, but it is not where teellm-service should run, and aiming the deployment at it
 # would make every later gate pass while the service never reaches the Pod the endpoint points
 # at).
 TEELLM_POD_NAME="${TEELLM_POD_NAME:-taa-teellm}"
+# A plain start targets the dedicated TEE-LLM Pod unless --pod names another existing one.
+TARGET_POD="${TARGET_POD:-$TEELLM_POD_NAME}"
 # The image this script builds from the working tree carries the service, the supervisor and the
 # ollama runtime, so a fresh guest serves without any host-side copy.
 #
@@ -298,7 +300,7 @@ TEELLM_POD_NAME="${TEELLM_POD_NAME:-taa-teellm}"
 # the one the guest's CDH tries to pull, and the Pod stops in ImagePullBackOff after the guest has
 # already booted. resolve_teellm_pod_image() therefore replaces it with the newest teellm tag the
 # registry actually has, and refuses rather than falling back to a tag it cannot see.
-TEELLM_IMAGE_REGISTRY="${TEELLM_IMAGE_REGISTRY:-172.16.10.178:31313}"
+TEELLM_IMAGE_REGISTRY="${TEELLM_IMAGE_REGISTRY:-${REMOTE_HOST}:31313}"
 TEELLM_IMAGE_REPO="${TEELLM_IMAGE_REPO:-teellm}"
 # Source image for the Pod image and the archive it can be loaded from when it is not local. The
 # TAA payload under /root/taa is stripped before the teellm payload is added (build path below).
@@ -314,11 +316,11 @@ TEELLM_IMAGE_FORCE_REBUILD="${TEELLM_IMAGE_FORCE_REBUILD:-false}"
 # "the script guessed one from today's date". Only a guess is replaced by a tag the registry
 # actually has; an explicit name is the operator's decision, and a registry whose tag listing is
 # slow, filtered or 401-guarded is no reason to override it.
-TEELLM_POD_IMAGE_WAS_SET="${TEELLM_POD_IMAGE+set}"
+TEELLM_IMAGE_WAS_SET="${TEELLM_IMAGE+set}"
 # Set when this run built and pushed the image, which is what makes the registry tag check in the
 # creation preflight unnecessary: the tag exists by construction.
-TEELLM_POD_IMAGE_BUILT=false
-TEELLM_POD_IMAGE="${TEELLM_POD_IMAGE:-$TEELLM_IMAGE_REGISTRY/$TEELLM_IMAGE_REPO:$(date +%Y%m%d)}"
+TEELLM_IMAGE_BUILT=false
+TEELLM_IMAGE="${TEELLM_IMAGE:-$TEELLM_IMAGE_REGISTRY/$TEELLM_IMAGE_REPO:$(date +%Y%m%d)}"
 TEELLM_POD_NODE="${TEELLM_POD_NODE:-hygon-master}"
 TEELLM_POD_RUNTIME_CLASS="${TEELLM_POD_RUNTIME_CLASS:-kata-qemu-csv2}"
 # Host port that publishes the service's 8443 on the node. TAA keeps dialling the Pod IP, so this
@@ -355,7 +357,7 @@ TEELLM_POD_READY_TIMEOUT="${TEELLM_POD_READY_TIMEOUT:-1800}"
 # recompiles teellm-service, bakes it plus the ollama runtime and the model into an image, pushes
 # that image and creates the Pod from it, so a Pod never runs a binary older than the tree being
 # deployed. Off, it falls back to the previous behaviour of picking the newest date tag the
-# registry already lists. An explicitly named TEELLM_POD_IMAGE skips the build either way: an
+# registry already lists. An explicitly named TEELLM_IMAGE skips the build either way: an
 # operator who names an image is making a decision, not guessing one.
 TEELLM_BUILD_POD_IMAGE="${TEELLM_BUILD_POD_IMAGE:-true}"
 TEELLM_POD_PULL_POLICY="${TEELLM_POD_PULL_POLICY:-IfNotPresent}"
@@ -365,11 +367,11 @@ TEELLM_POD_IMAGE_SIZE_GIB="${TEELLM_POD_IMAGE_SIZE_GIB:-}"
 # Escape hatch for the memory guard, matching --force in the reference create script. Two gates
 # read it: the guest-overlay budget and the host's available memory.
 TEELLM_POD_FORCE_MEMORY="${TEELLM_POD_FORCE_MEMORY:-false}"
-# Whether pod-down counts the host's kata sandboxes after deleting. A leaked qemu keeps its whole
+# Whether delete counts the host's kata sandboxes after deleting. A leaked qemu keeps its whole
 # -m resident, and encrypted memory is not reclaimable, so the count is the only thing that shows it.
 TEELLM_POD_ORPHAN_CHECK="${TEELLM_POD_ORPHAN_CHECK:-true}"
 # Interactive confirmation before a creation, which is a confidential VM of host-resident memory.
-# Non-interactive runs proceed without it: --create-pod is already the deliberate act.
+# Non-interactive runs proceed without it: create is already the deliberate act.
 TEELLM_POD_ASSUME_YES="${TEELLM_POD_ASSUME_YES:-false}"
 # Reads the kata default_memory that sizes the guest on top of limits.memory.
 KATA_TOML="${KATA_TOML:-/opt/kata/share/defaults/kata-containers/configuration-qemu-csv2.toml}"
@@ -441,8 +443,8 @@ SONAME_FIX
 }
 
 ensure_remote_ssh() {
-  if [[ -z "$PASSWORD" ]]; then
-    read -rsp "Password for ${REMOTE_USER}@${REMOTE_HOST}: " PASSWORD
+  if [[ -z "$REMOTE_PASSWORD" ]]; then
+    read -rsp "Password for ${REMOTE_USER}@${REMOTE_HOST}: " REMOTE_PASSWORD
     echo
   fi
   if ! command -v sshpass >/dev/null 2>&1; then
@@ -453,12 +455,12 @@ ensure_remote_ssh() {
 
 remote_ssh() {
   ensure_remote_ssh
-  sshpass -p "$PASSWORD" ssh "${SSH_OPTS[@]}" "${REMOTE_USER}@${REMOTE_HOST}" "$@"
+  sshpass -p "$REMOTE_PASSWORD" ssh "${SSH_OPTS[@]}" "${REMOTE_USER}@${REMOTE_HOST}" "$@"
 }
 
 check_remote_connectivity() {
   ensure_remote_ssh
-  if ! sshpass -p "$PASSWORD" ssh "${SSH_OPTS[@]}" -o ConnectTimeout=5 "${REMOTE_USER}@${REMOTE_HOST}" "true" 2>/dev/null; then
+  if ! sshpass -p "$REMOTE_PASSWORD" ssh "${SSH_OPTS[@]}" -o ConnectTimeout=5 "${REMOTE_USER}@${REMOTE_HOST}" "true" 2>/dev/null; then
     err "cannot connect to remote host ${REMOTE_USER}@${REMOTE_HOST} via SSH (timeout or authentication failed)"
     detail "Please verify network connectivity, REMOTE_HOST ($REMOTE_HOST), or password credentials."
     exit 1
@@ -483,12 +485,12 @@ check_remote_pod() {
 # the Pod ends up in ImagePullBackOff after the confidential VM is already resident. Asking the
 # registry which teellm tags exist turns that guess into a fact.
 #
-# Only a guessed image is resolved. An explicit TEELLM_POD_IMAGE is used as given, and a registry
+# Only a guessed image is resolved. An explicit TEELLM_IMAGE is used as given, and a registry
 # whose listing cannot be read falls back to the guess with a warning rather than failing: the
 # listing is a convenience, while a registry that answers 401 or is unreachable from the deploy
 # host says nothing about whether the guest's CDH can pull the tag.
 resolve_teellm_pod_image() {
-  if [[ -n "$TEELLM_POD_IMAGE_WAS_SET" ]]; then
+  if [[ -n "$TEELLM_IMAGE_WAS_SET" ]]; then
     return 0
   fi
 
@@ -499,17 +501,17 @@ resolve_teellm_pod_image() {
   tags="$(grep -o '"[0-9]\{8\}"' <<<"$listing" | tr -d '"' | sort -r || true)"
   if [[ -z "$tags" ]]; then
     warn "could not list tags of $TEELLM_IMAGE_REGISTRY/$TEELLM_IMAGE_REPO; keeping $(date +%Y%m%d)"
-    detail "Set TEELLM_POD_IMAGE explicitly if today's tag is not the one in the registry."
+    detail "Set TEELLM_IMAGE explicitly if today's tag is not the one in the registry."
     return 0
   fi
 
   newest="${tags%%$'\n'*}"
   if [[ "$newest" == "$(date +%Y%m%d)" ]]; then
-    info "TEE-LLM image: $TEELLM_POD_IMAGE (built today)"
+    info "TEE-LLM image: $TEELLM_IMAGE (built today)"
   else
-    local previous="$TEELLM_POD_IMAGE"
-    TEELLM_POD_IMAGE="$TEELLM_IMAGE_REGISTRY/$TEELLM_IMAGE_REPO:$newest"
-    info "TEE-LLM image: $TEELLM_POD_IMAGE (newest in the registry)"
+    local previous="$TEELLM_IMAGE"
+    TEELLM_IMAGE="$TEELLM_IMAGE_REGISTRY/$TEELLM_IMAGE_REPO:$newest"
+    info "TEE-LLM image: $TEELLM_IMAGE (newest in the registry)"
     detail "today's date tag is not there; $previous would fail the guest's image pull"
   fi
 }
@@ -586,7 +588,7 @@ build_teellm_pod_image() {
   require_command docker
   if ! docker info >/dev/null 2>&1; then
     err "the docker daemon is not reachable, so the TEE-LLM Pod image cannot be built"
-    detail "Start docker, or set TEELLM_POD_IMAGE to a prebuilt image."
+    detail "Start docker, or set TEELLM_IMAGE to a prebuilt image."
     exit 1
   fi
 
@@ -763,7 +765,7 @@ PY
     docker rm -f "$builder_container" >/dev/null 2>&1 || true
     docker run -d --name "$builder_container" --user root --entrypoint bash "$base_image" -c 'sleep infinity' >/dev/null
     TEMP_BUILDER_CONTAINER="$builder_container"
-    # /opt/teellm, not $CON_WORKDIR: this is the path baked into the image, and the Pod manifest and
+    # /opt/teellm, not $TEELLM_WORKDIR: this is the path baked into the image, and the Pod manifest and
     # the supervisor both name it literally.
     docker exec -i "$builder_container" sh -c 'mkdir -p /opt/teellm/configs /opt/teellm/ollama'
 
@@ -852,9 +854,9 @@ du -sh /opt/teellm/ollama /opt/teellm/teellm-service
     grep -o 'sha256:[0-9a-f]\{64\}' | head -n 1 || true)"
   if [[ -n "$remote_config" && "$remote_config" == "$local_id" ]]; then
     info "the registry already holds this build; nothing uploaded: $registry_image"
-    TEELLM_POD_IMAGE="$registry_image"
+    TEELLM_IMAGE="$registry_image"
     TEELLM_POD_PULL_POLICY="Always"
-    TEELLM_POD_IMAGE_BUILT=true
+    TEELLM_IMAGE_BUILT=true
     return 0
   fi
 
@@ -877,12 +879,12 @@ du -sh /opt/teellm/ollama /opt/teellm/teellm-service
   # instead of looking hung.
   info "uploading $(du -h "$archive" | cut -f1) to ${REMOTE_HOST}:$remote_archive"
   if command -v rsync >/dev/null 2>&1 && remote_ssh "command -v rsync >/dev/null 2>&1"; then
-    sshpass -p "$PASSWORD" rsync -a --partial --info=progress2 \
+    sshpass -p "$REMOTE_PASSWORD" rsync -a --partial --info=progress2 \
       -e "ssh -q -o LogLevel=ERROR -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=$HOME/.ssh/known_hosts" \
       "$archive" "${REMOTE_USER}@${REMOTE_HOST}:$remote_archive"
   else
     warn "rsync is not available on both ends; scp cannot report progress"
-    sshpass -p "$PASSWORD" scp "${SSH_OPTS[@]}" "$archive" "${REMOTE_USER}@${REMOTE_HOST}:$remote_archive"
+    sshpass -p "$REMOTE_PASSWORD" scp "${SSH_OPTS[@]}" "$archive" "${REMOTE_USER}@${REMOTE_HOST}:$remote_archive"
   fi
   if ! remote_ssh bash -s -- "$remote_archive" "$local_image" "$registry_image" "$TEELLM_IMAGE_REGISTRY" "$TEELLM_IMAGE_REPO" "$date_tag" <<'REMOTE_PUSH'
 set -euo pipefail
@@ -910,15 +912,15 @@ docker push "$registry_image" | sed 's/^/     /'
 REMOTE_PUSH
   then
     err "failed to upload or push the TEE-LLM Pod image to $registry_image"
-    detail "Check that ${REMOTE_HOST} can push to $TEELLM_IMAGE_REGISTRY, or set TEELLM_POD_IMAGE to a prebuilt image."
+    detail "Check that ${REMOTE_HOST} can push to $TEELLM_IMAGE_REGISTRY, or set TEELLM_IMAGE to a prebuilt image."
     exit 1
   fi
   rm -f "$archive"
 
-  TEELLM_POD_IMAGE="$registry_image"
+  TEELLM_IMAGE="$registry_image"
   TEELLM_POD_PULL_POLICY="Always"
-  TEELLM_POD_IMAGE_BUILT=true
-  info "TEE-LLM Pod image built and pushed: $TEELLM_POD_IMAGE"
+  TEELLM_IMAGE_BUILT=true
+  info "TEE-LLM Pod image built and pushed: $TEELLM_IMAGE"
 }
 
 # Sizes the guest before anything is created. A kata CSV2 guest gets default_memory + limits.memory
@@ -938,15 +940,15 @@ check_pod_memory_budget() {
   if [[ -n "$TEELLM_POD_IMAGE_SIZE_GIB" ]]; then
     image_mib="$(awk -v g="$TEELLM_POD_IMAGE_SIZE_GIB" 'BEGIN { printf "%d", g * 1024 }')"
     info "Pod image size: ${TEELLM_POD_IMAGE_SIZE_GIB}GiB (TEELLM_POD_IMAGE_SIZE_GIB)"
-  elif docker image inspect "$TEELLM_POD_IMAGE" >/dev/null 2>&1; then
-    image_mib=$(( $(docker image inspect -f '{{.Size}}' "$TEELLM_POD_IMAGE") / 1048576 ))
+  elif docker image inspect "$TEELLM_IMAGE" >/dev/null 2>&1; then
+    image_mib=$(( $(docker image inspect -f '{{.Size}}' "$TEELLM_IMAGE") / 1048576 ))
     info "Pod image size: ${image_mib}MiB uncompressed (local docker)"
-  elif remote_ssh "docker image inspect '$TEELLM_POD_IMAGE' >/dev/null 2>&1" >/dev/null 2>&1; then
-    image_mib="$(remote_ssh "docker image inspect -f '{{.Size}}' '$TEELLM_POD_IMAGE'" 2>/dev/null | awk '{ printf "%d", $1 / 1048576 }')"
+  elif remote_ssh "docker image inspect '$TEELLM_IMAGE' >/dev/null 2>&1" >/dev/null 2>&1; then
+    image_mib="$(remote_ssh "docker image inspect -f '{{.Size}}' '$TEELLM_IMAGE'" 2>/dev/null | awk '{ printf "%d", $1 / 1048576 }')"
     info "Pod image size: ${image_mib}MiB uncompressed (remote docker)"
   else
     image_mib=6247
-    warn "could not measure $TEELLM_POD_IMAGE; assuming 6.10GiB, the size teellm images measure"
+    warn "could not measure $TEELLM_IMAGE; assuming 6.10GiB, the size teellm images measure"
     detail "Set TEELLM_POD_IMAGE_SIZE_GIB to size the Pod against the real figure."
   fi
 
@@ -1074,7 +1076,7 @@ teellm_pod_ip() {
 }
 
 # A creation is a whole confidential VM of host-resident encrypted memory, so it is confirmed when
-# someone is there to answer. A non-interactive run -- deploy.sh, a CI job -- proceeds: --create-pod
+# someone is there to answer. A non-interactive run -- deploy.sh, a CI job -- proceeds: create
 # is already the deliberate act, and a prompt with no one at stdin would block forever.
 confirm_pod_creation() {
   if [[ "$TEELLM_POD_ASSUME_YES" == true ]] || [[ ! -t 0 ]]; then
@@ -1082,7 +1084,7 @@ confirm_pod_creation() {
   fi
   echo ""
   echo "    About to create: ${TARGET_NAMESPACE}/${TARGET_POD}"
-  echo "      image    $TEELLM_POD_IMAGE"
+  echo "      image    $TEELLM_IMAGE"
   echo "      cpu      $TEELLM_POD_CPU"
   echo "      memory   $TEELLM_POD_MEMORY (the VM is larger and resident on the host)"
   if [[ "$TEELLM_POD_HOST_PORT" -gt 0 ]]; then
@@ -1205,7 +1207,7 @@ REMOTE_ORPHANS
     detail "  1) sudo crictl pods | grep -i <sandbox prefix>   # confirm nothing still needs it"
     detail "  2) sudo crictl stopsandbox <sandbox-id>"
     detail "  3) sudo crictl rmp <sandbox-id>"
-    detail "  4) re-run $(basename "$0") pod-down to recheck"
+    detail "  4) re-run $(basename "$0") delete to recheck"
     # The two leaks seen on these hosts, neither caused by deleting the Pod itself.
     detail "Known causes here: containerd restarted during the guest's boot window (the operator's"
     detail "pre-install daemon), or a failed RunPodSandbox retry that left a qemu behind."
@@ -1242,7 +1244,7 @@ REMOTE_PORT
   if [[ "$busy" == yes ]]; then
     err "host port $port is already in use on ${REMOTE_USER}@${REMOTE_HOST}"
     remote_ssh "ss -H -ltnp 'sport = :$port' 2>/dev/null | head -5" || true
-    detail "Free it, or publish a different port: $var=<port> $(basename "$0") --create-pod start"
+    detail "Free it, or publish a different port: $var=<port> $(basename "$0") create"
     detail "0 creates the Pod without that host port; the Pod IP still works either way."
     exit 1
   fi
@@ -1316,7 +1318,7 @@ preflight_pod_cluster() {
 # the reference script: no CA material of its own, so an unreachable registry is a warning -- the
 # deploy cannot repair it either way, and the failure it predicts shows up in the wait loop.
 check_registry_has_tag() {
-  local ref="$TEELLM_POD_IMAGE" repo tag body
+  local ref="$TEELLM_IMAGE" repo tag body
   if [[ "$ref" == */* ]]; then repo="${ref#*/}"; else repo="$ref"; fi
   repo="${repo%%:*}"
   if [[ "$ref" == *:* ]]; then tag="${ref##*:}"; else tag="latest"; fi
@@ -1326,7 +1328,7 @@ check_registry_has_tag() {
   body="${body//$'\n'/}"
   if [[ -z "$body" ]]; then
     warn "could not list $repo tags in $TEELLM_IMAGE_REGISTRY; skipping the image check"
-    detail "Confirm '$TEELLM_POD_IMAGE' exists, or the guest pull will fail."
+    detail "Confirm '$TEELLM_IMAGE' exists, or the guest pull will fail."
     return 0
   fi
   if [[ "$body" == *"\"$tag\""* ]]; then
@@ -1344,7 +1346,7 @@ pod_up() {
   step "checking the dedicated TEE-LLM Pod ($TARGET_POD in $TARGET_NAMESPACE)"
 
   if remote_ssh "kubectl $K_NS get pod '$TARGET_POD' >/dev/null 2>&1"; then
-    # --create-pod creates; it never adopts a Pod that is already there. Reusing one silently
+    # create never adopts a Pod that is already there. Reusing one silently
     # deploys into whatever image it happens to run, and a "delete then apply" inside this path
     # would destroy a guest's writable layer (the ollama runtime and the model live there) without
     # the operator ever seeing the choice. Saying so and stopping is the only behaviour that makes
@@ -1353,7 +1355,7 @@ pod_up() {
     remote_ssh "kubectl $K_NS get pod '$TARGET_POD' -o wide" || true
     detail "This path only creates a Pod; it does not reuse or replace one."
     detail "Delete it first, then run this command again:"
-    detail "  $(basename "$0") pod-down"
+    detail "  $(basename "$0") delete"
     detail "The guest's writable layer (the ollama runtime and the model) goes with it, and the new"
     detail "Pod gets a new IP, so TAA's llm.endpoint has to be updated afterwards."
     exit 1
@@ -1364,8 +1366,8 @@ pod_up() {
 
     # The image is chosen only on this path: an existing Pod's image cannot change, so building or
     # resolving one there would be work whose result nothing acts on.
-    if [[ -n "$TEELLM_POD_IMAGE_WAS_SET" ]]; then
-      info "TEE-LLM image: $TEELLM_POD_IMAGE (named explicitly; nothing built or resolved)"
+    if [[ -n "$TEELLM_IMAGE_WAS_SET" ]]; then
+      info "TEE-LLM image: $TEELLM_IMAGE (named explicitly; nothing built or resolved)"
     elif [[ "$TEELLM_BUILD_POD_IMAGE" == true ]]; then
       build_teellm_pod_image
     else
@@ -1374,7 +1376,7 @@ pod_up() {
 
     # A tag this run pushed is in the registry by construction; asking again would only add a way
     # for a working path to fail.
-    if [[ "$TEELLM_POD_IMAGE_BUILT" != true ]]; then
+    if [[ "$TEELLM_IMAGE_BUILT" != true ]]; then
       check_registry_has_tag
     fi
 
@@ -1391,7 +1393,7 @@ pod_up() {
     sed -e "s|__POD_NAME__|$TARGET_POD|g" \
         -e "s|__NAMESPACE__|$TARGET_NAMESPACE|g" \
         -e "s|__NODE_NAME__|$TEELLM_POD_NODE|g" \
-        -e "s|__IMAGE__|$TEELLM_POD_IMAGE|g" \
+        -e "s|__IMAGE__|$TEELLM_IMAGE|g" \
         -e "s|__PULL_POLICY__|$TEELLM_POD_PULL_POLICY|g" \
         -e "s|__RUNTIME_CLASS__|$TEELLM_POD_RUNTIME_CLASS|g" \
         -e "s|__CPU__|$TEELLM_POD_CPU|g" \
@@ -1412,7 +1414,7 @@ pod_up() {
       remote_ssh "kubectl $K_NS describe pod '$TARGET_POD' | sed -n '/Events:/,\$p' | tail -n 20" || true
       detail "The Pod is left in place for inspection: kubectl $K_NS describe pod '$TARGET_POD'"
       detail "Container logs: kubectl $K_NS logs '$TARGET_POD'"
-      detail "Delete and recreate: $(basename "$0") pod-down"
+      detail "Delete and recreate: $(basename "$0") delete"
       exit 1
     fi
     info "TEE-LLM Pod created and Ready"
@@ -1499,7 +1501,7 @@ pod_down() {
 # it pauses the supervisor first, and resumes it only after every new file is in place. A
 # supervisor left running during the stream would restart a daemon on a half-written binary.
 pod_supervisor_pause() {
-  remote_ssh "$(container_exec) sh -lc 'touch \"$CON_WORKDIR/.teellm-supervisor-pause\"'"
+  remote_ssh "$(container_exec) sh -lc 'touch \"$TEELLM_WORKDIR/.teellm-supervisor-pause\"'"
 }
 
 # Lifting the pause is also when an installed supervisor script takes effect: the restart request
@@ -1510,7 +1512,7 @@ pod_supervisor_pause() {
 # its replacement had been installed, and the fix it carried never took effect. Re-execing a copy
 # that already runs the current file costs one restart of the daemons, before they are up.
 pod_supervisor_resume() {
-  remote_ssh "$(container_exec) sh -lc 'touch \"$CON_WORKDIR/.teellm-supervisor-restart\"; rm -f \"$CON_WORKDIR/.teellm-supervisor-pause\"'"
+  remote_ssh "$(container_exec) sh -lc 'touch \"$TEELLM_WORKDIR/.teellm-supervisor-restart\"; rm -f \"$TEELLM_WORKDIR/.teellm-supervisor-pause\"'"
 }
 
 # A Pod created with this template runs the supervisor itself as soon as the file is installed.
@@ -1522,14 +1524,14 @@ pod_supervisor_resume() {
 ensure_pod_supervisor_running() {
   local attempt
   for ((attempt = 1; attempt <= TEELLM_SUPERVISOR_START_WAIT; attempt++)); do
-    if remote_ssh "$(container_exec) sh -lc 'p=\"$CON_WORKDIR/.teellm-supervisor.pid\"; pid=\$(cat \"\$p\" 2>/dev/null); [ -n \"\$pid\" ] && kill -0 \"\$pid\" 2>/dev/null'" >/dev/null 2>&1; then
+    if remote_ssh "$(container_exec) sh -lc 'p=\"$TEELLM_WORKDIR/.teellm-supervisor.pid\"; pid=\$(cat \"\$p\" 2>/dev/null); [ -n \"\$pid\" ] && kill -0 \"\$pid\" 2>/dev/null'" >/dev/null 2>&1; then
       info "Pod supervisor is already running"
       return 0
     fi
     sleep 1
   done
   step "starting the Pod supervisor (this Pod has no process that would exec it)"
-  remote_ssh "$(container_exec) sh -lc 'cd \"$CON_WORKDIR\" && nohup ./teellm-supervisor.sh >> \"$CON_WORKDIR/teellm-service.log\" 2>&1 &'"
+  remote_ssh "$(container_exec) sh -lc 'cd \"$TEELLM_WORKDIR\" && nohup ./teellm-supervisor.sh >> \"$TEELLM_WORKDIR/teellm-service.log\" 2>&1 &'"
 }
 
 # Stops the three daemons the supervisor owns inside the Pod. Both the 'stop' action and the start
@@ -2431,7 +2433,7 @@ PY
       done <<< "$switch_output"
       echo ""
       echo -e "${BOLD}Next steps to deploy with ${model_arg}:${NC}"
-      echo "  Deploy: ./deploy-llm.sh --create-pod start"
+      echo "  Deploy: ./deploy-llm.sh create"
       ;;
     *)
       err "unknown models subcommand: $subcmd"
@@ -2445,7 +2447,7 @@ PY
 
 usage() {
   cat <<EOF
-Usage: $(basename "$0") [start|update|stop|probe|pod-down] [options]
+Usage: $(basename "$0") [start|update|stop|probe|create|delete] [options]
        $(basename "$0") models [list|info|switch] [args]
 
 Deploy and manage the standalone TEE-LLM inference service and its offline Ollama runtime in a
@@ -2458,46 +2460,34 @@ Model Management Commands:
 
 Actions:
   start        Build binary, incrementally sync model & runtime, hand the daemons to the Pod
-               supervisor, and verify (default). With --create-pod it creates the Pod from an
-               image built from this tree and installs nothing into it afterwards.
+               supervisor, and verify (default). Targets the dedicated TEE-LLM Pod
+               (TEELLM_POD_NAME) unless --pod names another existing Pod.
   update       Deploy into the existing TEE-LLM Pod named by TEELLM_POD_NAME: build the binary,
                sync the model & runtime, install the supervisor and configuration, restart the
                daemons and verify. It only updates a Pod that already exists -- it never creates
                or deletes one, and it refuses when the Pod is absent.
   stop         Pause the Pod supervisor and stop its services (teellm-service, ollama, llama-server).
   probe        Probe the TEE-LLM HTTPS endpoint for RFC 8998 TEE-TLS 1.3 readiness.
-  pod-down     Delete the dedicated TEE-LLM Pod (see --create-pod), then check the host for
-               kata sandboxes left behind by it.
+  create       Create the dedicated Kata CSV2 Pod named by TEELLM_POD_NAME from an image built
+               from this tree, then verify it. See "Creating the Pod" below.
+  delete       Delete the dedicated TEE-LLM Pod, then check the host for kata sandboxes left
+               behind by it.
 
 Options:
   --model <name> (or --model=<name>)
       Specify target LLM model name (default: qwen2.5-coder:3b).
   --ollama-dir <path> (or --ollama-dir=<path>)
       Specify local directory containing offline Ollama package and models.
-  --create-pod
-      Deploy into a dedicated Kata CSV2 Pod named by TEELLM_POD_NAME, creating it if it is absent,
-      instead of into the Pod a plain start targets by default. The Pod exists to give teellm-service a real /dev/csv-guest:
-      without that device it serves mock evidence, and TAA cannot tell that evidence apart from
-      hardware at the handshake. Creating the Pod builds teellm-service from this working tree,
-      bakes it plus the ollama runtime and model into an image, pushes that image and runs the Pod
-      from it, so the Pod never runs a binary older than the tree being deployed. That build takes
-      tens of minutes. The registry is asked for the config digest currently under the tag first:
-      when it already holds this exact build, nothing is exported or uploaded. Nothing is copied
-      into the Pod after it is created: the deployment verifies that the image carries the service,
-      the supervisor, the configuration, the ollama runtime and the model, and stops with a list of
-      what is missing rather than patching a defective image.
-      This path only creates: when the Pod already exists the run stops and asks for 'pod-down'
-      first, because reusing it would deploy into whatever image it happens to run, and replacing
-      it would throw away the guest's writable layer unannounced.
-      If --pod is given it must equal TEELLM_POD_NAME, or the run is refused.
+  --remote-password <password> (or --remote-password=<password>)
+      Remote SSH password (default: the REMOTE_PASSWORD default).
   --port <port> (or --port=<port>)
       Specify TEE-LLM service listening port (default: $TEELLM_PORT).
   --config <path> (or --config=<path>)
       Specify path to alternate service JSON configuration template.
   --pod <name> (or --pod=<name>)
-      Address the Pod named <name> for start, stop, probe and pod-down. For --create-pod, update
-      and pod-down the target is the dedicated TEE-LLM Pod (TEELLM_POD_NAME); naming a different
-      Pod on those paths is refused rather than silently overridden.
+      Address the Pod named <name> for start, stop and probe (default: TEELLM_POD_NAME). For
+      create, update and delete the target is always the dedicated TEE-LLM Pod (TEELLM_POD_NAME);
+      naming a different Pod on those paths is refused rather than silently overridden.
   --namespace <ns> (or --namespace=<ns>)
       Kubernetes namespace of the target Pod (default: osr).
   -h, --help, help
@@ -2510,13 +2500,13 @@ Environment overrides:
       Path to offline Ollama and model weights bundle.
   OLLAMA_MODEL=${OLLAMA_MODEL:-}
       Default model override for inference.
-  CON_WORKDIR=${CON_WORKDIR}
+  TEELLM_WORKDIR=${TEELLM_WORKDIR}
       Working directory inside the TEE-LLM Pod.
-  CONTAINER_OLLAMA_DIR=${CONTAINER_OLLAMA_DIR}
+  TEELLM_OLLAMA_DIR=${TEELLM_OLLAMA_DIR}
       Ollama deployment directory inside the TEE-LLM Pod.
   TEELLM_POD_NAME=${TEELLM_POD_NAME}
-      Name of the dedicated TEE-LLM Pod (--create-pod, pod-down).
-  TEELLM_POD_IMAGE=${TEELLM_POD_IMAGE}
+      Name of the dedicated TEE-LLM Pod (create, update, delete, and the default target of start).
+  TEELLM_IMAGE=${TEELLM_IMAGE}
       Image for the dedicated TEE-LLM Pod. Set explicitly, it is used as given and nothing is
       built or resolved. Left unset with TEELLM_BUILD_POD_IMAGE=true (the default), the Pod image
       is built from this working tree, pushed as
@@ -2578,7 +2568,7 @@ Environment overrides:
       Skip the interactive confirmation before creating the Pod (also skipped when stdin is not
       a terminal, so scripted runs never block).
   TEELLM_POD_ORPHAN_CHECK=${TEELLM_POD_ORPHAN_CHECK}
-      After pod-down, compare the host's kata Pod count, its /run/vc/sbs directories and its
+      After delete, compare the host's kata Pod count, its /run/vc/sbs directories and its
       qemu-system processes. Any disagreement means a sandbox outlived its Pod and its memory
       has not been returned.
   TEELLM_POD_CC_INIT_DATA=<base64>
@@ -2593,23 +2583,37 @@ Environment overrides:
       Remote SSH host IP or hostname.
   REMOTE_USER=${REMOTE_USER}
       Remote SSH login username.
-  PASSWORD=<hidden>
-      Remote SSH password override (or TARGET_PASSWORD).
+  REMOTE_PASSWORD=<hidden>
+      Remote SSH password. Prefer --remote-password; the environment variable is kept for CI.
   TEELLM_CONFIG_PATH=${TEELLM_CONFIG_PATH:-}
       Custom configuration JSON path.
+
+Creating the Pod:
+  create builds teellm-service from this working tree, bakes it plus the ollama runtime and model
+  into an image, pushes that image and runs the Pod from it, so the Pod never runs a binary older
+  than the tree being deployed. The Pod exists to give teellm-service a real /dev/csv-guest:
+  without that device it serves mock evidence, and TAA cannot tell that evidence apart from
+  hardware at the handshake. That build takes tens of minutes. The registry is asked for the
+  config digest currently under the tag first: when it already holds this exact build, nothing is
+  exported or uploaded. Nothing is copied into the Pod after it is created: the deployment
+  verifies that the image carries the service, the supervisor, the configuration, the ollama
+  runtime and the model, and stops with a list of what is missing rather than patching a
+  defective image. create never adopts or replaces an existing Pod: it stops and asks for delete
+  first, because reusing one would deploy into whatever image it happens to run, and replacing it
+  would throw away the guest's writable layer unannounced.
 
 Examples:
   $(basename "$0")
   $(basename "$0") models list
   $(basename "$0") models info qwen2.5-coder:3b
   $(basename "$0") models switch qwen2.5-coder:3b
-  $(basename "$0") --create-pod start
-  $(basename "$0") --create-pod start --model qwen2.5-coder:7b
+  $(basename "$0") create
+  $(basename "$0") create --model qwen2.5-coder:7b
   $(basename "$0") start
   $(basename "$0") update
   $(basename "$0") probe
   $(basename "$0") stop
-  $(basename "$0") pod-down
+  $(basename "$0") delete
 
 Point TAA at the Pod afterwards: the deployment prints
   LLM_IP=https://<pod-ip>:${TEELLM_PORT}
@@ -2623,6 +2627,7 @@ CLI_MODEL=""
 CLI_OLLAMA_DIR=""
 CLI_PORT=""
 CLI_CONFIG=""
+CLI_PASSWORD=""
 
 while [[ $# -gt 0 ]]; do
   arg="$1"
@@ -2665,16 +2670,21 @@ while [[ $# -gt 0 ]]; do
       fi
       ACTION="probe"
       ;;
-    pod-down)
-      if [[ -n "$ACTION" && "$ACTION" != "pod-down" ]]; then
-        err "cannot specify multiple actions ($ACTION and pod-down)"
+    create)
+      if [[ -n "$ACTION" && "$ACTION" != "create" ]]; then
+        err "cannot specify multiple actions ($ACTION and create)"
         usage >&2
         exit 1
       fi
-      ACTION="pod-down"
+      ACTION="create"
       ;;
-    --create-pod)
-      CREATE_POD=true
+    delete)
+      if [[ -n "$ACTION" && "$ACTION" != "delete" ]]; then
+        err "cannot specify multiple actions ($ACTION and delete)"
+        usage >&2
+        exit 1
+      fi
+      ACTION="delete"
       ;;
     --model=*)
       CLI_MODEL="${arg#*=}"
@@ -2724,7 +2734,7 @@ while [[ $# -gt 0 ]]; do
       fi
       CLI_CONFIG="$1"
       ;;
-    # Names the Pod to install into. Setting TARGET_POD_WAS_SET is what keeps --create-pod honest:
+    # Names the Pod to install into. Setting TARGET_POD_WAS_SET is what keeps create honest:
     # the check that refuses a mis-aimed dedicated-Pod command keys off "the operator named a Pod".
     --pod=*)
       TARGET_POD="${arg#*=}"
@@ -2744,6 +2754,18 @@ while [[ $# -gt 0 ]]; do
       fi
       TARGET_POD="$1"
       TARGET_POD_WAS_SET="set"
+      ;;
+    --remote-password=*)
+      CLI_PASSWORD="${arg#*=}"
+      ;;
+    --remote-password)
+      shift
+      if [[ $# -eq 0 || "$1" == -* ]]; then
+        err "--remote-password requires a password argument"
+        usage >&2
+        exit 1
+      fi
+      CLI_PASSWORD="$1"
       ;;
     --namespace=*)
       TARGET_NAMESPACE="${arg#*=}"
@@ -2777,6 +2799,16 @@ done
 
 ACTION="${ACTION:-start}"
 
+# `create` and `delete` are the operator-facing spellings for the two dedicated-Pod paths; the
+# internals keep using the long-standing CREATE_POD flag and pod-down action so the rest of the
+# script is unchanged.
+if [[ "$ACTION" == "create" ]]; then
+  CREATE_POD=true
+  ACTION="start"
+elif [[ "$ACTION" == "delete" ]]; then
+  ACTION="pod-down"
+fi
+
 # TARGET_POD and TARGET_NAMESPACE in the environment were removed. Silently falling back to the
 # defaults would aim the run at a Pod or namespace the caller did not name, so refuse before
 # anything reaches the cluster.
@@ -2791,12 +2823,6 @@ if [[ -n "$TARGET_NAMESPACE_ENV_WAS_SET" ]]; then
   exit 1
 fi
 
-if [[ "$ACTION" == "update" && "$CREATE_POD" == true ]]; then
-  err "update only updates an existing Pod and cannot be combined with --create-pod"
-  detail "To create the Pod, run: $(basename "$0") --create-pod start"
-  exit 1
-fi
-
 if [[ "$CREATE_POD" == true || "$ACTION" == "pod-down" || "$ACTION" == "update" ]]; then
   # An explicitly named Pod wins the argument: overriding it would aim the deployment at a Pod
   # the operator named, which is exactly the silent mis-target these paths have to prevent.
@@ -2807,8 +2833,8 @@ if [[ "$CREATE_POD" == true || "$ACTION" == "pod-down" || "$ACTION" == "update" 
   fi
   # Unconditional, default or not: the default target is a TAA environment Pod, which has
   # /dev/csv-guest as well, so a mis-aimed deployment passes every gate below while teellm-service
-  # ends up in a Pod that the printed endpoint does not point at -- and pod-down would delete TAA
-  # itself.
+  # ends up in a Pod that the printed endpoint does not point at -- and delete would remove a Pod
+  # the operator did not mean to touch.
   TARGET_POD="$TEELLM_POD_NAME"
 fi
 
@@ -2818,6 +2844,9 @@ fi
 if [[ -n "$CLI_CONFIG" ]]; then
   TEELLM_CONFIG_PATH="$CLI_CONFIG"
 fi
+if [[ -n "$CLI_PASSWORD" ]]; then
+  REMOTE_PASSWORD="$CLI_PASSWORD"
+fi
 
 cd "$PROJECT_DIR"
 
@@ -2826,7 +2855,7 @@ cd "$PROJECT_DIR"
 if [[ "$ACTION" == "probe" ]]; then
   banner "Probing TEE-LLM Service" "Endpoint: https://127.0.0.1:${TEELLM_PORT}"
   step "probing teellm-service in remote pod ($TARGET_POD)"
-  if remote_ssh "$(container_exec) \"$CON_WORKDIR/teellm-service\" -probe \"https://127.0.0.1:${TEELLM_PORT}\""; then
+  if remote_ssh "$(container_exec) \"$TEELLM_WORKDIR/teellm-service\" -probe \"https://127.0.0.1:${TEELLM_PORT}\""; then
     info "remote probe check successful: teellm-service is healthy on https://127.0.0.1:${TEELLM_PORT}"
     exit 0
   else
@@ -2859,7 +2888,7 @@ if [[ "$ACTION" == "update" ]]; then
   if ! remote_ssh "kubectl $K_NS get pod '$TARGET_POD' >/dev/null 2>&1"; then
     err "TEE-LLM Pod '$TARGET_POD' does not exist in namespace '${TARGET_NAMESPACE:-default}'"
     detail "update only updates a Pod that already exists; it never creates or deletes one."
-    detail "Create it first: $(basename "$0") --create-pod start"
+    detail "Create it first: $(basename "$0") create"
     exit 1
   fi
   info "TEE-LLM Pod '$TARGET_POD' found; updating it in place"
@@ -2874,7 +2903,7 @@ if [[ "$ACTION" == "pod-down" ]]; then
   pod_down
   echo ""
   warn "The guest's writable layer went with the Pod, so the ollama runtime and the model are gone."
-  detail "The next '--create-pod start' deploys them again."
+  detail "The next 'create' deploys them again."
   echo ""
   exit 0
 fi
@@ -2947,27 +2976,27 @@ sync_ollama_to_remote() {
     resolve_ollama_model_artifacts "$OLLAMA_LOCAL_DIR" "$OLLAMA_MODEL" "full" > "$list_tmp"
 
     if command -v rsync >/dev/null 2>&1 && remote_ssh "command -v rsync >/dev/null 2>&1"; then
-      sshpass -p "$PASSWORD" rsync -a -r --exclude='*cuda*' --files-from="$list_tmp" --partial --info=progress2 \
+      sshpass -p "$REMOTE_PASSWORD" rsync -a -r --exclude='*cuda*' --files-from="$list_tmp" --partial --info=progress2 \
         -e "ssh -q -o LogLevel=ERROR -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=$HOME/.ssh/known_hosts" \
         "$OLLAMA_LOCAL_DIR/" \
         "${REMOTE_USER}@${REMOTE_HOST}:$REMOTE_OLLAMA_DIR/"
     else
       warn "rsync not available; streaming pruned tar archive to remote host"
       tar -C "$OLLAMA_LOCAL_DIR" --exclude='*cuda*' -czf - -T "$list_tmp" | \
-        sshpass -p "$PASSWORD" ssh "${SSH_OPTS[@]}" "${REMOTE_USER}@${REMOTE_HOST}" "tar -xzf - -C '$REMOTE_OLLAMA_DIR'"
+        sshpass -p "$REMOTE_PASSWORD" ssh "${SSH_OPTS[@]}" "${REMOTE_USER}@${REMOTE_HOST}" "tar -xzf - -C '$REMOTE_OLLAMA_DIR'"
     fi
     rm -f "$list_tmp"
     TEMP_FILELIST=""
   else
     if command -v rsync >/dev/null 2>&1 && remote_ssh "command -v rsync >/dev/null 2>&1"; then
-      sshpass -p "$PASSWORD" rsync -a -r --exclude='*cuda*' --delete --partial --info=progress2 \
+      sshpass -p "$REMOTE_PASSWORD" rsync -a -r --exclude='*cuda*' --delete --partial --info=progress2 \
         -e "ssh -q -o LogLevel=ERROR -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=$HOME/.ssh/known_hosts" \
         "$OLLAMA_LOCAL_DIR/" \
         "${REMOTE_USER}@${REMOTE_HOST}:$REMOTE_OLLAMA_DIR/"
     else
       warn "rsync not available; falling back to scp -r transfer"
       remote_ssh "rm -rf '$REMOTE_OLLAMA_DIR.new' && mkdir -p '$REMOTE_DIR'"
-      sshpass -p "$PASSWORD" scp -r "${SSH_OPTS[@]}" "$OLLAMA_LOCAL_DIR" "${REMOTE_USER}@${REMOTE_HOST}:$REMOTE_OLLAMA_DIR.new"
+      sshpass -p "$REMOTE_PASSWORD" scp -r "${SSH_OPTS[@]}" "$OLLAMA_LOCAL_DIR" "${REMOTE_USER}@${REMOTE_HOST}:$REMOTE_OLLAMA_DIR.new"
       remote_ssh "rm -rf '$REMOTE_OLLAMA_DIR' && mv '$REMOTE_OLLAMA_DIR.new' '$REMOTE_OLLAMA_DIR'"
     fi
   fi
@@ -2992,8 +3021,8 @@ sync_ollama_to_remote_if_missing() {
     return 0
   fi
   local check_script
-  check_script="$(resolve_ollama_model_artifacts "$OLLAMA_LOCAL_DIR" "$OLLAMA_MODEL" "check_model_sh" "$CONTAINER_OLLAMA_DIR")"
-  if remote_ssh "$(container_exec) sh -lc 'test -f \"$CONTAINER_OLLAMA_DIR/ollama\" && test -f \"$CONTAINER_OLLAMA_DIR/start-ollama.sh\" && test -f \"$CONTAINER_OLLAMA_DIR/lib/ollama/libllama-server-impl.so\"'" >/dev/null 2>&1 \
+  check_script="$(resolve_ollama_model_artifacts "$OLLAMA_LOCAL_DIR" "$OLLAMA_MODEL" "check_model_sh" "$TEELLM_OLLAMA_DIR")"
+  if remote_ssh "$(container_exec) sh -lc 'test -f \"$TEELLM_OLLAMA_DIR/ollama\" && test -f \"$TEELLM_OLLAMA_DIR/start-ollama.sh\" && test -f \"$TEELLM_OLLAMA_DIR/lib/ollama/libllama-server-impl.so\"'" >/dev/null 2>&1 \
      && remote_ssh "$(container_exec) sh -lc '$check_script'" >/dev/null 2>&1; then
     info "ollama runtime and model '$OLLAMA_MODEL' are already inside the Pod; skipping the host sync"
     return 0
@@ -3010,20 +3039,20 @@ copy_ollama_to_remote_pod() {
   # directory, so move it into place instead of streaming several GB again. The is-not-a-symlink
   # guard skips pods that carry an alias left behind by an older revision of this script.
   local legacy_container_path="$CONTAINER_LEGACY_OLLAMA_DIR"
-  if [[ "$CONTAINER_OLLAMA_DIR" != "$legacy_container_path" ]]; then
-    if remote_ssh "$(container_exec) sh -lc 'test -d \"$legacy_container_path/lib/ollama\" && ! test -L \"$legacy_container_path\" && ! test -d \"$CONTAINER_OLLAMA_DIR/lib/ollama\"'" >/dev/null 2>&1; then
-      info "migrating existing ollama runtime from $legacy_container_path to $CONTAINER_OLLAMA_DIR"
-      remote_ssh "$(container_exec) sh -lc 'mkdir -p \"$CON_WORKDIR\" && if [ ! -d \"$CONTAINER_OLLAMA_DIR\" ]; then mv \"$legacy_container_path\" \"$CONTAINER_OLLAMA_DIR\"; elif [ ! -d \"$CONTAINER_OLLAMA_DIR/lib\" ]; then cp -r -n \"$legacy_container_path/lib\" \"$CONTAINER_OLLAMA_DIR/\"; fi'"
+  if [[ "$TEELLM_OLLAMA_DIR" != "$legacy_container_path" ]]; then
+    if remote_ssh "$(container_exec) sh -lc 'test -d \"$legacy_container_path/lib/ollama\" && ! test -L \"$legacy_container_path\" && ! test -d \"$TEELLM_OLLAMA_DIR/lib/ollama\"'" >/dev/null 2>&1; then
+      info "migrating existing ollama runtime from $legacy_container_path to $TEELLM_OLLAMA_DIR"
+      remote_ssh "$(container_exec) sh -lc 'mkdir -p \"$TEELLM_WORKDIR\" && if [ ! -d \"$TEELLM_OLLAMA_DIR\" ]; then mv \"$legacy_container_path\" \"$TEELLM_OLLAMA_DIR\"; elif [ ! -d \"$TEELLM_OLLAMA_DIR/lib\" ]; then cp -r -n \"$legacy_container_path/lib\" \"$TEELLM_OLLAMA_DIR/\"; fi'"
     fi
   fi
 
   local check_script has_base_runtime=false has_lib=false has_model=false
-  check_script="$(resolve_ollama_model_artifacts "$OLLAMA_LOCAL_DIR" "$OLLAMA_MODEL" "check_model_sh" "$CONTAINER_OLLAMA_DIR")"
+  check_script="$(resolve_ollama_model_artifacts "$OLLAMA_LOCAL_DIR" "$OLLAMA_MODEL" "check_model_sh" "$TEELLM_OLLAMA_DIR")"
 
-  if remote_ssh "$(container_exec) sh -lc 'test -f \"$CONTAINER_OLLAMA_DIR/ollama\" && test -f \"$CONTAINER_OLLAMA_DIR/start-ollama.sh\" && test -f \"$CONTAINER_OLLAMA_DIR/lib/ollama/libllama-server-impl.so\"'" >/dev/null 2>&1; then
+  if remote_ssh "$(container_exec) sh -lc 'test -f \"$TEELLM_OLLAMA_DIR/ollama\" && test -f \"$TEELLM_OLLAMA_DIR/start-ollama.sh\" && test -f \"$TEELLM_OLLAMA_DIR/lib/ollama/libllama-server-impl.so\"'" >/dev/null 2>&1; then
     has_base_runtime=true
   fi
-  if remote_ssh "$(container_exec) sh -lc 'test -f \"$CONTAINER_OLLAMA_DIR/lib/ollama/libllama-server-impl.so\"'" >/dev/null 2>&1; then
+  if remote_ssh "$(container_exec) sh -lc 'test -f \"$TEELLM_OLLAMA_DIR/lib/ollama/libllama-server-impl.so\"'" >/dev/null 2>&1; then
     has_lib=true
   fi
   if remote_ssh "$(container_exec) sh -lc '$check_script'" >/dev/null 2>&1; then
@@ -3034,17 +3063,17 @@ copy_ollama_to_remote_pod() {
     info "ollama runtime and model '$OLLAMA_MODEL' (${model_mb}MB) already present in remote pod"
   elif [[ "$FORCE_QWEN_COPY" == false && "$has_base_runtime" == true && "$has_model" == false ]]; then
     step "streaming model '$OLLAMA_MODEL' (${model_mb}MB) into remote pod"
-    remote_ssh "$(container_exec) sh -lc 'mkdir -p \"$CONTAINER_OLLAMA_DIR\"'"
+    remote_ssh "$(container_exec) sh -lc 'mkdir -p \"$TEELLM_OLLAMA_DIR\"'"
     local file_list
     file_list="$(resolve_ollama_model_artifacts "$OLLAMA_LOCAL_DIR" "$OLLAMA_MODEL" "model_only")"
-    remote_ssh "set -o pipefail; tar -b 1024 -C '$REMOTE_OLLAMA_DIR' -cf - -T - | $(container_exec_i) tar -xf - -C '$CONTAINER_OLLAMA_DIR'" <<< "$file_list" || {
+    remote_ssh "set -o pipefail; tar -b 1024 -C '$REMOTE_OLLAMA_DIR' -cf - -T - | $(container_exec_i) tar -xf - -C '$TEELLM_OLLAMA_DIR'" <<< "$file_list" || {
       err "failed to stream ollama model into remote pod"
       exit 1
     }
     info "incremental model stream transfer completed"
   else
     step "streaming pruned ollama runtime and model '$OLLAMA_MODEL' (${model_mb}MB) into remote pod"
-    remote_ssh "$(container_exec) sh -lc 'mkdir -p \"$CONTAINER_OLLAMA_DIR\"'"
+    remote_ssh "$(container_exec) sh -lc 'mkdir -p \"$TEELLM_OLLAMA_DIR\"'"
     local file_list
     if [[ "$FORCE_QWEN_COPY" == false && "$has_lib" == true ]]; then
       info "reusing existing lib in pod; streaming binaries and model"
@@ -3059,20 +3088,20 @@ copy_ollama_to_remote_pod() {
     else
       file_list="$(resolve_ollama_model_artifacts "$OLLAMA_LOCAL_DIR" "$OLLAMA_MODEL" "full")"
     fi
-    remote_ssh "set -o pipefail; tar -b 1024 -C '$REMOTE_OLLAMA_DIR' --exclude='*cuda*' -cf - -T - | $(container_exec_i) tar -xf - -C '$CONTAINER_OLLAMA_DIR'" <<< "$file_list" || {
+    remote_ssh "set -o pipefail; tar -b 1024 -C '$REMOTE_OLLAMA_DIR' --exclude='*cuda*' -cf - -T - | $(container_exec_i) tar -xf - -C '$TEELLM_OLLAMA_DIR'" <<< "$file_list" || {
       err "failed to stream ollama package into remote pod"
       exit 1
     }
     info "ollama package stream transfer completed"
   fi
 
-  remote_ssh "$(container_exec) sh -lc 'chmod +x \"$CONTAINER_OLLAMA_DIR/ollama\" \"$CONTAINER_OLLAMA_DIR/start-ollama.sh\" \"$CONTAINER_OLLAMA_DIR/lib/ollama/llama-\"* 2>/dev/null || true'"
+  remote_ssh "$(container_exec) sh -lc 'chmod +x \"$TEELLM_OLLAMA_DIR/ollama\" \"$TEELLM_OLLAMA_DIR/start-ollama.sh\" \"$TEELLM_OLLAMA_DIR/lib/ollama/llama-\"* 2>/dev/null || true'"
 
   # Restore the soname symlinks llama-server needs; the bundle ships versioned files only.
   local remote_soname_links
-  remote_soname_links="$(remote_ssh "$(container_exec) sh -lc '$(ollama_soname_fix_script)' sh '$CONTAINER_OLLAMA_DIR/lib/ollama'" 2>/dev/null || echo 0)"
+  remote_soname_links="$(remote_ssh "$(container_exec) sh -lc '$(ollama_soname_fix_script)' sh '$TEELLM_OLLAMA_DIR/lib/ollama'" 2>/dev/null || echo 0)"
   if [[ "${remote_soname_links:-0}" != "0" ]]; then
-    info "restored $remote_soname_links ollama soname symlink(s) in $CONTAINER_OLLAMA_DIR/lib/ollama"
+    info "restored $remote_soname_links ollama soname symlink(s) in $TEELLM_OLLAMA_DIR/lib/ollama"
   fi
 
   info "ollama runtime and model '$OLLAMA_MODEL' verified inside remote pod"
@@ -3088,19 +3117,19 @@ verify_pod_image_contents() {
 
   local missing=() probe
   for probe in \
-    "$CON_WORKDIR/teellm-service" \
-    "$CON_WORKDIR/teellm-supervisor.sh" \
-    "$CON_WORKDIR/configs/teellm-production.json" \
-    "$CON_WORKDIR/configs/models.json" \
-    "$CON_WORKDIR/.teellm-model" \
-    "$CONTAINER_OLLAMA_DIR/ollama" \
-    "$CONTAINER_OLLAMA_DIR/start-ollama.sh" \
-    "$CONTAINER_OLLAMA_DIR/lib/ollama/libllama-server-impl.so"; do
+    "$TEELLM_WORKDIR/teellm-service" \
+    "$TEELLM_WORKDIR/teellm-supervisor.sh" \
+    "$TEELLM_WORKDIR/configs/teellm-production.json" \
+    "$TEELLM_WORKDIR/configs/models.json" \
+    "$TEELLM_WORKDIR/.teellm-model" \
+    "$TEELLM_OLLAMA_DIR/ollama" \
+    "$TEELLM_OLLAMA_DIR/start-ollama.sh" \
+    "$TEELLM_OLLAMA_DIR/lib/ollama/libllama-server-impl.so"; do
     remote_ssh "$(container_exec) test -s '$probe'" >/dev/null 2>&1 || missing+=("$probe")
   done
 
   # The supervisor execs both of these, so a missing executable bit is as fatal as a missing file.
-  for probe in "$CON_WORKDIR/teellm-service" "$CON_WORKDIR/teellm-supervisor.sh"; do
+  for probe in "$TEELLM_WORKDIR/teellm-service" "$TEELLM_WORKDIR/teellm-supervisor.sh"; do
     remote_ssh "$(container_exec) test -x '$probe'" >/dev/null 2>&1 || missing+=("$probe (not executable)")
   done
 
@@ -3109,9 +3138,9 @@ verify_pod_image_contents() {
   # reported rather than silently accepted.
   if command -v python3 >/dev/null 2>&1; then
     local check_script
-    if check_script="$(resolve_ollama_model_artifacts "$OLLAMA_LOCAL_DIR" "$OLLAMA_MODEL" "check_model_sh" "$CONTAINER_OLLAMA_DIR" 2>/dev/null)"; then
+    if check_script="$(resolve_ollama_model_artifacts "$OLLAMA_LOCAL_DIR" "$OLLAMA_MODEL" "check_model_sh" "$TEELLM_OLLAMA_DIR" 2>/dev/null)"; then
       remote_ssh "$(container_exec) sh -lc '$check_script'" >/dev/null 2>&1 ||
-        missing+=("the ollama blobs of model '$OLLAMA_MODEL' under $CONTAINER_OLLAMA_DIR")
+        missing+=("the ollama blobs of model '$OLLAMA_MODEL' under $TEELLM_OLLAMA_DIR")
     else
       warn "cannot resolve model '$OLLAMA_MODEL' locally; skipped the in-pod model check"
     fi
@@ -3119,7 +3148,7 @@ verify_pod_image_contents() {
     warn "python3 is unavailable locally; skipped the in-pod model check"
   fi
 
-  # Deliberately not repaired: `update` installs into an existing Pod, and `pod-down` removes a Pod
+  # Deliberately not repaired: `update` installs into an existing Pod, and `delete` removes a Pod
   # that should not have been created. Patching it here is exactly what this branch removed.
   if (( ${#missing[@]} > 0 )); then
     err "the image of '$TARGET_POD' does not carry the full TEE-LLM payload"
@@ -3129,7 +3158,7 @@ verify_pod_image_contents() {
     done
     detail "nothing was copied into the Pod: creation verifies the image instead of patching it"
     detail "rebuild the image (TEELLM_IMAGE_FORCE_REBUILD=true), or run 'update' to install into"
-    detail "this Pod, and 'pod-down' to remove it"
+    detail "this Pod, and 'delete' to remove it"
     exit 1
   fi
   info "the Pod image carries teellm-service, the supervisor, the configs and model '$OLLAMA_MODEL'; nothing is copied into the Pod"
@@ -3177,11 +3206,11 @@ deploy_teellm() {
     prepare_config "$cfg_template" "$tmp_cfg" "$OLLAMA_MODEL" "$TEELLM_PORT"
 
     remote_ssh "mkdir -p '$REMOTE_DIR/configs'"
-    sshpass -p "$PASSWORD" scp "${SSH_OPTS[@]}" "$TEELLM_DIR/bin/teellm-service" "${REMOTE_USER}@${REMOTE_HOST}:$REMOTE_DIR/teellm-service.new"
-    sshpass -p "$PASSWORD" scp "${SSH_OPTS[@]}" "$TEELLM_SUPERVISOR_SCRIPT" "${REMOTE_USER}@${REMOTE_HOST}:$REMOTE_DIR/teellm-supervisor.sh"
-    sshpass -p "$PASSWORD" scp "${SSH_OPTS[@]}" "$tmp_cfg" "${REMOTE_USER}@${REMOTE_HOST}:$REMOTE_DIR/configs/teellm-production.json"
+    sshpass -p "$REMOTE_PASSWORD" scp "${SSH_OPTS[@]}" "$TEELLM_DIR/bin/teellm-service" "${REMOTE_USER}@${REMOTE_HOST}:$REMOTE_DIR/teellm-service.new"
+    sshpass -p "$REMOTE_PASSWORD" scp "${SSH_OPTS[@]}" "$TEELLM_SUPERVISOR_SCRIPT" "${REMOTE_USER}@${REMOTE_HOST}:$REMOTE_DIR/teellm-supervisor.sh"
+    sshpass -p "$REMOTE_PASSWORD" scp "${SSH_OPTS[@]}" "$tmp_cfg" "${REMOTE_USER}@${REMOTE_HOST}:$REMOTE_DIR/configs/teellm-production.json"
     if [[ -f "$TEELLM_DIR/configs/models.json" ]]; then
-      sshpass -p "$PASSWORD" scp "${SSH_OPTS[@]}" "$TEELLM_DIR/configs/models.json" "${REMOTE_USER}@${REMOTE_HOST}:$REMOTE_DIR/configs/models.json"
+      sshpass -p "$REMOTE_PASSWORD" scp "${SSH_OPTS[@]}" "$TEELLM_DIR/configs/models.json" "${REMOTE_USER}@${REMOTE_HOST}:$REMOTE_DIR/configs/models.json"
     fi
     rm -f "$tmp_cfg"
     TEMP_CONFIG_FILE=""
@@ -3190,23 +3219,23 @@ deploy_teellm() {
 
     # Copy into remote pod
     step "installing binary and configuration into remote pod"
-    remote_ssh "$(container_exec) sh -lc 'mkdir -p \"$CON_WORKDIR/configs\"'"
-    remote_ssh "$(container_cp "$REMOTE_DIR/teellm-service" "$CON_WORKDIR/teellm-service")"
-    remote_ssh "$(container_cp "$REMOTE_DIR/configs/teellm-production.json" "$CON_WORKDIR/configs/teellm-production.json")"
+    remote_ssh "$(container_exec) sh -lc 'mkdir -p \"$TEELLM_WORKDIR/configs\"'"
+    remote_ssh "$(container_cp "$REMOTE_DIR/teellm-service" "$TEELLM_WORKDIR/teellm-service")"
+    remote_ssh "$(container_cp "$REMOTE_DIR/configs/teellm-production.json" "$TEELLM_WORKDIR/configs/teellm-production.json")"
     if [[ -f "$TEELLM_DIR/configs/models.json" ]]; then
-      remote_ssh "$(container_cp "$REMOTE_DIR/configs/models.json" "$CON_WORKDIR/configs/models.json")"
+      remote_ssh "$(container_cp "$REMOTE_DIR/configs/models.json" "$TEELLM_WORKDIR/configs/models.json")"
     fi
-    remote_ssh "$(container_exec) sh -lc 'chmod +x \"$CON_WORKDIR/teellm-service\"'"
+    remote_ssh "$(container_exec) sh -lc 'chmod +x \"$TEELLM_WORKDIR/teellm-service\"'"
 
     # The supervisor is the Pod's PID 1 and the only thing that starts or restarts a daemon. It is
     # moved into place rather than written in place: `mv` swaps the inode, while overwriting a
     # running script fails with ETXTBSY. A running copy re-execs the new file on resume.
-    remote_ssh "$(container_cp "$REMOTE_DIR/teellm-supervisor.sh" "$CON_WORKDIR/.teellm-supervisor.sh.new")"
-    remote_ssh "$(container_exec) sh -lc 'chmod +x \"$CON_WORKDIR/.teellm-supervisor.sh.new\" && mv \"$CON_WORKDIR/.teellm-supervisor.sh.new\" \"$CON_WORKDIR/teellm-supervisor.sh\"'"
+    remote_ssh "$(container_cp "$REMOTE_DIR/teellm-supervisor.sh" "$TEELLM_WORKDIR/.teellm-supervisor.sh.new")"
+    remote_ssh "$(container_exec) sh -lc 'chmod +x \"$TEELLM_WORKDIR/.teellm-supervisor.sh.new\" && mv \"$TEELLM_WORKDIR/.teellm-supervisor.sh.new\" \"$TEELLM_WORKDIR/teellm-supervisor.sh\"'"
 
     # Written every deployment: a reused Pod keeps the env it was created with, so this file is what
     # carries a `models switch` into a Pod that is not recreated.
-    remote_ssh "$(container_exec) sh -lc 'printf %s \"$OLLAMA_MODEL\" > \"$CON_WORKDIR/.teellm-model\"'"
+    remote_ssh "$(container_exec) sh -lc 'printf %s \"$OLLAMA_MODEL\" > \"$TEELLM_WORKDIR/.teellm-model\"'"
 
     # Migrates a Pod that predates the supervisor; a no-op on one that already runs it.
     step "ensuring the Pod supervisor is running"
@@ -3225,7 +3254,7 @@ deploy_teellm() {
   cursor_hide
   local spin_len=${#SPIN_FRAMES[@]}
   local i=0
-  for ((attempt=1; attempt<=OLLAMA_READY_TIMEOUT/OLLAMA_READY_INTERVAL; attempt++)); do
+  for ((attempt=1; attempt<=TEELLM_OLLAMA_READY_TIMEOUT/OLLAMA_READY_INTERVAL; attempt++)); do
     if remote_ssh "$(container_exec) curl -fsS 'http://$OLLAMA_HOST/api/tags' >/dev/null 2>&1"; then
       ollama_ready=true
       break
@@ -3235,7 +3264,7 @@ deploy_teellm() {
       now=$(date +%s)
       local elapsed=$((now - wait_start_ts))
       local frame="${SPIN_FRAMES[$i]}"
-      printf "\r   ${CYAN}%s${NC} waiting for remote ollama daemon ${DIM}(%ds / %ds)...${NC}" "$frame" "$elapsed" "$OLLAMA_READY_TIMEOUT"
+      printf "\r   ${CYAN}%s${NC} waiting for remote ollama daemon ${DIM}(%ds / %ds)...${NC}" "$frame" "$elapsed" "$TEELLM_OLLAMA_READY_TIMEOUT"
       i=$(( (i + 1) % spin_len ))
     fi
     sleep "$OLLAMA_READY_INTERVAL"
@@ -3243,7 +3272,7 @@ deploy_teellm() {
   cursor_show
   printf "\r\033[K"
   if [[ "$ollama_ready" != true ]]; then
-    err "remote ollama daemon did not become ready within ${OLLAMA_READY_TIMEOUT}s"
+    err "remote ollama daemon did not become ready within ${TEELLM_OLLAMA_READY_TIMEOUT}s"
     remote_ssh "$(container_exec) tail -n 50 '$OLLAMA_LOG_FILE' || true"
     exit 1
   fi
@@ -3259,7 +3288,7 @@ deploy_teellm() {
   local spin_len=${#SPIN_FRAMES[@]}
   local i=0
   for ((attempt=1; attempt<=30; attempt++)); do
-    if remote_ssh "$(container_exec) \"$CON_WORKDIR/teellm-service\" -probe \"https://127.0.0.1:${TEELLM_PORT}\"" >/dev/null 2>&1; then
+    if remote_ssh "$(container_exec) \"$TEELLM_WORKDIR/teellm-service\" -probe \"https://127.0.0.1:${TEELLM_PORT}\"" >/dev/null 2>&1; then
       teellm_ready=true
       break
     fi
@@ -3277,7 +3306,7 @@ deploy_teellm() {
   printf "\r\033[K"
   if [[ "$teellm_ready" != true ]]; then
     err "remote teellm-service did not become ready on https://127.0.0.1:${TEELLM_PORT}"
-    remote_ssh "$(container_exec) \"$CON_WORKDIR/teellm-service\" -probe \"https://127.0.0.1:${TEELLM_PORT}\" || true"
+    remote_ssh "$(container_exec) \"$TEELLM_WORKDIR/teellm-service\" -probe \"https://127.0.0.1:${TEELLM_PORT}\" || true"
     remote_ssh "$(container_exec) tail -n 60 '$TEELLM_LOG_FILE' || true"
     exit 1
   fi
@@ -3321,13 +3350,13 @@ deploy_teellm() {
   if [[ "$TEELLM_POD_ATTESTATION_HOST_PORT" -gt 0 ]]; then
     echo -e "    ${MUTED}↳ Host Port  :${NC} ${TEELLM_POD_ATTESTATION_HOST_PORT} -> 6001 (http, platform)"
   fi
-  echo -e "    ${MUTED}↳ Config     :${NC} ${CON_WORKDIR}/configs/teellm-production.json"
+  echo -e "    ${MUTED}↳ Config     :${NC} ${TEELLM_WORKDIR}/configs/teellm-production.json"
   platform_summary="plaintext :6001 (/v1/llm/getAttestation, /v1/llm/heartbeat, /v1/llm/log) is polled by the platform"
   if [[ "$TEELLM_POD_ATTESTATION_HOST_PORT" -gt 0 ]]; then
     platform_summary="${platform_summary}; also at http://${TEELLM_POD_NODE}:${TEELLM_POD_ATTESTATION_HOST_PORT}"
   fi
   echo -e "    ${MUTED}↳ Platform   :${NC} ${platform_summary}"
-  echo -e "    ${MUTED}↳ Supervisor :${NC} ${CON_WORKDIR}/teellm-supervisor.sh (restarts teellm-service and ollama)"
+  echo -e "    ${MUTED}↳ Supervisor :${NC} ${TEELLM_WORKDIR}/teellm-supervisor.sh (restarts teellm-service and ollama)"
   echo -e "    ${MUTED}↳ Log file   :${NC} ${TEELLM_LOG_FILE}"
   if [[ -n "$TEELLM_POD_IP" ]]; then
     # The Pod IP, not a Service name: a kata guest cannot resolve cluster DNS, so TAA has to be
@@ -3339,7 +3368,7 @@ deploy_teellm() {
   echo -e "  ${BOLD}${CYAN}● Ollama / Qwen Engine${NC}  ${DIM}(In-Pod Engine)${NC}"
   echo -e "    ${MUTED}↳ Endpoint   :${NC} ${BOLD}http://${OLLAMA_HOST}${NC}"
   echo -e "    ${MUTED}↳ Model      :${NC} ${PURPLE}${OLLAMA_MODEL}${NC}"
-  echo -e "    ${MUTED}↳ Path       :${NC} ${CONTAINER_OLLAMA_DIR}"
+  echo -e "    ${MUTED}↳ Path       :${NC} ${TEELLM_OLLAMA_DIR}"
   echo -e "    ${MUTED}↳ Log file   :${NC} ${OLLAMA_LOG_FILE}"
   echo ""
 }

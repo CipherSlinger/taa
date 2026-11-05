@@ -106,17 +106,16 @@ REMOTE_DIR="${REMOTE_DIR:-/root/taa}"
 # TAA Pod on the host (kata-qemu-csv2, 3 CPU, 98Gi), because CSV2 encrypted memory is sized from
 # the limits and is resident from boot.
 #
-# The image is built from this tree and pushed to the registry on every Pod creation, so a new
-# Pod never starts from a stale binary. Setting TAA_POD_IMAGE explicitly pins an image and skips
-# the build entirely (the operator then owns the tag's contents).
-TAA_POD_IMAGE_WAS_SET="${TAA_POD_IMAGE:+set}"
-TAA_POD_IMAGE="${TAA_POD_IMAGE:-${REMOTE_HOST}:31313/taa-env:slim-v2}"
+# The image the Pod runs. --image sets it; when the operator does not, a fresh build of this
+# tree is pushed before the Pod exists, so the Pod never starts from a stale binary.
+TAA_IMAGE="${REMOTE_HOST}:31313/taa-env:slim-v2"
+TAA_IMAGE_WAS_SET=""
 # Registry and repository the auto-built image is pushed to. The date tag follows the repository's
 # packaging rule (<repo>:<YYYYMMDD>, see DEFAULT_SAVE_IMAGE).
-TAA_POD_REGISTRY="${TAA_POD_REGISTRY:-${REMOTE_HOST}:31313}"
+TAA_IMAGE_REGISTRY="${TAA_IMAGE_REGISTRY:-${REMOTE_HOST}:31313}"
 TAA_POD_IMAGE_REPO="${TAA_POD_IMAGE_REPO:-taa-train-infer}"
 # Pull policy written into a Pod this deployment creates. The auto-built image is a mutable
-# same-day tag, so a Pod must not accept a cached copy of it; a pinned TAA_POD_IMAGE keeps the
+# same-day tag, so a Pod must not accept a cached copy of it; a pinned TAA_IMAGE keeps the
 # cheaper IfNotPresent.
 TAA_POD_PULL_POLICY_WAS_SET="${TAA_POD_PULL_POLICY:+set}"
 TAA_POD_PULL_POLICY="${TAA_POD_PULL_POLICY:-IfNotPresent}"
@@ -160,24 +159,23 @@ BINARY_NAME="${BINARY_NAME:-taa}"
 TAA_BINARY_PATH="${TAA_BINARY_PATH:-$PROJECT_DIR/bin/$BINARY_NAME}"
 
 # 远程容器目录：TAA 容器内的工作目录，以及 attestation report 文件路径。
-CON_WORKDIR="${CON_WORKDIR:-/root/taa}"
-CON_PORT="${CON_PORT:-6001}"
-ATT_REPORT_FILE="${CON_WORKDIR}/attestation.report"
+TAA_WORKDIR="${TAA_WORKDIR:-/root/taa}"
+TAA_PORT=6001
+ATT_REPORT_FILE="${TAA_WORKDIR}/attestation.report"
 K_NS="${TARGET_NAMESPACE:+-n $TARGET_NAMESPACE}"
 
-# TAA 容器运行参数：容器内工作目录、监听地址、注册用容器标识和日志路径。
-TAA_CONTAINER_WORKDIR="${TAA_CONTAINER_WORKDIR:-${CON_WORKDIR}}"
-TAA_CONTAINER_ADDR="${TAA_CONTAINER_ADDR:-:${CON_PORT}}"
+# TAA 容器运行参数：监听地址、注册用容器标识和日志路径。
+TAA_CONTAINER_ADDR=":${TAA_PORT}"
 # TAA 程序固定读取工作目录下的 taa-config.json，脚本侧文件名必须保持一致。
 TAA_CONFIG_FILE="taa-config.json"
 TAA_PRODUCTION_CONFIG_TEMPLATE="${TAA_PRODUCTION_CONFIG_TEMPLATE:-$PROJECT_DIR/configs/taa-production.json}"
 REMOTE_TAA_CONFIG_PATH="${REMOTE_TAA_CONFIG_PATH:-$REMOTE_DIR/$TAA_CONFIG_FILE}"
-CONTAINER_TAA_CONFIG_PATH="${CONTAINER_TAA_CONFIG_PATH:-$TAA_CONTAINER_WORKDIR/$TAA_CONFIG_FILE}"
+CONTAINER_TAA_CONFIG_PATH="${CONTAINER_TAA_CONFIG_PATH:-$TAA_WORKDIR/$TAA_CONFIG_FILE}"
 CONTRACT_ID="${CONTRACT_ID:-}"
-TAA_LOG_FILE="${TAA_LOG_FILE:-$TAA_CONTAINER_WORKDIR/taa.log}"
+TAA_LOG_FILE="${TAA_LOG_FILE:-$TAA_WORKDIR/taa.log}"
 CLI_MODEL=""
-READY_TIMEOUT="${READY_TIMEOUT:-120}"
-READY_INTERVAL="${READY_INTERVAL:-2}"
+TAA_READY_TIMEOUT="${TAA_READY_TIMEOUT:-120}"
+TAA_READY_INTERVAL="${TAA_READY_INTERVAL:-2}"
 
 # Semgrep payload for the code scan engine. TAA resolves the engine at startup: with
 # codeAudit.codeScan.engine=semgrep a missing rules path makes it fall back to the built-in regex
@@ -197,7 +195,7 @@ SEMGREP_RULES_SOURCE="${SEMGREP_RULES_SOURCE:-$PROJECT_DIR/models/audit/semgrep/
 # from $SEMGREP_RULES_SOURCE so a rules edit does not force a payload rebuild. It is extracted with
 # `tar -xzf - -C /`, so packaging needs no network -- unlike a pip install.
 SEMGREP_PAYLOAD_BUNDLE="${SEMGREP_PAYLOAD_BUNDLE:-$PROJECT_DIR/deploy/guest-build/out/semgrep-bundle.tar.gz}"
-CONTAINER_SEMGREP_DIR="${CONTAINER_SEMGREP_DIR:-/opt/taa/semgrep}"
+TAA_SEMGREP_DIR="${TAA_SEMGREP_DIR:-/opt/taa/semgrep}"
 SEMGREP_VERSION="${SEMGREP_VERSION:-1.177.0}"
 
 # Whether the paths above provision the engine the config template selects. "auto" honors the
@@ -206,8 +204,8 @@ SEMGREP_VERSION="${SEMGREP_VERSION:-1.177.0}"
 # audit off at startup anyway, so installing the payload there would only bloat the image.
 TAA_SCAN_ENGINE_PROVISION="${TAA_SCAN_ENGINE_PROVISION:-auto}"
 
-# 远程 SSH 密码：通过 TARGET_PASSWORD 覆盖；置空时启动脚本会交互式询问。
-PASSWORD="${TARGET_PASSWORD:-Osrd@2026}"
+# 远程 SSH 密码：通过 REMOTE_PASSWORD 覆盖；置空时启动脚本会交互式询问。
+REMOTE_PASSWORD="${REMOTE_PASSWORD:-Osrd@2026}"
 
 DEPLOY_TAA=true
 STEP=0
@@ -375,8 +373,8 @@ SSH_OPTS=(
 )
 
 ensure_remote_ssh() {
-  if [[ -z "$PASSWORD" ]]; then
-    read -rsp "Password for ${REMOTE_USER}@${REMOTE_HOST}: " PASSWORD
+  if [[ -z "$REMOTE_PASSWORD" ]]; then
+    read -rsp "Password for ${REMOTE_USER}@${REMOTE_HOST}: " REMOTE_PASSWORD
     echo
   fi
   if ! command -v sshpass >/dev/null 2>&1; then
@@ -387,14 +385,14 @@ ensure_remote_ssh() {
 
 remote_ssh() {
   ensure_remote_ssh
-  sshpass -p "$PASSWORD" ssh "${SSH_OPTS[@]}" "${REMOTE_USER}@${REMOTE_HOST}" "$@"
+  sshpass -p "$REMOTE_PASSWORD" ssh "${SSH_OPTS[@]}" "${REMOTE_USER}@${REMOTE_HOST}" "$@"
 }
 
 check_remote_connectivity() {
   ensure_remote_ssh
-  if ! sshpass -p "$PASSWORD" ssh "${SSH_OPTS[@]}" -o ConnectTimeout=5 "${REMOTE_USER}@${REMOTE_HOST}" "true" 2>/dev/null; then
+  if ! sshpass -p "$REMOTE_PASSWORD" ssh "${SSH_OPTS[@]}" -o ConnectTimeout=5 "${REMOTE_USER}@${REMOTE_HOST}" "true" 2>/dev/null; then
     err "cannot connect to remote host ${REMOTE_USER}@${REMOTE_HOST} via SSH (connection timed out or authentication failed)"
-    detail "Please check network connection, REMOTE_HOST ($REMOTE_HOST), or TARGET_PASSWORD credentials."
+    detail "Please check network connection, REMOTE_HOST ($REMOTE_HOST), or REMOTE_PASSWORD credentials."
     exit 1
   fi
   info "remote host SSH connection verified: ${REMOTE_USER}@${REMOTE_HOST}"
@@ -502,13 +500,13 @@ sed_escape() {
 # it from restarting, then the process is signalled. Called right after a Pod is created (so the
 # binary baked into the image never serves the deployment window) and again before the update.
 pause_remote_taa() {
-  remote_ssh "$(container_exec) sh -lc 'touch \"$TAA_CONTAINER_WORKDIR/manual\" && pkill -x taa >/dev/null 2>&1 || true; killall taa >/dev/null 2>&1 || true'"
+  remote_ssh "$(container_exec) sh -lc 'touch \"$TAA_WORKDIR/manual\" && pkill -x taa >/dev/null 2>&1 || true; killall taa >/dev/null 2>&1 || true'"
 }
 
 # Builds the production TAA image from this tree, uploads it to the registry, and points the new
 # Pod at it. The tag carries today's date and is therefore mutable: when the registry already
 # holds a different build under that tag, its manifest is deleted and the tag repushed; when the
-# content is identical the push is skipped. Sets TAA_POD_IMAGE and TAA_POD_PULL_POLICY.
+# content is identical the push is skipped. Sets TAA_IMAGE and TAA_POD_PULL_POLICY.
 #
 # Reuses save_local_docker_image so the image a Pod runs is assembled by the same code path as a
 # packaged production image (base archive, supervisor, scan engine, static binary, config).
@@ -516,13 +514,13 @@ build_and_push_taa_pod_image() {
   require_command docker
   if ! docker info >/dev/null 2>&1; then
     err "the docker daemon is not reachable, so the Pod image cannot be built"
-    detail "Set TAA_POD_IMAGE explicitly to deploy a prebuilt image instead."
+    detail "Pass --image to deploy a prebuilt image instead."
     exit 1
   fi
 
   local tag="$SAVE_DATE_TAG"
   local local_image="$TAA_POD_IMAGE_REPO:$tag"
-  local registry_image="$TAA_POD_REGISTRY/$TAA_POD_IMAGE_REPO:$tag"
+  local registry_image="$TAA_IMAGE_REGISTRY/$TAA_POD_IMAGE_REPO:$tag"
   local archive="$PROJECT_DIR/deploy/out/taa-pod-$tag.tar.gz"
 
   step "building the TAA image for the new Pod ($local_image)"
@@ -542,10 +540,10 @@ build_and_push_taa_pod_image() {
 
   local remote_archive="/tmp/taa-pod-$tag.$$.tar.gz"
   step "uploading the image to ${REMOTE_USER}@${REMOTE_HOST} and updating ${registry_image}"
-  sshpass -p "$PASSWORD" scp "${SSH_OPTS[@]}" "$archive" "${REMOTE_USER}@${REMOTE_HOST}:$remote_archive"
+  sshpass -p "$REMOTE_PASSWORD" scp "${SSH_OPTS[@]}" "$archive" "${REMOTE_USER}@${REMOTE_HOST}:$remote_archive"
 
   local result
-  if ! result="$(remote_ssh bash -s -- "$remote_archive" "$local_image" "$registry_image" "$local_id" "$TAA_POD_REGISTRY" "$TAA_POD_IMAGE_REPO" "$tag" <<'REMOTE_PUSH'
+  if ! result="$(remote_ssh bash -s -- "$remote_archive" "$local_image" "$registry_image" "$local_id" "$TAA_IMAGE_REGISTRY" "$TAA_POD_IMAGE_REPO" "$tag" <<'REMOTE_PUSH'
 set -euo pipefail
 archive="$1"; local_image="$2"; registry_image="$3"; local_id="$4"
 registry="$5"; repo="$6"; tag="$7"
@@ -577,7 +575,7 @@ echo "PUSHED"
 REMOTE_PUSH
 )"; then
     err "failed to upload or push the TAA image to ${registry_image}"
-    detail "Check that ${REMOTE_HOST} can push to ${TAA_POD_REGISTRY}, or set TAA_POD_IMAGE to a prebuilt image."
+    detail "Check that ${REMOTE_HOST} can push to ${TAA_IMAGE_REGISTRY}, or pass --image with a prebuilt image."
     exit 1
   fi
 
@@ -591,7 +589,7 @@ REMOTE_PUSH
       ;;
   esac
 
-  TAA_POD_IMAGE="$registry_image"
+  TAA_IMAGE="$registry_image"
   # A same-day tag is mutable: the Pod must fetch the manifest instead of trusting a cached copy.
   # An explicit TAA_POD_PULL_POLICY stays the operator's choice.
   if [[ -z "$TAA_POD_PULL_POLICY_WAS_SET" ]]; then
@@ -607,7 +605,7 @@ create_taa_pod() {
   require_file "TAA Pod template" "$TAA_POD_TEMPLATE"
   # An image named explicitly is the operator's decision and is used as given. Otherwise the Pod
   # runs a fresh build of this tree, pushed before the Pod exists so it never starts stale.
-  if [[ -z "$TAA_POD_IMAGE_WAS_SET" ]]; then
+  if [[ -z "$TAA_IMAGE_WAS_SET" ]]; then
     build_and_push_taa_pod_image
   fi
   local cc_init_data docker_id pod_namespace
@@ -639,7 +637,7 @@ create_taa_pod() {
   sed -e "s|__POD_NAME__|$(sed_escape "$TARGET_POD")|g" \
       -e "s|__NAMESPACE__|$(sed_escape "$pod_namespace")|g" \
       -e "s|__NODE_NAME__|$(sed_escape "$TAA_POD_NODE")|g" \
-      -e "s|__IMAGE__|$(sed_escape "$TAA_POD_IMAGE")|g" \
+      -e "s|__IMAGE__|$(sed_escape "$TAA_IMAGE")|g" \
       -e "s|__RUNTIME_CLASS__|$(sed_escape "$TAA_POD_RUNTIME_CLASS")|g" \
       -e "s|__PULL_POLICY__|$(sed_escape "$TAA_POD_PULL_POLICY")|g" \
       -e "s|__CPU__|$(sed_escape "$TAA_POD_CPU")|g" \
@@ -650,7 +648,7 @@ create_taa_pod() {
       -e "s|__PLATFORM_PUBLIC_KEY__|$(sed_escape "$TAA_POD_PLATFORM_PUBLIC_KEY")|g" \
       -e "s|__CONTRACT_ID__|$(sed_escape "${CONTRACT_ID:-}")|g" \
       "$TAA_POD_TEMPLATE" > "$TEMP_TAA_POD_MANIFEST"
-  step "creating the TAA Pod $TARGET_POD (runtimeClassName: $TAA_POD_RUNTIME_CLASS, node: $TAA_POD_NODE, image: $TAA_POD_IMAGE)"
+  step "creating the TAA Pod $TARGET_POD (runtimeClassName: $TAA_POD_RUNTIME_CLASS, node: $TAA_POD_NODE, image: $TAA_IMAGE)"
   # create, not apply: the name was verified absent a moment ago, and create turns a race with
   # another operator into an error instead of silently rewriting a Pod whose spec is immutable.
   if ! remote_ssh "kubectl $K_NS create -f -" < "$TEMP_TAA_POD_MANIFEST"; then
@@ -699,7 +697,7 @@ ensure_remote_pod() {
         err "TAA Pod '$TARGET_POD' exists but did not become Ready within 30s"
         remote_ssh "kubectl $K_NS describe pod '$TARGET_POD' | tail -n 20" || true
         detail "It is the Pod this deployment owns. If it is wedged, delete it with:"
-        detail "  $(basename "$0") taa stop"
+        detail "  $(basename "$0") stop"
         exit 1
       fi
       info "remote target pod verified: ${TARGET_POD} (namespace: ${TARGET_NAMESPACE:-default}, reused, nothing applied)"
@@ -963,7 +961,7 @@ save_local_docker_image() {
 
 usage() {
   cat <<EOF
-Usage: $(basename "$0") [start|stop|save] [taa] [--pod <name>] [--namespace <ns>] [--model <name>]
+Usage: $(basename "$0") [start|stop|save] [--pod <name>] [--namespace <ns>] [--model <name>]
 
 This script deploys to the remote Kata CSV2 Pod over SSH and kubectl.
 
@@ -983,30 +981,33 @@ Options:
       Kubernetes namespace of the target Pod (default: osr).
   --model <name> (or --model=<name>)
       Explicitly specify the LLM audit model (overriding config files).
-  --archive <path> (or --output <path>, -o <path>)
+  --port <port>
+      Port TAA listens on inside the Pod (default: 6001).
+  --remote-password <password>
+      SSH password for the remote host. Without it the script prompts.
+  --archive <path>
       Customize the exported archive file destination (save).
-  --image <tag> (or --tag <tag>)
-      Customize the committed image tag name (save).
+  --image <tag>
+      Image to deploy (start) or the image tag to produce (save). Without it, start builds
+      the production image from this tree and save names it <repo>:<today>.
   --base-archive <path> (or --base <path>)
       Specify a custom base image archive (save).
-  --config <path>
+  --save-config <path>
       Specify an alternate production configuration template (save).
 
-Component selection:
-  taa is the only component this script deploys; it is the default and may be given explicitly.
-  The platform (or platform-mock) is deployed separately with deploy-platform-mock.sh.
-  Note: Qwen / Ollama / TEE-LLM inference service is managed independently via deploy-llm.sh.
+Note: the platform (or platform-mock) is deployed separately with deploy-platform-mock.sh,
+and Qwen / Ollama / TEE-LLM with deploy-llm.sh.
 
 Remote Pod lifecycle:
   --pod names the Pod to deploy into. Without it, remote mode creates a dedicated Kata CSV2 Pod
   (default name: TAA_POD_NAME, i.e. taa-deploy) on the remote host, reuses it on later runs, and
   deletes it on stop. A Pod named through --pod is never created and never deleted by this script.
   Before a new Pod is created, the production image is built from the current tree, uploaded to
-  the registry and pushed as TAA_POD_REGISTRY/TAA_POD_IMAGE_REPO:<today>. If the registry already
+  the registry and pushed as TAA_IMAGE_REGISTRY/TAA_POD_IMAGE_REPO:<today>. If the registry already
   holds a different build under that same-day tag, its manifest is deleted and the tag repushed;
   an identical build is left alone. An existing Pod is reused as is and is never recreated, so a
-  new image needs '$(basename "$0") taa stop' first (that deletes the Pod and its guest writable
-  layer). Set TAA_POD_IMAGE explicitly to skip the build and pin an image.
+  new image needs '$(basename "$0") stop' first (that deletes the Pod and its guest writable
+  layer). Pass --image to deploy a prebuilt image instead of building one.
   The Pod's LLM endpoint comes from taa-config.json, which is rewritten on every deploy.
 
 Examples:
@@ -1014,21 +1015,17 @@ Examples:
   $(basename "$0") start
   $(basename "$0") start --model qwen2.5-coder:7b
   $(basename "$0") stop
-  $(basename "$0") taa
 
   # Production image packaging (no deployment)
   $(basename "$0") save
-  $(basename "$0") save --tag taa-train-infer:$(date +%Y%m%d)
-  $(basename "$0") save -o /tmp/taa-env-production.tar.gz
+  $(basename "$0") save --image taa-train-infer:$(date +%Y%m%d)
+  $(basename "$0") save --archive /tmp/taa-env-production.tar.gz
 
 Environment overrides:
   # Kubernetes / Pod
   TAA_POD_NAME=${TAA_POD_NAME}
       --pod 未给出时创建/复用的 Pod 名称（默认 taa-deploy）。
-  TAA_POD_IMAGE=${TAA_POD_IMAGE}
-      新建 Pod 使用的镜像。未设置时，每次新建 Pod 前都会用当前源码构建生产镜像并推送到
-      registry（见 TAA_POD_REGISTRY / TAA_POD_IMAGE_REPO）；显式设置则跳过构建，原样使用。
-  TAA_POD_REGISTRY=${TAA_POD_REGISTRY}
+  TAA_IMAGE_REGISTRY=${TAA_IMAGE_REGISTRY}
       自动构建镜像推送到的 registry（默认 <REMOTE_HOST>:31313）。
   TAA_POD_IMAGE_REPO=${TAA_POD_IMAGE_REPO}
       自动构建镜像的仓库名（默认 taa-train-infer，tag 为当天日期 YYYYMMDD）。
@@ -1064,7 +1061,7 @@ Environment overrides:
       远程宿主机 IP 或主机名。
   REMOTE_DIR=${REMOTE_DIR}
       远程宿主机上的部署工作目录。
-  TARGET_PASSWORD=<password>
+  REMOTE_PASSWORD=<password>
       SSH 密码覆盖项；置空时脚本会交互式询问。
 
   # Platform address observed by TAA
@@ -1079,7 +1076,7 @@ Environment overrides:
       TAA 二进制文件名。
   TAA_BINARY_PATH=${TAA_BINARY_PATH}
       本地 TAA 二进制文件路径。
-  TAA_CONTAINER_WORKDIR=${TAA_CONTAINER_WORKDIR}
+  TAA_WORKDIR=${TAA_WORKDIR}
       TAA 在目标容器内的工作目录。
   TAA_CONTAINER_ADDR=${TAA_CONTAINER_ADDR}
       写入 TAA 配置文件的容器内监听地址与端口。
@@ -1098,16 +1095,16 @@ Environment overrides:
   SEMGREP_PAYLOAD_BUNDLE=$SEMGREP_PAYLOAD_BUNDLE
       save 打包时解包进镜像的 semgrep 容器 payload（由
       deploy/guest-build/build-semgrep-payload-container.sh 产出）。
-  CONTAINER_SEMGREP_DIR=$CONTAINER_SEMGREP_DIR
+  TAA_SEMGREP_DIR=$TAA_SEMGREP_DIR
       镜像内 semgrep 的安装根目录（pylib 与规则所在位置）。
   SEMGREP_VERSION=$SEMGREP_VERSION
       期望的 semgrep 版本；与 payload 包内 MANIFEST 记录的版本不一致时报错。
   TAA_SCAN_ENGINE_PROVISION=${TAA_SCAN_ENGINE_PROVISION}
       扫描引擎注入模式：auto（默认，按模板选择注入）或 skip（不注入，供运行时按角色关掉
       审计的场景使用，例如数据分析）。
-  READY_TIMEOUT=${READY_TIMEOUT}
+  TAA_READY_TIMEOUT=${TAA_READY_TIMEOUT}
       等待服务就绪的最长时间（秒）。
-  READY_INTERVAL=${READY_INTERVAL}
+  TAA_READY_INTERVAL=${TAA_READY_INTERVAL}
       服务就绪检测轮询间隔（秒）。
 EOF
 }
@@ -1362,7 +1359,7 @@ echo engine=\$e rules=\$r"
       if [[ -n "$SEMGREP_BUNDLE" ]]; then
         require_file "semgrep payload bundle not found" "$SEMGREP_BUNDLE"
         spin_task "uploading semgrep payload to ${REMOTE_HOST} ($(du -h "$SEMGREP_BUNDLE" 2>/dev/null | cut -f1))" \
-          sshpass -p "$PASSWORD" scp "${SSH_OPTS[@]}" "$SEMGREP_BUNDLE" "${REMOTE_USER}@${REMOTE_HOST}:$REMOTE_SEMGREP_BUNDLE.new"
+          sshpass -p "$REMOTE_PASSWORD" scp "${SSH_OPTS[@]}" "$SEMGREP_BUNDLE" "${REMOTE_USER}@${REMOTE_HOST}:$REMOTE_SEMGREP_BUNDLE.new"
         remote_ssh "mv '$REMOTE_SEMGREP_BUNDLE.new' '$REMOTE_SEMGREP_BUNDLE'"
       fi
       if ! remote_ssh "test -f '$REMOTE_SEMGREP_BUNDLE'"; then
@@ -1433,7 +1430,7 @@ provision_local_scan_engine() {
   if [[ -z "$rules_path" ]]; then
     err "codeAudit.codeScan.rulesPath is empty in $(basename "$template") but codeAudit.codeScan.engine=semgrep"
     detail "Without it taa falls back to its built-in path relative to the working directory, which does not exist in the image."
-    detail "Set codeAudit.codeScan.rulesPath (the shipped templates use a path under $CONTAINER_SEMGREP_DIR, e.g. $CONTAINER_SEMGREP_DIR/rules)."
+    detail "Set codeAudit.codeScan.rulesPath (the shipped templates use a path under $TAA_SEMGREP_DIR, e.g. $TAA_SEMGREP_DIR/rules)."
     exit 1
   fi
 
@@ -1473,8 +1470,8 @@ echo engine=\$e rules=\$r"
         docker exec -i "$2" sh -lc "tar -xzf /tmp/taa-semgrep-payload.tar.gz -C / && rm -f /tmp/taa-semgrep-payload.tar.gz"
       ' _ "$SEMGREP_PAYLOAD_BUNDLE" "$container"
 
-      if ! docker exec -i "$container" sh -lc "test -d '$CONTAINER_SEMGREP_DIR/pylib'"; then
-        err "payload extracted but $CONTAINER_SEMGREP_DIR/pylib is missing"
+      if ! docker exec -i "$container" sh -lc "test -d '$TAA_SEMGREP_DIR/pylib'"; then
+        err "payload extracted but $TAA_SEMGREP_DIR/pylib is missing"
         detail "The bundle is expected to carry opt/taa/semgrep/pylib; rebuild it with deploy/guest-build/build-semgrep-payload-container.sh"
         exit 1
       fi
@@ -1702,10 +1699,10 @@ else
         fi
         TARGET_NAMESPACE="$1"
         ;;
-      --archive=*|--output=*)
+      --archive=*)
         CUSTOM_SAVE_ARCHIVE="${arg#*=}"
         ;;
-      --archive|--output|-o)
+      --archive)
         shift
         if [[ $# -eq 0 || "$1" == -* ]]; then
           err "$arg requires a file path argument"
@@ -1714,17 +1711,21 @@ else
         fi
         CUSTOM_SAVE_ARCHIVE="$1"
         ;;
-      --image=*|--tag=*)
-        CUSTOM_SAVE_IMAGE="${arg#*=}"
+      --image=*)
+        TAA_IMAGE="${arg#*=}"
+        TAA_IMAGE_WAS_SET="set"
+        CUSTOM_SAVE_IMAGE="$TAA_IMAGE"
         ;;
-      --image|--tag)
+      --image)
         shift
         if [[ $# -eq 0 || "$1" == -* ]]; then
           err "$arg requires an image name argument"
           usage >&2
           exit 1
         fi
-        CUSTOM_SAVE_IMAGE="$1"
+        TAA_IMAGE="$1"
+        TAA_IMAGE_WAS_SET="set"
+        CUSTOM_SAVE_IMAGE="$TAA_IMAGE"
         ;;
       --base-archive=*|--base=*)
         CUSTOM_BASE_ARCHIVE="${arg#*=}"
@@ -1738,10 +1739,10 @@ else
         fi
         CUSTOM_BASE_ARCHIVE="$1"
         ;;
-      --config=*)
+      --save-config=*)
         CUSTOM_SAVE_CONFIG="${arg#*=}"
         ;;
-      --config)
+      --save-config)
         shift
         if [[ $# -eq 0 || "$1" == -* ]]; then
           err "$arg requires a config path argument"
@@ -1750,16 +1751,35 @@ else
         fi
         CUSTOM_SAVE_CONFIG="$1"
         ;;
+      --remote-password=*)
+        REMOTE_PASSWORD="${arg#*=}"
+        ;;
+      --remote-password)
+        shift
+        if [[ $# -eq 0 || "$1" == -* ]]; then
+          err "$arg requires a password argument"
+          usage >&2
+          exit 1
+        fi
+        REMOTE_PASSWORD="$1"
+        ;;
+      --port=*)
+        TAA_PORT="${arg#*=}"
+        TAA_CONTAINER_ADDR=":${TAA_PORT}"
+        ;;
+      --port)
+        shift
+        if [[ $# -eq 0 || "$1" == -* ]]; then
+          err "$arg requires a port argument"
+          usage >&2
+          exit 1
+        fi
+        TAA_PORT="$1"
+        TAA_CONTAINER_ADDR=":${TAA_PORT}"
+        ;;
       platform-mock)
         err "platform-mock is no longer deployed by this script; use ./deploy-platform-mock.sh start"
         exit 1
-        ;;
-      taa)
-        # TAA is the only component this script deploys; accepted for compatibility.
-        ;;
-      qwen)
-        info "Qwen/Ollama/TEE-LLM is now independently managed by teellm submodule."
-        info "To deploy TEE-LLM, please execute: ./deploy-llm.sh"
         ;;
       --model=*)
         CLI_MODEL="${arg#*=}"
@@ -1814,7 +1834,7 @@ cd "$PROJECT_DIR"
 wait_for_remote_taa_ready() {
   local wait_start_ts
   wait_start_ts=$(date +%s)
-  local ready_attempts=$(( (READY_TIMEOUT + READY_INTERVAL - 1) / READY_INTERVAL ))
+  local ready_attempts=$(( (TAA_READY_TIMEOUT + TAA_READY_INTERVAL - 1) / TAA_READY_INTERVAL ))
   local taa_ready=false
   cursor_hide
   local spin_len=${#SPIN_FRAMES[@]}
@@ -1827,7 +1847,7 @@ wait_for_remote_taa_ready() {
     # bash, not sh: /dev/tcp is a bash feature, and the image's /bin/sh is dash,
     # where the redirection fails with "cannot open /dev/tcp/..." no matter what
     # is listening. deploy-taa-vm.sh carries the same probe and the same reason.
-    if remote_ssh "$(container_exec) bash -c 'exec 3<>/dev/tcp/127.0.0.1/$CON_PORT' >/dev/null 2>&1"; then
+    if remote_ssh "$(container_exec) bash -c 'exec 3<>/dev/tcp/127.0.0.1/$TAA_PORT' >/dev/null 2>&1"; then
       taa_ready=true
       break
     fi
@@ -1836,16 +1856,16 @@ wait_for_remote_taa_ready() {
       now=$(date +%s)
       local elapsed=$((now - wait_start_ts))
       local frame="${SPIN_FRAMES[$i]}"
-      printf "\r   ${CYAN}%s${NC} waiting for remote taa service to become ready ${DIM}(%ds / %ds)...${NC}" "$frame" "$elapsed" "$READY_TIMEOUT"
+      printf "\r   ${CYAN}%s${NC} waiting for remote taa service to become ready ${DIM}(%ds / %ds)...${NC}" "$frame" "$elapsed" "$TAA_READY_TIMEOUT"
       i=$(( (i + 1) % spin_len ))
     fi
-    sleep "$READY_INTERVAL"
+    sleep "$TAA_READY_INTERVAL"
   done
   cursor_show
   printf "\r\033[K"
   if [[ "$taa_ready" == true ]]; then
     local total_elapsed=$(( $(date +%s) - wait_start_ts ))
-    info "remote taa ready: tcp 127.0.0.1:$CON_PORT ${DIM}(took ${total_elapsed}s)${NC}"
+    info "remote taa ready: tcp 127.0.0.1:$TAA_PORT ${DIM}(took ${total_elapsed}s)${NC}"
     # A reachable port only proves a listener; the log line is what shows the
     # daemon that owns it finished loading its configuration.
     if ! confirm_taa_listening "remote_ssh \"\$(container_exec) sh -lc 'tail -n 200 $TAA_LOG_FILE'\""; then
@@ -1853,7 +1873,7 @@ wait_for_remote_taa_ready() {
     fi
     return 0
   else
-    err "remote taa did not become ready within ${READY_TIMEOUT}s"
+    err "remote taa did not become ready within ${TAA_READY_TIMEOUT}s"
     remote_ssh "$(container_exec) tail -n 50 $TAA_LOG_FILE || true"
     return 1
   fi
@@ -1867,7 +1887,7 @@ if [[ "$ACTION" == "stop" ]]; then
     if remote_pod_exists; then
       # A Pod that is Pending or wedged cannot be exec'd into; that must not stop the deletion
       # of a Pod this deployment owns, whose memory is host-resident either way.
-      remote_ssh "$(container_exec) sh -lc 'touch \"$TAA_CONTAINER_WORKDIR/manual\" && pkill -x taa >/dev/null 2>&1 || true; killall taa >/dev/null 2>&1 || true'" \
+      remote_ssh "$(container_exec) sh -lc 'touch \"$TAA_WORKDIR/manual\" && pkill -x taa >/dev/null 2>&1 || true; killall taa >/dev/null 2>&1 || true'" \
         || warn "could not signal taa inside Pod '$TARGET_POD' (it may not be running)"
       # Only a Pod this deployment created is deleted. An explicitly named Pod belongs to the
       # operator, and its guest writable layer is where their data, keys and models live.
@@ -1926,12 +1946,12 @@ if [[ "$DEPLOY_TAA" == true ]]; then
   # storage.data stays as the template says (see save_local_docker_image).
   write_taa_config "$REMOTE_TAA_CONFIG_SOURCE" "$TAA_CONFIG_TEMPLATE" \
     "$TAA_CONTAINER_ADDR" "$REMOTE_PLATFORM_IP" "$REMOTE_DOCKER_ID" "$CONTRACT_ID" \
-    "$TAA_CONTAINER_WORKDIR/models" "" "$TAA_CONTAINER_WORKDIR/results" \
-    "${LLM_IP:-}" "$TARGET_MODEL" "$INCLUDE_TAA_IDENTITY" "" "" "$TAA_CONTAINER_WORKDIR/keys"
+    "$TAA_WORKDIR/models" "" "$TAA_WORKDIR/results" \
+    "${LLM_IP:-}" "$TARGET_MODEL" "$INCLUDE_TAA_IDENTITY" "" "" "$TAA_WORKDIR/keys"
 
   step "uploading taa and config to remote host"
-  sshpass -p "$PASSWORD" scp "${SSH_OPTS[@]}" "$TAA_BINARY_PATH" "${REMOTE_USER}@${REMOTE_HOST}:$REMOTE_DIR/$BINARY_NAME.new"
-  sshpass -p "$PASSWORD" scp "${SSH_OPTS[@]}" "$REMOTE_TAA_CONFIG_SOURCE" "${REMOTE_USER}@${REMOTE_HOST}:$REMOTE_TAA_CONFIG_PATH.new"
+  sshpass -p "$REMOTE_PASSWORD" scp "${SSH_OPTS[@]}" "$TAA_BINARY_PATH" "${REMOTE_USER}@${REMOTE_HOST}:$REMOTE_DIR/$BINARY_NAME.new"
+  sshpass -p "$REMOTE_PASSWORD" scp "${SSH_OPTS[@]}" "$REMOTE_TAA_CONFIG_SOURCE" "${REMOTE_USER}@${REMOTE_HOST}:$REMOTE_TAA_CONFIG_PATH.new"
 
   step "replacing remote taa and config"
   remote_ssh "mv '$REMOTE_DIR/$BINARY_NAME.new' '$REMOTE_DIR/$BINARY_NAME' && mv '$REMOTE_TAA_CONFIG_PATH.new' '$REMOTE_TAA_CONFIG_PATH' && chmod +x '$REMOTE_DIR/$BINARY_NAME'"
@@ -1960,12 +1980,12 @@ if [[ "$DEPLOY_TAA" == true ]]; then
   fi
 
   step "copying runtime files into container"
-  remote_ssh "$(container_cp "$REMOTE_DIR/$BINARY_NAME" "$TAA_CONTAINER_WORKDIR/$BINARY_NAME")"
+  remote_ssh "$(container_cp "$REMOTE_DIR/$BINARY_NAME" "$TAA_WORKDIR/$BINARY_NAME")"
   remote_ssh "$(container_cp "$REMOTE_TAA_CONFIG_PATH" "$CONTAINER_TAA_CONFIG_PATH")"
-  remote_ssh "$(container_exec) sh -lc 'chmod +x $TAA_CONTAINER_WORKDIR/$BINARY_NAME'"
+  remote_ssh "$(container_exec) sh -lc 'chmod +x $TAA_WORKDIR/$BINARY_NAME'"
 
   step "verifying copied files inside container"
-  remote_ssh "$(container_exec) sh -lc 'ls -l $TAA_CONTAINER_WORKDIR/$BINARY_NAME $CONTAINER_TAA_CONFIG_PATH 2>/dev/null'"
+  remote_ssh "$(container_exec) sh -lc 'ls -l $TAA_WORKDIR/$BINARY_NAME $CONTAINER_TAA_CONFIG_PATH 2>/dev/null'"
 
   step "checking attestation prerequisites inside container"
   if ! remote_ssh "$(container_exec) sh -lc 'test -e /dev/csv-guest'" 2>/dev/null; then
@@ -1979,7 +1999,7 @@ if [[ "$DEPLOY_TAA" == true ]]; then
     warn "TAA_KEEP_MANUAL is enabled; leaving taa manual mode paused"
   else
     step "restoring taa service inside container"
-    remote_ssh "$(container_exec) sh -lc 'rm -f "$TAA_CONTAINER_WORKDIR/manual"'"
+    remote_ssh "$(container_exec) sh -lc 'rm -f "$TAA_WORKDIR/manual"'"
   fi
 
   if [[ "${TAA_KEEP_MANUAL:-false}" == false ]]; then
@@ -1993,7 +2013,7 @@ fi
 banner "Deploy Complete (Remote)" "All remote services deployed and verified healthy"
 if [[ "$DEPLOY_TAA" == true ]]; then
   echo -e "  ${BOLD}${CYAN}● TAA Secure Enclave Daemon${NC}  ${DIM}(In-Container Daemon)${NC}"
-  echo -e "    ${MUTED}↳ Container  :${NC} ${CONTAINER_LABEL}:${TAA_CONTAINER_WORKDIR} (addr ${TAA_CONTAINER_ADDR})"
+  echo -e "    ${MUTED}↳ Container  :${NC} ${CONTAINER_LABEL}:${TAA_WORKDIR} (addr ${TAA_CONTAINER_ADDR})"
   echo -e "    ${MUTED}↳ Remote Bin :${NC} ${REMOTE_HOST}:${REMOTE_DIR}/${BINARY_NAME}"
   echo -e "    ${MUTED}↳ Config     :${NC} ${CONTAINER_TAA_CONFIG_PATH}"
   echo -e "    ${MUTED}↳ Log file   :${NC} ${TAA_LOG_FILE}"

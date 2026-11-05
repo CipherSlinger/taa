@@ -23,8 +23,8 @@ BINARY_NAME="${PLATFORM_MOCK_BINARY_NAME:-platform-mock}"
 # 18081, not 18080: on the shared hosts 18080 is where the real control plane
 # listens (ccs-node-agent), and the mock exists to stand in for it, not to
 # contend with it. `deploy.sh` still defaults to 18080 because that is the real
-# platform; point it here with PLATFORM_PORT=18081 when debugging against the mock.
-PORT="${PLATFORM_PORT:-18081}"
+# platform; point it here with MOCK_PORT=18081 when debugging against the mock.
+PORT="${MOCK_PORT:-18081}"
 ADDR="${PLATFORM_ADDR:-}"
 STATE_DIR="${PLATFORM_MOCK_STATE_DIR-__unset__}"
 UPLOAD_DIR="${PLATFORM_MOCK_UPLOAD_DIR-__unset__}"
@@ -54,7 +54,10 @@ REMOTE_USER="${REMOTE_USER:-root}"
 REMOTE_DIR="${REMOTE_DIR:-/root/taa}"
 REMOTE_BINARY=""
 REMOTE_SSH_PORT=""
-PASSWORD="${TARGET_PASSWORD:-${PASSWORD:-}}"
+REMOTE_PASSWORD="${REMOTE_PASSWORD:-}"
+# The environment spelling this replaced. Refused after parsing rather than ignored, so a stale
+# invocation cannot silently authenticate with a different password than it passed.
+TARGET_PASSWORD_ENV_WAS_SET="${TARGET_PASSWORD+set}"
 SSH_EXTRA_OPTS=()
 
 ALLOW_EMPTY_ATTESTATION=0
@@ -100,8 +103,8 @@ Common options:
   --pid-file PATH            PID file (default: <remote-dir>/platform-mock.pid)
   --taa-target URL           Single-instance fixed TAA address; omit to derive
                              each instance's address from its registration
-  --taa-pod NAME             TAA Pod for kubectl auto-discovery
-  --taa-ns NS                Namespace for --taa-pod (omit = search all namespaces)
+  --pod NAME                 TAA Pod for kubectl auto-discovery
+  --namespace NS             Namespace for --pod (omit = search all namespaces)
   --taa-port PORT            Port used for discovery and for per-instance target derivation
   --llm-target URL           TEE-LLM base URL; the platform polls it, so no
                              registration address is needed
@@ -126,7 +129,7 @@ Common options:
 SSH options:
   --host HOST                SSH host (also REMOTE_HOST)
   --user USER                SSH user (default: root)
-  --password PASSWORD        SSH password via sshpass (also TARGET_PASSWORD)
+  --remote-password PASSWORD SSH password via sshpass (also REMOTE_PASSWORD)
   --remote-dir DIR           Remote working directory (default: /root/taa)
   --remote-binary PATH       Remote binary path (default: <remote-dir>/<binary-name>)
   --ssh-port N               SSH port
@@ -167,12 +170,12 @@ parse_args() {
       --log-file) need_value "$@"; LOG_FILE="$2"; shift 2 ;;
       --pid-file) need_value "$@"; PID_FILE="$2"; shift 2 ;;
       --taa-target) need_value "$@"; TAA_TARGET="$2"; shift 2 ;;
-      --taa-pod) need_value "$@"; TAA_POD="$2"; shift 2 ;;
+      --pod) need_value "$@"; TAA_POD="$2"; shift 2 ;;
       --llm-target) need_value "$@"; LLM_TARGET="$2"; shift 2 ;;
       --llm-pod) need_value "$@"; LLM_POD="$2"; shift 2 ;;
       --llm-ns) need_value "$@"; LLM_NS="$2"; shift 2 ;;
       --llm-port) need_value "$@"; LLM_PORT="$2"; shift 2 ;;
-      --taa-ns) need_value "$@"; TAA_NS="$2"; shift 2 ;;
+      --namespace) need_value "$@"; TAA_NS="$2"; shift 2 ;;
       --taa-port) need_value "$@"; TAA_PORT="$2"; shift 2 ;;
       --sm2-id) need_value "$@"; SM2_ID="$2"; shift 2 ;;
       --platform-key-file) need_value "$@"; PLATFORM_KEY_FILE="$2"; shift 2 ;;
@@ -185,7 +188,7 @@ parse_args() {
       --dry-run) DRY_RUN=1; shift ;;
       --host) need_value "$@"; REMOTE_HOST="$2"; shift 2 ;;
       --user) need_value "$@"; REMOTE_USER="$2"; shift 2 ;;
-      --password) need_value "$@"; PASSWORD="$2"; shift 2 ;;
+      --remote-password) need_value "$@"; REMOTE_PASSWORD="$2"; shift 2 ;;
       --remote-dir) need_value "$@"; REMOTE_DIR="$2"; shift 2 ;;
       --remote-binary) need_value "$@"; REMOTE_BINARY="$2"; shift 2 ;;
       --ssh-port) need_value "$@"; REMOTE_SSH_PORT="$2"; shift 2 ;;
@@ -197,6 +200,9 @@ parse_args() {
 }
 
 resolve_defaults() {
+  if [ -n "$TARGET_PASSWORD_ENV_WAS_SET" ]; then
+    die "TARGET_PASSWORD is no longer supported; pass --remote-password <password> instead"
+  fi
   [ -n "$ADDR" ] || ADDR="0.0.0.0:${PORT}"
   PROBE_PORT="${ADDR##*:}"
   case "$PROBE_PORT" in
@@ -225,10 +231,10 @@ setup_ssh() {
     extra+=(-o "$opt")
   done
   local -a prefix=()
-  if [ -n "$PASSWORD" ]; then
+  if [ -n "$REMOTE_PASSWORD" ]; then
     command -v sshpass >/dev/null 2>&1 \
-      || die "sshpass is required when --password is set; install it or use key authentication"
-    prefix=(sshpass -p "$PASSWORD")
+      || die "sshpass is required when --remote-password is set; install it or use key authentication"
+    prefix=(sshpass -p "$REMOTE_PASSWORD")
   fi
   SSH_CMD=("${prefix[@]}" ssh "${common[@]}" "${extra[@]}")
   SCP_CMD=("${prefix[@]}" scp -q "${common[@]}" "${extra[@]}")

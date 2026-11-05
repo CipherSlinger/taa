@@ -71,7 +71,7 @@ unset LLM_IP TAA_LLM_ENDPOINT
 
 # deploy.sh derives its save defaults from the taa-env image (including the
 # archive basename), so a save run gets both names here unless the caller
-# already chose them. -o/--archive and --image/--tag are deploy.sh's own.
+# already chose them. --archive and --image are deploy.sh's own.
 args=("$@")
 want_save=false
 has_image=false
@@ -79,8 +79,8 @@ has_archive=false
 for arg in "${args[@]}"; do
   case "$arg" in
     save) want_save=true ;;
-    --image|--image=*|--tag|--tag=*) has_image=true ;;
-    --archive|--archive=*|--output|--output=*|-o) has_archive=true ;;
+    --image|--image=*) has_image=true ;;
+    --archive|--archive=*) has_archive=true ;;
   esac
 done
 
