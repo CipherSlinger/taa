@@ -173,13 +173,21 @@ Pod 规格与来源用 `FHE_POD_NAME`、`FHE_POD_CPU`、`FHE_POD_MEMORY`、`FHE_
 ## 数据分析角色：`deploy-dataanaylsis.sh`
 
 转发给 `deploy.sh`，基座换成 `jupyter-nologin-full:v2.2`，并把数据目录渲染到
-`/home/jovyan/systemAuthData`。参数与 `deploy.sh` 相同：
+`/home/jovyan/systemAuthData`。动作与参数全部原样透传，因此 `create`（默认）/ `update` /
+`start` / `stop` / `probe` / `delete` / `save` 都与 `deploy.sh` 一致：
 
 ```bash
-./deploy-dataanaylsis.sh create
+./deploy-dataanaylsis.sh          # create
+./deploy-dataanaylsis.sh update
 ./deploy-dataanaylsis.sh stop
+./deploy-dataanaylsis.sh start
+./deploy-dataanaylsis.sh probe
+./deploy-dataanaylsis.sh delete
 ./deploy-dataanaylsis.sh save
 ```
+
+注意默认 Pod 名与 `deploy.sh` 相同（`taa-deploy`），同一集群里同时跑 TEE 和数据分析时用
+`TAA_POD_NAME` 指定不同的名字，否则 `create` 会落到同名 Pod 上。
 
 `save` 未显式指定时，默认镜像名 `taa-dataanaylsis:<YYYYMMDD>`、归档
 `deploy/out/taa-dataanaylsis-<YYYYMMDD>.tar.gz`。
