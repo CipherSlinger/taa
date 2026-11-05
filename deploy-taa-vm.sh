@@ -48,6 +48,29 @@ if [[ ! -x "$BUILD_INITRD" ]]; then
   exit 1
 fi
 
+# ── Host-side install root ───────────────────────────────────────────────────
+#
+# Everything this flow puts on the target host lives under one directory:
+#
+#   $TAA_IMAGES_DIR/bundle/    initramfs.img, vmlinuz, OVMF.fd   (deploy)
+#   $TAA_IMAGES_DIR/package/   the rendered delivery package     (launch)
+#
+# Keeping them together gives `delete` a single subtree to own, and keeping the
+# package there matters beyond tidiness: it ships install.sh, so the test Pod
+# can be recreated on the host by running
+#
+#   sudo bash /root/taa-images/package/install.sh
+#
+# without another build, render or upload.
+#
+# These are exported *before* print-config is consulted below. build-initrd.sh
+# resolves its defaults from the environment, and it runs as a child process
+# for build/deploy/launch, so exporting here is what makes these the values the
+# whole flow actually uses.
+TAA_IMAGES_DIR="${TAA_IMAGES_DIR:-/root/taa-images}"
+export REMOTE_BUNDLE_DIR="${REMOTE_BUNDLE_DIR:-$TAA_IMAGES_DIR/bundle}"
+export REMOTE_PACKAGE_DIR="${REMOTE_PACKAGE_DIR:-$TAA_IMAGES_DIR/package}"
+
 # Pull the resolved settings from build-initrd.sh instead of restating them here.
 # That output is %q-quoted, so this eval is safe even for values with spaces.
 eval "$("$BUILD_INITRD" print-config)"
@@ -109,7 +132,9 @@ Options:
 Environment:
   REMOTE_USER=$REMOTE_USER          SSH 账号（需免密 sudo）
   REMOTE_HOST=$REMOTE_HOST
+  TAA_IMAGES_DIR=$TAA_IMAGES_DIR    （宿主侧统一安装根目录）
   REMOTE_BUNDLE_DIR=$REMOTE_BUNDLE_DIR
+  REMOTE_PACKAGE_DIR=$REMOTE_PACKAGE_DIR
   TEST_POD_NAME=$TEST_POD_NAME
   TEST_IMAGE=$TEST_IMAGE
   TEST_NODE_NAME=$TEST_NODE_NAME
@@ -117,6 +142,13 @@ Environment:
   TAA_PLATFORM_IP=$TAA_PLATFORM_IP        （默认跟随 REMOTE_HOST，端口 PLATFORM_PORT=$PLATFORM_PORT）
   TAA_DOCKER_ID=$TAA_DOCKER_ID            （每个实例必须唯一；覆盖 PLATFORM_PORT 可换平台端口）
   RUNTIME_HANDLER=$RUNTIME_HANDLER
+
+Layout on the host (defaults):
+  $REMOTE_BUNDLE_DIR/initramfs.img|vmlinuz|OVMF.fd   deploy 安装的 guest bundle
+  $REMOTE_PACKAGE_DIR/                              launch 渲染的交付包（含 install.sh）
+
+  launch 完成后交付包会保留，重建测试 Pod 只需在该宿主机上执行：
+    sudo bash $REMOTE_PACKAGE_DIR/install.sh
 
 CoCo note: on this host a CoCo Pod also needs the cc_init_data annotation, or the
 in-guest CDH cannot pull the image and the Pod lands in StartError. 'up' and
@@ -144,9 +176,10 @@ print_config() {
   local key
   for key in REMOTE_USER REMOTE_HOST REMOTE PLATFORM_PORT TAA_PLATFORM_IP \
              TAA_DOCKER_ID RUNTIME_HANDLER RUNTIME_TYPE SNAPSHOTTER \
-             CONTAINERD_CONFIG KATA_CONFIG_TEMPLATE DIST_DIR \
-             REMOTE_BUNDLE_DIR REMOTE_KATA_CONFIG TEST_POD_NAME TEST_NODE_NAME \
-             TEST_IMAGE TEST_POD_ANNOTATIONS INITRD_OUT; do
+             CONTAINERD_CONFIG KATA_CONFIG_TEMPLATE DIST_DIR TAA_IMAGES_DIR \
+             REMOTE_BUNDLE_DIR REMOTE_PACKAGE_DIR REMOTE_KATA_CONFIG \
+             TEST_POD_NAME TEST_NODE_NAME TEST_IMAGE TEST_POD_ANNOTATIONS \
+             INITRD_OUT; do
     printf '%s=%q\n' "$key" "${!key}"
   done
 }
@@ -414,7 +447,7 @@ delete_remote() {
   local remote_args
   remote_args="$(printf '%q ' "$REMOTE_BUNDLE_DIR" "$REMOTE_BASE_INITRD_SRC" "$REMOTE_KATA_CONFIG_SRC" \
     "$REMOTE_KATA_CONFIG" "$RUNTIME_HANDLER" "$PROTECTED_HANDLER" "$CONTAINERD_CONFIG" \
-    "$TEST_POD_NAME" "$DRY_RUN" "${FORCE_DELETE:-0}")"
+    "$TEST_POD_NAME" "$DRY_RUN" "${FORCE_DELETE:-0}" "${REMOTE_PACKAGE_DIR:-}")"
   ssh "$REMOTE" "bash -s -- $remote_args" <<'REMOTE_DELETE'
 set -euo pipefail
 bundle_dir="$1"
@@ -427,6 +460,7 @@ containerd_config="$7"
 test_pod_name="$8"
 dry_run="$9"
 force_delete="${10}"
+package_dir="${11}"
 
 for cmd in kubectl sudo grep python3 cmp sha256sum awk; do
   if ! command -v "$cmd" >/dev/null 2>&1; then
@@ -464,13 +498,27 @@ if [[ "$runtime_handler" == "$protected_handler" ]]; then
   exit 1
 fi
 # Guard 2: never remove a directory that also holds the base initrd, and never
-# aim at a top-level directory by accident.
+# aim at a top-level directory by accident. The delivery package gets the same
+# guard plus one more: neither tree may contain the other, or a single `rm -rf`
+# would take both of them (and anything else that happened to sit beside them).
 case "$bundle_dir" in
-  /|/opt|/opt/kata|/opt/kata/share|/opt/kata/share/kata-containers|"$(dirname "$base_initrd_src")")
+  /|/root|/root/taa-images|/opt|/opt/kata|/opt/kata/share|/opt/kata/share/kata-containers|"$(dirname "$base_initrd_src")")
     echo "error: REMOTE_BUNDLE_DIR 指向共享目录，拒绝删除: $bundle_dir" >&2
     exit 1
     ;;
 esac
+if [[ -n "$package_dir" ]]; then
+  case "$package_dir" in
+    /|/root|/root/taa-images|/opt|/opt/kata|/opt/kata/share|/opt/kata/share/kata-containers|"$(dirname "$base_initrd_src")")
+      echo "error: REMOTE_PACKAGE_DIR 指向共享目录，拒绝删除: $package_dir" >&2
+      exit 1
+      ;;
+  esac
+  if [[ "$bundle_dir" == "$package_dir" || "$bundle_dir" == "$package_dir"/* || "$package_dir" == "$bundle_dir"/* ]]; then
+    echo "error: bundle 与交付包目录互相包含，拒绝删除: $bundle_dir / $package_dir" >&2
+    exit 1
+  fi
+fi
 
 # Guard 3: refuse while other Pods still use this RuntimeClass. Deleting it would
 # break them, and they are not ours to break. kubectl's jsonpath has no filter
@@ -642,7 +690,20 @@ else
 fi
 
 echo
-echo "== 6. 回归核对（本次操作不该改动的东西）=="
+echo "== 6. 交付包 =="
+if [[ -n "$package_dir" && -d "$package_dir" ]]; then
+  echo "将删除 $package_dir:"
+  sudo ls -1 "$package_dir" 2>/dev/null | sed 's/^/  /' || true
+  run sudo rm -rf "$package_dir"
+  # Drop the install root only if it is empty. rmdir itself is the guard:
+  # anything somebody else put beside these two subtrees keeps it in place.
+  run sudo rmdir "$(dirname "$package_dir")" 2>/dev/null || true
+else
+  echo "${package_dir:-（未设置 REMOTE_PACKAGE_DIR）} 不存在或未设置，跳过"
+fi
+
+echo
+echo "== 7. 回归核对（本次操作不该改动的东西）=="
 if [[ -n "$orig_kata_sha_before" ]]; then
   orig_kata_sha_after="$(sha256sum "$kata_config_src" | awk '{print $1}')"
   if [[ "$orig_kata_sha_after" == "$orig_kata_sha_before" ]]; then

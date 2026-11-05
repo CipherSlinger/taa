@@ -94,6 +94,17 @@ check "print-config: overrides beat the defaults" "10.0.0.9:28080 mine" "$TAA_PL
 eval "$(PLATFORM_PORT=28080 "$DRIVER" print-config)"
 check "print-config: PLATFORM_PORT moves the default platform port" "28080" "${TAA_PLATFORM_IP##*:}"
 
+# Both halves of the flow land under one host directory, so `delete` has a
+# single subtree to own and the packaged install.sh stays available on the
+# host for recreating the Pod.
+check "print-config: default install root" "/root/taa-images" "$TAA_IMAGES_DIR"
+check "print-config: bundle lives under the install root" "$TAA_IMAGES_DIR/bundle" "$REMOTE_BUNDLE_DIR"
+check "print-config: package lives under the install root" "$TAA_IMAGES_DIR/package" "$REMOTE_PACKAGE_DIR"
+# The same values must reach build-initrd.sh as a child process; an unexported
+# default looks right here and still installs to the old path.
+check_contains "print-config: the install root is exported to the build" 'export REMOTE_BUNDLE_DIR=' "$(cat "$DRIVER")"
+check_contains "print-config: the package dir is exported to the build" 'export REMOTE_PACKAGE_DIR=' "$(cat "$DRIVER")"
+
 # The pair has to reach build-initrd.sh, which runs as a child process; an
 # unexported default would look right in print-config and still build an initrd
 # with no identity in it. That path needs the host, so this one is a string
@@ -194,6 +205,7 @@ driver_src="$(cat "$DRIVER")"
 check_contains "guard: refuses the shipped kata config" 'REMOTE_KATA_CONFIG 指向出厂 Kata 配置' "$driver_src"
 check_contains "guard: refuses the shipped runtime handler" 'RUNTIME_HANDLER 是出厂 handler' "$driver_src"
 check_contains "guard: refuses a shared bundle directory" 'REMOTE_BUNDLE_DIR 指向共享目录' "$driver_src"
+check_contains "guard: refuses a shared package directory" 'REMOTE_PACKAGE_DIR 指向共享目录' "$driver_src"
 check_contains "guard: refuses a runtime still in use" '仍被以下 Pod 使用' "$driver_src"
 check_contains "guard: verifies the original kata config afterwards" '出厂 Kata 配置未变' "$driver_src"
 check_contains "guard: verifies the base initrd afterwards" 'base initrd 未变' "$driver_src"

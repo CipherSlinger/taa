@@ -115,6 +115,13 @@ REMOTE_KERNEL_SRC="${REMOTE_KERNEL_SRC:-/opt/kata/share/kata-containers/vmlinuz-
 REMOTE_OVMF_SRC="${REMOTE_OVMF_SRC:-/opt/kata/share/ovmf/OVMFCSV.fd}"
 REMOTE_KATA_CONFIG_SRC="${REMOTE_KATA_CONFIG_SRC:-/opt/kata/share/defaults/kata-containers/configuration-qemu-csv2.toml}"
 REMOTE_KATA_CONFIG="${REMOTE_KATA_CONFIG:-/etc/kata-containers/configuration-qemu-csv2-taa.toml}"
+# Where `launch` leaves the rendered delivery package on the host. Empty keeps
+# the historical behaviour: a remote temporary directory removed as soon as
+# install.sh returns. A persistent directory makes that same install.sh
+# re-runnable on the host, which is how the test Pod is recreated without
+# another build, render or upload. deploy-taa-vm.sh sets this to
+# /root/taa-images/package by default.
+REMOTE_PACKAGE_DIR="${REMOTE_PACKAGE_DIR:-}"
 CONTAINERD_CONFIG="${CONTAINERD_CONFIG:-/etc/containerd/config.toml}"
 KATA_HYPERVISOR_SECTION="${KATA_HYPERVISOR_SECTION:-hypervisor.qemu}"
 RUNTIME_HANDLER="${RUNTIME_HANDLER:-kata-qemu-csv2-taa}"
@@ -1231,13 +1238,34 @@ REMOTE_NODE
   [[ "${SKIP_REMOTE_BASE_CHECK:-0}" == "1" ]] && install_flags+=" --skip-base-check"
   [[ "${SKIP_REMOTE_KATA_TEMPLATE_CHECK:-0}" == "1" ]] && install_flags+=" --skip-template-check"
 
-  ssh "$REMOTE" "bash -s -- $(printf '%q ' "$remote_tmp")$install_flags" <<'REMOTE_INSTALL'
+  # The package is uploaded to a temporary directory because scp cannot sudo;
+  # when REMOTE_PACKAGE_DIR is set it is then moved into place as root. Empty
+  # keeps the old behaviour: run from the temp directory and delete it on exit.
+  ssh "$REMOTE" "bash -s -- $(printf '%q ' "$remote_tmp" "$REMOTE_PACKAGE_DIR")$install_flags" <<'REMOTE_INSTALL'
 set -euo pipefail
 pkg="$1"
-shift
+persist_dir="$2"
+shift 2
+
 cleanup() { sudo rm -rf "$pkg"; }
 trap cleanup EXIT
+
+if [[ -n "$persist_dir" ]]; then
+  sudo mkdir -p "$(dirname "$persist_dir")"
+  sudo rm -rf "$persist_dir"
+  sudo mv "$pkg" "$persist_dir"
+  pkg="$persist_dir"
+  # Keep this copy: re-running it is how the Pod is recreated later.
+  trap - EXIT
+fi
+
 sudo bash "$pkg/install.sh" "$@"
+
+if [[ -n "$persist_dir" ]]; then
+  echo
+  echo "交付包已保留: $persist_dir"
+  echo "在该宿主机上重建测试 Pod: sudo bash $persist_dir/install.sh"
+fi
 REMOTE_INSTALL
 }
 
@@ -1268,7 +1296,7 @@ case "$cmd" in
     # Machine-readable dump of the resolved settings, so a driver script does not
     # have to duplicate (and drift from) the defaults defined above. %q quoting
     # makes the output safe to `eval` even when a value contains spaces.
-    for key in REMOTE_USER REMOTE_HOST REMOTE_BUNDLE_DIR REMOTE_BASE_INITRD_SRC \
+    for key in REMOTE_USER REMOTE_HOST REMOTE_BUNDLE_DIR REMOTE_PACKAGE_DIR REMOTE_BASE_INITRD_SRC \
                REMOTE_KATA_CONFIG_SRC REMOTE_KATA_CONFIG KATA_HYPERVISOR_SECTION \
                RUNTIME_HANDLER RUNTIME_TYPE RUNTIME_PATH SNAPSHOTTER \
                CONTAINERD_CONFIG KATA_CONFIG_TEMPLATE DIST_DIR \
