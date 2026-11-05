@@ -14,7 +14,9 @@
 #   * a Pod without /dev/csv-guest must fail the deploy, since TAA would then attest without a
 #     hardware device and nothing in the flow would say so;
 #   * delete must remove a Pod the deployment created, and must refuse an operator's Pod;
-#   * stop only stops the daemon and never removes the Pod.
+#   * stop only stops the daemon and never removes the Pod;
+#   * a role this script does not create (fhe, and anything outside 1-3) must fail before a
+#     manifest is written.
 #
 # The script runs from a throwaway repository root, which keeps the whole test independent of the
 # real checkout, its build products and the semgrep payload.
@@ -326,6 +328,28 @@ RUN_ENV=()
 grep -q "runs the 'tee' role" <<<"$output" || fail "the role mismatch was not named"
 [[ "$(cat "$MOCK_STATE_DIR/apply-count")" == "1" ]] \
   || fail "a role mismatch still applied a manifest"
+
+# ── 2c. Only the roles this script creates are accepted ─────────────────────
+#
+# The fhe role belongs to deploy-fhe.sh, which assembles a different base image and injection set;
+# a manifest written here with CONTRACT_TYPE=4 would be a Pod this deployment cannot serve.
+
+RUN_ENV=(TAA_POD_CONTRACT_TYPE=4)
+run_deploy create
+RUN_ENV=()
+[[ $status -ne 0 ]] || fail "the fhe role was accepted"
+grep -q "deploy-fhe.sh creates FHE Pods" <<<"$output" \
+  || fail "the fhe role did not point at deploy-fhe.sh"
+[[ "$(cat "$MOCK_STATE_DIR/apply-count")" == "1" ]] \
+  || fail "the fhe role still applied a manifest"
+
+RUN_ENV=(TAA_POD_CONTRACT_TYPE=9)
+run_deploy create
+RUN_ENV=()
+[[ $status -ne 0 ]] || fail "an unknown role was accepted"
+grep -q "must be 1, 2 or 3" <<<"$output" || fail "the unknown role was not named"
+[[ "$(cat "$MOCK_STATE_DIR/apply-count")" == "1" ]] \
+  || fail "an unknown role still applied a manifest"
 
 # ── 3. Negative control: update never creates a Pod --pod names ─────────────
 

@@ -123,12 +123,13 @@ TAA_POD_NODE="${TAA_POD_NODE:-hygon-master}"
 TAA_POD_RUNTIME_CLASS="${TAA_POD_RUNTIME_CLASS:-kata-qemu-csv2}"
 TAA_POD_CPU="${TAA_POD_CPU:-3}"
 TAA_POD_MEMORY="${TAA_POD_MEMORY:-98Gi}"
-# The instance role the Pod runs, injected as CONTRACT_TYPE (TAA rejects any value outside 1-4).
-# 1 (tee training) and 2 (tee inference) both select the ordinary tee role -- the difference is
-# carried by the requests, not by the daemon -- and 3 selects data analysis, whose landing
-# directory and audit switches then follow from the role instead of from a rendered config. This
-# deployment creates tee Pods, so 1 is the default; a Pod's environment is immutable, so changing
-# the role means recreating the Pod.
+# The instance role the Pod runs, injected as CONTRACT_TYPE. This script creates the tee and
+# data-analysis roles only: 1 (tee training) and 2 (tee inference) both select the ordinary tee
+# role -- the difference is carried by the requests, not by the daemon -- and 3 selects data
+# analysis, whose landing directory and audit switches then follow from the role instead of from a
+# rendered config. The fhe role (4) belongs to deploy-fhe.sh, which creates its own Pod from a
+# different base image. 1 is the default here, and because a Pod's environment is immutable,
+# changing the role means recreating the Pod.
 TAA_POD_CONTRACT_TYPE="${TAA_POD_CONTRACT_TYPE:-1}"
 # A fresh CSV2 Pod boots its guest before it can pull the image inside it, so this is longer than
 # the 120s readiness timeout the deployment uses once the Pod already exists.
@@ -412,12 +413,31 @@ remote_pod_exists() {
 }
 
 # The role a CONTRACT_TYPE value selects, using the same mapping TAA applies
-# (internal/config: 1 and 2 both mean tee). An empty or unknown value prints nothing.
+# (internal/config: 1 and 2 both mean tee). Only the roles this script creates are
+# mapped; an empty or unrecognised value prints nothing.
 contract_type_role() {
   case "${1:-}" in
     1|2) printf 'tee' ;;
     3) printf 'data-anaylsis' ;;
-    4) printf 'fhe' ;;
+  esac
+}
+
+# deploy.sh creates the tee and data-analysis Pods. The fhe role needs a different base image and
+# a different set of injected values, so it belongs to deploy-fhe.sh; accepting 4 here would write
+# a manifest this deployment cannot serve.
+validate_pod_contract_type() {
+  case "$TAA_POD_CONTRACT_TYPE" in
+    1|2|3) ;;
+    4)
+      err "TAA_POD_CONTRACT_TYPE=4 selects the fhe role, which deploy.sh does not create"
+      detail "deploy-fhe.sh creates FHE Pods. deploy.sh creates the tee (1, 2) and data-analysis (3) roles."
+      exit 1
+      ;;
+    *)
+      err "TAA_POD_CONTRACT_TYPE must be 1, 2 or 3 (got '$TAA_POD_CONTRACT_TYPE')"
+      detail "1 tee training, 2 tee inference, 3 data analysis."
+      exit 1
+      ;;
   esac
 }
 
@@ -1078,8 +1098,8 @@ Environment overrides:
       新建 Pod 的 RuntimeClass（默认 kata-qemu-csv2）。
   TAA_POD_CONTRACT_TYPE=${TAA_POD_CONTRACT_TYPE}
       新建 Pod 的实例角色，写入 CONTRACT_TYPE（默认 1）：1 tee 训练、2 tee 推理（1 和 2 都落到
-      普通 tee 角色）、3 数据分析、4 fhe。数据分析角色的数据落盘目录与审计开关由角色决定。
-      Pod 的环境变量不能原地修改，换角色只能重建 Pod。
+      普通 tee 角色）、3 数据分析。数据分析角色的数据落盘目录与审计开关由角色决定。fhe 角色
+      不在这里创建，由 deploy-fhe.sh 负责。Pod 的环境变量不能原地修改，换角色只能重建 Pod。
   TAA_POD_CPU=${TAA_POD_CPU}
   TAA_POD_MEMORY=${TAA_POD_MEMORY}
       新建 Pod 的 CPU/内存 limits（默认 3 / 98Gi；CSV2 加密内存按 limits 常驻）。
@@ -2102,6 +2122,7 @@ if [[ "$ACTION" == "save" ]]; then
 fi
 
 if [[ "$ACTION" == "create" ]]; then
+  validate_pod_contract_type
   banner "Creating the TAA Pod" "Host: ${REMOTE_USER}@${REMOTE_HOST} | Pod: ${TARGET_POD}"
   check_remote_connectivity
   require_file "taa supervisor script missing" "$PROJECT_DIR/deploy/taa-supervisor.sh"
