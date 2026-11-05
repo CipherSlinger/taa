@@ -1877,6 +1877,8 @@ document.addEventListener('DOMContentLoaded', () => {
   setupResourceUrlDropZones();
   refreshUploadedFiles();
   refreshFheUploadOptions();
+  // Generated on load so the import and upload cards never start without a key.
+  initGlobalKeyPair();
   refreshStatus();
   refreshReportResStatus();
   setReportModelImportPending();

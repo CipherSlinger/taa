@@ -2169,6 +2169,9 @@ func TestConsolidatedCardsAndRemovedHints(t *testing.T) {
 	if !strings.Contains(indexHTML, `id="importModelUsePublicKeySwitch"`) {
 		t.Fatal("indexHTML missing id=\"importModelUsePublicKeySwitch\"")
 	}
+	if !strings.Contains(frontendBundle, "initGlobalKeyPair();") {
+		t.Fatal("the console does not generate its test key pair on load")
+	}
 
 	// Verify removed per-field random buttons in import card
 	if strings.Contains(indexHTML, `randomizeField('importRequestId'`) {

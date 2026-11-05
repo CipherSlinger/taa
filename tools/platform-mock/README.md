@@ -94,7 +94,7 @@ The platform mock provides an embedded single-page Web console accessible by ope
 
 - **Static Asset Embedding**: The UI assets are statically bundled into the binary using Go `embed.FS` from `internal/static/`.
 - **Node Status & Attestation**: Displays registered node metadata, ephemeral SM2 public key, and CSV hardware attestation report validation status.
-- **Model Ingress & Audit**: Upload model packages, inspect static AST rule violations, and observe Ollama LLM semantic verification outcomes.
+- **Model Ingress & Audit**: Upload model packages, inspect static AST rule violations, and observe Ollama LLM semantic verification outcomes. The console generates its test SM2 key pair on load, so encryption and the import card's public key work without a manual setup step; the key control only rotates it.
 - **Real-Time Progress & Logs**: Displays real-time progress bars, streamed terminal logs (`modelLog`), and TAA daemon operational logs (`taaLog`).
 - **Execution Control**: Send graceful stop commands (`/v1/taa/stopTraining`) to interrupt running workloads.
 - **Instance-Kind Panels**: the console shows the TEE or FHE panel set for the instance

@@ -6,7 +6,12 @@ let globalKeyPair = {
   createdAt: null,
 };
 
-async function generateGlobalKeyPair(btn) {
+// generateGlobalKeyPair creates the console's test SM2 key pair. The automatic
+// run on page load passes silent: a modal on every load would cover the panel it
+// just enabled, and a failed generation should not greet the operator with an
+// alert before they have asked for a key.
+async function generateGlobalKeyPair(btn, opts = {}) {
+  const silent = Boolean(opts.silent);
   const origText = btn ? btn.textContent : '';
   if (btn) {
     btn.disabled = true;
@@ -35,20 +40,30 @@ async function generateGlobalKeyPair(btn) {
       onImportModelUsePublicKeyToggle(switchEl);
     }
 
-    if (typeof openBodyModal === 'function') {
+    if (!silent && typeof openBodyModal === 'function') {
       openBodyModal(
         '已生成新 SM2 密钥对',
         `公钥 (Public Key):\n${globalKeyPair.publicKey}\n\n私钥 (Private Key):\n${globalKeyPair.privateKey}\n\n生成时间: ${globalKeyPair.createdAt}`
       );
     }
   } catch (err) {
-    alert('生成密钥对失败: ' + err.message);
+    if (silent) {
+      console.warn('自动生成密钥对失败:', err);
+    } else {
+      alert('生成密钥对失败: ' + err.message);
+    }
   } finally {
     if (btn) {
       btn.textContent = origText;
       btn.disabled = false;
     }
   }
+}
+
+// initGlobalKeyPair runs once per console load so the import and upload cards
+// have a key pair from the start; the manual button only has to rotate it.
+function initGlobalKeyPair() {
+  return generateGlobalKeyPair(null, { silent: true });
 }
 
 function openGlobalPublicKeyModal() {
