@@ -210,6 +210,12 @@ case "$verb" in
       *"/api/tags"*) echo '{"models":[{"name":"qwen2.5-coder:0.5b"}]}'; exit 0 ;;
       *"-probe"*) exit 0 ;;
       *"tail -n"*) echo "2026-10-15T10:00:00Z using Hygon hardware evidence provider"; exit 0 ;;
+      # The creation path verifies the payload the image carries. MOCK_POD_MISSING_BINARY stands
+      # for an image built without the service, which is the case that must be reported rather
+      # than patched with a copy.
+      *"test -s /opt/teellm/teellm-service"*)
+        [[ -n "${MOCK_POD_MISSING_BINARY:-}" ]] && exit 1
+        exit 0 ;;
       *) exit 0 ;;
     esac
     ;;
@@ -527,34 +533,21 @@ grep -q "TEELLM_MODEL" "$APPLIED" || fail "the selected model is not in the Pod 
 grep -q 'value: "qwen2.5-coder:0.5b"' "$APPLIED" \
   || fail "the Pod environment does not carry the selected model"
 
-# The deployment must hand the daemons to the supervisor rather than start or stop them behind its
-# back, and it must pause it before it writes over the live tree: a daemon starting mid-stream
-# would execute a half-written binary.
-grep -q "\.teellm-supervisor-pause" "$MOCK_LOG" \
-  || fail "the deployment never paused the Pod supervisor"
-grep -q "rm -f .*\.teellm-supervisor-pause" "$MOCK_LOG" \
-  || fail "the deployment never resumed the Pod supervisor"
-grep -q "teellm-supervisor.sh" "$MOCK_LOG" \
-  || fail "the supervisor script was not installed into the Pod"
-grep -q "\.teellm-model" "$MOCK_LOG" \
-  || fail "the selected model was not written for the supervisor"
-# A Pod created before the supervisor existed still runs `sleep infinity` as PID 1, so nothing in
-# the container will ever exec the script; the deployment has to start it.
-grep -qE "nohup \./teellm-supervisor\.sh" "$MOCK_LOG" \
-  || fail "a Pod with no running supervisor was never given one"
-if grep -qE 'nohup.*(start-ollama\.sh|teellm-service")' "$MOCK_LOG"; then
-  fail "the deployment still starts daemons itself instead of leaving them to the supervisor"
+# A Pod created by this run takes everything from its image: the image was built from this tree
+# moments earlier (or was named explicitly), so nothing may be installed into the Pod afterwards.
+# A copy here would be a second, invisible definition of what the Pod runs, and it would keep a
+# defective image working until the next Pod is created from it.
+grep -q "the Pod image carries teellm-service" <<<"$output" \
+  || fail "the creation did not verify the payload baked into the Pod image"
+if grep -q "^KUBECTL cp " "$MOCK_LOG"; then
+  fail "the creation copied files into the Pod instead of trusting its image"
 fi
-pause_line="$(grep -n "\.teellm-supervisor-pause" "$MOCK_LOG" | head -n1 | cut -d: -f1)"
-# The image build also unpacks a tar, but into a throwaway builder container; only a write that
-# goes through the remote host reaches the Pod's live tree, so those are what the order is about.
-live_write_line="$(grep -nE "KUBECTL cp|SSH\[.*tar -xf" "$MOCK_LOG" | head -n1 | cut -d: -f1)"
-[[ -n "$pause_line" && -n "$live_write_line" && "$pause_line" -lt "$live_write_line" ]] \
-  || fail "the supervisor was not paused before the Pod's live tree was written to"
-start_line="$(grep -nE "nohup \./teellm-supervisor\.sh" "$MOCK_LOG" | head -n1 | cut -d: -f1)"
-resume_line="$(grep -n "rm -f .*\.teellm-supervisor-pause" "$MOCK_LOG" | head -n1 | cut -d: -f1)"
-[[ -n "$start_line" && -n "$resume_line" && "$start_line" -lt "$resume_line" ]] \
-  || fail "the supervisor was resumed before it was running"
+if grep -q "\.teellm-supervisor-pause" "$MOCK_LOG"; then
+  fail "the creation paused the supervisor to install files, which it must not do"
+fi
+if grep -q "^SCP\[.*teellm-service" "$MOCK_LOG"; then
+  fail "the creation uploaded a service binary for the Pod to install"
+fi
 
 # The deployment body must address the TEE-LLM Pod and nothing else. Aimed at the default TARGET_POD
 # it would still pass every gate -- that Pod has /dev/csv-guest too -- and fail in production.
@@ -652,6 +645,36 @@ TARGET_POD="$COPY_POD_NAME" run_deploy
 tail -n +"$((before + 1))" "$MOCK_LOG" > "$TMP_DIR/bare.log"
 grep -q "\.teellm-supervisor-restart" "$TMP_DIR/bare.log" \
   || fail "a bare TARGET_POD deployment did not ask the installed supervisor to re-exec"
+
+# A Pod this run did not create is the only case that still installs into it, and it still has to
+# hand the daemons to the supervisor rather than start or stop them behind its back -- and pause it
+# before writing over the live tree, so a daemon starting mid-stream cannot execute a half-written
+# binary.
+grep -q "\.teellm-supervisor-pause" "$TMP_DIR/bare.log" \
+  || fail "an existing Pod was not paused before its live tree was written to"
+grep -q "rm -f .*\.teellm-supervisor-pause" "$TMP_DIR/bare.log" \
+  || fail "an existing Pod's supervisor was never resumed"
+grep -q "teellm-supervisor.sh" "$TMP_DIR/bare.log" \
+  || fail "the supervisor script was not installed into the Pod"
+grep -q "\.teellm-model" "$TMP_DIR/bare.log" \
+  || fail "the selected model was not written for the supervisor"
+# A Pod created before the supervisor existed still runs `sleep infinity` as PID 1, so nothing in
+# the container will ever exec the script; the deployment has to start it.
+grep -qE "nohup \./teellm-supervisor\.sh" "$TMP_DIR/bare.log" \
+  || fail "a Pod with no running supervisor was never given one"
+if grep -qE 'nohup.*(start-ollama\.sh|teellm-service")' "$TMP_DIR/bare.log"; then
+  fail "the deployment still starts daemons itself instead of leaving them to the supervisor"
+fi
+pause_line="$(grep -n "\.teellm-supervisor-pause" "$TMP_DIR/bare.log" | head -n1 | cut -d: -f1)"
+# The image build also unpacks a tar, but into a throwaway builder container; only a write that
+# goes through the remote host reaches the Pod's live tree, so those are what the order is about.
+live_write_line="$(grep -nE "KUBECTL cp|SSH\[.*tar -xf" "$TMP_DIR/bare.log" | head -n1 | cut -d: -f1)"
+[[ -n "$pause_line" && -n "$live_write_line" && "$pause_line" -lt "$live_write_line" ]] \
+  || fail "the supervisor was not paused before the Pod's live tree was written to"
+start_line="$(grep -nE "nohup \./teellm-supervisor\.sh" "$TMP_DIR/bare.log" | head -n1 | cut -d: -f1)"
+resume_line="$(grep -n "rm -f .*\.teellm-supervisor-pause" "$TMP_DIR/bare.log" | head -n1 | cut -d: -f1)"
+[[ -n "$start_line" && -n "$resume_line" && "$start_line" -lt "$resume_line" ]] \
+  || fail "the supervisor was resumed before it was running"
 
 # ── 3. Negative control: a Pod without /dev/csv-guest ────────────────────────
 # A creation that goes through every earlier gate still has to be stopped by the device check,
@@ -767,6 +790,31 @@ RUN_ENV=()
 [[ $status -eq 0 ]] || fail "TEELLM_POD_HOST_PORT=0 exited $status"
 grep -q '^          hostPort: 0$' "$APPLIED" || fail "TEELLM_POD_HOST_PORT=0 was not rendered"
 grep -q "no host port published" <<<"$output" || fail "the disabled port was not reported"
+rm -f "$MOCK_STATE_DIR/pod"
+
+# ── 3i. Negative control: the image is missing its payload ───────────────────
+# Creation no longer installs anything, so an image that does not carry the service cannot be
+# repaired by the deployment: it has to say which file is missing and stop, instead of copying a
+# binary in and leaving a Pod whose contents no image describes.
+
+apply_before="$(cat "$MOCK_STATE_DIR/apply-count")"
+before="$(wc -l < "$MOCK_LOG")"
+RUN_ENV=(MOCK_POD_MISSING_BINARY=yes)
+run_deploy --create-pod start --model qwen2.5-coder:0.5b
+RUN_ENV=()
+[[ $status -ne 0 ]] || fail "an image without teellm-service was accepted"
+grep -q "does not carry the full TEE-LLM payload" <<<"$output" \
+  || fail "the missing payload was not reported as such"
+grep -q "missing: /opt/teellm/teellm-service" <<<"$output" \
+  || fail "the missing file was not named"
+grep -q "nothing was copied into the Pod" <<<"$output" \
+  || fail "the refusal does not say that nothing was copied"
+tail -n +"$((before + 1))" "$MOCK_LOG" > "$TMP_DIR/missing.log"
+if grep -q "^KUBECTL cp " "$TMP_DIR/missing.log"; then
+  fail "a defective image was patched with a copy instead of being reported"
+fi
+[[ "$(cat "$MOCK_STATE_DIR/apply-count")" == "$((apply_before + 1))" ]] \
+  || fail "the defective Pod was not created before its payload was inspected"
 rm -f "$MOCK_STATE_DIR/pod"
 
 # Put a Pod back for the cases below: the two refusals above removed it to reach the creation path,

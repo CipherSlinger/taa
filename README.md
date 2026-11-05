@@ -575,6 +575,14 @@ Inside Docker containers, TAA runs under the supervision of `deploy/taa-supervis
 > deployed. Set `TEELLM_POD_IMAGE` to use an existing tag instead, or
 > `TEELLM_BUILD_POD_IMAGE=false` to fall back to the newest date tag the registry lists.
 
+> **Creation installs nothing into the Pod.** The image is the Pod's only definition of what it
+> runs, so `--create-pod start` verifies it instead of copying over it: the service and the
+> supervisor (both executable), both configs, `.teellm-model`, the ollama binary, its start script
+> and `libllama-server-impl.so`, plus every blob the model's manifest names at the recorded size.
+> A missing item is listed and the run stops with a non-zero exit; nothing is `kubectl cp`-ed in.
+> `./deploy-llm.sh update` remains the path that installs into an existing Pod, and
+> `TEELLM_IMAGE_FORCE_REBUILD=true` rebuilds a defective image.
+
 > **`--create-pod` only creates.** When the Pod already exists the run prints it and stops,
 > naming `./deploy-llm.sh pod-down` as the next step — it neither reuses nor replaces an existing
 > Pod. Reusing one would deploy into whatever image it happens to run; replacing it in the same

@@ -2416,7 +2416,8 @@ Model Management Commands:
 
 Actions:
   start        Build binary, incrementally sync model & runtime, hand the daemons to the Pod
-               supervisor, and verify (default).
+               supervisor, and verify (default). With --create-pod it creates the Pod from an
+               image built from this tree and installs nothing into it afterwards.
   update       Deploy into the existing TEE-LLM Pod named by TEELLM_POD_NAME: build the binary,
                sync the model & runtime, install the supervisor and configuration, restart the
                daemons and verify. It only updates a Pod that already exists -- it never creates
@@ -2439,10 +2440,13 @@ Options:
       bakes it plus the ollama runtime and model into an image, pushes that image and runs the Pod
       from it, so the Pod never runs a binary older than the tree being deployed. That build takes
       tens of minutes. The registry is asked for the config digest currently under the tag first:
-      when it already holds this exact build, nothing is exported or uploaded. This path only
-      creates: when the Pod already exists the run stops and asks for 'pod-down' first, because
-      reusing it would deploy into whatever image it happens to run, and replacing it would throw
-      away the guest's writable layer unannounced.
+      when it already holds this exact build, nothing is exported or uploaded. Nothing is copied
+      into the Pod after it is created: the deployment verifies that the image carries the service,
+      the supervisor, the configuration, the ollama runtime and the model, and stops with a list of
+      what is missing rather than patching a defective image.
+      This path only creates: when the Pod already exists the run stops and asks for 'pod-down'
+      first, because reusing it would deploy into whatever image it happens to run, and replacing
+      it would throw away the guest's writable layer unannounced.
       If TARGET_POD is set explicitly it must equal TEELLM_POD_NAME, or the run is refused.
   --port <port> (or --port=<port>)
       Specify TEE-LLM service listening port (default: $TEELLM_PORT).
@@ -3008,6 +3012,63 @@ copy_ollama_to_remote_pod() {
   info "ollama runtime and model '$OLLAMA_MODEL' verified inside remote pod"
 }
 
+# The creation path installs nothing into the Pod. The image was built from this tree in the same
+# run (or was named explicitly), so it is the single definition of what the Pod runs; a copy
+# afterwards would give the Pod a second definition -- invisible to `kubectl describe`, not
+# re-derived by any rebuild, and able to mask a defective image until the next Pod is created from
+# it. Creation therefore verifies the payload and refuses a Pod that is missing any of it.
+verify_pod_image_contents() {
+  step "verifying the payload baked into the Pod image"
+
+  local missing=() probe
+  for probe in \
+    "$CON_WORKDIR/teellm-service" \
+    "$CON_WORKDIR/teellm-supervisor.sh" \
+    "$CON_WORKDIR/configs/teellm-production.json" \
+    "$CON_WORKDIR/configs/models.json" \
+    "$CON_WORKDIR/.teellm-model" \
+    "$CONTAINER_OLLAMA_DIR/ollama" \
+    "$CONTAINER_OLLAMA_DIR/start-ollama.sh" \
+    "$CONTAINER_OLLAMA_DIR/lib/ollama/libllama-server-impl.so"; do
+    remote_ssh "$(container_exec) test -s '$probe'" >/dev/null 2>&1 || missing+=("$probe")
+  done
+
+  # The supervisor execs both of these, so a missing executable bit is as fatal as a missing file.
+  for probe in "$CON_WORKDIR/teellm-service" "$CON_WORKDIR/teellm-supervisor.sh"; do
+    remote_ssh "$(container_exec) test -x '$probe'" >/dev/null 2>&1 || missing+=("$probe (not executable)")
+  done
+
+  # The model's files are named by a manifest, so only the local resolver can say which blobs this
+  # model needs and how large each one has to be. Without it the check cannot be complete, which is
+  # reported rather than silently accepted.
+  if command -v python3 >/dev/null 2>&1; then
+    local check_script
+    if check_script="$(resolve_ollama_model_artifacts "$OLLAMA_LOCAL_DIR" "$OLLAMA_MODEL" "check_model_sh" "$CONTAINER_OLLAMA_DIR" 2>/dev/null)"; then
+      remote_ssh "$(container_exec) sh -lc '$check_script'" >/dev/null 2>&1 ||
+        missing+=("the ollama blobs of model '$OLLAMA_MODEL' under $CONTAINER_OLLAMA_DIR")
+    else
+      warn "cannot resolve model '$OLLAMA_MODEL' locally; skipped the in-pod model check"
+    fi
+  else
+    warn "python3 is unavailable locally; skipped the in-pod model check"
+  fi
+
+  # Deliberately not repaired: `update` installs into an existing Pod, and `pod-down` removes a Pod
+  # that should not have been created. Patching it here is exactly what this branch removed.
+  if (( ${#missing[@]} > 0 )); then
+    err "the image of '$TARGET_POD' does not carry the full TEE-LLM payload"
+    local item
+    for item in "${missing[@]}"; do
+      detail "  missing: $item"
+    done
+    detail "nothing was copied into the Pod: creation verifies the image instead of patching it"
+    detail "rebuild the image (TEELLM_IMAGE_FORCE_REBUILD=true), or run 'update' to install into"
+    detail "this Pod, and 'pod-down' to remove it"
+    exit 1
+  fi
+  info "the Pod image carries teellm-service, the supervisor, the configs and model '$OLLAMA_MODEL'; nothing is copied into the Pod"
+}
+
 deploy_teellm() {
   banner "Deploying TEE-LLM Service" "Host: ${REMOTE_USER}@${REMOTE_HOST} | Pod: $TARGET_POD | Model: $OLLAMA_MODEL"
 
@@ -3023,68 +3084,73 @@ deploy_teellm() {
     TEELLM_POD_IP="$(teellm_pod_ip)"
   fi
 
-  build_local_binary
+  if [[ "$CREATE_POD" == true ]]; then
+    # A Pod created by this run gets everything from its image; see verify_pod_image_contents.
+    verify_pod_image_contents
+  else
+    build_local_binary
 
-  # Before anything is killed or written. The supervisor restarts whatever it finds missing, so a
-  # daemon left running during the stream could execute a half-copied runtime.
-  step "pausing the Pod supervisor inside remote pod"
-  pod_supervisor_pause
+    # Before anything is killed or written. The supervisor restarts whatever it finds missing, so a
+    # daemon left running during the stream could execute a half-copied runtime.
+    step "pausing the Pod supervisor inside remote pod"
+    pod_supervisor_pause
 
-  step "stopping old daemons inside remote pod"
-  stop_pod_daemons
+    step "stopping old daemons inside remote pod"
+    stop_pod_daemons
 
-  sync_ollama_to_remote_if_missing
-  copy_ollama_to_remote_pod
+    sync_ollama_to_remote_if_missing
+    copy_ollama_to_remote_pod
 
-  # Deploy the binary and configuration to the remote host, then into the Pod
-  step "preparing and uploading configuration and binary"
-  local cfg_template="${TEELLM_CONFIG_PATH:-$TEELLM_DIR/configs/teellm-production.json}"
-  local tmp_cfg
-  tmp_cfg="$(mktemp /tmp/teellm_cfg.XXXXXX)"
-  TEMP_CONFIG_FILE="$tmp_cfg"
-  # The platform calls the instance; the rendered config carries no platform address.
-  prepare_config "$cfg_template" "$tmp_cfg" "$OLLAMA_MODEL" "$TEELLM_PORT"
+    # Deploy the binary and configuration to the remote host, then into the Pod
+    step "preparing and uploading configuration and binary"
+    local cfg_template="${TEELLM_CONFIG_PATH:-$TEELLM_DIR/configs/teellm-production.json}"
+    local tmp_cfg
+    tmp_cfg="$(mktemp /tmp/teellm_cfg.XXXXXX)"
+    TEMP_CONFIG_FILE="$tmp_cfg"
+    # The platform calls the instance; the rendered config carries no platform address.
+    prepare_config "$cfg_template" "$tmp_cfg" "$OLLAMA_MODEL" "$TEELLM_PORT"
 
-  remote_ssh "mkdir -p '$REMOTE_DIR/configs'"
-  sshpass -p "$PASSWORD" scp "${SSH_OPTS[@]}" "$TEELLM_DIR/bin/teellm-service" "${REMOTE_USER}@${REMOTE_HOST}:$REMOTE_DIR/teellm-service.new"
-  sshpass -p "$PASSWORD" scp "${SSH_OPTS[@]}" "$TEELLM_SUPERVISOR_SCRIPT" "${REMOTE_USER}@${REMOTE_HOST}:$REMOTE_DIR/teellm-supervisor.sh"
-  sshpass -p "$PASSWORD" scp "${SSH_OPTS[@]}" "$tmp_cfg" "${REMOTE_USER}@${REMOTE_HOST}:$REMOTE_DIR/configs/teellm-production.json"
-  if [[ -f "$TEELLM_DIR/configs/models.json" ]]; then
-    sshpass -p "$PASSWORD" scp "${SSH_OPTS[@]}" "$TEELLM_DIR/configs/models.json" "${REMOTE_USER}@${REMOTE_HOST}:$REMOTE_DIR/configs/models.json"
+    remote_ssh "mkdir -p '$REMOTE_DIR/configs'"
+    sshpass -p "$PASSWORD" scp "${SSH_OPTS[@]}" "$TEELLM_DIR/bin/teellm-service" "${REMOTE_USER}@${REMOTE_HOST}:$REMOTE_DIR/teellm-service.new"
+    sshpass -p "$PASSWORD" scp "${SSH_OPTS[@]}" "$TEELLM_SUPERVISOR_SCRIPT" "${REMOTE_USER}@${REMOTE_HOST}:$REMOTE_DIR/teellm-supervisor.sh"
+    sshpass -p "$PASSWORD" scp "${SSH_OPTS[@]}" "$tmp_cfg" "${REMOTE_USER}@${REMOTE_HOST}:$REMOTE_DIR/configs/teellm-production.json"
+    if [[ -f "$TEELLM_DIR/configs/models.json" ]]; then
+      sshpass -p "$PASSWORD" scp "${SSH_OPTS[@]}" "$TEELLM_DIR/configs/models.json" "${REMOTE_USER}@${REMOTE_HOST}:$REMOTE_DIR/configs/models.json"
+    fi
+    rm -f "$tmp_cfg"
+    TEMP_CONFIG_FILE=""
+
+    remote_ssh "mv '$REMOTE_DIR/teellm-service.new' '$REMOTE_DIR/teellm-service' && chmod +x '$REMOTE_DIR/teellm-service'"
+
+    # Copy into remote pod
+    step "installing binary and configuration into remote pod"
+    remote_ssh "$(container_exec) sh -lc 'mkdir -p \"$CON_WORKDIR/configs\"'"
+    remote_ssh "$(container_cp "$REMOTE_DIR/teellm-service" "$CON_WORKDIR/teellm-service")"
+    remote_ssh "$(container_cp "$REMOTE_DIR/configs/teellm-production.json" "$CON_WORKDIR/configs/teellm-production.json")"
+    if [[ -f "$TEELLM_DIR/configs/models.json" ]]; then
+      remote_ssh "$(container_cp "$REMOTE_DIR/configs/models.json" "$CON_WORKDIR/configs/models.json")"
+    fi
+    remote_ssh "$(container_exec) sh -lc 'chmod +x \"$CON_WORKDIR/teellm-service\"'"
+
+    # The supervisor is the Pod's PID 1 and the only thing that starts or restarts a daemon. It is
+    # moved into place rather than written in place: `mv` swaps the inode, while overwriting a
+    # running script fails with ETXTBSY. A running copy re-execs the new file on resume.
+    remote_ssh "$(container_cp "$REMOTE_DIR/teellm-supervisor.sh" "$CON_WORKDIR/.teellm-supervisor.sh.new")"
+    remote_ssh "$(container_exec) sh -lc 'chmod +x \"$CON_WORKDIR/.teellm-supervisor.sh.new\" && mv \"$CON_WORKDIR/.teellm-supervisor.sh.new\" \"$CON_WORKDIR/teellm-supervisor.sh\"'"
+
+    # Written every deployment: a reused Pod keeps the env it was created with, so this file is what
+    # carries a `models switch` into a Pod that is not recreated.
+    remote_ssh "$(container_exec) sh -lc 'printf %s \"$OLLAMA_MODEL\" > \"$CON_WORKDIR/.teellm-model\"'"
+
+    # Migrates a Pod that predates the supervisor; a no-op on one that already runs it.
+    step "ensuring the Pod supervisor is running"
+    ensure_pod_supervisor_running
+
+    # Hand the daemons back. On a reused Pod this also re-execs the supervisor that was just
+    # installed, so a supervisor change takes effect without recreating the CSV2 guest.
+    step "resuming the Pod supervisor inside remote pod"
+    pod_supervisor_resume
   fi
-  rm -f "$tmp_cfg"
-  TEMP_CONFIG_FILE=""
-
-  remote_ssh "mv '$REMOTE_DIR/teellm-service.new' '$REMOTE_DIR/teellm-service' && chmod +x '$REMOTE_DIR/teellm-service'"
-
-  # Copy into remote pod
-  step "installing binary and configuration into remote pod"
-  remote_ssh "$(container_exec) sh -lc 'mkdir -p \"$CON_WORKDIR/configs\"'"
-  remote_ssh "$(container_cp "$REMOTE_DIR/teellm-service" "$CON_WORKDIR/teellm-service")"
-  remote_ssh "$(container_cp "$REMOTE_DIR/configs/teellm-production.json" "$CON_WORKDIR/configs/teellm-production.json")"
-  if [[ -f "$TEELLM_DIR/configs/models.json" ]]; then
-    remote_ssh "$(container_cp "$REMOTE_DIR/configs/models.json" "$CON_WORKDIR/configs/models.json")"
-  fi
-  remote_ssh "$(container_exec) sh -lc 'chmod +x \"$CON_WORKDIR/teellm-service\"'"
-
-  # The supervisor is the Pod's PID 1 and the only thing that starts or restarts a daemon. It is
-  # moved into place rather than written in place: `mv` swaps the inode, while overwriting a
-  # running script fails with ETXTBSY. A running copy re-execs the new file on resume.
-  remote_ssh "$(container_cp "$REMOTE_DIR/teellm-supervisor.sh" "$CON_WORKDIR/.teellm-supervisor.sh.new")"
-  remote_ssh "$(container_exec) sh -lc 'chmod +x \"$CON_WORKDIR/.teellm-supervisor.sh.new\" && mv \"$CON_WORKDIR/.teellm-supervisor.sh.new\" \"$CON_WORKDIR/teellm-supervisor.sh\"'"
-
-  # Written every deployment: a reused Pod keeps the env it was created with, so this file is what
-  # carries a `models switch` into a Pod that is not recreated.
-  remote_ssh "$(container_exec) sh -lc 'printf %s \"$OLLAMA_MODEL\" > \"$CON_WORKDIR/.teellm-model\"'"
-
-  # Migrates a Pod that predates the supervisor; a no-op on one that already runs it.
-  step "ensuring the Pod supervisor is running"
-  ensure_pod_supervisor_running
-
-  # Hand the daemons back. On a reused Pod this also re-execs the supervisor that was just
-  # installed, so a supervisor change takes effect without recreating the CSV2 guest.
-  step "resuming the Pod supervisor inside remote pod"
-  pod_supervisor_resume
 
   step "waiting for remote ollama service to become ready"
   local ollama_ready=false

@@ -191,6 +191,15 @@ platform-mock 的构建、启动、停止和就绪检查统一由仓库根目录
 模型，并换掉 TAA `llm.endpoint` 指向的 Pod IP —— 这两件事都必须由操作者显式决定。
 只是想更新一个已存在 Pod 时用 `--pod <名字>`，那条路径不创建也不删除 Pod。
 
+**创建后不再往里拷贝**：`--create-pod` 建完 Pod 只做校验，不安装任何文件。镜像本来就是这次运行
+用同一棵工作树构建的（或操作者显式点名的），校验项是 `teellm-service`（存在且可执行）、
+`teellm-supervisor.sh`（存在且可执行）、`configs/teellm-production.json`、`configs/models.json`、
+`.teellm-model`、`ollama`、`start-ollama.sh`、`lib/ollama/libllama-server-impl.so`，以及该模型
+manifest 列出的全部 blob（存在且大小吻合）。任一项缺失就逐条打印缺的是哪个文件、以非 0 退出，
+**不会**用 `kubectl cp` 补进去：补进去等于给 Pod 一批镜像里没有的内容，下次重建又会从坏镜像起来。
+要修就 `TEELLM_IMAGE_FORCE_REBUILD=true` 重建镜像，或用 `update` 往已存在的 Pod 里安装，再用
+`pod-down` 删掉这个建错的 Pod。`update` 与直接 `TARGET_POD=<名字> ./deploy-llm.sh` 仍会安装。
+
 **建之前先预检**：`--create-pod start` 在**构建镜像之前**确认 API server 可达、Pod 名是合法
 DNS label（≤63 字符）、命名空间与 RuntimeClass 存在、宿主端口空闲，任一不满足立即退出 ——
 命名空间写错或端口被占不该先花几十分钟编译推送镜像。端口检查分两处：宿主 `ss` 看是否已有监听
