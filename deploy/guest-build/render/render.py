@@ -60,7 +60,7 @@ def active_key(line, key):
     return not stripped.startswith("#") and re.match(rf"^\s*{re.escape(key)}\s*=", line)
 
 
-def render_kata_config(template, section, bundle_dir, out):
+def render_kata_config(template, section, bundle_dir, out, extra_params=()):
     """Point one hypervisor section at the TAA bundle; leave everything else."""
     path = Path(template)
     lines = path.read_text().splitlines()
@@ -68,6 +68,17 @@ def render_kata_config(template, section, bundle_dir, out):
     seen = {"kernel": False, "initrd": False, "firmware": False, "kernel_params": False}
     in_target = False
     target_seen = False
+
+    def with_extra(params):
+        """Drop parameters an extra one replaces, then append the extras.
+
+        A re-render must be idempotent: appending blindly would stack one
+        `taa.platform_ip=` per render, and the last one happens to win only by
+        luck (the guest parser would take whichever came last).
+        """
+        extra_keys = {p.split("=", 1)[0] for p in extra_params}
+        kept = [p for p in params if p.split("=", 1)[0] not in extra_keys]
+        return kept + list(extra_params)
 
     def emit_missing():
         if not seen["kernel"]:
@@ -80,7 +91,8 @@ def render_kata_config(template, section, bundle_dir, out):
             out_lines.append(f'firmware = {toml_string(bundle_dir + "/OVMF.fd")}')
             seen["firmware"] = True
         if not seen["kernel_params"]:
-            out_lines.append(f'kernel_params = {toml_string(RDINIT)}')
+            params = with_extra([RDINIT])
+            out_lines.append(f'kernel_params = {toml_string(" ".join(params))}')
             seen["kernel_params"] = True
 
     for line in lines:
@@ -124,6 +136,7 @@ def render_kata_config(template, section, bundle_dir, out):
             # suggest it still has an effect.
             params = [p for p in params if not p.startswith("init=") and not p.startswith("rdinit=")]
             params.insert(0, RDINIT)
+            params = with_extra(params)
             out_lines.append(f'kernel_params = {toml_string(" ".join(params))}')
             seen["kernel_params"] = True
             continue
@@ -286,6 +299,14 @@ def main(argv=None):
     kata.add_argument("--template", required=True)
     kata.add_argument("--section", required=True)
     kata.add_argument("--bundle-dir", required=True)
+    kata.add_argument(
+        "--param",
+        action="append",
+        default=[],
+        metavar="KEY=VALUE",
+        help="extra kernel parameter, repeatable; replaces an existing one with "
+        "the same key so a re-render cannot duplicate tokens",
+    )
     kata.add_argument("--out", required=True)
 
     merge = sub.add_parser("containerd-merge", help="add or replace the runtime handler")
@@ -320,7 +341,9 @@ def main(argv=None):
     args = parser.parse_args(argv)
 
     if args.command == "kata-config":
-        render_kata_config(args.template, args.section, args.bundle_dir, args.out)
+        render_kata_config(
+            args.template, args.section, args.bundle_dir, args.out, args.param
+        )
     elif args.command == "containerd-merge":
         containerd_merge(
             args.config,

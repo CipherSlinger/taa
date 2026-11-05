@@ -107,7 +107,25 @@ common_env=(
   MEASURE_OVMF="$tmp_dir/fixture-ovmf.fd"
   MEASURE_KERNEL="$tmp_dir/fixture-vmlinuz"
   MEASURE_INITRD="$tmp_dir/fixture-initrd.img"
+  # Pin the whole deployment identity: it is rendered into kernel_params, and
+  # an inherited value from the caller's shell would change every expectation
+  # below. The key file points at nothing so only this variable can supply it.
+  TAA_PLATFORM_KEY_FILE="$tmp_dir/absent-platform-key.json"
+  TAA_PLATFORM_IP=172.16.10.116:18080
+  TAA_DOCKER_ID=fixture-docker-id
+  PLATFORM_PUBLIC_KEY="04$(printf 'a%.0s' {1..128})"
+  TAA_PLATFORM_SM2_ID=fixture-sm2-id
+  TAA_CONTRACT_ID=fixture-contract-id
+  TAA_CONTRACT_TYPE=fixture-contract-type
+  TAA_LLM_ENDPOINT=https://172.16.10.116:8443
+  TAA_ADDR=0.0.0.0:6001
+  TAA_REQUIRED=1
+  TAA_REQUIRE_ATTESTATION=1
 )
+
+# The identity tokens render_package appends to kernel_params, in emission
+# order. Kept in one place so the config and cmdline expectations cannot drift.
+identity_params="taa.platform_ip=172.16.10.116:18080 taa.docker_id=fixture-docker-id taa.platform_public_key=04$(printf 'a%.0s' {1..128}) taa.platform_sm2_id=fixture-sm2-id taa.contract_id=fixture-contract-id taa.contract_type=fixture-contract-type taa.llm_endpoint=https://172.16.10.116:8443 taa.addr=0.0.0.0:6001 taa.required=1 taa.require_attestation=1"
 
 # ── 1. render produces a self-contained package, offline ────────────────────
 pkg="$tmp_dir/a/pkg"
@@ -134,11 +152,29 @@ check_absent "kata: no active image remains" $'\nimage = ' "$kata"
 check_contains "kata: kernel points at the bundle" "kernel = \"$bundle/vmlinuz\"" "$kata"
 check_contains "kata: initrd points at the bundle" "initrd = \"$bundle/initramfs.img\"" "$kata"
 check_contains "kata: firmware points at the bundle" "firmware = \"$bundle/OVMF.fd\"" "$kata"
-check_contains "kata: rdinit is first and the stale init= is gone" \
-  'kernel_params = "rdinit=/usr/local/bin/taa-init console=ttyS0 quiet"' "$kata"
+check_contains "kata: rdinit is first, stale init= gone, identity appended" \
+  "kernel_params = \"rdinit=/usr/local/bin/taa-init console=ttyS0 quiet $identity_params\"" "$kata"
 check "kata: rdinit appears exactly once" "1" "$(grep -c 'rdinit=/usr/local/bin/taa-init' "$pkg/config/kata-config.toml")"
 check_contains "kata: other sections are untouched" 'kernel_params = "must not be touched"' "$kata"
 check_contains "kata: other keys in the section survive" 'burst = 10' "$kata"
+
+# Rendering an already-rendered config is the realistic way to duplicate tokens
+# (a package config reused as its own template). The key must be replaced, not
+# appended a second time, and the guest parser must not be left with a stale
+# value in front of the new one.
+python3 "$RENDER" kata-config --template "$pkg/config/kata-config.toml" \
+  --section hypervisor.qemu --bundle-dir "$bundle" \
+  --param taa.platform_ip=10.0.0.1 --param taa.addr=0.0.0.0:6001 \
+  --out "$tmp_dir/kata-again.toml" >/dev/null
+again="$(cat "$tmp_dir/kata-again.toml")"
+check "kata: a re-render never duplicates a key" "" \
+  "$(grep -o 'taa\.[a-z0-9_]*=' "$tmp_dir/kata-again.toml" | sort | uniq -d)"
+check "kata: a re-render keeps every identity key" "10" \
+  "$(grep -o 'taa\.[a-z0-9_]*=' "$tmp_dir/kata-again.toml" | sort -u | wc -l)"
+check "kata: a re-render does not stack tokens" "1" \
+  "$(grep -o 'taa\.platform_ip=' "$tmp_dir/kata-again.toml" | wc -l)"
+check_contains "kata: a re-render carries the new value" 'taa.platform_ip=10.0.0.1' "$again"
+check_absent "kata: a re-render drops the old value" 'taa.platform_ip=172.16.10.116:18080' "$again"
 
 # The renderer refuses to publish a config that would boot the wrong initrd:
 # an active `image` in the target section wins over the initrd in Kata.
@@ -279,7 +315,7 @@ check "manifest: template sha is recorded" "1" \
 
 # ── 5b. expected MEASUREMENT ───────────────────────────────────────────────
 MEASURE="$SCRIPT_DIR/render/measure.py"
-expected_cmdline='tsc=reliable no_timer_check rcupdate.rcu_expedited=1 i8042.direct=1 i8042.dumbkbd=1 i8042.nopnp=1 i8042.noaux=1 noreplace-smp reboot=k cryptomgr.notests net.ifnames=0 pci=lastbus=0 console=hvc0 console=hvc1 debug panic=1 nr_cpus=3 selinux=0 scsi_mod.scan=none agent.log=debug agent.debug_console agent.debug_console_vport=1026 rdinit=/usr/local/bin/taa-init console=ttyS0 quiet'
+expected_cmdline="tsc=reliable no_timer_check rcupdate.rcu_expedited=1 i8042.direct=1 i8042.dumbkbd=1 i8042.nopnp=1 i8042.noaux=1 noreplace-smp reboot=k cryptomgr.notests net.ifnames=0 pci=lastbus=0 console=hvc0 console=hvc1 debug panic=1 nr_cpus=3 selinux=0 scsi_mod.scan=none agent.log=debug agent.debug_console agent.debug_console_vport=1026 rdinit=/usr/local/bin/taa-init console=ttyS0 quiet $identity_params"
 check "measure: cmdline follows the rendered config" "$expected_cmdline" "$(cat "$pkg/cmdline.txt")"
 check_contains "manifest: measurement status is computed" 'MEASUREMENT_STATUS=computed' "$manifest"
 check_contains "manifest: records the SMP" 'MEASUREMENT_SMP=3' "$manifest"
@@ -416,7 +452,16 @@ out="$(env "${common_env[@]}" KATA_CONFIG_TEMPLATE="$tmp_dir/absent.toml" \
   DIST_DIR="$tmp_dir/absent-pkg" REMOTE_HOST=invalid.invalid "$BUILD" render 2>&1 || true)"
 check_contains "render: missing template points at fetch-base" "fetch-base" "$out"
 check "render: missing template never creates the package" "absent" \
-  "$([[ -e "$tmp_dir/absent-pkg" ]] && echo present || echo absent)"
+  "$([[ -e "$tmp_dir/absent-pkg" ]] && present || echo absent)"
+
+# ── 10. kernel-command-line identity is validated, never escaped ────────────
+# A value with a space would silently become two arguments: the key would keep a
+# truncated value and the guest would see a stray token. Refuse it at render time.
+out="$(env "${common_env[@]}" TAA_CONTRACT_ID="two words" \
+  DIST_DIR="$tmp_dir/space-pkg" REMOTE_HOST=invalid.invalid "$BUILD" render 2>&1 || true)"
+check_contains "render: a whitespace value is refused" "无法写进内核命令行" "$out"
+check "render: a refused value never creates the package" "absent" \
+  "$([[ -e "$tmp_dir/space-pkg" ]] && echo present || echo absent)"
 
 echo
 if [[ "$failures" -eq 0 ]]; then

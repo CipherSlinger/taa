@@ -94,11 +94,13 @@ TAA_REQUIRED="${TAA_REQUIRED:-$TAA_REQUIRED_DEFAULT}"
 TAA_REQUIRE_ATTESTATION="${TAA_REQUIRE_ATTESTATION:-$TAA_REQUIRE_ATTESTATION_DEFAULT}"
 ALLOW_MISSING_TAA_ENV="${ALLOW_MISSING_TAA_ENV:-0}"
 
-# Settings that reach TAA only through the guest's /etc/default/taa.env. The
-# Pod's environment does not reach the initrd (TAA starts before kata-agent, and
-# nothing injects env into the guest), so every startup setting that differs
-# between deployments has to be baked here at build time. The config file stays
-# the role template; these are the deployment's identity and keys.
+# The deployment's startup settings. The Pod's environment cannot reach the
+# initrd (TAA starts before kata-agent, and nothing injects env into the guest),
+# so they arrive by one of two routes: the kernel command line rendered by
+# `render` (`taa.<key>=<value>`, read by taa-init from /proc/cmdline and the one
+# that wins), or /etc/default/taa.env baked into the image as the fallback. The
+# config file stays the role template; these are the deployment's identity and
+# keys.
 #
 # PLATFORM_PUBLIC_KEY is the one setting TAA cannot start without: every
 # platform message is sealed with it, and TAA exits 1 rather than fall back to
@@ -338,11 +340,15 @@ Notes:
   field or a bare hex string). ALLOW_MISSING_TAA_ENV=1 skips the requirement for
   a build that has another injection path.
 
-  The guest's environment is written only at build time, so every deployment
-  setting is part of the measured image: changing PLATFORM_IP, DOCKER_ID,
-  PLATFORM_PUBLIC_KEY, PLATFORM_SM2_ID, CONTRACT_ID, CONTRACT_TYPE or
-  TAA_LLM_ENDPOINT means rebuilding the initrd. deploy compares the identity
-  fields against the image and refuses a mismatch.
+  These values are not frozen into the image. render (and launch) writes them
+  onto the kernel command line as taa.<key>=<value>; taa-init reads that back
+  from /proc/cmdline and lets it override the baked /etc/default/taa.env. So
+  changing PLATFORM_IP, DOCKER_ID, PLATFORM_PUBLIC_KEY, PLATFORM_SM2_ID,
+  CONTRACT_ID, CONTRACT_TYPE or TAA_LLM_ENDPOINT is a re-render plus install,
+  not a rebuild: the initrd bytes stay as they are. The command line is part of
+  the CSV2 measurement, so the identity is still covered by MEASUREMENT -- but
+  it is also visible to the host in QEMU's -append, so secrets belong nowhere
+  near it (TAASECRETKEY is never carried at all).
   TAA_REQUIRE_ATTESTATION=1 makes the TAA attestation self-verification a
   precondition for starting kata-agent, so a Ready Pod implies a real report.
   The injected TAA must be statically linked; build it with
@@ -527,15 +533,13 @@ rebuild_hint() {
   echo "      PLATFORM_PUBLIC_KEY=<130 hex，或 TAA_PLATFORM_KEY_FILE=<文件>> $0 build" >&2
 }
 
-# taa-init reads /etc/default/taa.env from inside the guest, where nothing about
-# the deploying shell's environment can still reach it, so the registration
-# address is fixed at build time. An initrd built with different values deploys
-# and boots perfectly -- Ready pod, verified attestation -- and then registers
-# somewhere else entirely, which is invisible from this side: the only symptom is
-# a platform that never hears from TAA. `build` and `deploy` are separate
-# commands, so the values that built this image are not necessarily the ones this
-# invocation carries; compare them here, at the handoff into deploy, which is also
-# the first point at which the image under test is the one being published.
+# taa-init reads /etc/default/taa.env from inside the guest as its fallback
+# environment. The deployment identity it actually uses comes from the kernel
+# command line (rendered by `render`), which overrides that file; a mismatch here
+# therefore no longer breaks the deployment. It is still worth reporting: it means
+# the image was built for another platform, so if the command-line tokens were
+# ever missing the guest would silently fall back to the old address, and the only
+# symptom would be a platform that never hears from TAA.
 check_initrd_identity() {
   local baked_env baked_platform baked_docker_id baked_public_key
   local want_platform want_docker_id want_public_key
@@ -567,24 +571,18 @@ check_initrd_identity() {
   want_public_key="$(printf '%q' "$TAA_PLATFORM_PUBLIC_KEY")"
 
   if [[ "$baked_platform" != "$want_platform" || "$baked_docker_id" != "$want_docker_id" ]]; then
-    echo "error: initrd 里烘焙的注册身份与本次调用不一致" >&2
-    echo "       initrd: PLATFORM_IP=$baked_platform DOCKER_ID=$baked_docker_id" >&2
-    echo "       本次:   PLATFORM_IP=$want_platform DOCKER_ID=$want_docker_id" >&2
-    echo "hint: guest 内的 TAA 只认 initrd 里这份，发布出去它就会注册到旧地址且没有任何本地症状" >&2
-    rebuild_hint
-    exit 1
+    echo "warning: initrd 里烘焙的注册身份与本次调用不一致（以内核命令行上的为准）" >&2
+    echo "         initrd: PLATFORM_IP=$baked_platform DOCKER_ID=$baked_docker_id" >&2
+    echo "         本次:   PLATFORM_IP=$want_platform DOCKER_ID=$want_docker_id" >&2
   fi
 
-  # The platform key is what TAA seals every message with. Deploying an image
-  # built against a different platform key boots a TAA that starts, registers
-  # nothing the platform can read, and looks healthy from this side.
+  # The platform key is what TAA seals every message with. An image built against
+  # a different platform key boots a TAA that registers nothing the platform can
+  # read, so the rendered command line must carry the current one.
   if [[ "$baked_public_key" != "$want_public_key" ]]; then
-    echo "error: initrd 里烘焙的平台公钥与本次调用不一致" >&2
-    echo "       initrd: PLATFORM_PUBLIC_KEY=${baked_public_key:-<缺失>}" >&2
-    echo "       本次:   PLATFORM_PUBLIC_KEY=${want_public_key:-<未解析>}" >&2
-    echo "hint: 公钥只在构建时写入 initrd；换平台或轮换平台密钥后必须重新构建" >&2
-    rebuild_hint
-    exit 1
+    echo "warning: initrd 里烘焙的平台公钥与本次调用不一致（以内核命令行上的为准）" >&2
+    echo "         initrd: PLATFORM_PUBLIC_KEY=${baked_public_key:-<缺失>}" >&2
+    echo "         本次:   PLATFORM_PUBLIC_KEY=${want_public_key:-<未解析>}" >&2
   fi
 }
 
@@ -660,11 +658,11 @@ build_initrd() {
 
   echo "生成可选 env 文件"
 
-  # The guest-side environment, written at build time. %q shell-escapes the
-  # values so spaces or metacharacters are not reinterpreted when taa-init
-  # sources this file. Every variable here is also an input to the measured
-  # image, so changing one changes the boot MEASUREMENT -- which is why
-  # check_initrd_identity compares the identity fields again at deploy time.
+  # The guest-side fallback environment, written at build time. %q shell-escapes
+  # the values so spaces or metacharacters are not reinterpreted when taa-init
+  # sources this file. The kernel-command-line tokens rendered by `render` take
+  # precedence over every name below; this file only has to be usable if they are
+  # ever missing, which is why check_initrd_identity still reports a mismatch.
   if taa_env_file_needed; then
     mkdir -p "$BUILD_WORK_DIR/extra/etc/default"
     {
@@ -1101,6 +1099,49 @@ render_package() {
     exit 1
   fi
 
+  # The guest's deployment identity travels on the kernel command line. taa-init
+  # parses `taa.<key>=<value>` out of /proc/cmdline and lets those values override
+  # the build-time env file, so changing the platform address, docker id, key or
+  # endpoint is a re-render (`launch`) rather than a rebuild: the initrd's bytes,
+  # and with them its MEASUREMENT, stay as they are. The command line is part of
+  # the CSV2 measurement too, so the identity is still covered by the attested
+  # value -- see the notes in taa-init.sh.
+  #
+  # Built and validated before the package directory is touched: a bad value must
+  # fail the render, not leave a half-written package or destroy the previous one.
+  local -a kernel_params=()
+  local resolved_public_key
+  resolved_public_key="$(resolve_platform_public_key || true)"
+  if [[ -n "$resolved_public_key" ]] && ! platform_public_key_valid "$resolved_public_key"; then
+    echo "error: 平台 SM2 公钥格式不对（期望 04 + 128 位十六进制）: $resolved_public_key" >&2
+    exit 1
+  fi
+  add_kernel_param() {
+    local key="$1" value="$2"
+    [[ -n "$value" ]] || return 0
+    if [[ "$value" == *[[:space:]]* ]]; then
+      echo "error: $key 含空白字符，无法写进内核命令行: $value" >&2
+      exit 1
+    fi
+    kernel_params+=("taa.$key=$value")
+  }
+  add_kernel_param platform_ip "$TAA_PLATFORM_IP"
+  add_kernel_param docker_id "$TAA_DOCKER_ID"
+  add_kernel_param platform_public_key "$resolved_public_key"
+  add_kernel_param platform_sm2_id "$TAA_PLATFORM_SM2_ID"
+  add_kernel_param contract_id "$TAA_CONTRACT_ID"
+  add_kernel_param contract_type "$TAA_CONTRACT_TYPE"
+  add_kernel_param llm_endpoint "$TAA_LLM_ENDPOINT"
+  add_kernel_param addr "$TAA_ADDR"
+  add_kernel_param required "$TAA_REQUIRED"
+  add_kernel_param require_attestation "$TAA_REQUIRE_ATTESTATION"
+
+  local -a param_args=()
+  local param
+  for param in ${kernel_params[@]+"${kernel_params[@]}"}; do
+    param_args+=(--param "$param")
+  done
+
   rm -rf "$out_dir"
   mkdir -p "$out_dir/config" "$out_dir/k8s"
 
@@ -1108,6 +1149,7 @@ render_package() {
     --template "$template" \
     --section "$KATA_HYPERVISOR_SECTION" \
     --bundle-dir "$REMOTE_BUNDLE_DIR" \
+    ${param_args[@]+"${param_args[@]}"} \
     --out "$out_dir/$PACKAGE_KATA_CONFIG"
 
   python3 "$RENDER_DIR/render.py" containerd-fragment \
@@ -1306,6 +1348,17 @@ sudo bash install.sh
 当 ConfigPath 指向包内这份配置时（交付包被保存在持久目录，如
 \`/root/taa-images/package\`），install.sh 不会再往 \`/etc\` 拷一份：包就是宿主机上
 唯一的副本，删除或替换它之前必须先把 runtime handler 摘掉。
+
+## 部署身份
+
+平台地址、dockerId、平台公钥、LLM 端点等身份写在 \`$PACKAGE_KATA_CONFIG\` 的
+\`kernel_params\` 里（\`taa.<key>=<value>\` 令牌）。guest 内的 taa-init 从
+\`/proc/cmdline\` 读回它们，覆盖镜像里烘焙的 \`/etc/default/taa.env\`。
+
+所以换这些变量只需重新 render 再 install（\`./deploy-taa-vm.sh launch\`），
+不必重建 initrd，镜像侧的度量因此保持不变。内核命令行本身也在 CSV2 度量范围内，
+身份仍被 MEASUREMENT 覆盖；但它在宿主机的 QEMU \`-append\` 里可见，所以密钥类
+内容不应走这条通路。
 
 ## 使用
 

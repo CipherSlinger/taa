@@ -361,10 +361,11 @@ preflight() {
       check_remote_sudo
       # The initrd must carry a registration identity or deploy refuses to
       # publish it. Surface that here with both ways out, rather than letting it
-      # fail after a full build. Whether the identity it carries is the one this
-      # invocation asks for is checked in build-initrd.sh, where the image is
-      # handed over: `up` builds first, so checking the image here would judge the
-      # previous build and abort before the rebuild that fixes it.
+      # fail after a full build. Whether the identity it carries matches this
+      # invocation is reported (not enforced) in build-initrd.sh, where the image
+      # is handed over: `up` builds first, so judging the image here would look at
+      # the previous build. The identity the guest actually uses is the one
+      # `render` puts on the kernel command line.
       if [[ "${ALLOW_MISSING_TAA_ENV:-0}" != "1" ]]; then
         if [[ -z "${TAA_PLATFORM_IP:-}" || -z "${TAA_DOCKER_ID:-}" ]]; then
           echo "error: TAA_PLATFORM_IP 与 TAA_DOCKER_ID 需要成对给出（deploy 要求 initrd 内含 etc/default/taa.env）" >&2
@@ -388,15 +389,22 @@ preflight() {
   esac
 }
 
-# ── Registration identity baked into the initrd ──────────────────────────────
+# ── Registration identity on the kernel command line ─────────────────────────
 #
-# taa-init reads /etc/default/taa.env from inside the guest, where nothing about
-# this shell's environment can still reach it, so the platform address is fixed at
-# build time. The comparison between what an image carries and what this
-# invocation asks for lives in build-initrd.sh, next to the code that writes the
-# file: see check_initrd_identity there. It has to run when build hands the image
-# to deploy, not in the preflight above, because in the `up` path the preflight
-# runs before the build and would always be looking at the previous image.
+# Nothing about this shell's environment reaches the guest: TAA is the initrd's
+# first process, started before kata-agent and before the Pod's environment
+# exists. `render` therefore writes the deployment identity into the Kata config as
+# kernel_params tokens (taa.<key>=<value>), QEMU passes them on -append, and
+# taa-init reads them from /proc/cmdline, overriding the /etc/default/taa.env baked
+# into the image. That is what makes an identity change a re-render rather than a
+# rebuild.
+#
+# The comparison between the identity baked into an image and the one this
+# invocation asks for still lives in build-initrd.sh (check_initrd_identity), next
+# to the code that writes that file. It is a warning now, not a refusal: the
+# rendered command line wins. It runs when build hands the image to deploy, not in
+# the preflight above, because in the `up` path the preflight runs before the
+# build and would always be looking at the previous image.
 
 # ── verify ───────────────────────────────────────────────────────────────────
 #

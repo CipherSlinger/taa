@@ -27,6 +27,8 @@ ENV_FILE=/etc/default/taa.env
 # production always uses the defaults.
 CSV_MISC_FILE="${CSV_MISC_FILE:-/proc/misc}"
 CSV_SYSDEV_FILE="${CSV_SYSDEV_FILE:-/sys/class/misc/csv-guest/dev}"
+# Overridable only so the helpers can be tested locally, like the two above.
+CMDLINE_FILE="${CMDLINE_FILE:-/proc/cmdline}"
 CSV_DEV=/dev/csv-guest
 CSV_MAJOR=10
 
@@ -36,6 +38,54 @@ ATTESTATION_OK_PATTERN="attestation report verified successfully"
 ATTESTATION_DEGRADED_PATTERN="continuing with empty report"
 
 log() { echo "taa-init: $*" >"$CONSOLE" 2>/dev/null || true; }
+
+# Deployment identity can also arrive on the kernel command line as
+# `taa.<key>=<value>`. That is how a deployment changes its platform address,
+# docker id, public key or LLM endpoint without rebuilding the measured initrd:
+# the launcher renders the tokens into the Kata config's kernel_params, QEMU puts
+# them on -append, and they are read from here.
+#
+# Only the names below are honoured. The command line is host-provided input, so
+# exporting arbitrary names from it would let the host set anything at all.
+cmdline_env_name() {
+  case "$1" in
+    platform_ip)         echo PLATFORM_IP ;;
+    docker_id)           echo DOCKER_ID ;;
+    platform_public_key) echo PLATFORM_PUBLIC_KEY ;;
+    platform_sm2_id)     echo PLATFORM_SM2_ID ;;
+    contract_id)         echo CONTRACT_ID ;;
+    contract_type)       echo CONTRACT_TYPE ;;
+    llm_endpoint)        echo TAA_LLM_ENDPOINT ;;
+    addr)                echo TAA_ADDR ;;
+    required)            echo TAA_REQUIRED ;;
+    require_attestation) echo TAA_REQUIRE_ATTESTATION ;;
+    *) return 1 ;;
+  esac
+}
+
+# Values override the build-time /etc/default/taa.env: the image may be older than
+# the deployment it is used for. They are whitespace-free by construction -- the
+# renderer refuses anything else -- so a plain word split is enough here.
+apply_cmdline_identity() {
+  [ -r "$CMDLINE_FILE" ] || return 0
+  local token key value name applied=""
+  for token in $(cat "$CMDLINE_FILE" 2>/dev/null); do
+    case "$token" in
+      taa.*=*) ;;
+      *) continue ;;
+    esac
+    key="${token%%=*}"
+    key="${key#taa.}"
+    value="${token#*=}"
+    name="$(cmdline_env_name "$key")" || continue
+    export "$name=$value"
+    applied="$applied $name"
+  done
+  if [ -n "$applied" ]; then
+    log "identity from kernel cmdline:$applied"
+  fi
+  return 0
+}
 
 # Print the csv-guest minor, or nothing when neither source can be read.
 # /proc/misc is preferred: that is the path used for the 2026-10-09 evidence.
@@ -81,8 +131,10 @@ wait_for_attestation_verdict() {
 # Read the build-time /etc/default/taa.env. It carries the wrapper switches
 # (TAA_ADDR, TAA_REQUIRED, TAA_REQUIRE_ATTESTATION) and the deployment identity
 # TAA reads at startup (PLATFORM_IP, DOCKER_ID, PLATFORM_PUBLIC_KEY,
-# PLATFORM_SM2_ID, CONTRACT_ID, CONTRACT_TYPE, TAA_LLM_ENDPOINT). The guest has
-# no other injection path, so this file is the whole environment TAA sees.
+# PLATFORM_SM2_ID, CONTRACT_ID, CONTRACT_TYPE, TAA_LLM_ENDPOINT). This file is
+# the guest's fallback environment; the same names can be overridden from the
+# kernel command line (see apply_cmdline_identity below), which is what lets a
+# deployment change its identity without rebuilding the image.
 if [ -r "$ENV_FILE" ]; then
   . "$ENV_FILE"
 fi
@@ -112,6 +164,10 @@ fail_taa_required() {
 mkdir -p /proc /sys 2>/dev/null || true
 mount -t proc  proc  /proc >/dev/null 2>&1 || true
 mount -t sysfs sysfs /sys  >/dev/null 2>&1 || true
+
+# 1b) Identity from the kernel command line, overriding the env file read above.
+#     Must run after /proc is mounted: /proc/cmdline is the only copy of it.
+apply_cmdline_identity
 
 # 2) Create /dev/csv-guest. The driver is built in (CONFIG_CSV_GUEST=y) and has
 #    already called misc_register(); only the node is missing, because this

@@ -106,6 +106,80 @@ wait_for_attestation_verdict "$WORK_DIR/does-not-exist.log" 1
 check "missing log -> 2" "2" "$?"
 set -e
 
+echo "== apply_cmdline_identity =="
+
+# The kernel command line is host-provided input read by PID 1, so these tests
+# are mostly about what must NOT happen: unknown keys ignored, no arbitrary name
+# exported, and a missing /proc/cmdline not taking the boot down.
+
+cmdline="$WORK_DIR/cmdline"
+cat >"$cmdline" <<'EOF'
+BOOT_IMAGE=/vmlinuz rdinit=/usr/local/bin/taa-init console=hvc0 taa.platform_ip=10.1.2.3:18080 taa.docker_id=fixture-docker-id taa.platform_public_key=04ab taa.llm_endpoint=https://10.1.2.3:8443 taa.required=0
+EOF
+
+got="$(
+  export CMDLINE_FILE="$cmdline"
+  apply_cmdline_identity >/dev/null 2>&1
+  printf '%s|%s|%s|%s' "${PLATFORM_IP:-}" "${DOCKER_ID:-}" \
+    "${PLATFORM_PUBLIC_KEY:-}" "${TAA_REQUIRED:-}"
+)"
+check "maps taa.* tokens onto the deployment names" \
+  '10.1.2.3:18080|fixture-docker-id|04ab|0' "$got"
+
+# The env file is the build-time fallback; the command line is the deployment's
+# current identity and has to win.
+got="$(
+  PLATFORM_IP=10.0.0.9 DOCKER_ID=stale
+  export CMDLINE_FILE="$cmdline"
+  apply_cmdline_identity >/dev/null 2>&1
+  printf '%s|%s' "$PLATFORM_IP" "$DOCKER_ID"
+)"
+check "overrides the baked env file" '10.1.2.3:18080|fixture-docker-id' "$got"
+
+# Anything not on the allow-list stays out of the environment, including names
+# that would let the host turn a token into a privileged setting (PATH) or into
+# secret material (TAASECRETKEY is never carried at all).
+leak_cmdline="$WORK_DIR/cmdline-leak"
+cat >"$leak_cmdline" <<'EOF'
+taa.path=/tmp/evil taa.TAASECRETKEY=secret taa.unknown_key=x taa.=empty
+EOF
+got="$(
+  export CMDLINE_FILE="$leak_cmdline"
+  apply_cmdline_identity >/dev/null 2>&1
+  for name in TAASECRETKEY UNKNOWN_KEY; do
+    if declare -p "$name" >/dev/null 2>&1; then printf '%s ' "$name"; fi
+  done
+  printf 'PATH=%s' "$PATH"
+)"
+check "refuses keys outside the allow-list" "PATH=$PATH" "$got"
+
+# A non-taa token must not be re-exported under its own name.
+got="$(
+  export CMDLINE_FILE="$leak_cmdline"
+  apply_cmdline_identity >/dev/null 2>&1
+  declare -p taa.unknown_key >/dev/null 2>&1 && echo exported || echo absent
+)"
+check "does not export the raw token name" "absent" "$got"
+
+# Duplicate keys are prevented at render time, but a hand-edited config could
+# still carry two: the later one has to win, as it would for the kernel.
+dup_cmdline="$WORK_DIR/cmdline-dup"
+printf 'taa.platform_ip=1.1.1.1:1 taa.platform_ip=2.2.2.2:2\n' >"$dup_cmdline"
+got="$(
+  export CMDLINE_FILE="$dup_cmdline"
+  apply_cmdline_identity >/dev/null 2>&1
+  printf '%s' "$PLATFORM_IP"
+)"
+check "the last duplicate wins" "2.2.2.2:2" "$got"
+
+# An unreadable command line must not abort: PID 1 has no supervisor to restart
+# it, and the env file is still a usable identity.
+set +e
+( export CMDLINE_FILE="$WORK_DIR/does-not-exist"; apply_cmdline_identity ) >/dev/null 2>&1
+rc=$?
+set -e
+check "missing CMDLINE_FILE still returns 0" "0" "$rc"
+
 echo "== main flow invariants =="
 
 # The PATH extension is a side effect on the environment, so it lives in the main
