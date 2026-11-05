@@ -326,6 +326,13 @@ TEELLM_POD_RUNTIME_CLASS="${TEELLM_POD_RUNTIME_CLASS:-kata-qemu-csv2}"
 # host -- and it is the one address that survives recreating the Pod. 18443 is the reference create
 # script's number. 0 publishes nothing, which is how this Pod behaved before the port was mapped.
 TEELLM_POD_HOST_PORT="${TEELLM_POD_HOST_PORT:-18443}"
+# Host port that publishes the plaintext platform listener (6001) on the node. The platform reaches
+# that listener at the Pod IP, but a Pod IP changes whenever the Pod is recreated, so this mapping
+# is what lets a host-side script or a person poll /v1/llm/heartbeat, /v1/llm/log and
+# /v1/llm/getAttestation at a fixed http://<node>:<port>. 16001 keeps the container port's shape and
+# does not collide with anything the host already runs (18080/18081 are the mock's). 0 publishes
+# nothing. The two host ports are checked for a collision with each other before the build.
+TEELLM_POD_ATTESTATION_HOST_PORT="${TEELLM_POD_ATTESTATION_HOST_PORT:-16001}"
 # Kata sizes the guest as default_memory + limits.memory and default_vcpus + limits.cpu, and
 # encrypted memory is resident from boot, so these two numbers are a permanent host cost. Two vCPUs
 # is the reference create script's figure, kept so both paths ask the host for the same thing.
@@ -1079,8 +1086,12 @@ confirm_pod_creation() {
   echo "      cpu      $TEELLM_POD_CPU"
   echo "      memory   $TEELLM_POD_MEMORY (the VM is larger and resident on the host)"
   if [[ "$TEELLM_POD_HOST_PORT" -gt 0 ]]; then
-    echo "      hostPort $TEELLM_POD_HOST_PORT (also at https://${TEELLM_POD_NODE}:$TEELLM_POD_HOST_PORT)"
-  else
+    echo "      hostPort $TEELLM_POD_HOST_PORT -> 8443 (also at https://${TEELLM_POD_NODE}:$TEELLM_POD_HOST_PORT)"
+  fi
+  if [[ "$TEELLM_POD_ATTESTATION_HOST_PORT" -gt 0 ]]; then
+    echo "      hostPort $TEELLM_POD_ATTESTATION_HOST_PORT -> 6001 (platform: heartbeat / log / getAttestation)"
+  fi
+  if [[ "$TEELLM_POD_HOST_PORT" -le 0 && "$TEELLM_POD_ATTESTATION_HOST_PORT" -le 0 ]]; then
     echo "      hostPort none (reachable at the Pod IP only)"
   fi
   echo ""
@@ -1199,19 +1210,18 @@ REMOTE_ORPHANS
   fi
 }
 
-# Whether the host port the Pod publishes is free. The runtime opens it in the host's network
+# Whether one host port the Pod publishes is free. The runtime opens it in the host's network
 # namespace, so `ss` sees a live one, and a Pod that declares the same hostPort without running is
 # read from the cluster. Both are answered before the build, because a taken port only shows up as
 # a scheduling failure after tens of minutes of image work. No jq: the cluster query runs through a
 # bash -s heredoc and kubectl jsonpath answers the same question.
-preflight_pod_host_port() {
-  local port="$TEELLM_POD_HOST_PORT" report busy declared
-  if [[ ! "$port" =~ ^[0-9]+$ ]] || [[ "$port" -gt 65535 ]]; then
-    err "TEELLM_POD_HOST_PORT='$port' is not a TCP port number between 0 and 65535"
-    exit 1
-  fi
+#
+# $1 is the environment variable the port came from (so the error names the knob to turn),
+# $2 the port number, $3 the container port it publishes (for the message).
+preflight_one_host_port() {
+  local var="$1" port="$2" container_port="$3" report busy declared
   if [[ "$port" -eq 0 ]]; then
-    info "no host port published (TEELLM_POD_HOST_PORT=0); the Pod is reachable at its Pod IP only"
+    info "container port $container_port is not published on the node ($var=0); reachable at the Pod IP only"
     return 0
   fi
   report="$(remote_ssh "PORT=$port bash -s" <<'REMOTE_PORT'
@@ -1228,8 +1238,8 @@ REMOTE_PORT
   if [[ "$busy" == yes ]]; then
     err "host port $port is already in use on ${REMOTE_USER}@${REMOTE_HOST}"
     remote_ssh "ss -H -ltnp 'sport = :$port' 2>/dev/null | head -5" || true
-    detail "Free it, or publish a different port: TEELLM_POD_HOST_PORT=<port> $(basename "$0") --create-pod start"
-    detail "0 creates the Pod without a host port; TAA reaches it by Pod IP either way."
+    detail "Free it, or publish a different port: $var=<port> $(basename "$0") --create-pod start"
+    detail "0 creates the Pod without that host port; the Pod IP still works either way."
     exit 1
   fi
   if [[ -n "$declared" ]]; then
@@ -1238,10 +1248,32 @@ REMOTE_PORT
       detail "  $line"
     done <<<"$declared"
     detail "The new Pod only fails to schedule if that Pod is running on ${TEELLM_POD_NODE} when"
-    detail "it schedules; pick a different port with TEELLM_POD_HOST_PORT if that is a risk."
+    detail "it schedules; pick a different port with $var if that is a risk."
   else
     info "host port $port is free"
   fi
+}
+
+# Both host mappings the Pod declares: 8443 (TEE-TLS) and 6001 (plaintext platform listener). The
+# numbers are validated together first, because a non-numeric value would make the collision test
+# below compare strings as numbers, and because two container ports cannot share one host port.
+preflight_pod_host_port() {
+  local var port
+  for var in TEELLM_POD_HOST_PORT TEELLM_POD_ATTESTATION_HOST_PORT; do
+    port="${!var}"
+    if [[ ! "$port" =~ ^[0-9]+$ ]] || [[ "$port" -gt 65535 ]]; then
+      err "$var='$port' is not a TCP port number between 0 and 65535"
+      exit 1
+    fi
+  done
+  if [[ "$TEELLM_POD_HOST_PORT" -gt 0 && "$TEELLM_POD_ATTESTATION_HOST_PORT" -gt 0 \
+        && "$TEELLM_POD_HOST_PORT" -eq "$TEELLM_POD_ATTESTATION_HOST_PORT" ]]; then
+    err "TEELLM_POD_HOST_PORT and TEELLM_POD_ATTESTATION_HOST_PORT are both $TEELLM_POD_HOST_PORT"
+    detail "One Pod cannot publish 8443 and 6001 on the same host port; give each a distinct one."
+    exit 1
+  fi
+  preflight_one_host_port TEELLM_POD_HOST_PORT "$TEELLM_POD_HOST_PORT" 8443
+  preflight_one_host_port TEELLM_POD_ATTESTATION_HOST_PORT "$TEELLM_POD_ATTESTATION_HOST_PORT" 6001
 }
 
 # The creation preflight of the reference create script, host port checks included. Everything here
@@ -1362,6 +1394,7 @@ pod_up() {
         -e "s|__MEMORY__|$TEELLM_POD_MEMORY|g" \
         -e "s|__MODEL__|$OLLAMA_MODEL|g" \
         -e "s|__HOST_PORT__|$TEELLM_POD_HOST_PORT|g" \
+        -e "s|__ATTESTATION_HOST_PORT__|$TEELLM_POD_ATTESTATION_HOST_PORT|g" \
         -e "s|__CC_INIT_DATA__|$cc_init_data|g" \
         "$TEELLM_POD_TEMPLATE" > "$TEMP_POD_MANIFEST"
     confirm_pod_creation
@@ -1401,6 +1434,9 @@ pod_up() {
   info "TEE-LLM Pod ready with a real CSV device: $TARGET_POD at $TEELLM_POD_IP"
   if [[ "$TEELLM_POD_HOST_PORT" -gt 0 ]]; then
     info "also published at https://${TEELLM_POD_NODE}:$TEELLM_POD_HOST_PORT (self-signed)"
+  fi
+  if [[ "$TEELLM_POD_ATTESTATION_HOST_PORT" -gt 0 ]]; then
+    info "platform interfaces also published at http://${TEELLM_POD_NODE}:$TEELLM_POD_ATTESTATION_HOST_PORT"
   fi
 }
 
@@ -2520,6 +2556,12 @@ Environment overrides:
       https://<node>:<port> without a cluster-internal address. TAA itself keeps using the Pod
       IP. The port is checked for a listener and for another Pod's declaration before the image
       is built. 0 publishes nothing.
+  TEELLM_POD_ATTESTATION_HOST_PORT=${TEELLM_POD_ATTESTATION_HOST_PORT}
+      Host port that publishes the plaintext platform listener (6001) on the node, so
+      /v1/llm/heartbeat, /v1/llm/log and /v1/llm/getAttestation can be called at
+      http://<node>:<port> without knowing the Pod IP, which changes when the Pod is recreated.
+      Checked against the host and the cluster the same way as TEELLM_POD_HOST_PORT, and it must
+      differ from it when both are set. 0 publishes nothing.
   TEELLM_POD_IMAGE_SIZE_GIB / TEELLM_POD_FORCE_MEMORY
       Size the Pod is checked against, and the escape hatch for that check. Before creating
       anything the deployment verifies that the image fits the guest's overlayfs (whose cap is
@@ -3263,8 +3305,18 @@ deploy_teellm() {
   echo -e "    ${MUTED}↳ Pod IP     :${NC} ${TEELLM_POD_IP:-unknown}"
   echo -e "    ${MUTED}↳ Remote Host:${NC} ${REMOTE_USER}@${REMOTE_HOST}"
   echo -e "    ${MUTED}↳ Port       :${NC} ${TEELLM_PORT}"
+  if [[ "$TEELLM_POD_HOST_PORT" -gt 0 ]]; then
+    echo -e "    ${MUTED}↳ Host Port  :${NC} ${TEELLM_POD_HOST_PORT} -> 8443 (https, self-signed)"
+  fi
+  if [[ "$TEELLM_POD_ATTESTATION_HOST_PORT" -gt 0 ]]; then
+    echo -e "    ${MUTED}↳ Host Port  :${NC} ${TEELLM_POD_ATTESTATION_HOST_PORT} -> 6001 (http, platform)"
+  fi
   echo -e "    ${MUTED}↳ Config     :${NC} ${CON_WORKDIR}/configs/teellm-production.json"
-  echo -e "    ${MUTED}↳ Platform   :${NC} plaintext :6001 (/v1/llm/getAttestation, /v1/llm/heartbeat, /v1/llm/log) is polled by the platform"
+  platform_summary="plaintext :6001 (/v1/llm/getAttestation, /v1/llm/heartbeat, /v1/llm/log) is polled by the platform"
+  if [[ "$TEELLM_POD_ATTESTATION_HOST_PORT" -gt 0 ]]; then
+    platform_summary="${platform_summary}; also at http://${TEELLM_POD_NODE}:${TEELLM_POD_ATTESTATION_HOST_PORT}"
+  fi
+  echo -e "    ${MUTED}↳ Platform   :${NC} ${platform_summary}"
   echo -e "    ${MUTED}↳ Supervisor :${NC} ${CON_WORKDIR}/teellm-supervisor.sh (restarts teellm-service and ollama)"
   echo -e "    ${MUTED}↳ Log file   :${NC} ${TEELLM_LOG_FILE}"
   if [[ -n "$TEELLM_POD_IP" ]]; then

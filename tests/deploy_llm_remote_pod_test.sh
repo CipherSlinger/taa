@@ -127,9 +127,10 @@ MOCK
 # mock, so without this the preflight would consult the test machine's real ports.
 cat > "$MOCK_BIN/ss" <<'MOCK'
 #!/usr/bin/env bash
-# MOCK_HOST_PORT_BUSY answers as a host that already listens on the requested port.
+# MOCK_HOST_PORT_BUSY answers as a host that already listens on the requested port. The port comes
+# from the preflight's own PORT variable, so one flag can make either mapping busy.
 if [[ -n "${MOCK_HOST_PORT_BUSY:-}" ]]; then
-  echo "LISTEN 0 4096 0.0.0.0:18443 0.0.0.0:*"
+  echo "LISTEN 0 4096 0.0.0.0:${PORT:-18443} 0.0.0.0:*"
 fi
 exit 0
 MOCK
@@ -163,7 +164,7 @@ case "$verb" in
     # The host port preflight asks every Pod what it publishes. MOCK_HOST_PORT_TAKEN_BY answers as
     # a cluster where that Pod already claims 18443.
     if [[ "$*" == *"hostPort"* ]]; then
-      [[ -n "${MOCK_HOST_PORT_TAKEN_BY:-}" ]] && echo "$MOCK_HOST_PORT_TAKEN_BY 18443"
+      [[ -n "${MOCK_HOST_PORT_TAKEN_BY:-}" ]] && echo "$MOCK_HOST_PORT_TAKEN_BY ${PORT:-18443}"
       exit 0
     fi
     if [[ "$*" == *"-A"* ]]; then
@@ -482,12 +483,18 @@ memory_gi="$(grep -oE '^          memory: "[0-9]+Gi"' "$APPLIED" | grep -oE '[0-
 # count is a further permanent claim on a host whose CPU requests are already nearly accounted for.
 cpu_limits="$(grep -oE '^          cpu: "[0-9]+"' "$APPLIED" | grep -oE '[0-9]+' | sort -u)"
 [[ "$cpu_limits" == "2" ]] || fail "the TEE-LLM Pod CPU default is $cpu_limits, expected 2"
-# The service's TLS port is published on the node as well, at the reference script's 18443, so the
-# Pod is reachable without knowing a Pod IP that changes on every recreation.
+# Both listeners are published on the node: the service's TLS port at the reference script's 18443,
+# and the plaintext platform listener at 16001. The Pod IP changes on every recreation, so these
+# mappings are the only addresses that survive one -- and 6001 is the one a plain HTTP client can
+# use, since 8443 speaks RFC 8998 ShangMi TLS.
 grep -q '^          containerPort: 8443$' "$APPLIED" \
   || fail "the manifest does not expose teellm-service's 8443"
 grep -q '^          hostPort: 18443$' "$APPLIED" \
   || fail "the manifest does not publish the host port"
+grep -q '^          containerPort: 6001$' "$APPLIED" \
+  || fail "the manifest does not expose the plaintext platform listener on 6001"
+grep -q '^          hostPort: 16001$' "$APPLIED" \
+  || fail "the manifest does not publish the platform listener's host port"
 # Logs from inside the guest are read next to the host's, so the container keeps the host's zone.
 grep -q '^        - name: TZ$' "$APPLIED" || fail "the manifest does not set TZ"
 grep -q '^          value: "Asia/Shanghai"$' "$APPLIED" || fail "TZ is not Asia/Shanghai"
@@ -780,9 +787,9 @@ RUN_ENV=()
 grep -q "declares host port 18443" <<<"$output" || fail "the declaration was not reported"
 grep -q "default/old-teellm" <<<"$output" || fail "the declaration does not name the Pod"
 
-# ── 3h. TEELLM_POD_HOST_PORT=0 publishes nothing ─────────────────────────────
-# The escape hatch for a host that cannot spare the port. Kubernetes reads hostPort 0 as unset, so
-# the Pod is reachable at its Pod IP only, which is how every earlier Pod behaved.
+# ── 3h. Setting a host port to 0 publishes only that one ────────────────────
+# The escape hatch for a host that cannot spare a port. Kubernetes reads hostPort 0 as unset, so
+# that listener falls back to the Pod IP; the other mapping is untouched.
 
 rm -f "$MOCK_STATE_DIR/pod"
 RUN_ENV=(TEELLM_POD_HOST_PORT=0)
@@ -790,10 +797,44 @@ run_deploy --create-pod start --model qwen2.5-coder:0.5b
 RUN_ENV=()
 [[ $status -eq 0 ]] || fail "TEELLM_POD_HOST_PORT=0 exited $status"
 grep -q '^          hostPort: 0$' "$APPLIED" || fail "TEELLM_POD_HOST_PORT=0 was not rendered"
-grep -q "no host port published" <<<"$output" || fail "the disabled port was not reported"
+grep -q "container port 8443 is not published" <<<"$output" || fail "the disabled port was not reported"
+grep -q '^          hostPort: 16001$' "$APPLIED" \
+  || fail "TEELLM_POD_HOST_PORT=0 also disabled the platform mapping"
 rm -f "$MOCK_STATE_DIR/pod"
 
-# ── 3i. Negative control: the image is missing its payload ───────────────────
+# ── 3i. TEELLM_POD_ATTESTATION_HOST_PORT=0 publishes the platform port nowhere ─
+# The same escape hatch for the plaintext listener alone: the TLS mapping stays, and the platform
+# keeps reaching 6001 at the Pod IP.
+
+rm -f "$MOCK_STATE_DIR/pod"
+RUN_ENV=(TEELLM_POD_ATTESTATION_HOST_PORT=0)
+run_deploy --create-pod start --model qwen2.5-coder:0.5b
+RUN_ENV=()
+[[ $status -eq 0 ]] || fail "TEELLM_POD_ATTESTATION_HOST_PORT=0 exited $status"
+grep -q "container port 6001 is not published" <<<"$output" || fail "the disabled platform port was not reported"
+grep -q '^          hostPort: 18443$' "$APPLIED" \
+  || fail "TEELLM_POD_ATTESTATION_HOST_PORT=0 also disabled the TLS mapping"
+[[ "$(grep -c '^          hostPort: 0$' "$APPLIED")" == "1" ]] \
+  || fail "the disabled platform port was not rendered as hostPort 0"
+rm -f "$MOCK_STATE_DIR/pod"
+
+# ── 3j. Negative control: both container ports on one host port ──────────────
+# One Pod cannot publish 8443 and 6001 on the same host port; Kubernetes rejects the manifest, and
+# on this path that would happen after the image build. The collision is refused before anything.
+
+rm -f "$MOCK_STATE_DIR/pod"
+apply_before="$(cat "$MOCK_STATE_DIR/apply-count")"
+RUN_ENV=(TEELLM_POD_ATTESTATION_HOST_PORT=18443)
+run_deploy --create-pod start --model qwen2.5-coder:0.5b
+RUN_ENV=()
+[[ $status -ne 0 ]] || fail "two container ports sharing one host port were accepted"
+grep -q "cannot publish 8443 and 6001 on the same host port" <<<"$output" \
+  || fail "the collision refusal does not explain itself"
+[[ "$(cat "$MOCK_STATE_DIR/apply-count")" == "$apply_before" ]] \
+  || fail "the Pod was applied despite the host port collision"
+rm -f "$MOCK_STATE_DIR/pod"
+
+# ── 3k. Negative control: the image is missing its payload ───────────────────
 # Creation no longer installs anything, so an image that does not carry the service cannot be
 # repaired by the deployment: it has to say which file is missing and stop, instead of copying a
 # binary in and leaving a Pod whose contents no image describes.

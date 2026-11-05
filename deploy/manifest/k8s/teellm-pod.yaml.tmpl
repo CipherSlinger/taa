@@ -16,6 +16,7 @@
 #    RUNTIME_CLASS    runtimeClassName       (TEELLM_POD_RUNTIME_CLASS)
 #    CPU, MEMORY      container resources    (TEELLM_POD_CPU, TEELLM_POD_MEMORY)
 #    HOST_PORT        ports[0].hostPort       (TEELLM_POD_HOST_PORT; 0 publishes none)
+#    ATTESTATION_HOST_PORT  ports[1].hostPort  (TEELLM_POD_ATTESTATION_HOST_PORT; 0 publishes none)
 #    MODEL            env TEELLM_MODEL       (the model selected for the deployment)
 #    CC_INIT_DATA     cc_init_data annotation, read from a running CoCo Pod
 #
@@ -97,6 +98,16 @@ spec:
           containerPort: 8443
           protocol: TCP
           hostPort: __HOST_PORT__
+        # The platform-facing plaintext listener. The platform reaches it at the Pod IP, but a
+        # Pod IP changes with every recreation while the host port does not, so publishing it is
+        # what makes /v1/llm/heartbeat, /v1/llm/log and /v1/llm/getAttestation callable at a fixed
+        # http://<node>:<port> -- which is also how a person checks the service without a
+        # ShangMi TLS client. Kept out of hostPort 8443 because the two ports serve different
+        # protocols: 8443 is TEE-TLS, this one is deliberately plaintext.
+        - name: teellm-platform
+          containerPort: 6001
+          protocol: TCP
+          hostPort: __ATTESTATION_HOST_PORT__
       # The supervisor's own defaults match these paths; naming them here keeps the Pod's runtime
       # contract in one place. TEELLM_MODEL is the fallback when .teellm-model is absent -- an
       # image that does not bake the model, or a Pod before the deployment has written the file

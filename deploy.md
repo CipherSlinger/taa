@@ -203,10 +203,14 @@ DNS label（≤63 字符）、命名空间与 RuntimeClass 存在、宿主端口
 （只告警：不在运行的 Pod 不会阻塞调度）。镜像选定之后再 best-effort 查一次 registry 的
 `tags/list`（这次运行自己构建并推送过就跳过）；查不到只告警。
 
-**对外端口与时间**：Pod 把 teellm 的 `8443` 同时映射到节点的 `18443`（`TEELLM_POD_HOST_PORT`，
-设 `0` 则不映射），所以不依赖随时会变的 Pod IP 也能访问：`curl -k https://<节点>:18443`。
-TAA 自己仍拨 Pod IP，这个映射是给人的、给集群外调用方的，也是重建 Pod 后唯一不变的地址。
-容器里另设 `TZ=Asia/Shanghai`，guest 日志与宿主、平台记录按同一时区读。
+**对外端口与时间**：Pod 声明两条宿主映射 —— `8443 → 18443`（`TEELLM_POD_HOST_PORT`）和
+`6001 → 16001`（`TEELLM_POD_ATTESTATION_HOST_PORT`），各自的变量设 `0` 就不映射该条，两者都设时
+必须不同号。所以不依赖随时会变的 Pod IP 也能访问：TEE-TLS 在 `https://<节点>:18443`，平台三个
+明文接口在 `http://<节点>:16001/v1/llm/{heartbeat,log,getAttestation}`。`8443` 那条只对商密 TLS
+客户端有意义（普通 `curl -k` / `openssl s_client` 完成不了 RFC 8998 握手，服务端直接断开），
+`6001` 那条才是给人用 curl 查的。TAA 自己仍拨 Pod IP，这两条映射是给人的、给集群外调用方的，
+也是重建 Pod 后唯一不变的地址。容器里另设 `TZ=Asia/Shanghai`，guest 日志与宿主、平台记录按同一
+时区读。
 
 **平台怎么连上实例**：方向已经反过来 —— 平台调用 teellm，teellm 不主动上报。teellm-service
 在明文 `:6001` 上提供三个接口：`/v1/llm/getAttestation`（取远程证明报告）、

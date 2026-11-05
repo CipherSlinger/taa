@@ -587,10 +587,13 @@ Inside the TAA container, TAA runs under the supervision of `deploy/taa-supervis
 > `./deploy-llm.sh update`, which only updates a Pod that already exists and never creates or
 > deletes one. The old `--pod <name> start` spelling is refused.
 
-> **The created Pod publishes a host port.** Container port `8443` is mapped to the node's
-> `18443` (`TEELLM_POD_HOST_PORT`; `0` publishes nothing), so the service answers at
-> `https://<node>:18443` with its self-signed certificate — an address that survives recreating
-> the Pod, unlike the Pod IP the deployment records for TAA. The container also runs in
+> **The created Pod publishes both listeners.** Container port `8443` is mapped to the node's
+> `18443` (`TEELLM_POD_HOST_PORT`) and the plaintext platform listener `6001` to `16001`
+> (`TEELLM_POD_ATTESTATION_HOST_PORT`); either variable set to `0` stops publishing that one, and
+> the two must differ when both are set. The mappings are addresses that survive recreating the
+> Pod, unlike the Pod IP the deployment records for TAA. `8443` is TEE-TLS — only a ShangMi client
+> such as TAA can use it — while `16001` is the one to call with curl:
+> `http://<node>:16001/v1/llm/{heartbeat,log,getAttestation}`. The container also runs in
 > `Asia/Shanghai`, matching the host. A host port that is already listening fails the creation
 > preflight, before the image build. None of this changes how TAA connects: it keeps dialling the
 > Pod IP.
