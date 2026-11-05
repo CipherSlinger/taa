@@ -40,11 +40,11 @@ On first start the mock creates and persists a platform SM2 key pair and logs th
 `deploy-platform-mock.sh` at the repository root owns build, start, stop, restart and status.
 `deploy.sh` and `deploy-fhe.sh` do not deploy the mock; they only point TAA at a platform, so
 the flags and readiness probe are defined in one place. Local mode has been removed: the mock
-runs on the remote host, and `remote` may be omitted from the command line.
+runs on the remote host.
 
 ```bash
 # Builds linux/static, uploads over SSH and starts it detached
-./deploy-platform-mock.sh remote start --host 172.16.10.178 --user root --password '...' \
+./deploy-platform-mock.sh start --host 172.16.10.178 --user root --password '...' \
   --remote-dir /root/taa --taa-target http://127.0.0.1:6001 --allow-empty-attestation
 ./deploy-platform-mock.sh status --host 172.16.10.178
 ./deploy-platform-mock.sh restart --host 172.16.10.178

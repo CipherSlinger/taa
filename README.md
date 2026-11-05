@@ -522,10 +522,10 @@ An instance whose `server.type` is `fhe` exposes the same API surface as a `tee`
 ### 1. Deployment Target
 
 ```bash
-./deploy.sh [remote] [start|stop|save] [taa] [options...]
+./deploy.sh [start|stop|save] [taa] [options...]
 ```
 
-- **`remote`**: Deploys to a remote TEE Kata CSV2 Pod via SSH and `kubectl`. This is the only target; the word may be given explicitly or omitted. The old `docker` (local container) target has been removed and now fails with an explanatory error.
+Deployment always targets a remote TEE Kata CSV2 Pod via SSH and `kubectl`. The old `docker` (local container) and `remote` words have been removed: `docker`/`local`/`local-docker` fail with an explanatory error, and `remote` is an unknown argument.
 
 ### 2. Supported Actions
 
@@ -550,7 +550,7 @@ Inside the TAA container, TAA runs under the supervision of `deploy/taa-supervis
 ```bash
 # Remote deployment (Kubernetes Pod + SSH)
 ./deploy.sh start                             # Deploy TAA to the remote Pod (platform must already run there)
-./deploy.sh remote taa                        # Update TAA in the remote Pod
+./deploy.sh taa                               # Update TAA in the remote Pod
 ./deploy.sh stop                              # Stop TAA in the remote Pod
 
 # Production image packaging (no deployment)
@@ -630,7 +630,7 @@ Inside the TAA container, TAA runs under the supervision of `deploy/taa-supervis
 > on every deploy, so a later `LLM_IP` takes effect without recreating the Pod.
 
 > **Remote deploys provision the code scan engine.** When the config selects the semgrep engine
-> (`codeAudit.codeScan.engine`), `deploy.sh remote` makes sure the container has both the CLI and the
+> (`codeAudit.codeScan.engine`), `deploy.sh` makes sure the container has both the CLI and the
 > rules *before* it touches the running daemon. The engine comes from a payload archive kept on the
 > host (`REMOTE_SEMGREP_BUNDLE`, default `$REMOTE_DIR/semgrep-bundle.tar.gz`, built with
 > `deploy/guest-build/build-semgrep-payload-container.sh`; set `SEMGREP_BUNDLE` to a local archive to
@@ -752,7 +752,7 @@ FHE API at `127.0.0.1:58996` over container loopback.
 - **Positional modes.** The bare form deploys the unified container, same as `taa`.
   `platform-mock` is not accepted: run `./deploy-platform-mock.sh` instead.
 - **Remote by default.** The run targets `REMOTE_HOST` (default `172.16.10.178`) over ssh, the
-  same host `deploy.sh remote` uses, and takes the same credentials (`TARGET_PASSWORD`). It
+  same host `deploy.sh` uses, and takes the same credentials (`TARGET_PASSWORD`). It
   stages the bundle's models into `HOST_DATA_DIR/models` (`rsync -a`, no `--delete`, so models
   an operator added survive), uploads `deploy/taa-supervisor.sh`, `bin/taa` and the combined entrypoint
   to `REMOTE_DIR`, builds both binaries here and runs every command of the local path on that
@@ -799,11 +799,11 @@ TAA includes a full-featured management platform emulator with an embedded Web G
 
 ```bash
 # Build here, upload over SSH and start detached on the remote host
-./deploy-platform-mock.sh remote start \
+./deploy-platform-mock.sh start \
   --host 172.16.10.178 --user root --password '...' \
   --remote-dir /root/taa --taa-target http://127.0.0.1:6001 --allow-empty-attestation
 
-# Inspect or stop the remote instance (`remote` is optional)
+# Inspect or stop the remote instance
 ./deploy-platform-mock.sh status --host 172.16.10.178
 ./deploy-platform-mock.sh stop --host 172.16.10.178
 

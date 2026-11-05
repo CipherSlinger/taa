@@ -30,6 +30,16 @@ for mode in docker local local-docker; do
     || fail "deploy.sh $mode did not explain that the mode is gone"
 done
 
+for cmd in "$DEPLOY remote taa" "$MOCK_DEPLOY remote start"; do
+  rc=0
+  run_capture out $cmd || rc=$?
+  [[ "$rc" -ne 0 ]] || fail "${cmd#$ROOT_DIR/} exited 0; the removed 'remote' word still deploys"
+done
+grep -q "unknown argument: remote" <<<"$("$DEPLOY" remote taa 2>&1 || true)" \
+  || fail "deploy.sh remote did not fail as an unknown argument"
+grep -q "unknown action 'remote'" <<<"$("$MOCK_DEPLOY" remote start 2>&1 || true)" \
+  || fail "deploy-platform-mock.sh remote did not fail as an unknown action"
+
 rc=0
 run_capture out "$DEPLOY" --container taa-env || rc=$?
 [[ "$rc" -ne 0 ]] || fail "deploy.sh still accepts --container"
@@ -50,4 +60,4 @@ run_capture out "$MOCK_DEPLOY" local start || rc=$?
 grep -q 'local mode has been removed' <<<"$out" \
   || fail "deploy-platform-mock.sh local start did not explain that the mode is gone"
 
-echo "PASS: removed deployment modes fail with an explanatory error"
+echo "PASS: removed deployment modes and the 'remote' word fail with an explanatory error"

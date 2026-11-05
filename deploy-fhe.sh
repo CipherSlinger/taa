@@ -659,7 +659,7 @@ while [ $# -gt 0 ]; do
       DEPLOY_MODE="$1"
       ;;
     platform-mock)
-      printf '[deploy-fhe] ERROR: platform-mock is no longer deployed by this script; use ./deploy-platform-mock.sh remote start\n' >&2
+      printf '[deploy-fhe] ERROR: platform-mock is no longer deployed by this script; use ./deploy-platform-mock.sh start\n' >&2
       exit 1
       ;;
     save)

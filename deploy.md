@@ -70,14 +70,14 @@ platform-mock 的构建、启动、停止和就绪检查统一由仓库根目录
 （`PLATFORM_IP` / `REMOTE_PLATFORM_IP`），平台（mock 或生产平台）需单独启动。
 
 ```bash
-./deploy-platform-mock.sh [remote] <start|stop|restart|status> [选项]
+./deploy-platform-mock.sh <start|stop|restart|status> [选项]
 ```
 
-`remote` 可省略；local 本地模式已移除，传入 `local` 会报错退出。
+`remote` 可省略；local 本地模式已移除，传入 `local` 会报错退出；`remote` 参数也已移除。
 
 ```bash
 # 远端：静态构建后经 SSH 上传并后台启动
-./deploy-platform-mock.sh remote start \
+./deploy-platform-mock.sh start \
   --host 172.16.10.178 --user root --password 'Osrd@2026' \
   --remote-dir /root/taa --taa-target http://127.0.0.1:6001
 

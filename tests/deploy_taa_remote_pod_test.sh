@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Verifies the deployment-owned TAA Pod path: when TARGET_POD is unset, `deploy.sh remote taa`
+# Verifies the deployment-owned TAA Pod path: when TARGET_POD is unset, `deploy.sh taa`
 # creates a Kata CSV2 Pod on the remote host, reuses it on later runs, and deletes it on stop.
 # When TARGET_POD is set, the deployment never creates or deletes a Pod.
 #

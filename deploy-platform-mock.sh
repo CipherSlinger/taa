@@ -8,12 +8,11 @@
 #
 # Usage:
 #   ./deploy-platform-mock.sh start|stop|restart|status [options]
-#   ./deploy-platform-mock.sh remote start|stop|restart|status [options]
 #
 # The mock runs on the remote host: the binary is built here, uploaded over SSH
-# and started detached there. `remote` is optional. Without --taa-target the mock
-# runs in multi-instance mode: each TAA instance derives its own target from its
-# registration, using --taa-port (default 6001).
+# and started detached there. Without --taa-target the mock runs in multi-instance
+# mode: each TAA instance derives its own target from its registration, using
+# --taa-port (default 6001).
 set -Eeuo pipefail
 
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -78,11 +77,11 @@ shell_quote() {
 
 usage() {
   cat <<'EOF'
-Usage: deploy-platform-mock.sh [remote] <start|stop|restart|status> [options]
+Usage: deploy-platform-mock.sh <start|stop|restart|status> [options]
 
 Builds the platform mock from ./tools/platform-mock/cmd/platform-mock and manages
-one instance on the remote host (the binary is uploaded over SSH). The `remote`
-word is optional; local mode has been removed.
+one instance on the remote host (the binary is uploaded over SSH). Local mode has
+been removed.
 
 Common options:
   --binary PATH              Local build output (default: bin/platform-mock)
@@ -114,7 +113,7 @@ Common options:
   --dry-run                  Print what would run, execute nothing
   -h, --help                 Show this help
 
-Remote options:
+SSH options:
   --host HOST                SSH host (also REMOTE_HOST)
   --user USER                SSH user (default: root)
   --password PASSWORD        SSH password via sshpass (also TARGET_PASSWORD)
@@ -136,13 +135,9 @@ parse_args() {
   [ $# -ge 1 ] || { usage >&2; exit 2; }
   case "$1" in
     -h|--help) usage; exit 0 ;;
-    remote) shift; [ $# -ge 1 ] || { usage >&2; exit 2; } ;;
     local|local-docker)
       die "local mode has been removed; the mock runs on the remote host (use --host/REMOTE_HOST)"
       ;;
-  esac
-  case "$1" in
-    -h|--help) usage; exit 0 ;;
   esac
   ACTION="$1"
   shift

@@ -628,7 +628,7 @@ create_taa_pod() {
     err "PLATFORM_PUBLIC_KEY is not set, so the new TAA Pod could not start"
     detail "TAA seals every platform message and refuses to start without the platform's SM2 public key."
     detail "It was not found in ${REMOTE_HOST}:$TAA_POD_PLATFORM_KEY_FILE either."
-    detail "Export it first: PLATFORM_PUBLIC_KEY=<hex starting with 04> $(basename "$0") remote start"
+    detail "Export it first: PLATFORM_PUBLIC_KEY=<hex starting with 04> $(basename "$0") start"
     exit 1
   fi
   TEMP_TAA_POD_MANIFEST="$(mktemp /tmp/taa-pod.XXXXXX.yaml)"
@@ -959,11 +959,9 @@ save_local_docker_image() {
 
 usage() {
   cat <<EOF
-Usage: $(basename "$0") [remote] [start|stop|save] [taa] [--model <name>]
+Usage: $(basename "$0") [start|stop|save] [taa] [--model <name>]
 
-Target (default: remote):
-  remote    Deploy remotely via Kubernetes Pod and SSH. This is the only deployment target; the
-            word may be given explicitly or omitted.
+This script deploys to the remote Kata CSV2 Pod over SSH and kubectl.
 
 Actions (mutually exclusive, default: start):
   start     Deploy and start services (default action).
@@ -1007,9 +1005,7 @@ Examples:
   # Remote deployment (Kubernetes Pod + SSH)
   $(basename "$0") start
   $(basename "$0") start --model qwen2.5-coder:7b
-  $(basename "$0") remote start
   $(basename "$0") stop
-  $(basename "$0") remote taa
   $(basename "$0") taa
 
   # Production image packaging (no deployment)
@@ -1642,9 +1638,6 @@ else
         usage >&2
         exit 1
         ;;
-      remote)
-        # Accepted for compatibility: remote is the only mode left.
-        ;;
       start)
         if [[ -n "$ACTION" && "$ACTION" != "start" ]]; then
           err "cannot specify multiple actions (start/stop/save)"
@@ -1718,7 +1711,7 @@ else
         CUSTOM_SAVE_CONFIG="$1"
         ;;
       platform-mock)
-        err "platform-mock is no longer deployed by this script; use ./deploy-platform-mock.sh remote start"
+        err "platform-mock is no longer deployed by this script; use ./deploy-platform-mock.sh start"
         exit 1
         ;;
       taa)

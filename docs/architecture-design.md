@@ -616,11 +616,7 @@ USERDATA = taaPublicKey.X || taaPublicKey.Y
 | `deploy-llm.sh`（内建构建 + 部署） | TEE-LLM 网关 | `taa-env:slim-v2` 去掉 `/root/taa` | `teellm:<YYYYMMDD>` / `deploy/out/teellm-<YYYYMMDD>.tar.gz` |
 | `deploy-taa-vm.sh`（驱动 `deploy/guest-build/build-initrd.sh`） | CSV2 机密 VM initrd | `kata-containers-initrd-confidential-csv.img` | 追加 TAA 的 initrd 与测试 Pod 清单 |
 
-`deploy.sh` 只有一个部署目标（`remote`，可省略）与三种动作（默认 `start`）：
-
-| 目标 | 含义 |
-| :--- | :--- |
-| `remote` | 远程 Kata CSV2 Pod 部署（唯一目标）；默认**不**部署 platform-mock，避免与 ccs-node-agent 争 18080 |
+`deploy.sh` 固定部署到远程 Kata CSV2 Pod（默认**不**部署 platform-mock，避免与 ccs-node-agent 争 18080），有三种动作（默认 `start`）：
 
 | 动作 | 含义 |
 | :--- | :--- |
@@ -629,10 +625,10 @@ USERDATA = taaPublicKey.X || taaPublicKey.Y
 | `save` | 独立打包动作：提交镜像并导出归档，不部署任何东西 |
 
 ```sh
-# 远程 Kubernetes 部署（remote 可省略）
-./deploy.sh [remote]                    # 部署 TAA
-./deploy.sh remote taa                  # 仅部署 TAA 服务
-TARGET_POD=<pod> ./deploy.sh remote taa # 指定目标 Pod
+# 远程 Kubernetes 部署
+./deploy.sh                             # 部署 TAA
+./deploy.sh taa                         # 指定组件（兼容写法）
+TARGET_POD=<pod> ./deploy.sh taa        # 指定目标 Pod
 
 # 生产镜像打包（不部署）
 ./deploy.sh save                        # 打包镜像与归档
@@ -650,7 +646,7 @@ TARGET_POD=<pod> ./deploy.sh remote taa # 指定目标 Pod
 ./deploy-taa-vm.sh up|build|deploy|launch|render|verify|delete
 ```
 
-`docker`、`local` 与 `local-docker` 三种本地部署写法已移除，传入会报错退出；`qwen` 组件名保留但只打印指向 teellm 命令的提示。完整参数与环境变量清单见 `./deploy.sh --help` 与 `deploy.md`。
+`docker`、`local`、`local-docker` 与 `remote` 四种写法都已移除，传入会报错退出；`qwen` 组件名保留但只打印指向 teellm 命令的提示。完整参数与环境变量清单见 `./deploy.sh --help` 与 `deploy.md`。
 
 ### 9.2 部署流程
 
