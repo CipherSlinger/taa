@@ -2,13 +2,13 @@
 
 仓库里有 5 个部署脚本，按组件分工：
 
-| 脚本 | 部署对象 |
-|---|---|
-| `deploy.sh` | TEE 训练/推理 Pod 里的 TAA 本体 |
-| `deploy-fhe.sh` | FHE 服务 + TAA：默认建专用 FHE Pod，也可部署进已有 Pod 或 docker 容器 |
-| `deploy-dataanaylsis.sh` | 数据分析角色（转发给 `deploy.sh`，换基座与配置） |
-| `deploy-llm.sh` | 独立的 TEE-LLM 推理网关 Pod |
-| `deploy-platform-mock.sh` | 平台 mock，需单独启动 |
+| 脚本 | 部署对象 | 使用的镜像 |
+|---|---|---|
+| `deploy.sh` | TEE 训练/推理 Pod 里的 TAA 本体 | 自建 `taa-train-infer:<YYYYMMDD>`，基座 `taa-env:slim-v2`，推到 `<REMOTE_HOST>:31313` |
+| `deploy-fhe.sh` | FHE 服务 + TAA：默认建专用 FHE Pod，也可部署进已有 Pod 或 docker 容器 | 自建 `taa-fhe:<YYYYMMDD>`，基座 `latti/latti-server-node:latest`；`create` 建 Pod 时另把 FHE 模型树烤进镜像，推到 `<REMOTE_HOST>:31313` |
+| `deploy-dataanaylsis.sh` | 数据分析角色（转发给 `deploy.sh`，换基座与配置） | 自建 `taa-dataanaylsis:<YYYYMMDD>`，基座 `jupyter-nologin-full:v2.2` |
+| `deploy-llm.sh` | 独立的 TEE-LLM 推理网关 Pod | 自建 `teellm:<YYYYMMDD>`，基座 `teellm-base:<日期>`（由 `taa-env:slim-v2` 派生），内置 ollama 运行时与模型，推到 `<REMOTE_HOST>:31313` |
+| `deploy-platform-mock.sh` | 平台 mock，需单独启动 | 不用镜像：静态二进制经 SSH 上传后在远端后台运行 |
 
 平台（mock 或生产控制面）不由 `deploy.sh` / `deploy-fhe.sh` / `deploy-llm.sh` 启动；
 这三个脚本只负责让部署对象找到平台地址。每个脚本的完整选项和环境变量以 `--help` 为准。
