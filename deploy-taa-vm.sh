@@ -160,6 +160,9 @@ Environment:
   TAA_PLATFORM_SM2_ID / TAA_CONTRACT_ID / TAA_CONTRACT_TYPE
                                           （可选，一并烘焙进 guest 的 /etc/default/taa.env）
   RUNTIME_HANDLER=$RUNTIME_HANDLER
+  REMOTE_KATA_CONFIG=$REMOTE_KATA_CONFIG
+                                          （runtime handler 的 ConfigPath；默认就是交付包里的
+                                          $PACKAGE_KATA_CONFIG，宿主机不再另存一份）
   TAA_SRC=$TAA_SRC                （指向其它二进制时跳过重新编译）
   TAA_SKIP_GO_BUILD=${TAA_SKIP_GO_BUILD:-0}     （=1 跳过编译，直接注入现有 bin/taa）
 
@@ -169,6 +172,10 @@ Environment:
 Layout on the host (defaults):
   $REMOTE_BUNDLE_DIR/initramfs.img|vmlinuz|OVMF.fd   deploy 安装的 guest bundle
   $REMOTE_PACKAGE_DIR/                              launch 渲染的交付包（含 install.sh）
+
+  Kata 配置本身就在交付包里（$PACKAGE_KATA_CONFIG），containerd 的 ConfigPath
+  直接指向它，宿主机 /etc 下不再有第二份。因此交付包是运行期依赖：删包之前要先用
+  '$0 delete' 摘掉 handler。
 
   launch 完成后交付包会保留，重建测试 Pod 只需在该宿主机上执行：
     sudo bash $REMOTE_PACKAGE_DIR/install.sh
@@ -734,7 +741,13 @@ fi
 
 echo
 echo "== 4. Kata 配置 =="
-if [[ -f "$kata_config" ]]; then
+# With a persistent package the handler points at the packaged file, so the
+# config goes away with the package in step 6. The handler is already gone by
+# now, which is the order that matters: nothing may still reference the file
+# when it disappears.
+if [[ -n "$package_dir" && "$kata_config" == "$package_dir"/* ]]; then
+  echo "$kata_config 位于交付包内，随交付包删除"
+elif [[ -f "$kata_config" ]]; then
   run sudo rm -f "$kata_config"
 else
   echo "$kata_config 不存在，跳过"

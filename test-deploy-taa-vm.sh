@@ -110,6 +110,20 @@ check "print-config: package lives under the install root" "$TAA_IMAGES_DIR/pack
 check_contains "print-config: the install root is exported to the build" 'export REMOTE_BUNDLE_DIR=' "$(cat "$DRIVER")"
 check_contains "print-config: the package dir is exported to the build" 'export REMOTE_PACKAGE_DIR=' "$(cat "$DRIVER")"
 
+# The handler's ConfigPath points at the packaged copy, so a normal run installs
+# no second Kata config under /etc. That is only safe while the package persists,
+# which is exactly what REMOTE_PACKAGE_DIR means here.
+check "print-config: Kata config is the packaged copy" \
+  "$REMOTE_PACKAGE_DIR/config/kata-config.toml" "$REMOTE_KATA_CONFIG"
+# build-initrd.sh used on its own has no persistent package; there the old /etc
+# path is kept and install.sh copies the rendered file to it.
+no_pkg_kata_config="$(
+  eval "$("$BUILD" print-config)"
+  printf '%s' "$REMOTE_KATA_CONFIG"
+)"
+check "print-config: no persistent package falls back to /etc" \
+  "/etc/kata-containers/configuration-qemu-csv2-taa.toml" "$no_pkg_kata_config"
+
 # The pair has to reach build-initrd.sh, which runs as a child process; an
 # unexported default would look right in print-config and still build an initrd
 # with no identity in it. That path needs the host, so this one is a string
@@ -243,6 +257,13 @@ check_contains "build-initrd.sh: bakes the platform key into taa.env" "export PL
 check_contains "build-initrd.sh: bakes the LLM endpoint into taa.env" "export TAA_LLM_ENDPOINT=" "$build_src_now"
 check_contains "build-initrd.sh: deploy compares the baked platform key" '烘焙的平台公钥与本次调用不一致' "$build_src_now"
 check_contains "driver: supplies the LLM endpoint" 'TAA_LLM_ENDPOINT:-https://172.16.10.116:8443' "$driver_src"
+
+# The Kata config ships inside the package and the handler references it in
+# place; install.sh must therefore recognise "source and target are the same
+# file" instead of failing in install(1). delete has to leave that copy to the
+# package removal, and only after the handler is gone.
+check_contains "install.sh: skips the copy when the config is the packaged file" '-ef "$REMOTE_KATA_CONFIG"' "$(cat "$SCRIPT_DIR/deploy/guest-build/render/install.sh")"
+check_contains "delete: leaves an in-package Kata config to the package removal" '位于交付包内，随交付包删除' "$driver_src"
 
 # The same check must exist in build-initrd.sh's own remote steps, since those
 # are reachable without the driver. launch delegates its check to the packaged

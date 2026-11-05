@@ -192,7 +192,6 @@ REMOTE_BASE_INITRD_SRC="${REMOTE_BASE_INITRD_SRC:-/opt/kata/share/kata-container
 REMOTE_KERNEL_SRC="${REMOTE_KERNEL_SRC:-/opt/kata/share/kata-containers/vmlinuz-confidential-csv.container}"
 REMOTE_OVMF_SRC="${REMOTE_OVMF_SRC:-/opt/kata/share/ovmf/OVMFCSV.fd}"
 REMOTE_KATA_CONFIG_SRC="${REMOTE_KATA_CONFIG_SRC:-/opt/kata/share/defaults/kata-containers/configuration-qemu-csv2.toml}"
-REMOTE_KATA_CONFIG="${REMOTE_KATA_CONFIG:-/etc/kata-containers/configuration-qemu-csv2-taa.toml}"
 # Where `launch` leaves the rendered delivery package on the host. Empty keeps
 # the historical behaviour: a remote temporary directory removed as soon as
 # install.sh returns. A persistent directory makes that same install.sh
@@ -200,6 +199,17 @@ REMOTE_KATA_CONFIG="${REMOTE_KATA_CONFIG:-/etc/kata-containers/configuration-qem
 # another build, render or upload. deploy-taa-vm.sh sets this to
 # /root/taa-images/package by default.
 REMOTE_PACKAGE_DIR="${REMOTE_PACKAGE_DIR:-}"
+# The Kata config the runtime handler points at (containerd's ConfigPath). It is
+# rendered into the delivery package, so a persistent package also serves as the
+# host's only copy: install.sh registers the packaged file and no longer installs
+# a second one under /etc. That makes the package a runtime dependency, which is
+# why the packaged location is only chosen when the package persists.
+# With no persistent package (REMOTE_PACKAGE_DIR empty) -- e.g. build-initrd.sh
+# used on its own -- the historical /etc path is kept and install.sh copies the
+# rendered file there. An explicit REMOTE_KATA_CONFIG always wins.
+PACKAGE_KATA_CONFIG="config/kata-config.toml"
+REMOTE_KATA_CONFIG="${REMOTE_KATA_CONFIG:-${REMOTE_PACKAGE_DIR:+$REMOTE_PACKAGE_DIR/$PACKAGE_KATA_CONFIG}}"
+REMOTE_KATA_CONFIG="${REMOTE_KATA_CONFIG:-/etc/kata-containers/configuration-qemu-csv2-taa.toml}"
 CONTAINERD_CONFIG="${CONTAINERD_CONFIG:-/etc/containerd/config.toml}"
 KATA_HYPERVISOR_SECTION="${KATA_HYPERVISOR_SECTION:-hypervisor.qemu}"
 RUNTIME_HANDLER="${RUNTIME_HANDLER:-kata-qemu-csv2-taa}"
@@ -266,7 +276,10 @@ Environment overrides:
   REMOTE_KERNEL_SRC=$REMOTE_KERNEL_SRC
   REMOTE_OVMF_SRC=$REMOTE_OVMF_SRC
   REMOTE_KATA_CONFIG_SRC=$REMOTE_KATA_CONFIG_SRC
+  REMOTE_PACKAGE_DIR=$REMOTE_PACKAGE_DIR
   REMOTE_KATA_CONFIG=$REMOTE_KATA_CONFIG
+                                          (defaults to the packaged copy when the package
+                                          persists; otherwise /etc/kata-containers/...)
   KATA_HYPERVISOR_SECTION=$KATA_HYPERVISOR_SECTION
   RUNTIME_HANDLER=$RUNTIME_HANDLER
   RUNTIME_TYPE=$RUNTIME_TYPE
@@ -1095,7 +1108,7 @@ render_package() {
     --template "$template" \
     --section "$KATA_HYPERVISOR_SECTION" \
     --bundle-dir "$REMOTE_BUNDLE_DIR" \
-    --out "$out_dir/config/kata-config.toml"
+    --out "$out_dir/$PACKAGE_KATA_CONFIG"
 
   python3 "$RENDER_DIR/render.py" containerd-fragment \
     --handler "$RUNTIME_HANDLER" \
@@ -1185,7 +1198,7 @@ render_package() {
     printf 'REMOTE_BUNDLE_DIR=%q\n' "$REMOTE_BUNDLE_DIR"
     printf 'REMOTE_KATA_CONFIG=%q\n' "$REMOTE_KATA_CONFIG"
     printf 'CONTAINERD_CONFIG=%q\n' "$CONTAINERD_CONFIG"
-    printf 'PACKAGE_KATA_CONFIG=%q\n' "config/kata-config.toml"
+    printf 'PACKAGE_KATA_CONFIG=%q\n' "$PACKAGE_KATA_CONFIG"
     printf 'KATA_CONFIG_TEMPLATE_SRC=%q\n' "$REMOTE_KATA_CONFIG_SRC"
     printf 'KATA_CONFIG_TEMPLATE_SHA256=%q\n' "$template_sha"
     printf 'BASE_INITRD_SRC=%q\n' "$REMOTE_BASE_INITRD_SRC"
@@ -1264,7 +1277,8 @@ MEASURE
 
 ## 内容
 
-- \`config/kata-config.toml\` — 指向 bundle 的 Kata hypervisor 配置
+- \`$PACKAGE_KATA_CONFIG\` — 指向 bundle 的 Kata hypervisor 配置；runtime handler
+  的 ConfigPath 就指向它（路径以 \`manifest.env\` 为准）
 - \`config/containerd-runtime-handler.toml\` — containerd handler 片段（供审阅）
 - \`k8s/runtimeclass.yaml\` / \`k8s/test-pod.yaml\` — 运行时类与测试 Pod
 - \`install.sh\` / \`render.py\` / \`measure.py\` — 安装脚本、合并器与度量计算器
@@ -1288,6 +1302,10 @@ sha256sum -c SHA256SUMS
 sudo bash install.sh --dry-run   # 先看会改什么
 sudo bash install.sh
 \`\`\`
+
+当 ConfigPath 指向包内这份配置时（交付包被保存在持久目录，如
+\`/root/taa-images/package\`），install.sh 不会再往 \`/etc\` 拷一份：包就是宿主机上
+唯一的副本，删除或替换它之前必须先把 runtime handler 摘掉。
 
 ## 使用
 
@@ -1435,7 +1453,8 @@ case "$cmd" in
     # have to duplicate (and drift from) the defaults defined above. %q quoting
     # makes the output safe to `eval` even when a value contains spaces.
     for key in REMOTE_USER REMOTE_HOST REMOTE_BUNDLE_DIR REMOTE_PACKAGE_DIR REMOTE_BASE_INITRD_SRC \
-               REMOTE_KATA_CONFIG_SRC REMOTE_KATA_CONFIG KATA_HYPERVISOR_SECTION \
+               REMOTE_KATA_CONFIG_SRC REMOTE_KATA_CONFIG PACKAGE_KATA_CONFIG \
+               KATA_HYPERVISOR_SECTION \
                RUNTIME_HANDLER RUNTIME_TYPE RUNTIME_PATH SNAPSHOTTER \
                CONTAINERD_CONFIG KATA_CONFIG_TEMPLATE DIST_DIR \
                TEST_NODE_NAME TEST_POD_NAME TEST_IMAGE TEST_POD_ANNOTATIONS \

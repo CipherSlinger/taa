@@ -149,9 +149,17 @@ if [[ -n "$TEST_NODE_NAME" ]]; then
 fi
 
 echo
-echo "== 2. 安装 Kata 配置 =="
-run sudo mkdir -p "${REMOTE_KATA_CONFIG%/*}"
-run sudo install -o root -g root -m 0644 "$pkg_dir/$PACKAGE_KATA_CONFIG" "$REMOTE_KATA_CONFIG"
+echo "== 2. Kata 配置 =="
+package_kata_config="$pkg_dir/$PACKAGE_KATA_CONFIG"
+if [[ "$package_kata_config" -ef "$REMOTE_KATA_CONFIG" ]]; then
+  # The handler points at the packaged file itself: there is nothing to install,
+  # and install(1) would refuse anyway ("are the same file"). This is the layout
+  # a persistent package produces, and it is the only copy on the host.
+  echo "Kata 配置即交付包内文件，无需安装: $REMOTE_KATA_CONFIG"
+else
+  run sudo mkdir -p "${REMOTE_KATA_CONFIG%/*}"
+  run sudo install -o root -g root -m 0644 "$package_kata_config" "$REMOTE_KATA_CONFIG"
+fi
 echo "Kata guest assets in $REMOTE_KATA_CONFIG:"
 grep -nE '^[[:space:]]*(kernel|initrd|firmware|kernel_params)[[:space:]]*=' "$pkg_dir/$PACKAGE_KATA_CONFIG"
 
@@ -302,3 +310,8 @@ fi
 
 echo
 echo "安装完成。使用方创建 Pod 时指定 runtimeClassName: $RUNTIME_HANDLER"
+if [[ "$package_kata_config" -ef "$REMOTE_KATA_CONFIG" ]]; then
+  echo
+  echo "注意: runtime handler 的 ConfigPath 指向本交付包: $REMOTE_KATA_CONFIG"
+  echo "      删除或替换该目录前先移除 handler，否则下次拉起该 runtime 的 Pod 会失败。"
+fi
