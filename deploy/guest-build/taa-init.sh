@@ -78,8 +78,11 @@ wait_for_attestation_verdict() {
 
 # ===== main flow (local tests source only the part above this line) =====
 
-# Read the build-time /etc/default/taa.env. It carries TAA_ADDR, TAA_REQUIRED,
-# TAA_REQUIRE_ATTESTATION, PLATFORM_IP and DOCKER_ID.
+# Read the build-time /etc/default/taa.env. It carries the wrapper switches
+# (TAA_ADDR, TAA_REQUIRED, TAA_REQUIRE_ATTESTATION) and the deployment identity
+# TAA reads at startup (PLATFORM_IP, DOCKER_ID, PLATFORM_PUBLIC_KEY,
+# PLATFORM_SM2_ID, CONTRACT_ID, CONTRACT_TYPE, TAA_LLM_ENDPOINT). The guest has
+# no other injection path, so this file is the whole environment TAA sees.
 if [ -r "$ENV_FILE" ]; then
   . "$ENV_FILE"
 fi

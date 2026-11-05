@@ -46,7 +46,14 @@ fi
 # themselves testable.
 TAA_SRC="${TAA_SRC:-$ROOT_DIR/bin/taa}"
 TAA_INIT_SRC="${TAA_INIT_SRC:-$SCRIPT_DIR/taa-init.sh}"
-TAA_CONFIG_SRC="${TAA_CONFIG_SRC:-$ROOT_DIR/configs/taa-initrd.json}"
+# The initrd runs the same template as the production Pod. It used to carry a
+# copy of its own (configs/taa-initrd.json), which drifted: a field added to one
+# template and not the other would build and boot, and only the behaviour in the
+# guest would differ. Deployment-specific values that the guest cannot receive
+# from the Pod (registration identity, platform key, LLM endpoint) travel through
+# /etc/default/taa.env instead, so the file stays role-shaped rather than
+# deployment-shaped.
+TAA_CONFIG_SRC="${TAA_CONFIG_SRC:-$ROOT_DIR/configs/taa-production.json}"
 BASE_INITRD="${BASE_INITRD:-$SCRIPT_DIR/base/kata-containers-initrd-confidential-csv.img}"
 OUT_DIR="${OUT_DIR:-$SCRIPT_DIR/out}"
 INITRD_OUT="${INITRD_OUT:-$OUT_DIR/kata-containers-initrd-taa-csv.initrd}"
@@ -57,7 +64,7 @@ INITRD_OUT="${INITRD_OUT:-$OUT_DIR/kata-containers-initrd-taa-csv.initrd}"
 RENDER_DIR="${RENDER_DIR:-$SCRIPT_DIR/render}"
 KATA_CONFIG_TEMPLATE="${KATA_CONFIG_TEMPLATE:-$SCRIPT_DIR/base/configuration-qemu-csv2.toml}"
 
-# Optional semgrep payload. configs/taa-initrd.json selects the scan engine, so
+# Optional semgrep payload. The injected config selects the scan engine, so
 # the payload is only required when that config asks for semgrep -- but when it
 # does, the guest has to carry its own interpreter and wheels: the base initrd
 # has neither python3 nor semgrep, and TAA resolves the semgrep CLI through PATH.
@@ -87,16 +94,87 @@ TAA_REQUIRED="${TAA_REQUIRED:-$TAA_REQUIRED_DEFAULT}"
 TAA_REQUIRE_ATTESTATION="${TAA_REQUIRE_ATTESTATION:-$TAA_REQUIRE_ATTESTATION_DEFAULT}"
 ALLOW_MISSING_TAA_ENV="${ALLOW_MISSING_TAA_ENV:-0}"
 
+# Settings that reach TAA only through the guest's /etc/default/taa.env. The
+# Pod's environment does not reach the initrd (TAA starts before kata-agent, and
+# nothing injects env into the guest), so every startup setting that differs
+# between deployments has to be baked here at build time. The config file stays
+# the role template; these are the deployment's identity and keys.
+#
+# PLATFORM_PUBLIC_KEY is the one setting TAA cannot start without: every
+# platform message is sealed with it, and TAA exits 1 rather than fall back to
+# plaintext. Because the guest has no other injection path, a build without it
+# produces an initrd that boots, hangs the Pod at "TAA exited immediately", and
+# reports nothing useful. The build therefore refuses unless it can resolve one.
+#
+# Resolution order: PLATFORM_PUBLIC_KEY (TAA's own name) > TAA_PLATFORM_PUBLIC_KEY
+# > TAA_PLATFORM_KEY_FILE. The key file is read from the platform-mock's state
+# file format (field publicKeyHex) or as bare hex, so the mock's own file needs
+# no copy-paste step; the default points at the state directory this repository
+# uses for the platform-mock on the build host.
+TAA_PLATFORM_KEY_FILE="${TAA_PLATFORM_KEY_FILE:-$ROOT_DIR/.local/platform-mock/platform-key.json}"
+TAA_PLATFORM_PUBLIC_KEY="${TAA_PLATFORM_PUBLIC_KEY:-${PLATFORM_PUBLIC_KEY:-}}"
+# Optional envelope identity and role overrides. Empty means the protocol
+# default (PLATFORM_SM2_ID), the config file (CONTRACT_ID, CONTRACT_TYPE) or the
+# endpoint in the config file (TAA_LLM_ENDPOINT). TAASECRETKEY is deliberately
+# not carried: it is secret material, not deployment identity.
+TAA_PLATFORM_SM2_ID="${TAA_PLATFORM_SM2_ID:-}"
+TAA_CONTRACT_ID="${TAA_CONTRACT_ID:-}"
+TAA_CONTRACT_TYPE="${TAA_CONTRACT_TYPE:-}"
+TAA_LLM_ENDPOINT="${TAA_LLM_ENDPOINT:-}"
+
+# Read the platform public key from a key file. The platform-mock persists
+# {"privateKeyPem": ..., "publicKeyHex": "04..."}; a file that is just the hex
+# string is accepted as well. Nothing here is secret, so reading it from the
+# build host is fine -- what this removes is a copy-paste step that, when
+# skipped, produced an initrd whose TAA exits at startup.
+resolve_platform_public_key() {
+  local value=""
+  if [[ -n "$TAA_PLATFORM_PUBLIC_KEY" ]]; then
+    printf '%s' "$TAA_PLATFORM_PUBLIC_KEY"
+    return 0
+  fi
+  [[ -r "$TAA_PLATFORM_KEY_FILE" ]] || return 1
+  value="$(sed -n 's/.*"publicKeyHex"[[:space:]]*:[[:space:]]*"\([0-9a-fA-F]*\)".*/\1/p' "$TAA_PLATFORM_KEY_FILE" | head -n 1)"
+  if [[ -z "$value" ]]; then
+    value="$(tr -d '[:space:]' < "$TAA_PLATFORM_KEY_FILE" 2>/dev/null || true)"
+  fi
+  printf '%s' "$value"
+}
+
+# Published wire format: 04 || X (32 bytes) || Y (32 bytes), lowercase or upper
+# hex. Checked here rather than left to TAA: the failure otherwise only shows up
+# after a full boot, as a guest that hangs with a log nobody is looking at.
+platform_public_key_valid() {
+  [[ "$1" =~ ^04[[:xdigit:]]{128}$ ]]
+}
+
+ensure_platform_public_key() {
+  if [[ -z "$TAA_PLATFORM_PUBLIC_KEY" ]]; then
+    TAA_PLATFORM_PUBLIC_KEY="$(resolve_platform_public_key || true)"
+  fi
+  if [[ -n "$TAA_PLATFORM_PUBLIC_KEY" ]] && ! platform_public_key_valid "$TAA_PLATFORM_PUBLIC_KEY"; then
+    echo "error: 平台 SM2 公钥不是 130 位十六进制（04 || X || Y）" >&2
+    echo "       来源: 环境变量 PLATFORM_PUBLIC_KEY / TAA_PLATFORM_PUBLIC_KEY" >&2
+    echo "       或文件: $TAA_PLATFORM_KEY_FILE" >&2
+    exit 1
+  fi
+}
+
 # The env file carries every runtime switch of the wrapper. It has to be written
-# as soon as a registration identity is given, or any switch is explicitly moved
-# off its default; otherwise a build-time override would silently do nothing.
+# as soon as a registration identity or the platform key is given, or any switch
+# is explicitly moved off its default; otherwise a build-time override would
+# silently do nothing.
 taa_env_file_needed() {
+  if [[ -n "$TAA_PLATFORM_PUBLIC_KEY" ]]; then
+    return 0
+  fi
   if [[ -n "$TAA_PLATFORM_IP" && -n "$TAA_DOCKER_ID" ]]; then
     return 0
   fi
   [[ "$TAA_ADDR" != "$TAA_ADDR_DEFAULT" ]] && return 0
   [[ "$TAA_REQUIRED" != "$TAA_REQUIRED_DEFAULT" ]] && return 0
   [[ "$TAA_REQUIRE_ATTESTATION" != "$TAA_REQUIRE_ATTESTATION_DEFAULT" ]] && return 0
+  [[ -n "$TAA_PLATFORM_SM2_ID$TAA_CONTRACT_ID$TAA_CONTRACT_TYPE$TAA_LLM_ENDPOINT" ]] && return 0
   return 1
 }
 
@@ -202,6 +280,12 @@ Environment overrides:
   TAA_ADDR=$TAA_ADDR
   TAA_PLATFORM_IP=$TAA_PLATFORM_IP
   TAA_DOCKER_ID=$TAA_DOCKER_ID
+  PLATFORM_PUBLIC_KEY / TAA_PLATFORM_PUBLIC_KEY  平台 SM2 公钥（TAA 必需，见下方说明）
+  TAA_PLATFORM_KEY_FILE=$TAA_PLATFORM_KEY_FILE
+  TAA_PLATFORM_SM2_ID=$TAA_PLATFORM_SM2_ID
+  TAA_CONTRACT_ID=$TAA_CONTRACT_ID
+  TAA_CONTRACT_TYPE=$TAA_CONTRACT_TYPE
+  TAA_LLM_ENDPOINT=$TAA_LLM_ENDPOINT
   TAA_REQUIRED=$TAA_REQUIRED
   TAA_REQUIRE_ATTESTATION=$TAA_REQUIRE_ATTESTATION
   ALLOW_MISSING_TAA_ENV=$ALLOW_MISSING_TAA_ENV
@@ -233,6 +317,19 @@ Notes:
   dependency (TAA exits 1 without it). PLATFORM_IP and DOCKER_ID are optional and
   only affect platform registration, which is a warning inside TAA. Set both to
   have /etc/default/taa.env carry them.
+
+  PLATFORM_PUBLIC_KEY is required: TAA seals every platform message with it and
+  exits 1 without one. The build reads it from the environment, or from
+  TAA_PLATFORM_KEY_FILE (default: the platform-mock state file,
+  .local/platform-mock/platform-key.json; it accepts that file's publicKeyHex
+  field or a bare hex string). ALLOW_MISSING_TAA_ENV=1 skips the requirement for
+  a build that has another injection path.
+
+  The guest's environment is written only at build time, so every deployment
+  setting is part of the measured image: changing PLATFORM_IP, DOCKER_ID,
+  PLATFORM_PUBLIC_KEY, PLATFORM_SM2_ID, CONTRACT_ID, CONTRACT_TYPE or
+  TAA_LLM_ENDPOINT means rebuilding the initrd. deploy compares the identity
+  fields against the image and refuses a mismatch.
   TAA_REQUIRE_ATTESTATION=1 makes the TAA attestation self-verification a
   precondition for starting kata-agent, so a Ready Pod implies a real report.
   The injected TAA must be statically linked; build it with
@@ -336,6 +433,20 @@ check_build_inputs() {
     exit 1
   fi
 
+  # TAA exits 1 at startup without the platform public key. An initrd built
+  # without one is not "unregistered but working": taa-init sees the process die,
+  # and with TAA_REQUIRED=1 it holds kata-agent forever, so the Pod never gets
+  # past ContainerCreating. Refuse at build time with the sources that can fix it.
+  ensure_platform_public_key
+  if [[ -z "$TAA_PLATFORM_PUBLIC_KEY" && "$ALLOW_MISSING_TAA_ENV" != "1" ]]; then
+    echo "error: 没有平台 SM2 公钥，guest 内的 TAA 会启动即退出" >&2
+    echo "hint: 设置 PLATFORM_PUBLIC_KEY=<04||X||Y 的 130 位十六进制>" >&2
+    echo "      或 TAA_PLATFORM_KEY_FILE=<含 publicKeyHex 的 JSON 文件>" >&2
+    echo "      默认读取: $TAA_PLATFORM_KEY_FILE" >&2
+    echo "hint: 只有确认另有注入路径时才用 ALLOW_MISSING_TAA_ENV=1 跳过这一检查" >&2
+    exit 1
+  fi
+
   # One entry per part of the payload that would be missed silently: the
   # interpreter, both PATH-visible CLI entry points (semgrep dispatches to the
   # OCaml CLI, which falls back to pysemgrep by name), the native scanner, and
@@ -399,7 +510,8 @@ check_deploy_inputs() {
 # operator has to retype; an empty value gets a placeholder, and an empty value is
 # exactly what produces the missing-entry case above.
 rebuild_hint() {
-  echo "hint: 重新构建：TAA_PLATFORM_IP=${TAA_PLATFORM_IP:-<ip:port>} TAA_DOCKER_ID=${TAA_DOCKER_ID:-<id>} $0 build" >&2
+  echo "hint: 重新构建：TAA_PLATFORM_IP=${TAA_PLATFORM_IP:-<ip:port>} TAA_DOCKER_ID=${TAA_DOCKER_ID:-<id>} \\" >&2
+  echo "      PLATFORM_PUBLIC_KEY=<130 hex，或 TAA_PLATFORM_KEY_FILE=<文件>> $0 build" >&2
 }
 
 # taa-init reads /etc/default/taa.env from inside the guest, where nothing about
@@ -412,7 +524,12 @@ rebuild_hint() {
 # invocation carries; compare them here, at the handoff into deploy, which is also
 # the first point at which the image under test is the one being published.
 check_initrd_identity() {
-  local baked_env baked_platform baked_docker_id want_platform want_docker_id
+  local baked_env baked_platform baked_docker_id baked_public_key
+  local want_platform want_docker_id want_public_key
+
+  # Resolve the same way the build did, so a deploy invoked with only the key
+  # file (or only the environment variable) still compares like with like.
+  ensure_platform_public_key
 
   # --to-stdout prints the entry instead of extracting it, so there is no temp
   # directory to own and nothing left behind if this exits midway. The whole
@@ -427,18 +544,32 @@ check_initrd_identity() {
 
   baked_platform="$(sed -n 's/^export PLATFORM_IP=//p' <<<"$baked_env" | head -n 1)"
   baked_docker_id="$(sed -n 's/^export DOCKER_ID=//p' <<<"$baked_env" | head -n 1)"
+  baked_public_key="$(sed -n 's/^export PLATFORM_PUBLIC_KEY=//p' <<<"$baked_env" | head -n 1)"
 
   # Compared in the %q form the writer below produces, not as raw values: a value
   # %q decides to quote is stored quoted, and comparing it raw would fail the
   # deploy for a difference that is only escaping.
   want_platform="$(printf '%q' "$TAA_PLATFORM_IP")"
   want_docker_id="$(printf '%q' "$TAA_DOCKER_ID")"
+  want_public_key="$(printf '%q' "$TAA_PLATFORM_PUBLIC_KEY")"
 
   if [[ "$baked_platform" != "$want_platform" || "$baked_docker_id" != "$want_docker_id" ]]; then
     echo "error: initrd 里烘焙的注册身份与本次调用不一致" >&2
     echo "       initrd: PLATFORM_IP=$baked_platform DOCKER_ID=$baked_docker_id" >&2
     echo "       本次:   PLATFORM_IP=$want_platform DOCKER_ID=$want_docker_id" >&2
     echo "hint: guest 内的 TAA 只认 initrd 里这份，发布出去它就会注册到旧地址且没有任何本地症状" >&2
+    rebuild_hint
+    exit 1
+  fi
+
+  # The platform key is what TAA seals every message with. Deploying an image
+  # built against a different platform key boots a TAA that starts, registers
+  # nothing the platform can read, and looks healthy from this side.
+  if [[ "$baked_public_key" != "$want_public_key" ]]; then
+    echo "error: initrd 里烘焙的平台公钥与本次调用不一致" >&2
+    echo "       initrd: PLATFORM_PUBLIC_KEY=${baked_public_key:-<缺失>}" >&2
+    echo "       本次:   PLATFORM_PUBLIC_KEY=${want_public_key:-<未解析>}" >&2
+    echo "hint: 公钥只在构建时写入 initrd；换平台或轮换平台密钥后必须重新构建" >&2
     rebuild_hint
     exit 1
   fi
@@ -508,7 +639,7 @@ build_initrd() {
   install -m 0755 "$TAA_INIT_SRC" "$BUILD_WORK_DIR/extra/usr/local/bin/taa-init"
 
   # TAA reads its config from a fixed absolute path, so the file has to be part
-  # of the measured image. configs/taa-initrd.json is the initrd baseline; when
+  # of the measured image. The initrd runs configs/taa-production.json; when
   # that config selects the semgrep engine, the payload is staged afterwards
   # under /opt/taa/semgrep plus the interpreter and CLI that run it.
   mkdir -p "$BUILD_WORK_DIR/extra/etc/taa"
@@ -516,15 +647,22 @@ build_initrd() {
 
   echo "生成可选 env 文件"
 
-  # Optional environment file, letting the initrd carry its own TAA registration
-  # target. %q shell-escapes the values so spaces or metacharacters are not
-  # reinterpreted when taa-init sources this file.
+  # The guest-side environment, written at build time. %q shell-escapes the
+  # values so spaces or metacharacters are not reinterpreted when taa-init
+  # sources this file. Every variable here is also an input to the measured
+  # image, so changing one changes the boot MEASUREMENT -- which is why
+  # check_initrd_identity compares the identity fields again at deploy time.
   if taa_env_file_needed; then
     mkdir -p "$BUILD_WORK_DIR/extra/etc/default"
     {
       printf 'export TAA_ADDR=%q\n' "$TAA_ADDR"
       printf 'export PLATFORM_IP=%q\n' "$TAA_PLATFORM_IP"
       printf 'export DOCKER_ID=%q\n' "$TAA_DOCKER_ID"
+      printf 'export PLATFORM_PUBLIC_KEY=%q\n' "$TAA_PLATFORM_PUBLIC_KEY"
+      printf 'export PLATFORM_SM2_ID=%q\n' "$TAA_PLATFORM_SM2_ID"
+      printf 'export CONTRACT_ID=%q\n' "$TAA_CONTRACT_ID"
+      printf 'export CONTRACT_TYPE=%q\n' "$TAA_CONTRACT_TYPE"
+      printf 'export TAA_LLM_ENDPOINT=%q\n' "$TAA_LLM_ENDPOINT"
       printf 'export TAA_REQUIRED=%q\n' "$TAA_REQUIRED"
       printf 'export TAA_REQUIRE_ATTESTATION=%q\n' "$TAA_REQUIRE_ATTESTATION"
     } > "$BUILD_WORK_DIR/extra/etc/default/taa.env"

@@ -261,7 +261,8 @@ sequenceDiagram
 | `configs/taa-production.json` | 生产 Pod，`tee` 训练 / `tee` 推理 / `data-anaylsis` 共用（`csv-hw` 密封、Semgrep + LLM 审计；后两者的审计由角色关闭） |
 | `configs/taa-docker.json` | 本地 Docker 测试（`sm2` 密封，LLM 指向 `127.0.0.1:8443`） |
 | `configs/taa-fhe.json` | FHE 实例（`server.type=fhe`，指向同容器 `127.0.0.1:58996`） |
-| `configs/taa-initrd.json` | CSV2 机密 VM initrd 内运行（配置在 `/etc/taa/taa-config.json`） |
+
+CSV2 机密 VM 的 initrd 使用 `configs/taa-production.json`（写入 `/etc/taa/taa-config.json`），不再维护独立模板；部署相关的身份、平台公钥、SM2 ID、合约和 LLM 地址在构建时写入 guest 的 `/etc/default/taa.env`。
 
 ### 3.3 持久化状态与崩溃恢复
 

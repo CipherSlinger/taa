@@ -104,7 +104,12 @@ REMOTE="${REMOTE_USER}@${REMOTE_HOST}"
 PLATFORM_PORT="${PLATFORM_PORT:-18080}"
 TAA_PLATFORM_IP="${TAA_PLATFORM_IP:-172.16.10.116:${PLATFORM_PORT}}"
 TAA_DOCKER_ID="${TAA_DOCKER_ID:-kata-csv2-taa-test-0001}"
-export TAA_PLATFORM_IP TAA_DOCKER_ID
+# The Tier-2 gateway address. The config template carries one too, but it is a
+# Pod IP that belongs to the deployment the template was last edited for; the
+# guest cannot be told apart from it at boot, so this flow pins the endpoint
+# explicitly. Override TAA_LLM_ENDPOINT to point at another gateway.
+TAA_LLM_ENDPOINT="${TAA_LLM_ENDPOINT:-https://172.16.10.116:8443}"
+export TAA_PLATFORM_IP TAA_DOCKER_ID TAA_LLM_ENDPOINT
 
 # The shipped runtime handler. `delete` refuses to touch a runtime that points at
 # it, because that one belongs to the host, not to this flow.
@@ -146,8 +151,14 @@ Environment:
   TEST_IMAGE=$TEST_IMAGE
   TEST_NODE_NAME=$TEST_NODE_NAME
   TEST_POD_ANNOTATIONS=$TEST_POD_ANNOTATIONS
-  TAA_PLATFORM_IP=$TAA_PLATFORM_IP        （默认跟随 REMOTE_HOST，端口 PLATFORM_PORT=$PLATFORM_PORT）
+  TAA_PLATFORM_IP=$TAA_PLATFORM_IP        （默认指向平台主机，端口 PLATFORM_PORT=$PLATFORM_PORT）
   TAA_DOCKER_ID=$TAA_DOCKER_ID            （每个实例必须唯一；覆盖 PLATFORM_PORT 可换平台端口）
+  TAA_LLM_ENDPOINT=$TAA_LLM_ENDPOINT      （Tier-2 网关地址；覆盖 configs/taa-production.json 里的 endpoint）
+  PLATFORM_PUBLIC_KEY=<130 hex>           （平台 SM2 公钥；TAA 必需，见下）
+  TAA_PLATFORM_KEY_FILE=<file>           （可选；默认 .local/platform-mock/platform-key.json，
+                                          未给 PLATFORM_PUBLIC_KEY 时从这里读 publicKeyHex）
+  TAA_PLATFORM_SM2_ID / TAA_CONTRACT_ID / TAA_CONTRACT_TYPE
+                                          （可选，一并烘焙进 guest 的 /etc/default/taa.env）
   RUNTIME_HANDLER=$RUNTIME_HANDLER
   TAA_SRC=$TAA_SRC                （指向其它二进制时跳过重新编译）
   TAA_SKIP_GO_BUILD=${TAA_SKIP_GO_BUILD:-0}     （=1 跳过编译，直接注入现有 bin/taa）
@@ -187,7 +198,7 @@ require_cmd() {
 print_config() {
   local key
   for key in REMOTE_USER REMOTE_HOST REMOTE PLATFORM_PORT TAA_PLATFORM_IP \
-             TAA_DOCKER_ID RUNTIME_HANDLER RUNTIME_TYPE SNAPSHOTTER \
+             TAA_DOCKER_ID TAA_LLM_ENDPOINT RUNTIME_HANDLER RUNTIME_TYPE SNAPSHOTTER \
              CONTAINERD_CONFIG KATA_CONFIG_TEMPLATE DIST_DIR TAA_IMAGES_DIR \
              REMOTE_BUNDLE_DIR REMOTE_PACKAGE_DIR REMOTE_KATA_CONFIG \
              TEST_POD_NAME TEST_NODE_NAME TEST_IMAGE TEST_POD_ANNOTATIONS \

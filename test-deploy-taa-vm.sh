@@ -91,6 +91,11 @@ fi
 
 eval "$(REMOTE_HOST=10.0.0.9 TAA_PLATFORM_IP=10.0.0.9:28080 TAA_DOCKER_ID=mine "$DRIVER" print-config)"
 check "print-config: overrides beat the defaults" "10.0.0.9:28080 mine" "$TAA_PLATFORM_IP $TAA_DOCKER_ID"
+# The Tier-2 gateway is part of the guest's environment, not the Pod's, so the
+# driver has to supply it; leaving it to the template would bake a stale Pod IP.
+check "print-config: default LLM endpoint is the gateway host" "https://172.16.10.116:8443" "$TAA_LLM_ENDPOINT"
+eval "$(TAA_LLM_ENDPOINT=https://10.0.0.9:9443 "$DRIVER" print-config)"
+check "print-config: TAA_LLM_ENDPOINT override survives" "https://10.0.0.9:9443" "$TAA_LLM_ENDPOINT"
 eval "$(PLATFORM_PORT=28080 "$DRIVER" print-config)"
 check "print-config: PLATFORM_PORT moves the default platform port" "28080" "${TAA_PLATFORM_IP##*:}"
 
@@ -218,6 +223,26 @@ check_contains "build: recompiles TAA before injecting it" 'CGO_ENABLED=0 GOOS=l
 check_contains "build: a failed compile leaves the old binary untouched" 'TAA 编译失败，未改动' "$driver_src"
 check_contains "build: the recompile can be skipped explicitly" 'TAA_SKIP_GO_BUILD' "$driver_src"
 check_contains "build: an overridden TAA_SRC is not recompiled" '跳过重新编译' "$driver_src"
+
+# The initrd and the production Pod run one template now; a second template was
+# a copy that could drift without either side noticing.
+build_src_now="$(cat "$BUILD")"
+check_contains "build-initrd.sh: the initrd runs the production template" 'configs/taa-production.json' "$build_src_now"
+if [[ -e "$SCRIPT_DIR/configs/taa-initrd.json" ]]; then
+  echo "FAIL configs/taa-initrd.json still exists" >&2
+  failures=$((failures + 1))
+else
+  echo "ok   configs/taa-initrd.json is gone"
+fi
+
+# TAA exits without the platform key, and the guest has no other injection path,
+# so the build must resolve it and write it into the measured env file.
+check_contains "build-initrd.sh: reads the platform key from the mock state file" 'publicKeyHex' "$build_src_now"
+check_contains "build-initrd.sh: validates the platform key wire format" '^04[[:xdigit:]]{128}$' "$build_src_now"
+check_contains "build-initrd.sh: bakes the platform key into taa.env" "export PLATFORM_PUBLIC_KEY=" "$build_src_now"
+check_contains "build-initrd.sh: bakes the LLM endpoint into taa.env" "export TAA_LLM_ENDPOINT=" "$build_src_now"
+check_contains "build-initrd.sh: deploy compares the baked platform key" '烘焙的平台公钥与本次调用不一致' "$build_src_now"
+check_contains "driver: supplies the LLM endpoint" 'TAA_LLM_ENDPOINT:-https://172.16.10.116:8443' "$driver_src"
 
 # The same check must exist in build-initrd.sh's own remote steps, since those
 # are reachable without the driver. launch delegates its check to the packaged
