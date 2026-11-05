@@ -212,6 +212,13 @@ check_contains "guard: verifies the base initrd afterwards" 'base initrd 未变'
 check_contains "guard: checks passwordless sudo before mutating" 'passwordless sudo' "$driver_src"
 check_contains "delete defaults to dry-run-able, mutation goes through one point" 'dry-run: %s' "$driver_src"
 
+# The initrd carries whatever bin/taa holds, so the driver has to compile before
+# injecting; otherwise a forgotten rebuild ships the previous revision silently.
+check_contains "build: recompiles TAA before injecting it" 'CGO_ENABLED=0 GOOS=linux go build' "$driver_src"
+check_contains "build: a failed compile leaves the old binary untouched" 'TAA 编译失败，未改动' "$driver_src"
+check_contains "build: the recompile can be skipped explicitly" 'TAA_SKIP_GO_BUILD' "$driver_src"
+check_contains "build: an overridden TAA_SRC is not recompiled" '跳过重新编译' "$driver_src"
+
 # The same check must exist in build-initrd.sh's own remote steps, since those
 # are reachable without the driver. launch delegates its check to the packaged
 # install.sh, so the count stays at one here and one there.

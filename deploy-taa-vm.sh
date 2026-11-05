@@ -71,6 +71,13 @@ TAA_IMAGES_DIR="${TAA_IMAGES_DIR:-/root/taa-images}"
 export REMOTE_BUNDLE_DIR="${REMOTE_BUNDLE_DIR:-$TAA_IMAGES_DIR/bundle}"
 export REMOTE_PACKAGE_DIR="${REMOTE_PACKAGE_DIR:-$TAA_IMAGES_DIR/package}"
 
+# The binary build-initrd.sh injects. Defaulted and exported here so the
+# preflight's static-link check and the build itself read the same file, even
+# when an operator overrides TAA_SRC.
+TAA_SRC="${TAA_SRC:-$TAA_BIN}"
+export TAA_SRC
+TAA_BIN="$TAA_SRC"
+
 # Pull the resolved settings from build-initrd.sh instead of restating them here.
 # That output is %q-quoted, so this eval is safe even for values with spaces.
 eval "$("$BUILD_INITRD" print-config)"
@@ -142,6 +149,11 @@ Environment:
   TAA_PLATFORM_IP=$TAA_PLATFORM_IP        （默认跟随 REMOTE_HOST，端口 PLATFORM_PORT=$PLATFORM_PORT）
   TAA_DOCKER_ID=$TAA_DOCKER_ID            （每个实例必须唯一；覆盖 PLATFORM_PORT 可换平台端口）
   RUNTIME_HANDLER=$RUNTIME_HANDLER
+  TAA_SRC=$TAA_SRC                （指向其它二进制时跳过重新编译）
+  TAA_SKIP_GO_BUILD=${TAA_SKIP_GO_BUILD:-0}     （=1 跳过编译，直接注入现有 bin/taa）
+
+  build/up 会先重新编译 TAA（CGO_ENABLED=0 GOOS=linux go build），
+  再把新的 bin/taa 注入 initrd，避免注入上一次的旧二进制。
 
 Layout on the host (defaults):
   $REMOTE_BUNDLE_DIR/initramfs.img|vmlinuz|OVMF.fd   deploy 安装的 guest bundle
@@ -258,6 +270,41 @@ ensure_pod_annotations() {
   fi
 }
 
+# ── Compile before injecting ─────────────────────────────────────────────────
+#
+# The initrd is just a container for whatever bin/taa holds at build time, so an
+# un-rebuilt binary is injected silently and only shows up as a guest that
+# behaves like the previous revision. Compile into the same path the build
+# reads, and publish atomically: a failed compile must not leave a truncated
+# binary behind for the next run to inject.
+#
+# Two deliberate skips. A TAA_SRC pointing somewhere other than the default
+# repository binary is an explicit "use this file" (and is what keeps the
+# offline tests offline). TAA_SKIP_GO_BUILD=1 is a deliberate "use what is
+# already there".
+build_taa_binary() {
+  if [[ "$TAA_BIN" != "$SCRIPT_DIR/bin/taa" ]]; then
+    echo "TAA_SRC=$TAA_BIN，跳过重新编译"
+    return 0
+  fi
+  if [[ "${TAA_SKIP_GO_BUILD:-0}" == "1" ]]; then
+    echo "warning: TAA_SKIP_GO_BUILD=1，跳过重新编译，注入的是现有 bin/taa" >&2
+    return 0
+  fi
+  require_cmd go
+  echo "重新编译 TAA（CGO_ENABLED=0 GOOS=linux）"
+  local tmp_bin="${TAA_BIN}.tmp.$$"
+  rm -f "$tmp_bin"
+  if ! ( cd "$SCRIPT_DIR" && CGO_ENABLED=0 GOOS=linux go build -o "$tmp_bin" ./cmd/taa ); then
+    rm -f "$tmp_bin"
+    echo "error: TAA 编译失败，未改动 $TAA_BIN" >&2
+    exit 1
+  fi
+  chmod 0755 "$tmp_bin"
+  mv -f "$tmp_bin" "$TAA_BIN"
+  echo "bin/taa sha256: $(sha256sum "$TAA_BIN" | awk '{print $1}')"
+}
+
 # ── Preflight ────────────────────────────────────────────────────────────────
 #
 # Runs before any host mutation. Each check here is something the flow cannot
@@ -273,6 +320,9 @@ preflight() {
         echo "hint: 先跑 $0 fetch-base" >&2
         exit 1
       fi
+      # After the base check on purpose: a run that cannot build must not spend
+      # time compiling first.
+      build_taa_binary
       local taa_bin="$TAA_BIN"
       if [[ ! -f "$taa_bin" ]]; then
         echo "error: bin/taa 缺失: $taa_bin" >&2
