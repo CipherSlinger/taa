@@ -25,10 +25,6 @@
     <div class="card-head" style="margin-bottom:12px; padding-bottom:10px; flex-wrap:wrap; gap:12px;">
       <div style="display:flex; align-items:center; gap:12px; flex-wrap:wrap;">
         <h2 style="margin:0;">平台注册</h2>
-        <div id="registerPill" class="status-pill pending" style="font-size:13px;">
-          <span id="dot" class="dot pill-dot pending"></span>
-          <span id="statusText">等待 TAA 注册请求</span>
-        </div>
       </div>
       <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
         <button type="button" id="taaPublicKeyBtn" class="secondary" onclick="openTaaPublicKeyModal()" disabled title="查看 TAA 注册公钥">
@@ -55,6 +51,12 @@
           <span class="pill-dot"></span>
           <span id="taaProxyBadge">自动检测中...</span>
         </span>
+        <!-- Registration outcome sits beside the service address so both facts about
+             this instance are read in one place. -->
+        <div id="registerPill" class="status-pill pending" style="display:inline-flex; font-size:12px;">
+          <span id="dot" class="dot pill-dot pending"></span>
+          <span id="statusText">未注册</span>
+        </div>
       </div>
       <div style="display:flex; align-items:center; gap:12px; flex-wrap:wrap;">
         <div style="display:flex; align-items:center; gap:8px;">

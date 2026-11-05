@@ -1977,6 +1977,20 @@ func TestHealthCheckIntegratedIntoRegistration(t *testing.T) {
 			t.Fatalf("frontendBundle missing integrated element or function %q", want)
 		}
 	}
+
+	// The registration outcome sits to the right of the service address, not in
+	// the card heading, so both facts about the instance are read together.
+	targetPillIdx := strings.Index(indexHTML, `id="taaTargetPill"`)
+	registerPillIdx := strings.Index(indexHTML, `id="registerPill"`)
+	if targetPillIdx == -1 || registerPillIdx == -1 {
+		t.Fatalf("registration pills missing: target=%d register=%d", targetPillIdx, registerPillIdx)
+	}
+	if registerPillIdx < targetPillIdx {
+		t.Fatal("registerPill must follow taaTargetPill")
+	}
+	if !strings.Contains(indexHTML, `<span id="statusText">未注册</span>`) {
+		t.Fatal("statusText should default to 未注册")
+	}
 }
 
 func TestIndexHTMLModalTabsAndLegacySectionRemoval(t *testing.T) {

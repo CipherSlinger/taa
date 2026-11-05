@@ -976,7 +976,7 @@ function renderRegister(data) {
   const publicKeyField = document.getElementById('registerPublicKey');
   if (!data || !data.received) {
     if (pill) pill.className = 'status-pill pending';
-    text('statusText', '等待 TAA 注册请求');
+    text('statusText', '未注册');
     const regBtn = document.getElementById('registerBodyBtn');
     if (regBtn) regBtn.disabled = true;
     if (pubKeyBtn) pubKeyBtn.disabled = true;
@@ -985,7 +985,7 @@ function renderRegister(data) {
   }
   if (dot) dot.className = 'dot ' + (data.accepted ? 'ok status-pill ok' : 'bad status-pill bad');
   if (pill) pill.className = 'status-pill ' + (data.accepted ? 'ok' : 'bad');
-  text('statusText', data.accepted ? '已收到注册请求，并已返回 HTTP 200' : '已收到请求，但参数校验失败');
+  text('statusText', data.accepted ? '已注册' : '注册失败');
   const regBtn = document.getElementById('registerBodyBtn');
   if (regBtn) regBtn.disabled = false;
   const publicKey = data.accepted ? String(data.taaPublicKey || '').trim() : '';
