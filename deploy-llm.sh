@@ -2913,8 +2913,14 @@ build_local_binary() {
   # the repository root makes Go look for it in the root module and fail with "main module (taa)
   # does not contain package", so build inside the module with the workspace switched off.
   # teellm's go.mod already carries `replace teetls => ./teetls`, so it needs nothing else.
+  #
+  # -buildvcs=false is load-bearing for the image fingerprint. Go stamps vcs.revision into the
+  # binary by default, and it looks for a repository root by requiring .git to be a directory --
+  # which a submodule's .git is not (it is a gitfile). teellm is a submodule, so the stamp comes
+  # from the parent TAA repository: every commit there, however unrelated, changed this binary's
+  # bytes and so the fingerprint, and the multi-gigabyte image was rebuilt from scratch each time.
   spin_task "compiling teellm-service binary" \
-    env GOWORK=off go -C "$TEELLM_DIR" build -o bin/teellm-service ./cmd/teellm-service
+    env GOWORK=off go -C "$TEELLM_DIR" build -buildvcs=false -o bin/teellm-service ./cmd/teellm-service
   require_file "build verification failed (teellm-service binary missing)" "$TEELLM_DIR/bin/teellm-service"
   LOCAL_BINARY_BUILT=true
   info "teellm-service binary built: $TEELLM_DIR/bin/teellm-service"
