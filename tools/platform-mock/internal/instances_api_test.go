@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"testing"
 
 	"taa/pkg/crypto"
@@ -345,5 +346,63 @@ func TestInstancesEndpointReportsTheDerivedKind(t *testing.T) {
 	}
 	if kinds["docker-fhe"] != instanceKindFHE {
 		t.Fatalf("docker-fhe kind = %q, want %q", kinds["docker-fhe"], instanceKindFHE)
+	}
+}
+
+// A deleted Pod keeps its last registration forever; the console's delete
+// button is what drops it. The directory has to go with the in-memory entry,
+// or a restart would scan the same stale instance back in.
+func TestInstancesDeleteRemovesTheInstanceAndItsState(t *testing.T) {
+	mgr := newInstanceManager(t.TempDir(), Config{})
+	b := mgr.getOrCreate("docker-gone")
+	b.register.set(registerState{Received: true, Accepted: true, DockerID: "docker-gone"})
+	if _, err := os.Stat(b.dir); err != nil {
+		t.Fatalf("instance directory was not created: %v", err)
+	}
+	mgr.getOrCreate("docker-keep").register.set(registerState{Received: true, Accepted: true, DockerID: "docker-keep"})
+
+	w := httptest.NewRecorder()
+	instancesDeleteHandler(mgr).ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/api/instances/delete?dockerId=docker-gone", nil))
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", w.Code, w.Body.String())
+	}
+	if mgr.lookup("docker-gone") != nil {
+		t.Fatal("the deleted instance is still in the manager")
+	}
+	if _, err := os.Stat(b.dir); !os.IsNotExist(err) {
+		t.Fatalf("instance directory still exists after delete: %v", err)
+	}
+	if mgr.lookup("docker-keep") == nil {
+		t.Fatal("deleting one instance removed another")
+	}
+}
+
+func TestInstancesDeleteValidatesTheRequest(t *testing.T) {
+	mgr := newInstanceManager(t.TempDir(), Config{})
+	mgr.getOrCreate("docker-keep").register.set(registerState{Received: true, Accepted: true, DockerID: "docker-keep"})
+	handler := instancesDeleteHandler(mgr)
+
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/api/instances/delete", nil))
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("missing dockerId status = %d, want 400; body = %s", w.Code, w.Body.String())
+	}
+
+	w = httptest.NewRecorder()
+	handler.ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/api/instances/delete?dockerId=missing", nil))
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("unknown dockerId status = %d, want 404; body = %s", w.Code, w.Body.String())
+	}
+
+	w = httptest.NewRecorder()
+	handler.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/api/instances/delete?dockerId=docker-keep", nil))
+	if w.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("GET status = %d, want 405; body = %s", w.Code, w.Body.String())
+	}
+	if allow := w.Header().Get("Allow"); allow != http.MethodPost {
+		t.Fatalf("Allow = %q, want POST", allow)
+	}
+	if mgr.lookup("docker-keep") == nil {
+		t.Fatal("a rejected delete removed the instance")
 	}
 }

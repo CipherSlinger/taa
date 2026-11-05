@@ -384,6 +384,34 @@ func (m *instanceManager) lookup(dockerID string) *instanceStores {
 	return m.byID[dockerID]
 }
 
+// remove forgets one instance and deletes its state directory. It is the
+// operator's way to drop an instance whose Pod is gone: a deleted Pod sends
+// nothing, so without an explicit removal a stale registration would stay in
+// the selector forever. The empty-id legacy bundle is not an instance and is
+// refused.
+func (m *instanceManager) remove(dockerID string) error {
+	dockerID = strings.TrimSpace(dockerID)
+	if dockerID == "" {
+		return errInstanceNotFound
+	}
+	m.mu.Lock()
+	b, ok := m.byID[dockerID]
+	if !ok {
+		m.mu.Unlock()
+		return errInstanceNotFound
+	}
+	delete(m.byID, dockerID)
+	m.mu.Unlock()
+
+	if b.dir == "" {
+		return nil
+	}
+	if err := os.RemoveAll(b.dir); err != nil {
+		return fmt.Errorf("remove instance directory %s: %w", b.dir, err)
+	}
+	return nil
+}
+
 func (m *instanceManager) list() []*instanceStores {
 	m.mu.RLock()
 	bundles := make([]*instanceStores, 0, len(m.byID))

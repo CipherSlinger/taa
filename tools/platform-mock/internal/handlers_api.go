@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"log"
 	"net/http"
 )
 
@@ -136,6 +137,37 @@ func instancesHandler(mgr *instanceManager) http.HandlerFunc {
 			"instances":       items,
 			"defaultDockerId": defaultID,
 		}, 0)
+	}
+}
+
+// instancesDeleteHandler forgets an instance whose Pod is gone. Deletion is
+// explicit because registration has no expiry and nothing else removes a stale
+// entry from the selector.
+func instancesDeleteHandler(mgr *instanceManager) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		setCORS(w)
+		if !requireMethod(w, r, http.MethodPost) {
+			return
+		}
+		dockerID := requestedDockerID(r)
+		if dockerID == "" {
+			writeEnvelope(w, http.StatusBadRequest, "缺少 dockerId", nil, http.StatusBadRequest)
+			return
+		}
+		if err := mgr.remove(dockerID); err != nil {
+			if errors.Is(err, errInstanceNotFound) {
+				writeInstanceError(w, err)
+				return
+			}
+			writeEnvelope(w, http.StatusInternalServerError, err.Error(), nil, http.StatusInternalServerError)
+			return
+		}
+		if err := currentPlatformKeys().deleteTaaPublicKeyFor(dockerID); err != nil {
+			// The instance records are already gone; a key left behind only
+			// means a later same-id registration overwrites it.
+			log.Printf("remove TAA public key for %q failed: %v", dockerID, err)
+		}
+		writeEnvelope(w, http.StatusOK, "deleted", map[string]any{"dockerId": dockerID}, 0)
 	}
 }
 

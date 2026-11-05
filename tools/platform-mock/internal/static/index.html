@@ -46,6 +46,7 @@
       <div style="display:flex; align-items:center; gap:10px; flex:1; min-width:280px;">
         <label for="instanceSelect" id="instanceSelectLabel" style="font-size:13px; font-weight:650; white-space:nowrap; margin:0; display:none;">实例</label>
         <select id="instanceSelect" style="display:none; max-width:260px; padding:6px 10px; font-size:13px; border-radius:6px; border:1px solid var(--line); background:var(--bg);" title="选择要查看的 TAA 实例"></select>
+        <button type="button" id="instanceDeleteBtn" class="secondary" style="display:none; padding:6px 12px; font-size:13px;" onclick="deleteSelectedInstance()" title="删除该实例的本地记录（Pod 已删除后清理）">删除实例</button>
         <span style="font-size:13px; font-weight:650; white-space:nowrap;">TAA 服务地址</span>
         <!-- Not an input any more: the address is detected from the registration and the
              console calls whichever target that produced, so the field was a value nobody

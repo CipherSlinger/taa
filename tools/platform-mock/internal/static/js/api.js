@@ -58,6 +58,8 @@ function setInstanceSelectorVisibility(show) {
   document.getElementById('instanceSelect').style.display = show ? '' : 'none';
   const label = document.getElementById('instanceSelectLabel');
   if (label) label.style.display = show ? '' : 'none';
+  const del = document.getElementById('instanceDeleteBtn');
+  if (del) del.style.display = show ? '' : 'none';
 }
 
 function applyInstanceList(list, defaultId) {
@@ -92,7 +94,7 @@ function applyInstanceList(list, defaultId) {
   }
   currentInstanceDockerId = sel.value;
   applySelectedInstanceKind();
-  setInstanceSelectorVisibility(list.length > 1);
+  setInstanceSelectorVisibility(list.length > 0);
 }
 
 // applySelectedInstanceKind drives the panel set from the selected instance.
@@ -146,24 +148,59 @@ function initInstanceSelector() {
       // The selected instance's kind decides which panels apply, before the
       // refreshes below run.
       applySelectedInstanceKind();
-      // A paused panel skips its fetch, so clear the flags before refreshing.
-      if (typeof resetLogPauseForInstanceChange === 'function') resetLogPauseForInstanceChange();
-      if (typeof refreshStatus === 'function') refreshStatus();
-      if (typeof refreshReportResStatus === 'function') refreshReportResStatus();
-      if (typeof refreshReportModelImportStatus === 'function') refreshReportModelImportStatus();
-      if (typeof refreshReportAuditStatus === 'function') refreshReportAuditStatus();
-      if (typeof refreshReportProgress === 'function') refreshReportProgress();
-      if (typeof refreshDashboardStatus === 'function') refreshDashboardStatus();
-      if (typeof fetchModelLogs === 'function') fetchModelLogs();
-      if (typeof fetchTaaLogs === 'function') fetchTaaLogs();
-      // The selected instance decides the target, so the pill follows it.
-      if (typeof detectTAAProxy === 'function') {
-        detectTAAProxy();
-      }
+      refreshInstancePanels();
     });
   }
   loadInstances();
   setInterval(loadInstances, 5000);
+}
+
+// refreshInstancePanels re-reads every instance-scoped panel. It is shared by
+// the selector's change handler and by deletion, where the selection moves to
+// the new default without a change event.
+function refreshInstancePanels() {
+  // A paused panel skips its fetch, so clear the flags before refreshing.
+  if (typeof resetLogPauseForInstanceChange === 'function') resetLogPauseForInstanceChange();
+  if (typeof refreshStatus === 'function') refreshStatus();
+  if (typeof refreshReportResStatus === 'function') refreshReportResStatus();
+  if (typeof refreshReportModelImportStatus === 'function') refreshReportModelImportStatus();
+  if (typeof refreshReportAuditStatus === 'function') refreshReportAuditStatus();
+  if (typeof refreshReportProgress === 'function') refreshReportProgress();
+  if (typeof refreshDashboardStatus === 'function') refreshDashboardStatus();
+  if (typeof fetchModelLogs === 'function') fetchModelLogs();
+  if (typeof fetchTaaLogs === 'function') fetchTaaLogs();
+  // The selected instance decides the target, so the pill follows it.
+  if (typeof detectTAAProxy === 'function') {
+    detectTAAProxy();
+  }
+}
+
+// deleteSelectedInstance removes the selected instance's local records after
+// its Pod is gone. A deleted Pod sends nothing, so without this the selector
+// would keep offering an instance that can never answer again.
+async function deleteSelectedInstance() {
+  const id = currentDockerId();
+  if (!id) return;
+  if (!confirm('删除实例 ' + id + ' 的本地记录？\n这不会影响 Pod，只清理平台模拟器保存的注册与上报数据。')) {
+    return;
+  }
+  try {
+    const res = await fetch('/api/instances/delete?dockerId=' + encodeURIComponent(id), { method: 'POST' });
+    const data = await res.json().catch(() => ({}));
+    if (res.status !== 200 || data.error !== 0) {
+      alert('删除失败: ' + (data.msg || 'HTTP ' + res.status));
+      return;
+    }
+    // The selection itself must move to whatever remains before the refreshes
+    // run, and the list signature is reset so the options are rebuilt even if
+    // another poll is already in flight.
+    currentInstanceDockerId = '';
+    instanceListSignature = null;
+    await loadInstances();
+    refreshInstancePanels();
+  } catch (err) {
+    alert('删除失败: ' + err.message);
+  }
 }
 
 function formatResp(r) {

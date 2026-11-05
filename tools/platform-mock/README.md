@@ -135,6 +135,10 @@ flag: instance identity is the registration's `dockerId`.
   `/api/crypto/*`, `/api/request-logs/*`) ignore it. `GET /api/instances` returns the instance
   list, each instance's derived `kind` (`tee` or `fhe`) and `defaultDockerId`. Selecting an
   instance also switches the console panels to that kind.
+- **Removing a stale instance**: `POST /api/instances/delete?dockerId=...` deletes that
+  instance's state directory and its stored TAA public key. The console's 删除实例 button
+  calls it. A Pod that has been deleted sends nothing, so this is the only way a stale entry
+  leaves the selector.
 - **Proxying**: `/taa/*` proxies to the selected instance and strips `dockerId` before
   forwarding.
 

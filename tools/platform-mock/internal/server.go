@@ -133,6 +133,7 @@ func NewServer(cfg Config) *Server {
 	mux.HandleFunc("/api/llm/reset", llmResetHandler(llmState, llmLogStore))
 	mux.HandleFunc("/api/llm/logs/clear", llmLogsClearHandler(llmState, llmLogStore))
 	mux.HandleFunc("/api/instances", instancesHandler(mgr))
+	mux.HandleFunc("/api/instances/delete", instancesDeleteHandler(mgr))
 	mux.HandleFunc("/api/dashboard/status", dashboardStatusHandler(mgr))
 	mux.HandleFunc("/api/register/status", registerStatusHandler(mgr))
 	mux.HandleFunc("/api/register/reset", registerResetHandler(mgr))
