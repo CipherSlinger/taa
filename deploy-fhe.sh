@@ -509,6 +509,24 @@ pod_env() {
     | sed -n "s/^$1=//p" | head -n1
 }
 
+# The role the target Pod runs. A Pod's environment is immutable, so the role it
+# was created with is the role it keeps. This deployment injects CONTRACT_TYPE=4;
+# a Pod carrying no CONTRACT_TYPE is fine because TAA then falls back to the
+# config, which this deployment renders with server.type=fhe. Any other value
+# means the Pod belongs to another role, and installing the FHE files into it
+# would leave an instance that never runs the FHE pipeline.
+require_pod_fhe_role() {
+  local spec role
+  spec="$(host_capture "$(shell_quote "${POD_KCTL[@]}" get pod "$TARGET_POD" -o json)" 2>/dev/null || true)"
+  [ -n "$spec" ] \
+    || die "cannot read Pod $POD_NAMESPACE/$TARGET_POD, so the role it runs cannot be verified"
+  role="$(printf '%s' "$spec" | jq -r '([.spec.containers[0].env[]? | select(.name == "CONTRACT_TYPE") | .value])[0] // empty' 2>/dev/null || true)"
+  case "$role" in
+    ""|4) return 0 ;;
+  esac
+  die "Pod $POD_NAMESPACE/$TARGET_POD runs CONTRACT_TYPE=$role, not the fhe role (4); its environment cannot be changed in place -- name another Pod, or delete and recreate this one"
+}
+
 # The in-pod probe opens a TCP connection rather than calling /v1/taa/health:
 # that route is sealed with an SM2 {cipher,sign} envelope a local probe cannot
 # produce. python3 is used because the image ships no curl, and a bare socket
@@ -1333,6 +1351,7 @@ deploy_into_pod() {
     state_base="$HOST_TAA_STATE_DIR"
   else
     pod_ready || die "pod $POD_NAMESPACE/$TARGET_POD is not Running and Ready"
+    require_pod_fhe_role
     pod_state
     old_config="$(pod_capture "cat $(shell_quote "$TAA_CONTAINER_CONFIG_PATH") 2>/dev/null || true")"
     if [ -n "$old_config" ] && printf '%s' "$old_config" | jq -e . >/dev/null 2>&1; then
@@ -1833,6 +1852,7 @@ pod_create() {
   else
     if host_sh "$(shell_quote "${POD_KCTL[@]}" get pod "$TARGET_POD" >/dev/null 2>&1)"; then
       log "Pod $POD_NAMESPACE/$TARGET_POD already exists; verifying it instead of creating a second one"
+      require_pod_fhe_role
       rm -f "$POD_MANIFEST_TMP"
     else
       # create, not apply: the name was verified absent a moment ago, and create
