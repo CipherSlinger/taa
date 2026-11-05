@@ -616,37 +616,32 @@ USERDATA = taaPublicKey.X || taaPublicKey.Y
 | `deploy-llm.sh`（内建构建 + 部署） | TEE-LLM 网关 | `taa-env:slim-v2` 去掉 `/root/taa` | `teellm:<YYYYMMDD>` / `deploy/out/teellm-<YYYYMMDD>.tar.gz` |
 | `deploy-taa-vm.sh`（驱动 `deploy/guest-build/build-initrd.sh`） | CSV2 机密 VM initrd | `kata-containers-initrd-confidential-csv.img` | 追加 TAA 的 initrd 与测试 Pod 清单 |
 
-`deploy.sh` 有两种模式（默认 `remote`）与三种动作（默认 `start`）：
+`deploy.sh` 只有一个部署目标（`remote`，可省略）与三种动作（默认 `start`）：
 
-| 模式 | 含义 |
+| 目标 | 含义 |
 | :--- | :--- |
-| `remote` | 远程 Kubernetes Pod 部署（默认）；默认**不**部署 platform-mock，避免与 ccs-node-agent 争 18080 |
-| `docker` | 本地 Docker 容器化测试：TAA 与依赖跑在本地容器内，platform-mock 跑在宿主机 |
+| `remote` | 远程 Kata CSV2 Pod 部署（唯一目标）；默认**不**部署 platform-mock，避免与 ccs-node-agent 争 18080 |
 
 | 动作 | 含义 |
 | :--- | :--- |
 | `start` | 部署并启动（默认动作） |
 | `stop` | 停止目标服务 |
-| `save` | 提交镜像并打包归档（**仅 docker 模式**） |
+| `save` | 独立打包动作：提交镜像并导出归档，不部署任何东西 |
 
 ```sh
-# 远程 Kubernetes 部署（默认模式，remote 可省略）
-./deploy.sh [remote]                    # 全部组件部署
+# 远程 Kubernetes 部署（remote 可省略）
+./deploy.sh [remote]                    # 部署 TAA
 ./deploy.sh remote taa                  # 仅部署 TAA 服务
-./deploy.sh remote platform-mock        # 仅部署平台模拟器
 TARGET_POD=<pod> ./deploy.sh remote taa # 指定目标 Pod
 
-# 本地 Docker 容器化测试
-./deploy.sh docker                      # 全部组件本地启动
-./deploy.sh docker taa                  # 仅本地启动 TAA
-./deploy.sh docker save                 # 打包镜像与归档
-./deploy.sh docker save --tag taa-train-infer:$(date +%Y%m%d)
+# 生产镜像打包（不部署）
+./deploy.sh save                        # 打包镜像与归档
+./deploy.sh save --tag taa-train-infer:$(date +%Y%m%d)
 
 # FHE 实例 / 数据分析实例
 ./deploy-fhe.sh taa save                # 打包 taa-fhe 镜像与归档
 ./deploy-fhe.sh taa                     # 部署统一容器（FHE + TAA）
 ./deploy-dataanaylsis.sh save           # 打包数据分析镜像与归档
-./deploy-dataanaylsis.sh docker         # 本地数据分析容器
 
 # TEE-LLM 网关（独立 Kata CSV2 Pod）
 ./deploy-llm.sh [--create-pod] [start|stop|probe|pod-down]
@@ -655,7 +650,7 @@ TARGET_POD=<pod> ./deploy.sh remote taa # 指定目标 Pod
 ./deploy-taa-vm.sh up|build|deploy|launch|render|verify|delete
 ```
 
-`local` 与 `local-docker` 是 `docker` 的历史别名，仍然可用；`qwen` 组件名保留但只打印指向 teellm 命令的提示。完整参数与环境变量清单见 `./deploy.sh --help` 与 `deploy.md`。
+`docker`、`local` 与 `local-docker` 三种本地部署写法已移除，传入会报错退出；`qwen` 组件名保留但只打印指向 teellm 命令的提示。完整参数与环境变量清单见 `./deploy.sh --help` 与 `deploy.md`。
 
 ### 9.2 部署流程
 

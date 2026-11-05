@@ -35,24 +35,20 @@ On first start the mock creates and persists a platform SM2 key pair and logs th
 `PLATFORM_PUBLIC_KEY` value to give TAA (see [SM2 Envelope](#sm2-envelope)). Set the same
 `PLATFORM_SM2_ID` for both processes if you override the default identity.
 
-### Lifecycle (local or remote)
+### Lifecycle (remote host)
 
 `deploy-platform-mock.sh` at the repository root owns build, start, stop, restart and status.
 `deploy.sh` and `deploy-fhe.sh` do not deploy the mock; they only point TAA at a platform, so
-the flags and readiness probe are defined in one place.
+the flags and readiness probe are defined in one place. Local mode has been removed: the mock
+runs on the remote host, and `remote` may be omitted from the command line.
 
 ```bash
-# Local: builds bin/platform-mock, then runs it detached
-./deploy-platform-mock.sh local start --taa-target http://127.0.0.1:6001 --allow-empty-attestation
-./deploy-platform-mock.sh local status
-./deploy-platform-mock.sh local restart
-./deploy-platform-mock.sh local stop
-
-# Remote: builds linux/static, uploads over SSH and starts it detached
+# Builds linux/static, uploads over SSH and starts it detached
 ./deploy-platform-mock.sh remote start --host 172.16.10.178 --user root --password '...' \
-  --remote-dir /root/taa --taa-target http://127.0.0.1:6001
-./deploy-platform-mock.sh remote status --host 172.16.10.178
-./deploy-platform-mock.sh remote stop --host 172.16.10.178
+  --remote-dir /root/taa --taa-target http://127.0.0.1:6001 --allow-empty-attestation
+./deploy-platform-mock.sh status --host 172.16.10.178
+./deploy-platform-mock.sh restart --host 172.16.10.178
+./deploy-platform-mock.sh stop --host 172.16.10.178
 ```
 
 Useful options: `--state-dir` / `--upload-dir` (omitted when empty, which keeps the binary's

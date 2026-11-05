@@ -45,7 +45,7 @@ TARGET_POD=taa-env-slim-v2-20261016-7104e03003ae0072-f7fbbf8f5-kkdb2 ./deploy.sh
 
 ./deploy.sh taa
 ./deploy.sh taa stop    # 删除对应的 pod
-./deploy.sh docker save # 保存镜像
+./deploy.sh save        # 打包生产镜像（不部署任何东西）
 ```
 
 不指定 `TARGET_POD` 时，`./deploy.sh taa` 会在远端创建并接管一个 Kata CSV2 Pod
@@ -70,29 +70,26 @@ platform-mock 的构建、启动、停止和就绪检查统一由仓库根目录
 （`PLATFORM_IP` / `REMOTE_PLATFORM_IP`），平台（mock 或生产平台）需单独启动。
 
 ```bash
-./deploy-platform-mock.sh <local|remote> <start|stop|restart|status> [选项]
+./deploy-platform-mock.sh [remote] <start|stop|restart|status> [选项]
 ```
 
+`remote` 可省略；local 本地模式已移除，传入 `local` 会报错退出。
+
 ```bash
-# 本地：构建 bin/platform-mock 并后台启动
-./deploy-platform-mock.sh local start --taa-target http://127.0.0.1:6001 --allow-empty-attestation
-
-# 查看状态（未运行且端点无应答时退出码非 0）
-./deploy-platform-mock.sh local status
-
-# 重启 / 停止
-./deploy-platform-mock.sh local restart
-./deploy-platform-mock.sh local stop
-
 # 远端：静态构建后经 SSH 上传并后台启动
 ./deploy-platform-mock.sh remote start \
   --host 172.16.10.178 --user root --password 'Osrd@2026' \
   --remote-dir /root/taa --taa-target http://127.0.0.1:6001
-./deploy-platform-mock.sh remote status --host 172.16.10.178
-./deploy-platform-mock.sh remote stop --host 172.16.10.178
+
+# 查看状态（未运行且端点无应答时退出码非 0）
+./deploy-platform-mock.sh status --host 172.16.10.178
+
+# 重启 / 停止
+./deploy-platform-mock.sh restart --host 172.16.10.178
+./deploy-platform-mock.sh stop --host 172.16.10.178
 
 # 只查看会执行什么，不构建、不连接
-./deploy-platform-mock.sh remote start --host 172.16.10.178 --dry-run
+./deploy-platform-mock.sh start --host 172.16.10.178 --dry-run
 ```
 
 **常用选项**
@@ -103,14 +100,13 @@ platform-mock 的构建、启动、停止和就绪检查统一由仓库根目录
 | `--binary-name NAME` | 进程名与远端安装名，默认 `platform-mock` |
 | `--addr ADDR` / `--port N` | 监听地址，默认 `0.0.0.0:18081`（18080 留给宿主上的真实平台 ccs-node-agent） |
 | `--state-dir DIR` / `--upload-dir DIR` | 为空时不传对应参数，沿用二进制自身默认目录 |
-| `--log-file PATH` / `--pid-file PATH` | 默认分别在 `.local/logs/`、`.local/run/`（远端在 `--remote-dir` 下） |
+| `--log-file PATH` / `--pid-file PATH` | 默认在 `--remote-dir` 下（`platform-mock.log` / `platform-mock.pid`） |
 | `--taa-target URL` | 固定到单个 TAA 地址；不传时按注册信息推导每个实例的地址 |
 | `--taa-pod` / `--taa-ns` / `--taa-port` | `--taa-target` 为空时的 Kubernetes 发现参数；`--taa-port` 同时用于多实例地址推导 |
 | `--allow-empty-attestation` | 非 TEE 测试环境跳过证明校验 |
 | `--reuse` | 端口已有实例应答时直接复用，不停止、不重启 |
 | `--reset-register` | 就绪后 `POST /api/register/reset` |
 | `--skip-build` | 复用 `--binary` 指向的现有二进制 |
-| `--static` | 强制 `CGO_ENABLED=0 GOOS=linux`（远端模式默认如此） |
 | `--ready-timeout` / `--ready-interval` | 就绪等待，默认 60s / 2s |
 | `--dry-run` | 只打印计划 |
 | `--host` / `--user` / `--password` / `--remote-dir` / `--remote-binary` | 远端目标、SSH 凭据与安装路径 |
@@ -133,7 +129,7 @@ platform-mock 的构建、启动、停止和就绪检查统一由仓库根目录
   （`http://<源 IP>:<--taa-port>`，默认端口 6001）。
 - 直接调用 `deploy-platform-mock.sh` 时省略 `--taa-target` 即可：
   ```bash
-  ./deploy-platform-mock.sh local start --taa-port 6001
+  ./deploy-platform-mock.sh start --host 172.16.10.178 --taa-port 6001
   ```
 - 需要固定单实例地址时传 `--taa-target http://<ip>:6001`（未按注册推导出地址时作为后备）。
 - 限制：反向代理或端口转发会丢失请求源 IP，此时无法按注册推导地址，应退回
@@ -353,7 +349,7 @@ HOME/WORKDIR = `/home/jovyan`，EXPOSE 8888。
 按模板文本决定是否注入 semgrep payload，脚本因此导出 `TAA_SCAN_ENGINE_PROVISION=skip`，
 让 `save`/`remote` 两条路都不再装这个镜像用不上的 payload。
 密封密钥来源不需要渲染：TAA 启动时按 `/dev/csv-guest` 是否存在自动选择硬件密钥或 SM2 派生，
-docker 与远端两种路径行为一致。
+打包与远端两种路径行为一致。
 
 **基础镜像自带**
 

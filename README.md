@@ -517,31 +517,30 @@ An instance whose `server.type` is `fhe` exposes the same API surface as a `tee`
 
 ## Deployment & Operation (`deploy.sh`)
 
-`deploy.sh` provides lifecycle management and image packaging for TAA. The platform (or platform-mock) is deployed separately with `deploy-platform-mock.sh` (see [Local Platform Mock & Web Console](#local-platform-mock--web-console)); `deploy.sh` only configures the address TAA registers with.
+`deploy.sh` provides lifecycle management and image packaging for TAA. The platform (or platform-mock) is deployed separately with `deploy-platform-mock.sh` (see [Platform Mock & Web Console](#platform-mock--web-console)); `deploy.sh` only configures the address TAA registers with.
 
-### 1. Two Mutually Exclusive Running Modes
+### 1. Deployment Target
 
 ```bash
-./deploy.sh [docker|remote] [start|stop|save] [taa] [options...]
+./deploy.sh [remote] [start|stop|save] [taa] [options...]
 ```
 
-- **`docker`**: Local Docker container mode. Runs TAA inside a local Docker container (`taa-env-slim-v2`) managed by a supervisor daemon (`deploy/taa-supervisor.sh`). The platform must already run on the host (e.g. `./deploy-platform-mock.sh local start`).
-- **`remote`**: Remote Kubernetes mode (default when omitted). Deploys to a remote TEE Kubernetes Pod via SSH and `kubectl`.
+- **`remote`**: Deploys to a remote TEE Kata CSV2 Pod via SSH and `kubectl`. This is the only target; the word may be given explicitly or omitted. The old `docker` (local container) target has been removed and now fails with an explanatory error.
 
 ### 2. Supported Actions
 
-- **`start`** (default): Builds binaries, prepares configs/certs, starts supervisor daemon, and launches target services.
-- **`stop`**: Gracefully stops target services in the chosen mode.
-- **`save`**: **Exclusively valid in `docker` mode** (`./deploy.sh docker save`). Assembles a **TAA-only production image — TAA plus the code scan engine** — and exports it as an archive. It removes every TEE-LLM and ollama artifact the base image may carry (asserting each is gone), installs the supervisor from `deploy/taa-supervisor.sh` instead of inheriting the base image's copy, provisions semgrep offline from a payload archive and verifies it with a real scan, then copies the binary, certificates and generated production config (`configs/taa-production.json`) before `docker commit` + `docker save`. TEE-LLM and ollama are **not** in this image; deploy them separately with `./deploy-llm.sh`. The generated config's `codeAudit.llm.endpoint` is the template's value verbatim — nothing is discovered on the packaging host — so a deployment that needs a different address sets `LLM_IP` at container startup.
+- **`start`** (default): Builds the binary, prepares config and certs, and starts TAA in the remote Pod.
+- **`stop`**: Stops TAA in the remote Pod; a Pod this script created is deleted as well.
+- **`save`**: A standalone packaging action (`./deploy.sh save`) that deploys nothing. Assembles a **TAA-only production image — TAA plus the code scan engine** — and exports it as an archive. It removes every TEE-LLM and ollama artifact the base image may carry (asserting each is gone), installs the supervisor from `deploy/taa-supervisor.sh` instead of inheriting the base image's copy, provisions semgrep offline from a payload archive and verifies it with a real scan, then copies the binary, certificates and generated production config (`configs/taa-production.json`) before `docker commit` + `docker save`. TEE-LLM and ollama are **not** in this image; deploy them separately with `./deploy-llm.sh`. The generated config's `codeAudit.llm.endpoint` is the template's value verbatim — nothing is discovered on the packaging host — so a deployment that needs a different address sets `LLM_IP` at container startup.
 
 ### 3. Component Selection and Platform Address
 
-TAA is the only component `deploy.sh` deploys; `taa` may be given explicitly for compatibility. The platform (or platform-mock) is deployed separately with `./deploy-platform-mock.sh`; `PLATFORM_PORT`, `LOCAL_PLATFORM_PORT` and `REMOTE_PLATFORM_IP` only tell TAA where to register.
+TAA is the only component `deploy.sh` deploys; `taa` may be given explicitly for compatibility. The platform (or platform-mock) is deployed separately with `./deploy-platform-mock.sh`; `PLATFORM_PORT` and `REMOTE_PLATFORM_IP` only tell TAA where to register.
 - **Note on TEE-LLM / Qwen / Ollama**: The LLM inference service sources live in the `teellm` submodule, but its deployment script sits at the repository root. TEE-LLM needs a real `/dev/csv-guest` to produce a genuine attestation, so it is deployed as a Kata CSV2 Pod on the remote host: run `./deploy-llm.sh` (add `--create-pod` the first time, to create that Pod).
 
 ### 4. Container Autostart Supervisor (`deploy/taa-supervisor.sh`)
 
-Inside Docker containers, TAA runs under the supervision of `deploy/taa-supervisor.sh` (deployed to `/root/taa/taa-supervisor.sh`):
+Inside the TAA container, TAA runs under the supervision of `deploy/taa-supervisor.sh` (deployed to `/root/taa/taa-supervisor.sh`):
 - Automatically restarts `taa` upon unexpected exits (10s retry interval).
 - Provides a manual debug override: `touch /root/taa/manual` pauses autostart; removing the file resumes supervisor management.
 - Logs runtime supervisor events to `/root/taa/taa.log`.
@@ -549,17 +548,14 @@ Inside Docker containers, TAA runs under the supervision of `deploy/taa-supervis
 ### 5. Common CLI Examples
 
 ```bash
-# Docker Container Mode
-./deploy.sh docker start                      # Start TAA in container (platform must already run on the host)
-./deploy.sh docker taa                        # Deploy/update only TAA inside Docker
-./deploy.sh docker stop                       # Stop local Docker services
-./deploy.sh docker save                       # Export production Docker image archive
-./deploy.sh docker save --tag my-taa:v1 -o /tmp/taa.tar.gz
+# Remote deployment (Kubernetes Pod + SSH)
+./deploy.sh start                             # Deploy TAA to the remote Pod (platform must already run there)
+./deploy.sh remote taa                        # Update TAA in the remote Pod
+./deploy.sh stop                              # Stop TAA in the remote Pod
 
-# Remote Kubernetes Mode
-./deploy.sh remote start                      # Deploy TAA to remote Kubernetes Pod (or simply ./deploy.sh)
-./deploy.sh remote taa                        # Update TAA in remote Pod
-./deploy.sh remote stop                       # Stop remote services
+# Production image packaging (no deployment)
+./deploy.sh save                              # Build and export the production image archive
+./deploy.sh save --tag my-taa:v1 -o /tmp/taa.tar.gz
 
 # Decoupled TEE-LLM Service (Kata CSV2 Pod on the remote host)
 ./deploy-llm.sh --create-pod start            # Build the Pod image from this tree, create the Pod, deploy
@@ -620,7 +616,7 @@ Inside Docker containers, TAA runs under the supervision of `deploy/taa-supervis
 > `deploy/manifest/k8s/taa-pod.yaml.tmpl`.
 >
 > Unless `TAA_POD_IMAGE` is set, every Pod creation is preceded by an image build from the current
-> tree: the production image is assembled by the same code path as `docker save`, uploaded to the
+> tree: the production image is assembled by the same code path as `save`, uploaded to the
 > remote host, and pushed as `TAA_POD_REGISTRY/TAA_POD_IMAGE_REPO:<YYYYMMDD>` (default
 > `172.16.10.178:31313/taa-train-infer:<today>`). If the registry already holds a *different*
 > build under that same-day tag, its manifest is deleted and the tag repushed; an identical build
@@ -653,13 +649,13 @@ Inside Docker containers, TAA runs under the supervision of `deploy/taa-supervis
 > a registry metacheck pack that no flag can skip, and offline that ends the command with a
 > non-zero exit. A failure prints semgrep's own output rather than an exit code alone.
 
-> **`docker save` needs the semgrep payload archive built first.** The base image carries neither
+> **`save` needs the semgrep payload archive built first.** The base image carries neither
 > the engine nor the rules while the production template selects semgrep, and a missing rules path
 > is now a downgrade rather than a startup failure — an image packaged without an engine would
 > start on the regex scanner with only a warning in the log, and the deployment would silently lose
 > the semgrep tier. Build the archive once with
 > `./deploy/guest-build/build-semgrep-payload-container.sh` (needs network, ~350 MiB, writes
-> `deploy/guest-build/out/semgrep-bundle.tar.gz`); every later `./deploy.sh docker save` extracts it
+> `deploy/guest-build/out/semgrep-bundle.tar.gz`); every later `./deploy.sh save` extracts it
 > offline, so packaging itself never needs the network. A missing archive fails the packaging with
 > that command as the hint instead of producing an image that silently scans with the baseline
 > engine.
@@ -678,7 +674,7 @@ Inside Docker containers, TAA runs under the supervision of `deploy/taa-supervis
 > `https://10.0.0.2:8443`). When both are set, `LLM_IP` wins:
 >
 > ```bash
-> ./deploy.sh docker save --tag my-taa:v1 -o /tmp/taa.tar.gz
+> ./deploy.sh save --tag my-taa:v1 -o /tmp/taa.tar.gz
 > ./deploy-llm.sh --create-pod start                # TEE-LLM in its own Kata CSV2 Pod
 > docker run -e LLM_IP=https://10.0.0.2:8443 my-taa:v1
 > ```
@@ -793,7 +789,7 @@ are replaced atomically, and the wrapper restarts it).
 
 ---
 
-## Local Platform Mock & Web Console
+## Platform Mock & Web Console
 
 TAA includes a full-featured management platform emulator with an embedded Web GUI console:
 
@@ -802,18 +798,17 @@ TAA includes a full-featured management platform emulator with an embedded Web G
 - **Web Console**: `http://127.0.0.1:18081`
 
 ```bash
-# Start locally (builds bin/platform-mock, then runs it detached)
-./deploy-platform-mock.sh local start --taa-target http://127.0.0.1:6001 --allow-empty-attestation
-
-# Inspect or stop the local instance
-./deploy-platform-mock.sh local status
-./deploy-platform-mock.sh local stop
-
-# Same lifecycle on a remote host over SSH
+# Build here, upload over SSH and start detached on the remote host
 ./deploy-platform-mock.sh remote start \
   --host 172.16.10.178 --user root --password '...' \
-  --remote-dir /root/taa --taa-target http://127.0.0.1:6001
-./deploy-platform-mock.sh remote status --host 172.16.10.178
+  --remote-dir /root/taa --taa-target http://127.0.0.1:6001 --allow-empty-attestation
+
+# Inspect or stop the remote instance (`remote` is optional)
+./deploy-platform-mock.sh status --host 172.16.10.178
+./deploy-platform-mock.sh stop --host 172.16.10.178
+
+# Open the console in a local browser through an SSH tunnel
+ssh -L 18081:127.0.0.1:18081 root@172.16.10.178   # then browse http://127.0.0.1:18081
 
 # Run in the foreground without the lifecycle wrapper
 go run ./tools/platform-mock/cmd/platform-mock -addr 0.0.0.0:18081 -taa-target http://127.0.0.1:6001
@@ -843,7 +838,7 @@ the instance is neither running nor answering `/api/register/status`.
 
 - **Go**: Version 1.22 or newer (orchestrated via `go.work` multi-module workspace).
 - **Environment**: Linux x86_64 with Hygon CSV hardware support (for genuine TEE attestation; non-TEE environments run in simulation mode with warning).
-- **Docker**: Required for `docker` mode and `docker save`.
+- **Docker**: Required for `save` image packaging and for assembling the Pod image.
 
 ### Build Commands
 

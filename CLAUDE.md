@@ -97,9 +97,11 @@ image.
 
 These are large, production-shaped Bash scripts; there is no Makefile.
 
-- `deploy.sh [docker|remote] [start|stop|save] [components]` — the main one. `save` is
-  docker-only and builds the TAA-only production image (it needs a prebuilt semgrep payload
-  archive; see `deploy/guest-build/build-semgrep-payload-container.sh`).
+- `deploy.sh [remote] [start|stop|save] [components]` — the main one. `remote` is the only
+  deployment target (the word may be omitted); `docker`/`local` were removed and now fail with
+  an error. `save` is a standalone packaging action and builds the TAA-only production image
+  (it needs a prebuilt semgrep payload archive; see
+  `deploy/guest-build/build-semgrep-payload-container.sh`).
 - `deploy-llm.sh` — deploys TEE-LLM into its own Kata CSV2 Pod (`--create-pod` the first time).
 - `deploy-fhe.sh`, `deploy-dataanaylsis.sh`, `build-teellm-image.sh` — the other image chains.
 - `deploy-taa-vm.sh` and `deploy/guest-build/build-initrd.sh` — the CSV2 initrd that injects TAA

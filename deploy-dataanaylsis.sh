@@ -23,15 +23,14 @@
 #
 # The state sealing key source is not rendered: TAA detects /dev/csv-guest at
 # startup and uses the CSV hardware key inside a guest, the SM2 derivation
-# everywhere else. The remote and save paths therefore behave exactly as the
-# docker path does here.
+# everywhere else. Remote deployment and image packaging therefore behave the
+# same way for this role.
 set -euo pipefail
 
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CONFIG_TEMPLATE="$PROJECT_DIR/configs/taa-production.json"
 BASE_IMAGE="${DATAANALYSIS_IMAGE:-jupyter-nologin-full:v2.2}"
 BASE_ARCHIVE="${DATAANALYSIS_IMAGE_ARCHIVE:-$PROJECT_DIR/deploy/base/jupyter-nologin-full-v2.2.tar.gz}"
-LOCAL_CONTAINER="${DATAANALYSIS_CONTAINER:-taa-dataanaylsis}"
 RENDERED_TEMPLATE="$PROJECT_DIR/.local/run/taa-dataanaylsis.json"
 
 die() { printf '[deploy-dataanaylsis] ERROR: %s\n' "$*" >&2; exit 1; }
@@ -59,12 +58,8 @@ with open(dst, "w", encoding="utf-8") as f:
 PY
 
 export TAA_PRODUCTION_CONFIG_TEMPLATE="$RENDERED_TEMPLATE"
-export TAA_DOCKER_CONFIG_TEMPLATE="$RENDERED_TEMPLATE"
 export BASE_DOCKER_IMAGE="$BASE_IMAGE"
 export BASE_DOCKER_IMAGE_ARCHIVE="$BASE_ARCHIVE"
-export LOCAL_DOCKER_IMAGE="$BASE_IMAGE"
-export LOCAL_DOCKER_IMAGE_ARCHIVE="$BASE_ARCHIVE"
-export LOCAL_DOCKER_CONTAINER="$LOCAL_CONTAINER"
 # The rendered template still selects semgrep, so deploy.sh would otherwise install the payload
 # into the image (save) or the pod (remote). The role disables the engine at startup, and this
 # base image ships neither the payload nor a use for it.

@@ -36,7 +36,6 @@ LAST_ERR_LINE=""
 LAST_ERR_CMD=""
 TEMP_EXPORT_FILE=""
 TEMP_BUILDER_CONTAINER=""
-TEMP_FILELIST=""
 
 cursor_hide() { [[ "$IS_TTY" == true ]] && printf "\033[?25l" 2>/dev/null || true; }
 cursor_show() { [[ "$IS_TTY" == true ]] && printf "\033[?25h" 2>/dev/null || true; }
@@ -57,9 +56,6 @@ cleanup_display() {
   fi
   if [[ -n "${TEMP_EXPORT_FILE:-}" && -f "$TEMP_EXPORT_FILE" ]]; then
     rm -f "$TEMP_EXPORT_FILE" 2>/dev/null || true
-  fi
-  if [[ -n "${TEMP_FILELIST:-}" && -f "$TEMP_FILELIST" ]]; then
-    rm -f "$TEMP_FILELIST" 2>/dev/null || true
   fi
   if [[ -n "${TEMP_TAA_POD_MANIFEST:-}" && -f "$TEMP_TAA_POD_MANIFEST" ]]; then
     rm -f "$TEMP_TAA_POD_MANIFEST" 2>/dev/null || true
@@ -170,7 +166,6 @@ TAA_CONTAINER_WORKDIR="${TAA_CONTAINER_WORKDIR:-${CON_WORKDIR}}"
 TAA_CONTAINER_ADDR="${TAA_CONTAINER_ADDR:-:${CON_PORT}}"
 # TAA 程序固定读取工作目录下的 taa-config.json，脚本侧文件名必须保持一致。
 TAA_CONFIG_FILE="taa-config.json"
-TAA_DOCKER_CONFIG_TEMPLATE="${TAA_DOCKER_CONFIG_TEMPLATE:-$PROJECT_DIR/configs/taa-docker.json}"
 TAA_PRODUCTION_CONFIG_TEMPLATE="${TAA_PRODUCTION_CONFIG_TEMPLATE:-$PROJECT_DIR/configs/taa-production.json}"
 REMOTE_TAA_CONFIG_PATH="${REMOTE_TAA_CONFIG_PATH:-$REMOTE_DIR/$TAA_CONFIG_FILE}"
 CONTAINER_TAA_CONFIG_PATH="${CONTAINER_TAA_CONFIG_PATH:-$TAA_CONTAINER_WORKDIR/$TAA_CONFIG_FILE}"
@@ -210,46 +205,14 @@ TAA_SCAN_ENGINE_PROVISION="${TAA_SCAN_ENGINE_PROVISION:-auto}"
 # 远程 SSH 密码：通过 TARGET_PASSWORD 覆盖；置空时启动脚本会交互式询问。
 PASSWORD="${TARGET_PASSWORD:-Osrd@2026}"
 
-DEPLOY_DOCKER=false
-DEPLOY_REMOTE=false
 DEPLOY_TAA=true
 STEP=0
 
-# Best-effort routable IPv4 address of this host, empty when none can be determined.
-# The primary lookup asks the kernel which source address it would use to leave the host, which
-# naturally skips loopback and the docker bridges that "hostname -I" also reports; that list is
-# only the fallback. Every command is guarded so a missing tool cannot abort the script under
-# "set -e".
-detect_local_host_ip() {
-  local ip=""
-  if command -v ip >/dev/null 2>&1; then
-    ip="$(ip route get 1.1.1.1 2>/dev/null | awk '{for (i = 1; i <= NF; i++) if ($i == "src") { print $(i + 1); exit }}' || true)"
-  fi
-  if [[ -z "$ip" ]] && command -v hostname >/dev/null 2>&1; then
-    ip="$(hostname -I 2>/dev/null | awk '{for (i = 1; i <= NF; i++) if ($i !~ /^127\./) { print $i; exit }}' || true)"
-  fi
-  printf '%s' "$ip"
-}
-
-LOCAL_PLATFORM_PORT="${LOCAL_PLATFORM_PORT:-18080}"
-LOCAL_PLATFORM_IP="${LOCAL_PLATFORM_IP:-127.0.0.1:${LOCAL_PLATFORM_PORT}}"
 LOCAL_RUN_DIR="${LOCAL_RUN_DIR:-$PROJECT_DIR/.local/run}"
 REMOTE_TAA_CONFIG_SOURCE="${REMOTE_TAA_CONFIG_SOURCE:-$LOCAL_RUN_DIR/remote-$TAA_CONFIG_FILE}"
-LOCAL_DOCKER_CONFIG_SOURCE="${LOCAL_DOCKER_CONFIG_SOURCE:-$LOCAL_RUN_DIR/docker-$TAA_CONFIG_FILE}"
-LOCAL_TAA_PORT="${LOCAL_TAA_PORT:-$CON_PORT}"
-LOCAL_TAA_BIND="${LOCAL_TAA_BIND:-:${LOCAL_TAA_PORT}}"
-# TAA publishes on the host network, so it answers on loopback and on the host's routable
-# address alike. Prefer the routable one: it is what the platform is given as the TAA endpoint,
-# and 127.0.0.1 is meaningless to anyone reading it from another machine. Loopback remains the
-# fallback for hosts with no routable address.
-LOCAL_HOST_IP="${LOCAL_HOST_IP:-$(detect_local_host_ip)}"
-LOCAL_TAA_URL="${LOCAL_TAA_URL:-http://${LOCAL_HOST_IP:-127.0.0.1}:${LOCAL_TAA_PORT}}"
-LOCAL_DOCKER_CONTAINER="${LOCAL_DOCKER_CONTAINER:-taa-env-slim-v2}"
-LOCAL_DOCKER_IMAGE_ARCHIVE="${LOCAL_DOCKER_IMAGE_ARCHIVE:-$PROJECT_DIR/deploy/base/taa-env-slim-v2.tar.gz}"
-LOCAL_DOCKER_IMAGE="${LOCAL_DOCKER_IMAGE:-taa-env:slim-v2}"
 SAVE_DATE_TAG="$(date +%Y%m%d)"
-BASE_DOCKER_IMAGE_ARCHIVE="${BASE_DOCKER_IMAGE_ARCHIVE:-$LOCAL_DOCKER_IMAGE_ARCHIVE}"
-BASE_DOCKER_IMAGE="${BASE_DOCKER_IMAGE:-$LOCAL_DOCKER_IMAGE}"
+BASE_DOCKER_IMAGE_ARCHIVE="${BASE_DOCKER_IMAGE_ARCHIVE:-$PROJECT_DIR/deploy/base/taa-env-slim-v2.tar.gz}"
+BASE_DOCKER_IMAGE="${BASE_DOCKER_IMAGE:-taa-env:slim-v2}"
 # Packaging names follow one rule across this repository: <repo>:<YYYYMMDD>, with the archive
 # named after the image (<repo>-<YYYYMMDD>.tar.gz) under deploy/out. The tag carries only the
 # date, never the base image's tag, so the packaged image is not mistaken for the base it was
@@ -261,25 +224,13 @@ DEFAULT_SAVE_ARCHIVE="$PROJECT_DIR/deploy/out/taa-train-infer-${SAVE_DATE_TAG}.t
 CUSTOM_SAVE_IMAGE=""
 CUSTOM_SAVE_ARCHIVE=""
 CUSTOM_BASE_ARCHIVE=""
-CUSTOM_BASE_IMAGE=""
 CUSTOM_SAVE_CONFIG=""
-LOCAL_DOCKER_NETWORK="${LOCAL_DOCKER_NETWORK:-host}"
 # TEE-LLM gateway endpoint written into taa's config. The gateway does not run on the machine that
 # writes the config: it is deployed as a Kata CSV2 Pod on the remote host (see deploy-llm.sh), which
 # prints the Pod IP to use, so this is set explicitly in practice. LLM_IP is the preferred variable;
 # TAA_LLM_ENDPOINT is still read so that callers written before the rename keep working. Empty means
-# "keep the endpoint the config template names"; the local docker start path falls back to loopback,
-# which is correct when the gateway shares taa's network namespace.
-TAA_TEELLM_PORT="${TAA_TEELLM_PORT:-8443}"
+# "keep the endpoint the config template names".
 LLM_IP="${LLM_IP:-${TAA_LLM_ENDPOINT:-}}"
-LOCAL_DOCKER_INPUT_DIR="${LOCAL_DOCKER_INPUT_DIR:-/opt/taa/input}"
-# The result directory itself, not the output root: this value becomes model.output.result, and all
-# three templates put it one level down (/opt/taa/output/result) so results do not share a directory
-# with log/ and progress/ -- the three-way split this deployment itself creates. Passing the root
-# here was the same slip as in the save path, and it produced a different layout from the template
-# in both places. TAA creates whichever of the three directories it needs, so pre-creating only this
-# one is enough.
-LOCAL_DOCKER_OUTPUT_DIR="${LOCAL_DOCKER_OUTPUT_DIR:-/opt/taa/output/result}"
 
 banner() {
   local title="$1"
@@ -420,9 +371,6 @@ SSH_OPTS=(
 )
 
 ensure_remote_ssh() {
-  if [[ "$DEPLOY_DOCKER" == true ]]; then
-    return 0
-  fi
   if [[ -z "$PASSWORD" ]]; then
     read -rsp "Password for ${REMOTE_USER}@${REMOTE_HOST}: " PASSWORD
     echo
@@ -439,9 +387,6 @@ remote_ssh() {
 }
 
 check_remote_connectivity() {
-  if [[ "$DEPLOY_DOCKER" == true ]]; then
-    return 0
-  fi
   ensure_remote_ssh
   if ! sshpass -p "$PASSWORD" ssh "${SSH_OPTS[@]}" -o ConnectTimeout=5 "${REMOTE_USER}@${REMOTE_HOST}" "true" 2>/dev/null; then
     err "cannot connect to remote host ${REMOTE_USER}@${REMOTE_HOST} via SSH (connection timed out or authentication failed)"
@@ -741,9 +686,6 @@ create_taa_pod() {
 # its annotations and limits are immutable, and a fresh Pod would throw away the guest's writable
 # layer (data, keys, models) and be a second confidential VM of host-resident memory.
 ensure_remote_pod() {
-  if [[ "$DEPLOY_DOCKER" == true ]]; then
-    return 0
-  fi
   if remote_pod_exists; then
     if [[ -z "$TARGET_POD_WAS_SET" ]]; then
       # The Pod this deployment owns should already be Ready. A short wait turns a wedged or
@@ -790,74 +732,6 @@ delete_taa_pod() {
   info "TAA Pod '$TARGET_POD' deleted (its writable layer goes with it)"
 }
 
-ensure_local_docker_container() {
-  step "checking local docker image: $LOCAL_DOCKER_IMAGE"
-  if ! docker image inspect "$LOCAL_DOCKER_IMAGE" >/dev/null 2>&1; then
-    if [[ -f "$LOCAL_DOCKER_IMAGE_ARCHIVE" ]]; then
-      spin_task "loading local docker image from $LOCAL_DOCKER_IMAGE_ARCHIVE" docker load -i "$LOCAL_DOCKER_IMAGE_ARCHIVE"
-    else
-      warn "image '$LOCAL_DOCKER_IMAGE' not found and archive '$LOCAL_DOCKER_IMAGE_ARCHIVE' does not exist"
-    fi
-  else
-    info "local docker image verified: $LOCAL_DOCKER_IMAGE"
-  fi
-
-  step "checking local docker container: $LOCAL_DOCKER_CONTAINER"
-  if docker ps -a --format '{{.Names}}' | grep -Eq "^${LOCAL_DOCKER_CONTAINER}\$"; then
-    local current_image
-    current_image=$(docker inspect --format '{{.Config.Image}}' "$LOCAL_DOCKER_CONTAINER" 2>/dev/null || true)
-    local current_image_id
-    current_image_id=$(docker inspect --format '{{.Image}}' "$LOCAL_DOCKER_CONTAINER" 2>/dev/null || true)
-    local target_image_id
-    target_image_id=$(docker image inspect --format '{{.Id}}' "$LOCAL_DOCKER_IMAGE" 2>/dev/null || true)
-
-    local image_mismatch=false
-    if [[ -n "$current_image" && "$current_image" != "$LOCAL_DOCKER_IMAGE" ]]; then
-      image_mismatch=true
-    elif [[ -n "$target_image_id" && -n "$current_image_id" && "$current_image_id" != "$target_image_id" ]]; then
-      image_mismatch=true
-    fi
-
-    if [[ "$image_mismatch" == true ]]; then
-      warn "container $LOCAL_DOCKER_CONTAINER image mismatch (current: $current_image, expected: $LOCAL_DOCKER_IMAGE)"
-      info "recreating container $LOCAL_DOCKER_CONTAINER using $LOCAL_DOCKER_IMAGE"
-      docker rm -f "$LOCAL_DOCKER_CONTAINER" >/dev/null
-    fi
-  fi
-
-  if docker ps --format '{{.Names}}' | grep -Eq "^${LOCAL_DOCKER_CONTAINER}\$"; then
-    info "local docker container is already running: $LOCAL_DOCKER_CONTAINER"
-  elif docker ps -a --format '{{.Names}}' | grep -Eq "^${LOCAL_DOCKER_CONTAINER}\$"; then
-    info "starting stopped local docker container: $LOCAL_DOCKER_CONTAINER"
-    docker start "$LOCAL_DOCKER_CONTAINER" >/dev/null
-  else
-    info "creating and starting local docker container: $LOCAL_DOCKER_CONTAINER (image: $LOCAL_DOCKER_IMAGE, network: $LOCAL_DOCKER_NETWORK)"
-    # --user root: TAA always lives under /root/taa, while a base image may default
-    # to an unprivileged user (jupyter-nologin-full runs as jovyan). Without this the
-    # very next mkdir and every later exec fail with EACCES. Harmless on a base image
-    # that already runs as root.
-    docker run -d --name "$LOCAL_DOCKER_CONTAINER" --network "$LOCAL_DOCKER_NETWORK" --user root --entrypoint tail "$LOCAL_DOCKER_IMAGE" -f /dev/null >/dev/null
-  fi
-
-  # 在容器工作目录标记 manual 模式，防止镜像内置的 taa-supervisor.sh 自启动造成端口竞争
-  docker exec -i "$LOCAL_DOCKER_CONTAINER" sh -lc "mkdir -p '$TAA_CONTAINER_WORKDIR' && touch '$TAA_CONTAINER_WORKDIR/manual'" >/dev/null 2>&1 || true
-
-  if ! docker exec -i "$LOCAL_DOCKER_CONTAINER" sh -lc "command -v python3 >/dev/null 2>&1"; then
-    spin_task "installing python3 inside container: $LOCAL_DOCKER_CONTAINER" \
-      docker exec -i "$LOCAL_DOCKER_CONTAINER" sh -lc "apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq python3 < /dev/null" || {
-      err "failed to install python3 in container $LOCAL_DOCKER_CONTAINER; ensure base image has python3 or network access is available"
-      exit 1
-    }
-  fi
-  docker exec -i "$LOCAL_DOCKER_CONTAINER" sh -lc "if ! command -v python >/dev/null 2>&1 && command -v python3 >/dev/null 2>&1; then ln -s \$(which python3) /usr/local/bin/python; fi" >/dev/null 2>&1 || true
-  local py_ver
-  if ! py_ver=$(docker exec -i "$LOCAL_DOCKER_CONTAINER" python3 --version 2>&1); then
-    err "python3 runtime check failed inside container $LOCAL_DOCKER_CONTAINER: $py_ver"
-    exit 1
-  fi
-  info "container python runtime: $py_ver"
-}
-
 # Removes every TEE-LLM and ollama artifact a base image may carry, then asserts each one is gone.
 # The list is enumerated from the combined images this repository produces
 # (taa-train-infer:<date>, taa-fhe:<date>), not guessed.
@@ -899,7 +773,7 @@ strip_teellm_from_image() {
 
 save_local_docker_image() {
   local base_archive="${CUSTOM_BASE_ARCHIVE:-$BASE_DOCKER_IMAGE_ARCHIVE}"
-  local base_image="${CUSTOM_BASE_IMAGE:-$BASE_DOCKER_IMAGE}"
+  local base_image="${BASE_DOCKER_IMAGE}"
   local prod_config_template="${CUSTOM_SAVE_CONFIG:-$TAA_PRODUCTION_CONFIG_TEMPLATE}"
   local target_image="${CUSTOM_SAVE_IMAGE:-$DEFAULT_SAVE_IMAGE}"
   local target_archive="${CUSTOM_SAVE_ARCHIVE:-$DEFAULT_SAVE_ARCHIVE}"
@@ -1085,33 +959,31 @@ save_local_docker_image() {
 
 usage() {
   cat <<EOF
-Usage: $(basename "$0") [docker|remote] [start|stop|save] [taa] [--model <name>]
+Usage: $(basename "$0") [remote] [start|stop|save] [taa] [--model <name>]
 
-Running modes (mutually exclusive, default: remote):
-  docker    Deploy TAA into a local Docker container for testing.
-  remote    Deploy remotely via Kubernetes Pod and SSH (default mode).
+Target (default: remote):
+  remote    Deploy remotely via Kubernetes Pod and SSH. This is the only deployment target; the
+            word may be given explicitly or omitted.
 
 Actions (mutually exclusive, default: start):
   start     Deploy and start services (default action).
-  stop      Stop target running services. In remote mode, a Pod created by this script (i.e. when
-            TARGET_POD was not set) is deleted as well; an explicitly named Pod is left in place.
+  stop      Stop target running services. A Pod created by this script (i.e. when TARGET_POD was
+            not set) is deleted as well; an explicitly named Pod is left in place.
   save      Package base image archive ($BASE_DOCKER_IMAGE_ARCHIVE) with production config ($TAA_PRODUCTION_CONFIG_TEMPLATE),
             commit with a date-stamped tag ($DEFAULT_SAVE_IMAGE), and export to an image archive ($DEFAULT_SAVE_ARCHIVE).
-            NOTE: save action is ONLY valid in docker mode (e.g. $(basename "$0") docker save).
+            This is a standalone packaging action and does not deploy anything (e.g. $(basename "$0") save).
 
 Options:
   --model <name> (or --model=<name>)
       Explicitly specify the LLM audit model (overriding config files).
   --archive <path> (or --output <path>, -o <path>)
-      Customize the exported archive file destination (docker save).
+      Customize the exported archive file destination (save).
   --image <tag> (or --tag <tag>)
-      Customize the committed image tag name (docker save).
+      Customize the committed image tag name (save).
   --base-archive <path> (or --base <path>)
-      Specify a custom base image archive (docker save).
+      Specify a custom base image archive (save).
   --config <path>
-      Specify an alternate production configuration template (docker save).
-  --container <name>
-      Specify local Docker container name (docker mode).
+      Specify an alternate production configuration template (save).
 
 Component selection:
   taa is the only component this script deploys; it is the default and may be given explicitly.
@@ -1127,40 +999,26 @@ Remote Pod lifecycle:
   the registry and pushed as TAA_POD_REGISTRY/TAA_POD_IMAGE_REPO:<today>. If the registry already
   holds a different build under that same-day tag, its manifest is deleted and the tag repushed;
   an identical build is left alone. An existing Pod is reused as is and is never recreated, so a
-  new image needs `TARGET_POD= ./deploy.sh taa stop` first (that deletes the Pod and its guest
+  new image needs 'TARGET_POD= ./deploy.sh taa stop' first (that deletes the Pod and its guest
   writable layer). Set TAA_POD_IMAGE explicitly to skip the build and pin an image.
   The Pod's LLM endpoint comes from taa-config.json, which is rewritten on every deploy.
 
 Examples:
-  # Docker mode (local Docker container)
-  $(basename "$0") docker start
-  $(basename "$0") docker start --model qwen2.5-coder:7b
-  $(basename "$0") docker stop
-  $(basename "$0") docker save
-  $(basename "$0") docker save --tag taa-train-infer:$(date +%Y%m%d)
-  $(basename "$0") docker save -o /tmp/taa-env-production.tar.gz
-  $(basename "$0") docker
-  $(basename "$0") docker taa
-
-  # Remote mode (Kubernetes / SSH)
+  # Remote deployment (Kubernetes Pod + SSH)
+  $(basename "$0") start
+  $(basename "$0") start --model qwen2.5-coder:7b
   $(basename "$0") remote start
-  $(basename "$0") remote stop
-  $(basename "$0") remote
+  $(basename "$0") stop
   $(basename "$0") remote taa
   $(basename "$0") taa
 
-Environment overrides:
-  # Docker mode (docker)
-  LOCAL_DOCKER_CONTAINER=${LOCAL_DOCKER_CONTAINER}
-      本地 Docker 目标容器名称（默认 taa-env-slim-v2）。
-  LOCAL_DOCKER_IMAGE_ARCHIVE=${LOCAL_DOCKER_IMAGE_ARCHIVE}
-      本地基础镜像归档文件路径（默认 deploy/base/taa-env-slim-v2.tar.gz）。
-  LOCAL_DOCKER_IMAGE=${LOCAL_DOCKER_IMAGE}
-      本地 Docker 基础镜像名称（默认 taa-env:slim-v2）。
-  LOCAL_DOCKER_NETWORK=${LOCAL_DOCKER_NETWORK}
-      本地 Docker 容器网络模式（默认 host）。
+  # Production image packaging (no deployment)
+  $(basename "$0") save
+  $(basename "$0") save --tag taa-train-infer:$(date +%Y%m%d)
+  $(basename "$0") save -o /tmp/taa-env-production.tar.gz
 
-  # Kubernetes / Pod (Remote mode)
+Environment overrides:
+  # Kubernetes / Pod
   TARGET_POD=${TARGET_POD:-<unset>}
       目标 TAA Pod 名称。未设置时由脚本创建并管理一个 Pod（见下方 TAA_POD_*）。
   TARGET_NAMESPACE=${TARGET_NAMESPACE}
@@ -1212,9 +1070,7 @@ Environment overrides:
   # Platform address observed by TAA
   # The platform itself (or platform-mock) is deployed separately with deploy-platform-mock.sh.
   PLATFORM_PORT=${PLATFORM_PORT}
-      remote 模式下 TAA 访问 platform 使用的端口（默认 18080）。
-  LOCAL_PLATFORM_PORT=${LOCAL_PLATFORM_PORT}
-      docker 模式下 TAA 访问宿主机 platform 使用的端口（默认 18080）。
+      TAA 访问 platform 使用的端口（默认 18080）。
   REMOTE_PLATFORM_IP=${REMOTE_PLATFORM_IP}
       TAA 容器访问 platform 使用的完整地址（默认 <REMOTE_HOST>:<PLATFORM_PORT>）。
 
@@ -1227,10 +1083,8 @@ Environment overrides:
       TAA 在目标容器内的工作目录。
   TAA_CONTAINER_ADDR=${TAA_CONTAINER_ADDR}
       写入 TAA 配置文件的容器内监听地址与端口。
-  TAA_DOCKER_CONFIG_TEMPLATE=${TAA_DOCKER_CONFIG_TEMPLATE}
-      docker 场景 TAA 配置模板。
   TAA_PRODUCTION_CONFIG_TEMPLATE=${TAA_PRODUCTION_CONFIG_TEMPLATE}
-      正式远程场景 TAA 配置模板。
+      TAA 配置模板（远程部署与打包镜像都用它）。
   CONTRACT_ID=${CONTRACT_ID}
       写入配置文件的合约 ID（可选，正式场景通常由运行环境注入）。
   TAA_KEEP_MANUAL=${TAA_KEEP_MANUAL:-false}
@@ -1242,7 +1096,7 @@ Environment overrides:
   SEMGREP_RULES_SOURCE=$SEMGREP_RULES_SOURCE
       注入容器的代码扫描规则目录，按配置里的 codeAudit.codeScan.rulesPath 落位。
   SEMGREP_PAYLOAD_BUNDLE=$SEMGREP_PAYLOAD_BUNDLE
-      docker save 打包时解包进镜像的 semgrep 容器 payload（由
+      save 打包时解包进镜像的 semgrep 容器 payload（由
       deploy/guest-build/build-semgrep-payload-container.sh 产出）。
   CONTAINER_SEMGREP_DIR=$CONTAINER_SEMGREP_DIR
       镜像内 semgrep 的安装根目录（pylib 与规则所在位置）。
@@ -1262,202 +1116,17 @@ ensure_parent_dir() {
   mkdir -p "$(dirname "$1")"
 }
 
-stop_pidfile() {
-  local name="$1"
-  local pidfile="$2"
-  if [[ -f "$pidfile" ]]; then
-    local pid
-    pid=$(<"$pidfile")
-    if [[ "$pid" =~ ^[0-9]+$ ]] && kill -0 "$pid" 2>/dev/null; then
-      warn "stopping old $name (pid $pid)"
-      pkill -P "$pid" 2>/dev/null || true
-      kill "$pid" 2>/dev/null || true
-      for _ in {1..50}; do
-        if ! kill -0 "$pid" 2>/dev/null; then
-          break
-        fi
-        sleep 0.1
-      done
-      pkill -9 -P "$pid" 2>/dev/null || true
-      kill -9 "$pid" 2>/dev/null || true
-    fi
-    rm -f "$pidfile"
-  fi
-}
-
-start_local_background() {
-  local name="$1"
-  local pidfile="$2"
-  local logfile="$3"
-  shift 3
-
-  ensure_parent_dir "$pidfile"
-  ensure_parent_dir "$logfile"
-  stop_pidfile "$name" "$pidfile"
-
-  nohup "$@" >"$logfile" 2>&1 < /dev/null &
-  local pid=$!
-  echo "$pid" >"$pidfile"
-  sleep 0.2
-  if ! kill -0 "$pid" 2>/dev/null; then
-    err "$name process died immediately after launch (pid $pid)"
-    if [[ -f "$logfile" ]]; then
-      echo -e "   ${YELLOW}↳${NC} ${name} log:" >&2
-      tail -n 20 "$logfile" >&2 || true
-    fi
-    exit 1
-  fi
-  info "started $name (pid $pid)"
-}
-
-# taa_tcp_probe HOST PORT
-#
-# TAA's own routes are sealed with an SM2 {cipher,sign} envelope, so no local
-# probe can get an answer out of /v1/taa/health: it would have to hold the
-# platform private key to sign a request and TAA's private key to open the
-# reply. A TCP connect is what is left, and it is still a meaningful gate —
-# TAA calls ListenAndServe only after config loading, key recovery and
-# registration have all returned, so a reachable port means startup completed.
-#
-# The reverse is not true: a failed registration is logged and startup
-# continues, so "port open" does NOT mean the platform knows this instance.
-# Callers confirm the listening log line separately for that reason.
-taa_tcp_probe() {
-  local host="$1"
-  local port="$2"
-  if command -v nc >/dev/null 2>&1; then
-    nc -z -w 2 "$host" "$port" >/dev/null 2>&1 && return 0
-  fi
-  # bash's /dev/tcp needs no external binary and is available wherever this
-  # script's own bash is. -z keeps it quiet; the subshell keeps the failure
-  # from being reported as a syntax error on shells built without it.
-  (exec 3<>"/dev/tcp/$host/$port") >/dev/null 2>&1
-}
-
-wait_for_taa_tcp_ready() {
-  local label="$1"
-  local host="$2"
-  local port="$3"
-  local timeout_seconds="$4"
-  local interval_seconds="${5:-2}"
-  local start_ts
-  start_ts=$(date +%s)
-  while :; do
-    if taa_tcp_probe "$host" "$port"; then
-      info "$label ready: tcp $host:$port ${DIM}(took $(( $(date +%s) - start_ts ))s)${NC}"
-      return 0
-    fi
-    if (( $(date +%s) - start_ts >= timeout_seconds )); then
-      err "$label did not become ready within ${timeout_seconds}s: tcp $host:$port"
-      return 1
-    fi
-    sleep "$interval_seconds"
-  done
-}
-
 # confirm_taa_listening CMD runs CMD (which should print the tail of TAA's log)
 # after a successful TCP probe and looks for the startup line. Without it a stale
 # process from a previous run, or a listener that is up but short of the
 # configuration step, looks the same as a healthy daemon -- the probe alone
-# cannot tell them apart. The command is a string because the two callers reach
-# the log by different routes (docker exec locally, kubectl exec over SSH).
+# cannot tell them apart. The command is a string because the caller reaches the
+# log through kubectl exec over SSH.
 confirm_taa_listening() {
   local tail_cmd="$1"
   local haystack
   haystack=$(eval "$tail_cmd" 2>/dev/null || true)
   grep -q 'taa service listening on' <<<"$haystack"
-}
-
-http_probe() {
-  local method="$1"
-  local url="$2"
-  if command -v curl >/dev/null 2>&1; then
-    curl -fsS -X "$method" "$url" >/dev/null 2>&1
-    return $?
-  fi
-  if command -v wget >/dev/null 2>&1; then
-    if [[ "$method" == "POST" ]]; then
-      wget -q -O - --method=POST --body-data='' "$url" >/dev/null 2>&1
-    else
-      wget -q -O - "$url" >/dev/null 2>&1
-    fi
-    return $?
-  fi
-  return 127
-}
-
-wait_for_http_ready() {
-  local label="$1"
-  local method="$2"
-  local url="$3"
-  local timeout_seconds="$4"
-  local interval_seconds="${5:-2}"
-  local logfile="${6:-}"
-
-  if [[ "$IS_TTY" != true ]]; then
-    local attempts=$(( (timeout_seconds + interval_seconds - 1) / interval_seconds ))
-    for ((i = 1; i <= attempts; i++)); do
-      if http_probe "$method" "$url"; then
-        info "$label ready: $url"
-        return 0
-      fi
-      sleep "$interval_seconds"
-    done
-
-    err "$label did not become ready within ${timeout_seconds}s: $url"
-    if [[ -n "$logfile" && -f "$logfile" ]]; then
-      echo -e "   ${YELLOW}↳${NC} ${label} log:"
-      tail -n 60 "$logfile" || true
-    fi
-    return 1
-  fi
-
-  cursor_hide
-  local start_ts
-  start_ts=$(date +%s)
-  local i=0
-  local spin_len=${#SPIN_FRAMES[@]}
-  local last_probe=0
-  local probe_ok=false
-
-  while true; do
-    local now
-    now=$(date +%s)
-    local elapsed=$((now - start_ts))
-
-    if (( now - last_probe >= interval_seconds )) || (( last_probe == 0 )); then
-      if http_probe "$method" "$url"; then
-        probe_ok=true
-        break
-      fi
-      last_probe=$now
-    fi
-
-    if (( elapsed >= timeout_seconds )); then
-      break
-    fi
-
-    local frame="${SPIN_FRAMES[$i]}"
-    printf "\r   ${CYAN}%s${NC} waiting for %s service to become ready ${DIM}(%ds / %ds)...${NC}" "$frame" "$label" "$elapsed" "$timeout_seconds"
-    i=$(( (i + 1) % spin_len ))
-    sleep 0.08
-  done
-
-  cursor_show
-  printf "\r\033[K"
-
-  local total_elapsed=$(( $(date +%s) - start_ts ))
-  if [[ "$probe_ok" == true ]]; then
-    info "$label ready: $url ${DIM}(took ${total_elapsed}s)${NC}"
-    return 0
-  else
-    err "$label did not become ready within ${timeout_seconds}s: $url"
-    if [[ -n "$logfile" && -f "$logfile" ]]; then
-      echo -e "   ${YELLOW}↳${NC} ${label} log:"
-      tail -n 60 "$logfile" || true
-    fi
-    return 1
-  fi
 }
 
 require_file() {
@@ -1513,14 +1182,6 @@ ensure_go_compiler() {
         fi
       fi
     fi
-  fi
-}
-
-select_taa_config_template() {
-  if [[ "$DEPLOY_DOCKER" == true ]]; then
-    printf '%s' "$TAA_DOCKER_CONFIG_TEMPLATE"
-  else
-    printf '%s' "$TAA_PRODUCTION_CONFIG_TEMPLATE"
   fi
 }
 
@@ -1748,7 +1409,7 @@ $SEMGREP_VERIFY_BODY"
   fi
 }
 
-# The docker-mode twin of provision_remote_scan_engine, run against the ephemeral builder container
+# The image-packaging twin of provision_remote_scan_engine, run against the ephemeral builder container
 # so the engine lands in the committed image. Same detection, same payload, same verification probe:
 # presence is not proof, because the payload can be extracted and the rules in place while semgrep
 # still cannot run them in this image -- a state the cheap probe reports as provisioned. Unlike the
@@ -1857,10 +1518,8 @@ resolve_target_model() {
     printf '%s' "$CLI_MODEL"
     return 0
   fi
-  local template
-  template="$(select_taa_config_template)"
   local model
-  model="$(get_taa_config_llm_model "$template")"
+  model="$(get_taa_config_llm_model "$TAA_PRODUCTION_CONFIG_TEMPLATE")"
   if [[ -n "$model" ]]; then
     printf '%s' "$model"
     return 0
@@ -1974,21 +1633,17 @@ ACTION=""
 
 if [[ $# -eq 0 ]]; then
   ACTION="start"
-  DEPLOY_REMOTE=true
 else
   while [[ $# -gt 0 ]]; do
     arg="$1"
     case "$arg" in
-      docker)
-        DEPLOY_DOCKER=true
-        ;;
-      local|local-docker)
-        err "'$arg' mode has been removed. Please use 'docker' for local container deployment or 'remote' for remote deployment."
+      docker|local|local-docker)
+        err "the '$arg' mode has been removed. This script deploys to the remote Kata CSV2 Pod only."
         usage >&2
         exit 1
         ;;
       remote)
-        DEPLOY_REMOTE=true
+        # Accepted for compatibility: remote is the only mode left.
         ;;
       start)
         if [[ -n "$ACTION" && "$ACTION" != "start" ]]; then
@@ -2016,7 +1671,6 @@ else
         ;;
       --archive=*|--output=*)
         CUSTOM_SAVE_ARCHIVE="${arg#*=}"
-        LOCAL_DOCKER_IMAGE_ARCHIVE="${arg#*=}"
         ;;
       --archive|--output|-o)
         shift
@@ -2026,11 +1680,9 @@ else
           exit 1
         fi
         CUSTOM_SAVE_ARCHIVE="$1"
-        LOCAL_DOCKER_IMAGE_ARCHIVE="$1"
         ;;
       --image=*|--tag=*)
         CUSTOM_SAVE_IMAGE="${arg#*=}"
-        LOCAL_DOCKER_IMAGE="${arg#*=}"
         ;;
       --image|--tag)
         shift
@@ -2040,7 +1692,6 @@ else
           exit 1
         fi
         CUSTOM_SAVE_IMAGE="$1"
-        LOCAL_DOCKER_IMAGE="$1"
         ;;
       --base-archive=*|--base=*)
         CUSTOM_BASE_ARCHIVE="${arg#*=}"
@@ -2066,20 +1717,8 @@ else
         fi
         CUSTOM_SAVE_CONFIG="$1"
         ;;
-      --container=*)
-        LOCAL_DOCKER_CONTAINER="${arg#*=}"
-        ;;
-      --container)
-        shift
-        if [[ $# -eq 0 || "$1" == -* ]]; then
-          err "$arg requires a container name argument"
-          usage >&2
-          exit 1
-        fi
-        LOCAL_DOCKER_CONTAINER="$1"
-        ;;
       platform-mock)
-        err "platform-mock is no longer deployed by this script; use ./deploy-platform-mock.sh <local|remote> start"
+        err "platform-mock is no longer deployed by this script; use ./deploy-platform-mock.sh remote start"
         exit 1
         ;;
       taa)
@@ -2115,25 +1754,6 @@ else
   done
 
   ACTION="${ACTION:-start}"
-
-  mode_count=0
-  [[ "$DEPLOY_DOCKER" == true ]] && ((mode_count++)) || true
-  [[ "$DEPLOY_REMOTE" == true ]] && ((mode_count++)) || true
-
-  if (( mode_count > 1 )); then
-    err "cannot specify multiple deploy modes (docker and remote are mutually exclusive)"
-    usage >&2
-    exit 1
-  fi
-
-  if (( mode_count == 0 )); then
-    if [[ "$ACTION" == "save" ]]; then
-      err "save action is only supported in docker mode"
-      detail "Use '$(basename "$0") docker save' to package and export the production Docker image archive."
-      exit 1
-    fi
-    DEPLOY_REMOTE=true
-  fi
 fi
 
 # Resolve the effective Pod name. TAA is the only thing deployed here, so an unset TARGET_POD
@@ -2194,30 +1814,21 @@ wait_for_remote_taa_ready() {
 
 if [[ "$ACTION" == "stop" ]]; then
   banner "Stopping Services"
-  if [[ "$DEPLOY_DOCKER" == true ]]; then
-    step "stopping docker services"
-    if command -v docker >/dev/null 2>&1 && docker ps --format '{{.Names}}' | grep -Eq "^${LOCAL_DOCKER_CONTAINER}\$"; then
-      if [[ "$DEPLOY_TAA" == true ]]; then
-        docker exec -i "$LOCAL_DOCKER_CONTAINER" sh -lc "touch '$TAA_CONTAINER_WORKDIR/manual'; pkill -f '[s]tart\.sh' >/dev/null 2>&1 || true; pkill -x '$BINARY_NAME' >/dev/null 2>&1 || true; killall '$BINARY_NAME' >/dev/null 2>&1 || true" 2>/dev/null || true
+  step "stopping remote processes"
+  check_remote_connectivity
+  if [[ "$DEPLOY_TAA" == true ]]; then
+    if remote_pod_exists; then
+      # A Pod that is Pending or wedged cannot be exec'd into; that must not stop the deletion
+      # of a Pod this deployment owns, whose memory is host-resident either way.
+      remote_ssh "$(container_exec) sh -lc 'touch \"$TAA_CONTAINER_WORKDIR/manual\" && pkill -x taa >/dev/null 2>&1 || true; killall taa >/dev/null 2>&1 || true'" \
+        || warn "could not signal taa inside Pod '$TARGET_POD' (it may not be running)"
+      # Only a Pod this deployment created is deleted. An explicitly named Pod belongs to the
+      # operator, and its guest writable layer is where their data, keys and models live.
+      if [[ -z "$TARGET_POD_WAS_SET" ]]; then
+        delete_taa_pod
       fi
-    fi
-  else
-    step "stopping remote processes"
-    check_remote_connectivity
-    if [[ "$DEPLOY_TAA" == true ]]; then
-      if remote_pod_exists; then
-        # A Pod that is Pending or wedged cannot be exec'd into; that must not stop the deletion
-        # of a Pod this deployment owns, whose memory is host-resident either way.
-        remote_ssh "$(container_exec) sh -lc 'touch \"$TAA_CONTAINER_WORKDIR/manual\" && pkill -x taa >/dev/null 2>&1 || true; killall taa >/dev/null 2>&1 || true'" \
-          || warn "could not signal taa inside Pod '$TARGET_POD' (it may not be running)"
-        # Only a Pod this deployment created is deleted. An explicitly named Pod belongs to the
-        # operator, and its guest writable layer is where their data, keys and models live.
-        if [[ -z "$TARGET_POD_WAS_SET" ]]; then
-          delete_taa_pod
-        fi
-      else
-        info "taa Pod '$TARGET_POD' does not exist; nothing to stop"
-      fi
+    else
+      info "taa Pod '$TARGET_POD' does not exist; nothing to stop"
     fi
   fi
   info "all target services stopped cleanly"
@@ -2225,28 +1836,15 @@ if [[ "$ACTION" == "stop" ]]; then
 fi
 
 if [[ "$ACTION" == "save" ]]; then
-  if [[ "$DEPLOY_DOCKER" != true ]]; then
-    err "save action is only supported in docker mode"
-    detail "Use '$(basename "$0") docker save' to package and export the production Docker image archive."
-    exit 1
-  fi
   save_local_docker_image
   exit 0
 fi
 
-# 容器标识显示名：docker 模式显示本地容器名，k8s 模式显示 Pod 名。
-if [[ "$DEPLOY_DOCKER" == true ]]; then
-  CONTAINER_LABEL="${LOCAL_DOCKER_CONTAINER}"
-else
-  CONTAINER_LABEL="${TARGET_POD}"
-fi
+CONTAINER_LABEL="${TARGET_POD}"
 REMOTE_DOCKER_ID="${REMOTE_DOCKER_ID:-$CONTAINER_LABEL}"
 
 DEPLOY_COMPONENTS="taa "
 DEPLOY_TARGET_DESC="${REMOTE_USER}@${REMOTE_HOST}"
-if [[ "$DEPLOY_DOCKER" == true ]]; then
-  DEPLOY_TARGET_DESC="local docker (${LOCAL_DOCKER_CONTAINER})"
-fi
 TARGET_MODEL="$(resolve_target_model)"
 banner "Deploying: ${DEPLOY_COMPONENTS}→ ${DEPLOY_TARGET_DESC}" "Target model: ${TARGET_MODEL}"
 
@@ -2262,111 +1860,7 @@ if [[ "$DEPLOY_TAA" == true ]]; then
 fi
 
 
-deploy_docker_taa() {
-  step "preparing runtime directories inside container"
-  docker exec -i "$LOCAL_DOCKER_CONTAINER" sh -lc "mkdir -p '$TAA_CONTAINER_WORKDIR/models' '$TAA_CONTAINER_WORKDIR/data' '$TAA_CONTAINER_WORKDIR/results' '$TAA_CONTAINER_WORKDIR/keys' '$LOCAL_DOCKER_INPUT_DIR' '$LOCAL_DOCKER_OUTPUT_DIR' && chmod 700 '$TAA_CONTAINER_WORKDIR/keys'" >/dev/null 2>&1
-  info "runtime directories initialized: $TAA_CONTAINER_WORKDIR"
 
-  step "copying taa binary into container"
-  spin_task "copying binary into container" bash -c '
-    set -euo pipefail
-    docker cp "$1" "$2:$3/$4" >/dev/null
-    docker exec -i "$2" sh -lc "chmod +x \"$3/$4\"" >/dev/null
-  ' _ "$TAA_BINARY_PATH" "$LOCAL_DOCKER_CONTAINER" "$TAA_CONTAINER_WORKDIR" "$BINARY_NAME"
-
-  step "checking attestation prerequisites inside container"
-  if ! docker exec -i "$LOCAL_DOCKER_CONTAINER" sh -lc 'test -e /dev/csv-guest' 2>/dev/null; then
-    warn "/dev/csv-guest not found in container — attestation will fail (expected in non-TEE Docker)"
-  else
-    info "attestation device /dev/csv-guest verified"
-  fi
-
-  TAA_CONFIG_TEMPLATE="$(select_taa_config_template)"
-  step "writing taa config for docker from $(basename "$TAA_CONFIG_TEMPLATE")"
-  ensure_parent_dir "$LOCAL_DOCKER_CONFIG_SOURCE"
-  local target_llm_endpoint="${LLM_IP:-https://127.0.0.1:${TAA_TEELLM_PORT}}"
-  info "taa llm endpoint: $target_llm_endpoint"
-  # storage.data stays as the template says (see save_local_docker_image).
-  write_taa_config "$LOCAL_DOCKER_CONFIG_SOURCE" "$TAA_CONFIG_TEMPLATE" \
-    "$TAA_CONTAINER_ADDR" "$LOCAL_PLATFORM_IP" "$LOCAL_DOCKER_CONTAINER" "$CONTRACT_ID" \
-    "$TAA_CONTAINER_WORKDIR/models" "" "$TAA_CONTAINER_WORKDIR/results" \
-    "$target_llm_endpoint" "$TARGET_MODEL" true \
-    "$LOCAL_DOCKER_INPUT_DIR" "$LOCAL_DOCKER_OUTPUT_DIR" "$TAA_CONTAINER_WORKDIR/keys"
-  docker cp "$LOCAL_DOCKER_CONFIG_SOURCE" "$LOCAL_DOCKER_CONTAINER:$CONTAINER_TAA_CONFIG_PATH" >/dev/null
-  info "config written to container: $CONTAINER_TAA_CONFIG_PATH"
-
-  step "deploying taa daemon script into container"
-  docker cp "$PROJECT_DIR/deploy/taa-supervisor.sh" "$LOCAL_DOCKER_CONTAINER:$TAA_CONTAINER_WORKDIR/taa-supervisor.sh"
-  docker exec -i "$LOCAL_DOCKER_CONTAINER" sh -lc "chmod +x '$TAA_CONTAINER_WORKDIR/taa-supervisor.sh'"
-
-  step "stopping old taa and daemon wrapper inside container"
-  stop_pidfile "taa" "$LOCAL_RUN_DIR/taa.pid"
-  pkill -f "$TAA_BINARY_PATH" >/dev/null 2>&1 || true
-  docker exec -i "$LOCAL_DOCKER_CONTAINER" sh -lc "touch '$TAA_CONTAINER_WORKDIR/manual'; pkill -f '[s]tart\.sh' >/dev/null 2>&1 || true; pkill -x '$BINARY_NAME' >/dev/null 2>&1 || true; killall '$BINARY_NAME' >/dev/null 2>&1 || true" >/dev/null 2>&1 || true
-  local stopped=false
-  # The bracket keeps pgrep from matching the shell running the pattern itself. The daemon
-  # is checked through ps instead of `pgrep -x`: a zombie keeps its comm (only its cmdline
-  # is emptied), and this container's PID 1 is an idle `tail -f /dev/null` that never reaps
-  # an orphan, so one dead taa would keep this loop reporting "still running" until the
-  # timeout and then "force-kill" a process that is already gone.
-  for _ in {1..30}; do
-    if ! docker exec -i "$LOCAL_DOCKER_CONTAINER" sh -lc "pgrep -f '[s]tart\.sh' >/dev/null 2>&1 || ps -eo stat=,comm= | awk -v n='$BINARY_NAME' '\$1 !~ /^Z/ && \$2 == n { f=1 } END { exit !f }'"; then
-      stopped=true
-      break
-    fi
-    sleep 0.2
-  done
-  if [[ "$stopped" != true ]]; then
-    warn "taa or taa-supervisor.sh did not terminate gracefully; force-killing"
-    docker exec -i "$LOCAL_DOCKER_CONTAINER" sh -lc "pkill -9 -f '[s]tart\.sh' >/dev/null 2>&1 || true; pkill -9 -x '$BINARY_NAME' >/dev/null 2>&1 || true; killall -9 '$BINARY_NAME' >/dev/null 2>&1 || true" >/dev/null 2>&1 || true
-    sleep 0.5
-  fi
-  info "stopped previous taa daemon and instances"
-
-  step "starting taa supervisor inside container"
-  docker exec -i "$LOCAL_DOCKER_CONTAINER" sh -lc "rm -f '$TAA_CONTAINER_WORKDIR/manual'"
-  docker exec -d "$LOCAL_DOCKER_CONTAINER" sh -lc "cd '$TAA_CONTAINER_WORKDIR' && nohup bash ./taa-supervisor.sh >/dev/null 2>&1 &"
-
-  step "waiting for taa service to become ready"
-  # TCP, not HTTP: /v1/taa/health is sealed and unreachable to a local probe.
-  if ! wait_for_taa_tcp_ready "taa" 127.0.0.1 "$LOCAL_TAA_PORT" "$READY_TIMEOUT" "$READY_INTERVAL"; then
-    echo -e "   ${YELLOW}↳${NC} taa container log (${TAA_LOG_FILE}):"
-    docker exec -i "$LOCAL_DOCKER_CONTAINER" sh -lc "tail -n 60 '$TAA_LOG_FILE' 2>/dev/null || true"
-    exit 1
-  fi
-  if ! confirm_taa_listening "docker exec -i '$LOCAL_DOCKER_CONTAINER' sh -lc 'tail -n 200 $TAA_LOG_FILE' 2>/dev/null"; then
-    warn "taa port is open but the 'taa service listening on' line was not found in the container log; the daemon may be an older process or still starting"
-  fi
-}
-
-if [[ "$DEPLOY_DOCKER" == true ]]; then
-  require_command docker
-  docker info >/dev/null 2>&1 || { err "docker daemon is not running or accessible"; exit 1; }
-
-  # 如果需要部署 taa，先确保容器已就绪
-  if [[ "$DEPLOY_TAA" == true ]]; then
-    ensure_local_docker_container
-  fi
-
-  # 1. 部署 taa 进本地容器
-  if [[ "$DEPLOY_TAA" == true ]]; then
-    deploy_docker_taa
-  fi
-
-  banner "Deploy Complete (Docker)" "All requested services are running in Docker container and verified healthy"
-  if [[ "$DEPLOY_TAA" == true ]]; then
-    echo -e "  ${BOLD}${CYAN}● TAA Secure Enclave Daemon${NC}  ${DIM}(In-Container Daemon)${NC}"
-    echo -e "    ${MUTED}↳ API        :${NC} ${BOLD}${LOCAL_TAA_URL}/v1/taa/*${NC} ${DIM}(sealed: needs the platform key pair)${NC}"
-    echo -e "    ${MUTED}↳ Container  :${NC} ${LOCAL_DOCKER_CONTAINER}"
-    echo -e "    ${MUTED}↳ Config     :${NC} ${CONTAINER_TAA_CONFIG_PATH}"
-    echo -e "    ${MUTED}↳ Log file   :${NC} ${TAA_LOG_FILE}"
-    echo -e "    ${MUTED}↳ Keys dir   :${NC} ${LOCAL_DOCKER_CONTAINER}:${TAA_CONTAINER_WORKDIR}/keys"
-    echo -e "    ${MUTED}↳ Platform   :${NC} ${LOCAL_PLATFORM_IP}"
-    echo -e "    ${MUTED}↳ Attestation:${NC} ${ATT_REPORT_FILE}"
-    echo ""
-  fi
-  exit 0
-fi
 
 ensure_remote_ssh
 
@@ -2379,7 +1873,7 @@ if [[ "$DEPLOY_TAA" == true ]]; then
 fi
 
 if [[ "$DEPLOY_TAA" == true ]]; then
-  TAA_CONFIG_TEMPLATE="$(select_taa_config_template)"
+  TAA_CONFIG_TEMPLATE="$TAA_PRODUCTION_CONFIG_TEMPLATE"
   step "writing remote taa config from $(basename "$TAA_CONFIG_TEMPLATE")"
   INCLUDE_TAA_IDENTITY=false
   # storage.data stays as the template says (see save_local_docker_image).

@@ -7,13 +7,13 @@
 # a platform, so the build flags, readiness probe and pid handling live here alone.
 #
 # Usage:
-#   ./deploy-platform-mock.sh local  start|stop|restart|status [options]
+#   ./deploy-platform-mock.sh start|stop|restart|status [options]
 #   ./deploy-platform-mock.sh remote start|stop|restart|status [options]
 #
-# Local mode runs the binary on this host. Remote mode uploads it over SSH and
-# starts it detached there. Without --taa-target the mock runs in multi-instance
-# mode: each TAA instance derives its own target from its registration, using
-# --taa-port (default 6001).
+# The mock runs on the remote host: the binary is built here, uploaded over SSH
+# and started detached there. `remote` is optional. Without --taa-target the mock
+# runs in multi-instance mode: each TAA instance derives its own target from its
+# registration, using --taa-port (default 6001).
 set -Eeuo pipefail
 
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -25,17 +25,17 @@ BINARY_NAME="${PLATFORM_MOCK_BINARY_NAME:-platform-mock}"
 # listens (ccs-node-agent), and the mock exists to stand in for it, not to
 # contend with it. `deploy.sh` still defaults to 18080 because that is the real
 # platform; point it here with PLATFORM_PORT=18081 when debugging against the mock.
-PORT="${PLATFORM_PORT:-${LOCAL_PLATFORM_PORT:-18081}}"
-ADDR="${PLATFORM_ADDR:-${LOCAL_PLATFORM_BIND:-}}"
+PORT="${PLATFORM_PORT:-18081}"
+ADDR="${PLATFORM_ADDR:-}"
 STATE_DIR="${PLATFORM_MOCK_STATE_DIR-__unset__}"
 UPLOAD_DIR="${PLATFORM_MOCK_UPLOAD_DIR-__unset__}"
 LOG_FILE="${PLATFORM_MOCK_LOG_FILE-__unset__}"
 PID_FILE="${PLATFORM_MOCK_PID_FILE-__unset__}"
-TAA_TARGET="${PLATFORM_MOCK_TAA_TARGET:-${LOCAL_TAA_URL:-}}"
+TAA_TARGET="${PLATFORM_MOCK_TAA_TARGET:-}"
 TAA_POD=""
 TAA_NS=""
 TAA_PORT=""
-LLM_TARGET="${PLATFORM_MOCK_LLM_TARGET:-${LOCAL_LLM_URL:-}}"
+LLM_TARGET="${PLATFORM_MOCK_LLM_TARGET:-}"
 LLM_POD=""
 LLM_NS=""
 LLM_PORT=""
@@ -54,12 +54,10 @@ SSH_EXTRA_OPTS=()
 
 ALLOW_EMPTY_ATTESTATION=0
 SKIP_BUILD=0
-STATIC_BUILD=0
 DRY_RUN="${DRY_RUN:-0}"
 REUSE_IF_RUNNING=0
 RESET_REGISTER=0
 
-TARGET=""
 ACTION=""
 
 # ── Logging ─────────────────────────────────────────────────────────────────
@@ -80,10 +78,11 @@ shell_quote() {
 
 usage() {
   cat <<'EOF'
-Usage: deploy-platform-mock.sh <local|remote> <start|stop|restart|status> [options]
+Usage: deploy-platform-mock.sh [remote] <start|stop|restart|status> [options]
 
 Builds the platform mock from ./tools/platform-mock/cmd/platform-mock and manages
-one instance. Local mode runs it on this host; remote mode uploads it over SSH.
+one instance on the remote host (the binary is uploaded over SSH). The `remote`
+word is optional; local mode has been removed.
 
 Common options:
   --binary PATH              Local build output (default: bin/platform-mock)
@@ -92,8 +91,8 @@ Common options:
   --port N                   Listen/probe port (default: 18081)
   --state-dir DIR            Persisted state directory (empty = omit the flag)
   --upload-dir DIR           Uploaded-files directory (empty = omit the flag)
-  --log-file PATH            Log file (local default: .local/logs/platform-mock.log)
-  --pid-file PATH            PID file (local default: .local/run/platform-mock.pid)
+  --log-file PATH            Log file (default: <remote-dir>/platform-mock.log)
+  --pid-file PATH            PID file (default: <remote-dir>/platform-mock.pid)
   --taa-target URL           Single-instance fixed TAA address; omit to derive
                              each instance's address from its registration
   --taa-pod NAME             TAA Pod for kubectl auto-discovery
@@ -110,7 +109,6 @@ Common options:
   --reuse                    On start, reuse an instance already answering
   --reset-register           POST /api/register/reset once the instance is ready
   --skip-build               Use the binary already at --binary
-  --static                   Force CGO_ENABLED=0 GOOS=linux (remote mode does this anyway)
   --ready-timeout SECONDS    Readiness timeout (default: 60)
   --ready-interval SECONDS   Readiness poll interval (default: 2)
   --dry-run                  Print what would run, execute nothing
@@ -125,8 +123,7 @@ Remote options:
   --ssh-port N               SSH port
   --ssh-opt OPTION           Extra ssh option, repeatable
 
-Local defaults: state .local/platform-mock, uploads .local/upload.
-Remote defaults: no --state-dir/--upload-dir (the binary's own defaults apply),
+Defaults: no --state-dir/--upload-dir (the binary's own defaults apply),
 log <remote-dir>/platform-mock.log, pid <remote-dir>/platform-mock.pid.
 EOF
 }
@@ -136,14 +133,19 @@ need_value() {
 }
 
 parse_args() {
-  [ $# -ge 2 ] || { usage >&2; exit 2; }
-  TARGET="$1"
-  ACTION="$2"
-  shift 2
-  case "$TARGET" in
-    local|remote) ;;
-    *) die "unknown target '$TARGET' (expected local or remote)" ;;
+  [ $# -ge 1 ] || { usage >&2; exit 2; }
+  case "$1" in
+    -h|--help) usage; exit 0 ;;
+    remote) shift; [ $# -ge 1 ] || { usage >&2; exit 2; } ;;
+    local|local-docker)
+      die "local mode has been removed; the mock runs on the remote host (use --host/REMOTE_HOST)"
+      ;;
   esac
+  case "$1" in
+    -h|--help) usage; exit 0 ;;
+  esac
+  ACTION="$1"
+  shift
   case "$ACTION" in
     start|stop|restart|status) ;;
     *) die "unknown action '$ACTION' (expected start, stop, restart or status)" ;;
@@ -173,7 +175,6 @@ parse_args() {
       --reuse) REUSE_IF_RUNNING=1; shift ;;
       --reset-register) RESET_REGISTER=1; shift ;;
       --skip-build) SKIP_BUILD=1; shift ;;
-      --static) STATIC_BUILD=1; shift ;;
       --ready-timeout) need_value "$@"; READY_TIMEOUT="$2"; shift 2 ;;
       --ready-interval) need_value "$@"; READY_INTERVAL="$2"; shift 2 ;;
       --dry-run) DRY_RUN=1; shift ;;
@@ -199,25 +200,17 @@ resolve_defaults() {
   PROBE_BASE="http://127.0.0.1:${PROBE_PORT}"
   PROBE_URL="${PROBE_BASE}/api/register/status"
 
-  if [ "$TARGET" = "local" ]; then
-    [ "$STATE_DIR" = "__unset__" ] && STATE_DIR="$PROJECT_DIR/.local/platform-mock"
-    [ "$UPLOAD_DIR" = "__unset__" ] && UPLOAD_DIR="$PROJECT_DIR/.local/upload"
-    [ "$LOG_FILE" = "__unset__" ] && LOG_FILE="$PROJECT_DIR/.local/logs/platform-mock.log"
-    [ "$PID_FILE" = "__unset__" ] && PID_FILE="$PROJECT_DIR/.local/run/platform-mock.pid"
-  else
-    [ "$STATE_DIR" = "__unset__" ] && STATE_DIR=""
-    [ "$UPLOAD_DIR" = "__unset__" ] && UPLOAD_DIR=""
-    [ "$LOG_FILE" = "__unset__" ] && LOG_FILE="$REMOTE_DIR/platform-mock.log"
-    [ "$PID_FILE" = "__unset__" ] && PID_FILE="$REMOTE_DIR/platform-mock.pid"
-    [ -n "$REMOTE_HOST" ] || die "remote mode requires --host or REMOTE_HOST"
-    [ -n "$REMOTE_BINARY" ] || REMOTE_BINARY="$REMOTE_DIR/$BINARY_NAME"
-  fi
+  [ "$STATE_DIR" = "__unset__" ] && STATE_DIR=""
+  [ "$UPLOAD_DIR" = "__unset__" ] && UPLOAD_DIR=""
+  [ "$LOG_FILE" = "__unset__" ] && LOG_FILE="$REMOTE_DIR/platform-mock.log"
+  [ "$PID_FILE" = "__unset__" ] && PID_FILE="$REMOTE_DIR/platform-mock.pid"
+  [ -n "$REMOTE_HOST" ] || die "--host or REMOTE_HOST is required"
+  [ -n "$REMOTE_BINARY" ] || REMOTE_BINARY="$REMOTE_DIR/$BINARY_NAME"
   return 0
 }
 
 # ── SSH ─────────────────────────────────────────────────────────────────────
 setup_ssh() {
-  [ "$TARGET" = "remote" ] || return 0
   local -a common=(-q -o LogLevel=ERROR -o StrictHostKeyChecking=accept-new \
     -o "UserKnownHostsFile=$HOME/.ssh/known_hosts")
   [ -n "$REMOTE_SSH_PORT" ] && common+=(-p "$REMOTE_SSH_PORT")
@@ -242,27 +235,13 @@ remote_sh() {
   "${SSH_CMD[@]}" "$REMOTE_TARGET" "$script"
 }
 
-remote_capture() {
-  local script="$1"
-  "${SSH_CMD[@]}" "$REMOTE_TARGET" "$script"
-}
-
 # ── Probe helpers ───────────────────────────────────────────────────────────
-http_ready_local() {
-  curl -fsS -o /dev/null "$PROBE_URL" 2>/dev/null \
-    || wget -q -O /dev/null "$PROBE_URL" 2>/dev/null
-}
-
 http_ready_remote() {
   remote_sh "curl -fsS -o /dev/null $(shell_quote "$PROBE_URL") 2>/dev/null || wget -q -O /dev/null $(shell_quote "$PROBE_URL") 2>/dev/null"
 }
 
 http_ready() {
-  if [ "$TARGET" = "local" ]; then
-    http_ready_local
-  else
-    http_ready_remote
-  fi
+  http_ready_remote
 }
 
 wait_ready() {
@@ -283,22 +262,13 @@ reset_register() {
     log "would POST $url"
     return 0
   fi
-  if [ "$TARGET" = "local" ]; then
-    curl -fsS -o /dev/null -X POST "$url" \
-      || wget -q -O /dev/null --post-data='' "$url" \
-      || die "could not clear the register state on $url"
-  else
-    remote_sh "curl -fsS -o /dev/null -X POST $(shell_quote "$url")" \
-      || die "could not clear the register state on $url"
-  fi
+  remote_sh "curl -fsS -o /dev/null -X POST $(shell_quote "$url")" \
+    || die "could not clear the register state on $url"
   log "register state cleared on $PROBE_BASE"
 }
 
 # ── Build ───────────────────────────────────────────────────────────────────
 build_binary() {
-  local static_build="$STATIC_BUILD"
-  [ "$TARGET" = "remote" ] && static_build=1
-
   if [ "$SKIP_BUILD" = "1" ]; then
     if is_dry_run; then
       log "would use the existing binary at $BINARY_PATH"
@@ -309,23 +279,14 @@ build_binary() {
   fi
 
   if is_dry_run; then
-    if [ "$static_build" = "1" ]; then
-      log "would build $BINARY_PATH (CGO_ENABLED=0 GOOS=linux go build -o $BINARY_PATH ./tools/platform-mock/cmd/platform-mock)"
-    else
-      log "would build $BINARY_PATH (go build -o $BINARY_PATH ./tools/platform-mock/cmd/platform-mock)"
-    fi
+    log "would build $BINARY_PATH (CGO_ENABLED=0 GOOS=linux go build -o $BINARY_PATH ./tools/platform-mock/cmd/platform-mock)"
     return 0
   fi
 
   command -v go >/dev/null 2>&1 || die "the go compiler is required to build platform-mock"
   mkdir -p "$(dirname "$BINARY_PATH")"
-  if [ "$static_build" = "1" ]; then
-    log "building $BINARY_PATH for linux (CGO disabled)"
-    ( cd "$PROJECT_DIR" && CGO_ENABLED=0 GOOS=linux go build -o "$BINARY_PATH" ./tools/platform-mock/cmd/platform-mock )
-  else
-    log "building $BINARY_PATH"
-    ( cd "$PROJECT_DIR" && go build -o "$BINARY_PATH" ./tools/platform-mock/cmd/platform-mock )
-  fi
+  log "building $BINARY_PATH for linux (CGO disabled)"
+  ( cd "$PROJECT_DIR" && CGO_ENABLED=0 GOOS=linux go build -o "$BINARY_PATH" ./tools/platform-mock/cmd/platform-mock )
   [ -f "$BINARY_PATH" ] || die "go build reported success but $BINARY_PATH is not there"
 }
 
@@ -352,78 +313,6 @@ build_mock_args() {
   [ -n "$SM2_ID" ] && MOCK_ARGS+=(-sm2-id "$SM2_ID")
   [ -n "$PLATFORM_KEY_FILE" ] && MOCK_ARGS+=(-platform-key-file "$PLATFORM_KEY_FILE")
   return 0
-}
-
-# ── Local lifecycle ─────────────────────────────────────────────────────────
-stop_local() {
-  if is_dry_run; then
-    log "would stop the local platform-mock (pid file $PID_FILE)"
-    return 0
-  fi
-  if [ -f "$PID_FILE" ]; then
-    local pid
-    pid="$(cat "$PID_FILE" 2>/dev/null || true)"
-    if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
-      kill "$pid" 2>/dev/null || true
-      local i
-      for i in $(seq 1 50); do
-        kill -0 "$pid" 2>/dev/null || break
-        sleep 0.1
-      done
-      kill -9 "$pid" 2>/dev/null || true
-    fi
-    rm -f "$PID_FILE"
-  fi
-  # pkill -f would match this script itself, whose argv carries --binary PATH.
-  pkill -x "$BINARY_NAME" >/dev/null 2>&1 || true
-}
-
-start_local() {
-  if is_dry_run; then
-    log "would start $BINARY_PATH on $ADDR (log $LOG_FILE, pid $PID_FILE)"
-    return 0
-  fi
-  [ -n "$STATE_DIR" ] && mkdir -p "$STATE_DIR"
-  [ -n "$UPLOAD_DIR" ] && mkdir -p "$UPLOAD_DIR"
-  mkdir -p "$(dirname "$LOG_FILE")" "$(dirname "$PID_FILE")"
-  stop_local
-  build_mock_args
-  log "starting platform-mock on $ADDR"
-  nohup "$BINARY_PATH" "${MOCK_ARGS[@]}" >"$LOG_FILE" 2>&1 </dev/null &
-  printf '%s\n' "$!" >"$PID_FILE"
-  sleep 0.2
-  if ! kill -0 "$(cat "$PID_FILE")" 2>/dev/null; then
-    [ -f "$LOG_FILE" ] && tail -n 20 "$LOG_FILE" >&2 || true
-    die "platform-mock exited immediately after start (log $LOG_FILE)"
-  fi
-  if ! wait_ready; then
-    [ -f "$LOG_FILE" ] && tail -n 40 "$LOG_FILE" >&2 || true
-    die "platform-mock did not answer $PROBE_URL within ${READY_TIMEOUT}s (log $LOG_FILE)"
-  fi
-  log "platform-mock is answering on $PROBE_BASE"
-}
-
-status_local() {
-  local running=0
-  if [ -f "$PID_FILE" ]; then
-    local pid
-    pid="$(cat "$PID_FILE" 2>/dev/null || true)"
-    if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
-      log "running (pid $pid, log $LOG_FILE)"
-      running=1
-    else
-      log "not running (stale pid file $PID_FILE)"
-    fi
-  else
-    log "not running (no pid file $PID_FILE)"
-  fi
-  if http_ready_local; then
-    log "status endpoint ready: $PROBE_URL"
-    return 0
-  fi
-  log "status endpoint not answering: $PROBE_URL"
-  [ "$running" = "1" ] && return 0
-  return 1
 }
 
 # ── Remote lifecycle ────────────────────────────────────────────────────────
@@ -505,41 +394,21 @@ main() {
         return 0
       fi
       build_binary
-      if [ "$TARGET" = "local" ]; then
-        start_local
-      else
-        start_remote
-      fi
+      start_remote
       reset_register
       ;;
     stop)
-      if [ "$TARGET" = "local" ]; then
-        stop_local
-      else
-        stop_remote
-      fi
+      stop_remote
       log "platform-mock stopped"
       ;;
     restart)
-      if [ "$TARGET" = "local" ]; then
-        stop_local
-      else
-        stop_remote
-      fi
+      stop_remote
       build_binary
-      if [ "$TARGET" = "local" ]; then
-        start_local
-      else
-        start_remote
-      fi
+      start_remote
       reset_register
       ;;
     status)
-      if [ "$TARGET" = "local" ]; then
-        status_local
-      else
-        status_remote
-      fi
+      status_remote
       ;;
   esac
 }
