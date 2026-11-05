@@ -15,10 +15,15 @@
 #    RUNTIME_CLASS    runtimeClassName       (TAA_POD_RUNTIME_CLASS)
 #    CPU, MEMORY      container resources    (TAA_POD_CPU, TAA_POD_MEMORY)
 #    CC_INIT_DATA     cc_init_data annotation, read from a running CoCo Pod or rendered from TAA_POD_INITDATA_FILE
+#    CONTRACT_TYPE    env CONTRACT_TYPE      (TAA_POD_CONTRACT_TYPE; 1/2 tee, 3 data analysis)
 #    DOCKER_ID        env DOCKER_ID          (TAA_POD_DOCKER_ID, default Pod name)
 #    PLATFORM_IP      env PLATFORM_IP        (REMOTE_PLATFORM_IP)
 #    PLATFORM_PUBLIC_KEY env PLATFORM_PUBLIC_KEY (TAA_POD_PLATFORM_PUBLIC_KEY, PLATFORM_PUBLIC_KEY, or read from the host)
 #    CONTRACT_ID      env CONTRACT_ID        (CONTRACT_ID)
+#
+#  CONTRACT_TYPE is the role the instance runs. It is injected here rather than rendered into
+#  taa-config.json so that one image can be deployed as either role, and because a Pod's
+#  environment is immutable: changing the role means recreating the Pod.
 #
 #  The LLM endpoint is deliberately not an env var here: an env value outlives every deployment
 #  and would override the endpoint written into taa-config.json on each run, so a later deploy
@@ -73,6 +78,11 @@ spec:
       # image that was rebuilt under the same tag. A pinned TAA_POD_IMAGE keeps IfNotPresent.
       imagePullPolicy: __PULL_POLICY__
       env:
+        # The instance role. 1 and 2 both select the ordinary tee role, 3 selects
+        # data analysis; the deployment injects the value so the image stays
+        # role-free and the config needs no rendering.
+        - name: CONTRACT_TYPE
+          value: "__CONTRACT_TYPE__"
         # The remote config path writes a template without a `platform` block,
         # so these are the only source of the registration identity; deploy.sh
         # refuses to finish when either is empty.

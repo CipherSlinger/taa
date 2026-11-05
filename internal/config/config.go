@@ -174,6 +174,14 @@ const (
 	ServerTypeDataAnalysis = "data-anaylsis"
 )
 
+// dataAnalysisDataDir is where a data-analysis instance lands imported data.
+// The role runs on the jupyter base image, whose runtime reads under
+// /home/jovyan; the shared template's /root/taa/data would put the data where
+// nothing looks for it. The role therefore overrides whatever the config says,
+// which is what lets the deployment inject CONTRACT_TYPE instead of rendering a
+// per-role config copy.
+const dataAnalysisDataDir = "/home/jovyan/systemAuthData"
+
 // FHE section defaults.
 const (
 	DefaultFHEPollIntervalMs   = 5000
@@ -1045,14 +1053,23 @@ func applyStartupConfigFile(cfg *StartupConfig, fileCfg startupConfigFile) {
 		cfg.EnableResultCheck = *fileCfg.CodeAudit.ResultCheck.Enabled
 	}
 
-	if trimmed := strings.TrimSpace(fileCfg.DataDir); trimmed != "" {
-		cfg.DataDir = trimmed
-	}
-	if trimmed := strings.TrimSpace(fileCfg.Storage.DataDir); trimmed != "" {
-		cfg.DataDir = trimmed
-	}
-	if trimmed := strings.TrimSpace(fileCfg.Storage.Data); trimmed != "" {
-		cfg.DataDir = trimmed
+	// The data landing directory. The data-analysis role is the one role whose directory is
+	// decided by the base image rather than by the daemon: it runs on the jupyter image, whose
+	// runtime reads under /home/jovyan. The role therefore wins over the shared template here --
+	// the template is tee-shaped and its /root/taa/data would put the data where nothing looks --
+	// which is what lets the deployment inject CONTRACT_TYPE instead of rendering a config copy.
+	if cfg.ServerType == ServerTypeDataAnalysis {
+		cfg.DataDir = dataAnalysisDataDir
+	} else {
+		if trimmed := strings.TrimSpace(fileCfg.DataDir); trimmed != "" {
+			cfg.DataDir = trimmed
+		}
+		if trimmed := strings.TrimSpace(fileCfg.Storage.DataDir); trimmed != "" {
+			cfg.DataDir = trimmed
+		}
+		if trimmed := strings.TrimSpace(fileCfg.Storage.Data); trimmed != "" {
+			cfg.DataDir = trimmed
+		}
 	}
 
 	if trimmed := strings.TrimSpace(fileCfg.ResultDir); trimmed != "" {

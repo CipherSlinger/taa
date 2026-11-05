@@ -210,10 +210,11 @@ func TestLoadStartupConfigFHEPlatformSection(t *testing.T) {
 }
 
 // The data-analysis role is selected by CONTRACT_TYPE, not by a template of its
-// own: deploy-dataanaylsis.sh renders a copy of configs/taa-production.json for
-// the role. Loading the real template with the environment value the platform
-// injects is what proves the role both overrides the template's tee-shaped audit
-// block and keeps the CSV hardware sealing key.
+// own: the deployment injects the role and nothing else, so the daemon has to
+// derive both the audit switches and the landing directory from it. Loading the
+// real template with the environment value the platform injects is what proves
+// the role both overrides the template's tee-shaped audit block, keeps the CSV
+// hardware sealing key, and moves the data where the jupyter runtime reads.
 func TestLoadStartupConfigDataAnalysisRole(t *testing.T) {
 	t.Setenv("CONTRACT_TYPE", "3")
 
@@ -250,9 +251,33 @@ func TestLoadStartupConfigDataAnalysisRole(t *testing.T) {
 	if cfg.CodeScan.Engine == "semgrep" {
 		t.Errorf("CodeScan.Engine = %q, want an engine that needs no semgrep payload", cfg.CodeScan.Engine)
 	}
-	if cfg.DataDir != "/root/taa/data" {
-		t.Errorf("DataDir = %q, want the shared template's data landing directory %q",
-			cfg.DataDir, "/root/taa/data")
+	if cfg.DataDir != dataAnalysisDataDir {
+		t.Errorf("DataDir = %q, want the data-analysis role's landing directory %q",
+			cfg.DataDir, dataAnalysisDataDir)
+	}
+}
+
+// The role, not the config, decides where a data-analysis instance lands its data: the shared
+// template is tee-shaped and names /root/taa/data, which the jupyter runtime would never read.
+// Pinning it here keeps the deployment free to inject the role instead of rendering a config copy.
+func TestLoadStartupConfigDataAnalysisRoleOwnsDataDir(t *testing.T) {
+	t.Setenv("CONTRACT_TYPE", "3")
+
+	path := filepath.Join(t.TempDir(), DefaultFileName)
+	writeTestConfig(t, path, `{
+		"server": {"addr": ":6001"},
+		"storage": {"data": "/root/taa/data"}
+	}`)
+
+	cfg, err := LoadStartupConfig(path)
+	if err != nil {
+		t.Fatalf("LoadStartupConfig() error = %v", err)
+	}
+	if cfg.ServerType != ServerTypeDataAnalysis {
+		t.Fatalf("ServerType = %q, want %q", cfg.ServerType, ServerTypeDataAnalysis)
+	}
+	if cfg.DataDir != dataAnalysisDataDir {
+		t.Errorf("DataDir = %q, want the role's directory %q", cfg.DataDir, dataAnalysisDataDir)
 	}
 }
 

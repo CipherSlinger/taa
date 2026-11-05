@@ -123,6 +123,13 @@ TAA_POD_NODE="${TAA_POD_NODE:-hygon-master}"
 TAA_POD_RUNTIME_CLASS="${TAA_POD_RUNTIME_CLASS:-kata-qemu-csv2}"
 TAA_POD_CPU="${TAA_POD_CPU:-3}"
 TAA_POD_MEMORY="${TAA_POD_MEMORY:-98Gi}"
+# The instance role the Pod runs, injected as CONTRACT_TYPE (TAA rejects any value outside 1-4).
+# 1 (tee training) and 2 (tee inference) both select the ordinary tee role -- the difference is
+# carried by the requests, not by the daemon -- and 3 selects data analysis, whose landing
+# directory and audit switches then follow from the role instead of from a rendered config. This
+# deployment creates tee Pods, so 1 is the default; a Pod's environment is immutable, so changing
+# the role means recreating the Pod.
+TAA_POD_CONTRACT_TYPE="${TAA_POD_CONTRACT_TYPE:-1}"
 # A fresh CSV2 Pod boots its guest before it can pull the image inside it, so this is longer than
 # the 120s readiness timeout the deployment uses once the Pod already exists.
 TAA_POD_READY_TIMEOUT="${TAA_POD_READY_TIMEOUT:-600}"
@@ -404,6 +411,40 @@ remote_pod_exists() {
   remote_ssh "kubectl $K_NS get pod '$TARGET_POD' >/dev/null 2>&1"
 }
 
+# The role a CONTRACT_TYPE value selects, using the same mapping TAA applies
+# (internal/config: 1 and 2 both mean tee). An empty or unknown value prints nothing.
+contract_type_role() {
+  case "${1:-}" in
+    1|2) printf 'tee' ;;
+    3) printf 'data-anaylsis' ;;
+    4) printf 'fhe' ;;
+  esac
+}
+
+# Prints the CONTRACT_TYPE the target Pod was created with, or nothing when it carries none (a Pod
+# created before the role was injected, which TAA therefore runs as tee).
+pod_contract_type() {
+  remote_ssh "kubectl $K_NS get pod '$TARGET_POD' -o jsonpath='{.spec.containers[0].env[?(@.name==\"CONTRACT_TYPE\")].value}' 2>/dev/null" || true
+}
+
+# A Pod's environment is immutable, so the role it was created with is the role it keeps. Reusing
+# an existing Pod for a deployment that asked for another role would install this tree's files into
+# an instance that still runs the old role, and since the role now comes from the environment
+# rather than from the config, nothing later in the flow would notice.
+require_matching_role() {
+  local existing existing_role wanted_role
+  existing="$(pod_contract_type)"
+  existing="${existing//[$'\r\n']/}"
+  wanted_role="$(contract_type_role "$TAA_POD_CONTRACT_TYPE")"
+  # No CONTRACT_TYPE means tee: that is how TAA interprets a Pod that carries none.
+  existing_role="$(contract_type_role "${existing:-1}")"
+  if [[ -n "$wanted_role" && "$existing_role" != "$wanted_role" ]]; then
+    err "TAA Pod '$TARGET_POD' runs the '$existing_role' role (CONTRACT_TYPE=${existing:-unset}), not '$wanted_role' (CONTRACT_TYPE=$TAA_POD_CONTRACT_TYPE)"
+    detail "A Pod's environment cannot be changed in place. Use a different TAA_POD_NAME, or delete and recreate the Pod."
+    exit 1
+  fi
+}
+
 # True when the value is the platform's published wire format: 04 || X(32B) || Y(32B), hex.
 is_platform_public_key() {
   [[ "$1" =~ ^04[[:xdigit:]]{128}$ ]]
@@ -642,6 +683,7 @@ create_taa_pod() {
       -e "s|__PULL_POLICY__|$(sed_escape "$TAA_POD_PULL_POLICY")|g" \
       -e "s|__CPU__|$(sed_escape "$TAA_POD_CPU")|g" \
       -e "s|__MEMORY__|$(sed_escape "$TAA_POD_MEMORY")|g" \
+      -e "s|__CONTRACT_TYPE__|$(sed_escape "$TAA_POD_CONTRACT_TYPE")|g" \
       -e "s|__CC_INIT_DATA__|$(sed_escape "$cc_init_data")|g" \
       -e "s|__DOCKER_ID__|$(sed_escape "$docker_id")|g" \
       -e "s|__PLATFORM_IP__|$(sed_escape "$REMOTE_PLATFORM_IP")|g" \
@@ -1034,6 +1076,10 @@ Environment overrides:
       新建 Pod 绑定的节点（默认 hygon-master）。
   TAA_POD_RUNTIME_CLASS=${TAA_POD_RUNTIME_CLASS}
       新建 Pod 的 RuntimeClass（默认 kata-qemu-csv2）。
+  TAA_POD_CONTRACT_TYPE=${TAA_POD_CONTRACT_TYPE}
+      新建 Pod 的实例角色，写入 CONTRACT_TYPE（默认 1）：1 tee 训练、2 tee 推理（1 和 2 都落到
+      普通 tee 角色）、3 数据分析、4 fhe。数据分析角色的数据落盘目录与审计开关由角色决定。
+      Pod 的环境变量不能原地修改，换角色只能重建 Pod。
   TAA_POD_CPU=${TAA_POD_CPU}
   TAA_POD_MEMORY=${TAA_POD_MEMORY}
       新建 Pod 的 CPU/内存 limits（默认 3 / 98Gi；CSV2 加密内存按 limits 常驻）。
@@ -1976,8 +2022,14 @@ verify_pod_contents() {
 
   # Presence, not a run: semgrep's own verification belongs to provisioning, where a failure can
   # still be repaired. Here a missing engine means the image was assembled wrong.
+  #
+  # A deployment that skipped provisioning on purpose (the data-analysis role, whose audit is off)
+  # has no engine to find, so it is not checked against one: the template still selects semgrep,
+  # but nothing was installed for it.
   local engine="" rules_path=""
-  read -r engine rules_path <<<"$(taa_scan_engine_requirements "${CUSTOM_SAVE_CONFIG:-$TAA_PRODUCTION_CONFIG_TEMPLATE}")"
+  if [[ "$TAA_SCAN_ENGINE_PROVISION" != "skip" ]]; then
+    read -r engine rules_path <<<"$(taa_scan_engine_requirements "${CUSTOM_SAVE_CONFIG:-$TAA_PRODUCTION_CONFIG_TEMPLATE}")"
+  fi
   if [[ "$engine" == "semgrep" ]]; then
     remote_ssh "$(container_exec) sh -lc 'command -v semgrep >/dev/null 2>&1'" >/dev/null 2>&1 ||
       VERIFY_FAILURES+=("semgrep CLI: not installed in the Pod, so audits would fall back to regex")
@@ -2058,6 +2110,7 @@ if [[ "$ACTION" == "create" ]]; then
     # The guest's writable layer holds the SM2 key pair, the sealed state and the imported data, so
     # an existing Pod is kept and verified rather than replaced under the operator.
     info "TAA Pod '$TARGET_POD' already exists; verifying it instead of creating a second one"
+    require_matching_role
   else
     create_taa_pod
   fi

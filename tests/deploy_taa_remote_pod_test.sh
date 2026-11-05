@@ -288,6 +288,10 @@ grep -q "value: \"$TEST_PLATFORM_KEY\"" "$APPLIED" \
   || fail "the platform public key did not reach the Pod environment"
 grep -q "platform public key read from" <<<"$output" \
   || fail "the platform public key was not read from the host when it was not exported"
+# The role is part of the Pod environment, not the config: TAA resolves data analysis's landing
+# directory and audit switches from it alone.
+grep -q 'name: CONTRACT_TYPE' "$APPLIED" || fail "the Pod environment does not carry CONTRACT_TYPE"
+grep -q 'value: "1"' "$APPLIED" || fail "CONTRACT_TYPE does not default to the tee role"
 # Requests must equal limits: CSV2 memory is resident from boot, so an overcommit is a permanent
 # host cost, not a burst.
 cpu_limits="$(grep -cE '^          cpu: "' "$APPLIED")"
@@ -308,6 +312,20 @@ run_deploy create
   || fail "the second run applied the manifest again instead of reusing the Pod"
 grep -q "already exists; verifying it instead of creating a second one" <<<"$output" \
   || fail "the second run did not report the reused Pod"
+
+# ── 2b. Reuse is refused when the existing Pod runs another role ────────────
+#
+# The role lives in the Pod environment, which cannot be changed in place. Reusing a tee Pod for a
+# data-analysis deployment would install the right files into an instance that still audits like a
+# tee, and with the role no longer rendered into the config nothing later in the flow would see it.
+
+RUN_ENV=(TAA_POD_CONTRACT_TYPE=3)
+run_deploy create
+RUN_ENV=()
+[[ $status -ne 0 ]] || fail "a role mismatch was accepted"
+grep -q "runs the 'tee' role" <<<"$output" || fail "the role mismatch was not named"
+[[ "$(cat "$MOCK_STATE_DIR/apply-count")" == "1" ]] \
+  || fail "a role mismatch still applied a manifest"
 
 # ── 3. Negative control: update never creates a Pod --pod names ─────────────
 

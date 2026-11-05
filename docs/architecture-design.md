@@ -17,7 +17,7 @@ TAA（Trusted Application Attestation）是一个运行在 Hygon CSV（可信安
 | `fhe` | 普通 GPU 宿主机（非 TEE） | 把模型与密文数据转交给同机 FHE 服务（redis + api_server + worker），轮询进度、接收回调、取回密文结果并导出 | **不做**远程证明、不做本地训练、不做代码审计、不提供导出信封 |
 | `data-anaylsis` | CSV guest（jupyter 基座） | 只接管平台下发的数据：解密后按 `dataResourceCode` 落盘 | **不做**审计、不做训练、不写导入索引、不接受模型导入 |
 
-角色不只决定流水线，也决定配置里哪些段生效（`internal/config` 的 `roleCapabilitySets`）：`tee` 审计 + 证明；`data-anaylsis` 保留证明、关闭审计/二进制通道/结果检查/LLM；`fhe` 两者都不做，并把密封密钥来源从模板的 `csv-hw` 解析为 `sm2`（它不在 CSV guest 内）。`tee` 训练与 `tee` 推理共用同一个 `taa-env` 镜像和 `configs/taa-production.json`；`data-anaylsis` 仍用 jupyter 基座镜像，但配置同样取自该共享模板（部署脚本按角色渲染副本）。
+角色不只决定流水线，也决定配置里哪些段生效（`internal/config` 的 `roleCapabilitySets`）：`tee` 审计 + 证明；`data-anaylsis` 保留证明、关闭审计/二进制通道/结果检查/LLM，并把数据落盘目录固定为 jupyter 运行时读取的 `/home/jovyan/systemAuthData`；`fhe` 两者都不做，并把密封密钥来源从模板的 `csv-hw` 解析为 `sm2`（它不在 CSV guest 内）。`tee` 训练与 `tee` 推理共用同一个 `taa-env` 镜像和 `configs/taa-production.json`；`data-anaylsis` 仍用 jupyter 基座镜像，配置同样原样取自该共享模板——角色由部署时注入 Pod 的 `CONTRACT_TYPE` 决定，不再渲染配置副本。
 
 > 拼写 `data-anaylsis` 是配置契约的既有取值（`internal/config/config.go` 的 `ServerTypeDataAnalysis`），不是笔误。
 
@@ -435,7 +435,7 @@ TAA 作为服务端注册的路由（`internal/controller/router.go`）：
                     └─ 有公钥 → SM2 信封 + SM4-GCM，文件名追加 .enc
 ```
 
-### 5.4 数据分析实例 (`server.type=data-anaylsis`)
+### 5.4 数据分析实例 (`CONTRACT_TYPE=3` / `server.type=data-anaylsis`)
 
 - `/v1/taa/import` 的 `resourceUrl` 必须携带三个查询参数：`dataKeyCipher`、`fileName`、`dataResourceCode`，缺一即 400。
 - `fileName` 与 `dataResourceCode` 会做 URL 解码与单路径段校验，落盘前再次做 `SafeJoinWithBase`，防止路径穿越。
@@ -612,7 +612,7 @@ USERDATA = taaPublicKey.X || taaPublicKey.Y
 |---|---|---|---|
 | `deploy.sh` | TEE 训练 / TEE 推理（同一镜像，角色由 `CONTRACT_TYPE` 选择） | `taa-env:slim-v2` | `taa-train-infer:<YYYYMMDD>` / `deploy/out/taa-train-infer-<YYYYMMDD>.tar.gz` |
 | `deploy-fhe.sh` | FHE 实例（与 FHE 服务同容器） | `latti/latti-server-node:latest` | `taa-fhe:<YYYYMMDD>` / `deploy/out/taa-fhe-<YYYYMMDD>.tar.gz` |
-| `deploy-dataanaylsis.sh` | 数据分析实例（共享模板按角色渲染） | `jupyter-nologin-full:v2.2` | `taa-dataanaylsis:<YYYYMMDD>` / `deploy/out/taa-dataanaylsis-<YYYYMMDD>.tar.gz` |
+| `deploy-dataanaylsis.sh` | 数据分析实例（注入 `CONTRACT_TYPE=3`） | `jupyter-nologin-full:v2.2` | `taa-dataanaylsis:<YYYYMMDD>` / `deploy/out/taa-dataanaylsis-<YYYYMMDD>.tar.gz` |
 | `deploy-llm.sh`（内建构建 + 部署） | TEE-LLM 网关 | `taa-env:slim-v2` 去掉 `/root/taa` | `teellm:<YYYYMMDD>` / `deploy/out/teellm-<YYYYMMDD>.tar.gz` |
 | `deploy-taa-vm.sh`（驱动 `deploy/guest-build/build-initrd.sh`） | CSV2 机密 VM initrd | `kata-containers-initrd-confidential-csv.img` | 追加 TAA 的 initrd 与测试 Pod 清单 |
 
@@ -681,7 +681,7 @@ USERDATA = taaPublicKey.X || taaPublicKey.Y
 └── semgrep/{pylib,MANIFEST,rules}  Semgrep payload（仅审计镜像）
 ```
 
-模板路径可以整体覆盖：`data-anaylsis` 的 `storage.data` 为 `/home/jovyan/systemAuthData`，`fhe` 的 `storage.result` 为 `/data/taa-results`、`storage.keys` 为 `/opt/taa-state/keys`。新增可写路径时以模板为准，不要假设所有实例都落在 `/root/taa`。
+模板路径可以整体覆盖：`fhe` 的 `storage.result` 为 `/data/taa-results`、`storage.keys` 为 `/opt/taa-state/keys`。`data-anaylsis` 的数据落盘目录不由模板决定：加载器按角色固定为 `/home/jovyan/systemAuthData`（jupyter 运行时读取的位置），模板里的 `storage.data` 在该角色下被忽略。新增可写路径时以模板为准，不要假设所有实例都落在 `/root/taa`。
 
 Ollama 离线包**不在 TAA 容器内**：TEE-LLM 网关拆分为独立部署后，Ollama 与网关同容器，由 `teellm` 子模块提供源码、由 `deploy-llm.sh` 内建构建镜像并部署到远端宿主机的 Kata CSV2 Pod，TAA 通过 `codeAudit.llm.endpoint`（或 `LLM_IP`）访问。
 

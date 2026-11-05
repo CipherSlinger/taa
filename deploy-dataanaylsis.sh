@@ -1,68 +1,35 @@
 #!/usr/bin/env bash
 # Deploy the data-analysis role of TAA.
 #
-# The role itself is selected by CONTRACT_TYPE=3 (or by the rendered
-# server.type), and the loader derives what the role cannot do - no code audit,
-# no binary channel, no result check, no LLM, the rule-carrying scan engine -
-# from that selection alone. What this script adds is the deployment shape the
-# data-analysis tasks need: the jupyter base image, and a data landing directory
-# inside that image's home.
+# The role is injected into the Pod as CONTRACT_TYPE=3 and is not written into the config: TAA
+# derives everything the role changes from that one value - the code audit, the binary channel,
+# the result check, the LLM and the rule-carrying scan engine are switched off, and the data lands
+# under /home/jovyan/systemAuthData, where the jupyter runtime reads it, instead of the shared
+# template's /root/taa/data. The shared configs/taa-production.json is therefore used unmodified,
+# and the same image can be deployed as another role by injecting another value.
 #
-# One thing follows from the base image and is rendered into a copy of the
-# shared configs/taa-production.json: the data lands under
-# /home/jovyan/systemAuthData, where the jupyter runtime reads it, instead of
-# the shared template's /root/taa/data.
+# What this script adds is the deployment shape the data-analysis tasks need: the jupyter base
+# image, the role, and the packed image names.
 #
-# The code audit block is left exactly as the shared template has it. The role
-# (server.type=data-anaylsis, or CONTRACT_TYPE=3) disables the whole audit at
-# startup - switches, LLM and a rule-carrying engine - so the template's semgrep
-# selection never reaches a scan on this instance. What must not happen is the
-# packaging path reading that text at face value and installing a semgrep
-# payload this image has no use for, so engine provisioning is skipped
-# explicitly below.
-#
-# The state sealing key source is not rendered: TAA detects /dev/csv-guest at
-# startup and uses the CSV hardware key inside a guest, the SM2 derivation
-# everywhere else. Remote deployment and image packaging therefore behave the
-# same way for this role.
+# The state sealing key source is not rendered: TAA detects /dev/csv-guest at startup and uses the
+# CSV hardware key inside a guest, the SM2 derivation everywhere else. Remote deployment and image
+# packaging therefore behave the same way for this role.
 set -euo pipefail
 
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-CONFIG_TEMPLATE="$PROJECT_DIR/configs/taa-production.json"
 BASE_IMAGE="${DATAANALYSIS_IMAGE:-jupyter-nologin-full:v2.2}"
 BASE_ARCHIVE="${DATAANALYSIS_IMAGE_ARCHIVE:-$PROJECT_DIR/deploy/base/jupyter-nologin-full-v2.2.tar.gz}"
-RENDERED_TEMPLATE="$PROJECT_DIR/.local/run/taa-dataanaylsis.json"
 
-die() { printf '[deploy-dataanaylsis] ERROR: %s\n' "$*" >&2; exit 1; }
 log() { printf '[deploy-dataanaylsis] %s\n' "$*"; }
 
-[ -f "$CONFIG_TEMPLATE" ] || die "config template not found: $CONFIG_TEMPLATE"
-command -v python3 >/dev/null 2>&1 \
-  || die "python3 is required to render the config template"
-
-mkdir -p "$(dirname "$RENDERED_TEMPLATE")"
-python3 - "$CONFIG_TEMPLATE" "$RENDERED_TEMPLATE" <<'PY'
-import json
-import sys
-
-src, dst = sys.argv[1], sys.argv[2]
-with open(src, encoding="utf-8") as f:
-    cfg = json.load(f)
-
-cfg.setdefault("server", {})["type"] = "data-anaylsis"
-cfg.setdefault("storage", {})["data"] = "/home/jovyan/systemAuthData"
-
-with open(dst, "w", encoding="utf-8") as f:
-    json.dump(cfg, f, ensure_ascii=False, indent=2)
-    f.write("\n")
-PY
-
-export TAA_PRODUCTION_CONFIG_TEMPLATE="$RENDERED_TEMPLATE"
 export BASE_DOCKER_IMAGE="$BASE_IMAGE"
 export BASE_DOCKER_IMAGE_ARCHIVE="$BASE_ARCHIVE"
-# The rendered template still selects semgrep, so deploy.sh would otherwise install the payload
-# into the image (save) or the pod (remote). The role disables the engine at startup, and this
-# base image ships neither the payload nor a use for it.
+# 3 is data analysis in TAA's CONTRACT_TYPE mapping; the Pod carries it and the daemon resolves the
+# role from it before it reads the config.
+export TAA_POD_CONTRACT_TYPE=3
+# The shared template still selects semgrep, so deploy.sh would otherwise install the payload into
+# the image (save) or the pod (remote). The role disables the engine at startup, and this base
+# image ships neither the payload nor a use for it.
 export TAA_SCAN_ENGINE_PROVISION=skip
 # No gateway is deployed behind this instance, and the role disables the LLM; an
 # endpoint injected by the environment would only be a leftover from the audit
@@ -90,6 +57,6 @@ if [[ "$want_save" == true ]]; then
   [[ "$has_archive" == true ]] || args+=(--archive "$PROJECT_DIR/deploy/out/taa-dataanaylsis-$date_tag.tar.gz")
 fi
 
-log "config: $CONFIG_TEMPLATE rendered with server.type=data-anaylsis, data under /home/jovyan/systemAuthData"
+log "role: CONTRACT_TYPE=3 (data-anaylsis), data under /home/jovyan/systemAuthData"
 log "base image: $BASE_IMAGE"
 exec "$PROJECT_DIR/deploy.sh" "${args[@]}"

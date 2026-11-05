@@ -6,7 +6,7 @@
 |---|---|---|
 | `deploy.sh` | TEE 训练/推理 Pod 里的 TAA 本体 | 自建 `taa-train-infer:<YYYYMMDD>`，基座 `taa-env:slim-v2`，推到 `<REMOTE_HOST>:31313` |
 | `deploy-fhe.sh` | FHE 服务 + TAA：默认建专用 FHE Pod，也可部署进已有 Pod 或 docker 容器 | 自建 `taa-fhe:<YYYYMMDD>`，基座 `latti/latti-server-node:latest`；`create` 建 Pod 时另把 FHE 模型树烤进镜像，推到 `<REMOTE_HOST>:31313` |
-| `deploy-dataanaylsis.sh` | 数据分析角色（转发给 `deploy.sh`，换基座与配置） | 自建 `taa-dataanaylsis:<YYYYMMDD>`，基座 `jupyter-nologin-full:v2.2` |
+| `deploy-dataanaylsis.sh` | 数据分析角色（转发给 `deploy.sh`，换基座并注入 `CONTRACT_TYPE=3`） | 自建 `taa-dataanaylsis:<YYYYMMDD>`，基座 `jupyter-nologin-full:v2.2` |
 | `deploy-llm.sh` | 独立的 TEE-LLM 推理网关 Pod | 自建 `teellm:<YYYYMMDD>`，基座 `teellm-base:<日期>`（由 `taa-env:slim-v2` 派生），内置 ollama 运行时与模型，推到 `<REMOTE_HOST>:31313` |
 | `deploy-platform-mock.sh` | 平台 mock，需单独启动 | 不用镜像：静态二进制经 SSH 上传后在远端后台运行 |
 
@@ -61,6 +61,11 @@ PLATFORM_PORT=18081 ./deploy.sh create
 **动作**：`create`（默认）、`update`、`start`、`stop`、`probe`、`delete`、`save`，互斥。
 `start` 只启动 Pod 里的 taa（等价于 `stop` 的另一端），不构建、不拷贝、不创建 Pod；`create`
 才是唯一创建 Pod 的动作。`delete` 只删本脚本创建的 Pod，`--pod` 指定的 Pod 一律拒绝。
+
+**实例角色**：`create` 把角色写进 Pod 的 `CONTRACT_TYPE` 环境变量（默认 `1`，即普通 tee 角色），
+不再依赖配置里的 `server.type`。用 `TAA_POD_CONTRACT_TYPE` 改角色（`1`/`2` 都是 tee，`3` 数据分析）。
+Pod 的环境变量不能原地修改，已有 Pod 的角色与本次请求不一致时 `create` 会拒绝复用，换角色需要
+`delete` 后重建，或用另一个 `TAA_POD_NAME`。
 
 **Pod 生命周期**：不给 `--pod` 时，首次 `create` 会先用当前源码构建生产镜像、上传并推送，
 再创建 Pod 并校验；已有 Pod 会被原样保留并校验（guest 可写层里是 SM2 密钥、封存状态和导入的
@@ -172,9 +177,10 @@ Pod 规格与来源用 `FHE_POD_NAME`、`FHE_POD_CPU`、`FHE_POD_MEMORY`、`FHE_
 
 ## 数据分析角色：`deploy-dataanaylsis.sh`
 
-转发给 `deploy.sh`，基座换成 `jupyter-nologin-full:v2.2`，并把数据目录渲染到
-`/home/jovyan/systemAuthData`。动作与参数全部原样透传，因此 `create`（默认）/ `update` /
-`start` / `stop` / `probe` / `delete` / `save` 都与 `deploy.sh` 一致：
+转发给 `deploy.sh`，基座换成 `jupyter-nologin-full:v2.2`，并向 Pod 注入 `CONTRACT_TYPE=3`：
+数据落盘目录（`/home/jovyan/systemAuthData`）和审计开关都由角色决定，配置文件原样使用。
+动作与参数全部原样透传，因此 `create`（默认）/ `update` / `start` / `stop` / `probe` /
+`delete` / `save` 都与 `deploy.sh` 一致：
 
 ```bash
 ./deploy-dataanaylsis.sh          # create
@@ -468,12 +474,12 @@ bundle 只带 `pylib`（66 个 wheel）。supervisor 的单例锁用 `flock`，�
 dpkg 437 个包，解压 7.55 GB，ENTRYPOINT `tini -g --`，USER `jovyan`(1000)，
 HOME/WORKDIR = `/home/jovyan`，EXPOSE 8888。
 
-配置不再有自己的模板：脚本把 `configs/taa-production.json` 渲染成副本，只写入
-`server.type=data-anaylsis` 与 `storage.data=/home/jovyan/systemAuthData`（jupyter 运行时读取的
-位置），`codeAudit` 块与生产模板逐字一致。加载器按角色在启动时关闭整个审计（开关、LLM、
-带规则的引擎），所以模板里的 semgrep 选择到不了扫描。真正需要处理的是打包路径：`deploy.sh`
-按模板文本决定是否注入 semgrep payload，脚本因此导出 `TAA_SCAN_ENGINE_PROVISION=skip`，
-让 `save` 打包与远程部署两条路都不再装这个镜像用不上的 payload。
+配置不再有自己的模板，也不再渲染副本：`configs/taa-production.json` 原样使用。角色由 Pod 的
+环境变量 `CONTRACT_TYPE=3` 指定，加载器据此在启动时关闭整个审计（开关、LLM、带规则的引擎），
+并把数据落盘目录固定为 `/home/jovyan/systemAuthData`（jupyter 运行时读取的位置），与模板里的
+`storage.data` 无关。打包路径仍需处理：`deploy.sh` 按模板文本决定是否注入 semgrep payload，
+脚本因此导出 `TAA_SCAN_ENGINE_PROVISION=skip`，让 `save` 打包与远程部署两条路都不再装这个镜像
+用不上的 payload。
 密封密钥来源不需要渲染：TAA 启动时按 `/dev/csv-guest` 是否存在自动选择硬件密钥或 SM2 派生，
 打包与远端两种路径行为一致。
 
