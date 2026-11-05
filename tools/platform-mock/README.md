@@ -104,7 +104,10 @@ The platform mock provides an embedded single-page Web console accessible by ope
   each entry with it. An unattested TEE instance registers the same way as FHE and is shown
   as FHE, because that is all the platform was told.
 - **TEE-LLM Instance**: the mock polls the instance's plaintext `/v1/llm/*` routes, so the console
-  gives it a dedicated card (TEE mode only): the address discovered, the instance's per-process
+  gives it a dedicated card (TEE mode only): the address it polls — the host address
+  `http://<host>:16001` by default (`--llm-target` / `LLM_TARGET`), which is the host port the
+  TEE-LLM Pod publishes and therefore survives recreating the Pod; `--llm-pod` / `--llm-ns` /
+  `--llm-port` opt back into kubectl Pod-IP discovery — the instance's per-process
   `dockerId` (`teellm-<10 digits>`; a change means the instance was restarted or rebuilt, and the
   log cursor resets with it), model and uptime, heartbeat liveness, the batched run logs from
   `/v1/llm/log`, and the report fetched from `/v1/llm/getAttestation` on demand. Reset clears the

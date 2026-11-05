@@ -800,6 +800,10 @@ TAA includes a full-featured management platform emulator with an embedded Web G
 - **Source Code**: `tools/platform-mock/cmd/platform-mock/main.go`, `tools/platform-mock/internal/static/`
 - **Default Port**: `18081` (18080 is where the real control plane listens on the shared hosts)
 - **Web Console**: `http://127.0.0.1:18081`
+- **TEE-LLM Target**: the TEE-LLM card and every `/v1/llm/*` call go to
+  `http://<--host>:16001` by default — the host port `deploy-llm.sh` publishes — so the
+  address shown is the host's and survives recreating the Pod. `--llm-pod`/`--llm-ns`/
+  `--llm-port` switch back to kubectl Pod-IP discovery; `--llm-target` names any other URL.
 
 ```bash
 # Build here, upload over SSH and start detached on the remote host

@@ -38,6 +38,12 @@ LLM_TARGET="${PLATFORM_MOCK_LLM_TARGET:-}"
 LLM_POD=""
 LLM_NS=""
 LLM_PORT=""
+# Host port the TEE-LLM Pod publishes its plaintext platform listener on (`deploy-llm.sh`,
+# TEELLM_POD_ATTESTATION_HOST_PORT). The mock polls the host address by default because it
+# outlives the Pod: a Pod IP changes on every recreation, so a mock that discovered one would
+# keep calling an address nothing answers until its next rediscovery. Pass --llm-pod to go back
+# to kubectl discovery, or --llm-target to name any other base URL.
+LLM_HOST_PORT="${PLATFORM_MOCK_LLM_HOST_PORT:-16001}"
 SM2_ID="${PLATFORM_SM2_ID:-}"
 PLATFORM_KEY_FILE="${PLATFORM_KEY_FILE:-}"
 READY_TIMEOUT="${PLATFORM_READY_TIMEOUT:-${READY_TIMEOUT:-60}}"
@@ -99,9 +105,13 @@ Common options:
   --taa-port PORT            Port used for discovery and for per-instance target derivation
   --llm-target URL           TEE-LLM base URL; the platform polls it, so no
                              registration address is needed
-  --llm-pod NAME             TEE-LLM Pod for kubectl auto-discovery (default taa-teellm)
+                             (default http://<--host>:<LLM_HOST_PORT>)
+  --llm-pod NAME             TEE-LLM Pod for kubectl auto-discovery instead of
+                             the host address (default taa-teellm)
   --llm-ns NS                Namespace for --llm-pod (omit = search all namespaces)
-  --llm-port PORT            TEE-LLM plaintext platform port (default 6001)
+  --llm-port PORT            TEE-LLM plaintext platform port (default 6001);
+                             giving any of --llm-pod/--llm-ns/--llm-port
+                             switches the mock back to kubectl discovery
   --sm2-id ID                SM2 ID_A passed to the mock
   --platform-key-file PATH   Platform SM2 key file passed to the mock
   --allow-empty-attestation  Skip attestation validation (non-TEE testing)
@@ -297,12 +307,22 @@ build_mock_args() {
     [ -n "$TAA_NS" ] && MOCK_ARGS+=(-taa-ns "$TAA_NS")
     [ -n "$TAA_PORT" ] && MOCK_ARGS+=(-taa-port "$TAA_PORT")
   fi
+  LLM_TARGET_EFFECTIVE=""
   if [ -n "$LLM_TARGET" ]; then
+    LLM_TARGET_EFFECTIVE="$LLM_TARGET"
     MOCK_ARGS+=(-llm-target "$LLM_TARGET")
-  else
+  elif [ -n "$LLM_POD$LLM_NS$LLM_PORT" ]; then
+    # Any discovery flag opts back into kubectl. LLM_PORT is included so that
+    # `--llm-port` alone keeps meaning "the default Pod, another port" rather
+    # than being silently ignored in favour of the host address.
     [ -n "$LLM_POD" ] && MOCK_ARGS+=(-llm-pod "$LLM_POD")
     [ -n "$LLM_NS" ] && MOCK_ARGS+=(-llm-ns "$LLM_NS")
     [ -n "$LLM_PORT" ] && MOCK_ARGS+=(-llm-port "$LLM_PORT")
+  else
+    # The host address, not the Pod IP: deploy-llm.sh publishes the listener on
+    # the node precisely so it has an address that survives recreating the Pod.
+    LLM_TARGET_EFFECTIVE="http://${REMOTE_HOST}:${LLM_HOST_PORT}"
+    MOCK_ARGS+=(-llm-target "$LLM_TARGET_EFFECTIVE")
   fi
   [ "$ALLOW_EMPTY_ATTESTATION" = "1" ] && MOCK_ARGS+=(-allow-empty-attestation)
   [ -n "$SM2_ID" ] && MOCK_ARGS+=(-sm2-id "$SM2_ID")
@@ -337,6 +357,11 @@ upload_remote() {
 
 start_remote() {
   build_mock_args
+  if [ -n "$LLM_TARGET_EFFECTIVE" ]; then
+    log "TEE-LLM target: $LLM_TARGET_EFFECTIVE (host address; pass --llm-pod for kubectl discovery)"
+  else
+    log "TEE-LLM target: kubectl discovery from the Pod name (--llm-pod/--llm-ns/--llm-port)"
+  fi
   if is_dry_run; then
     log "would start $REMOTE_BINARY on $REMOTE_TARGET with ${MOCK_ARGS[*]} (log $LOG_FILE)"
     return 0

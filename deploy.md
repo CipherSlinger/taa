@@ -214,8 +214,11 @@ DNS label（≤63 字符）、命名空间与 RuntimeClass 存在、宿主端口
 
 **平台怎么连上实例**：方向已经反过来 —— 平台调用 teellm，teellm 不主动上报。teellm-service
 在明文 `:6001` 上提供三个接口：`/v1/llm/getAttestation`（取远程证明报告）、
-`/v1/llm/heartbeat`（心跳）和 `/v1/llm/log`（按 `sinceSeq` 增量拉日志）。平台侧通过 K8s Pod
-自动发现拿到 teellm 的 Pod IP 和端口，再直接调用；没有任何注册请求，也不再需要
+`/v1/llm/heartbeat`（心跳）和 `/v1/llm/log`（按 `sinceSeq` 增量拉日志）。本仓库的
+`deploy-platform-mock.sh` 默认直接调**宿主地址** `http://<--host>:16001`（即上面那条 hostPort），
+控制台 TEE-LLM 卡片显示的也是它——Pod IP 每次重建都会变，宿主端口不会，所以默认不再查 Pod IP；
+传 `--llm-pod` / `--llm-ns` / `--llm-port` 才回到 kubectl 发现，`--llm-target` 可指定任意地址。
+真实平台若仍按 K8s Pod 自动发现拿 Pod IP 也能用，两条路都存在。没有任何注册请求，也不再需要
 `PLATFORM_IP`、`DOCKER_ID` 之类的环境变量。渲染进 Pod 的配置文件里不再有 `platform` 段，
 `deploy-llm.sh` 的 `--platform` / `TEELLM_PLATFORM_ADDR` 已删除；重新部署会把旧配置里的
 `platform` 段一并去掉。部署输出的 `Platform` 一行固定打印 `:6001` 上这三个被平台轮询的接口。
