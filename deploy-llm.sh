@@ -1095,9 +1095,13 @@ confirm_pod_creation() {
     echo "      hostPort none (reachable at the Pod IP only)"
   fi
   echo ""
+  # Enter accepts. By the time this prompt appears the image has already been built, exported and
+  # pushed, so the answer only decides whether the VM is created -- declining throws that work away
+  # while the next run reuses the image, and the common intent after a long build is to go ahead.
+  # Only an explicit 'n' cancels.
   local answer=""
-  read -r -p "    Continue? [y/N] " answer || true
-  if [[ ! "$answer" =~ ^[Yy]$ ]]; then
+  read -r -p "    Continue? [Y/n] " answer || true
+  if [[ -n "$answer" && ! "$answer" =~ ^[Yy]$ ]]; then
     info "cancelled; nothing was created"
     exit 0
   fi
