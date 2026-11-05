@@ -641,15 +641,14 @@ grep -q "delete" <<<"$output" || fail "the refusal does not tell the operator to
 [[ "$(grep -c '^DOCKER commit ' "$MOCK_LOG" || true)" == "$build_before" ]] \
   || fail "an image was built for a Pod that already exists"
 
-# ── 2b. A plain `start --pod` re-execs the supervisor it just installed ──────
-# `create` is not the only way in: a plain `--pod <name> start` skips pod_up, so
-# nothing marks the Pod as reused. If the restart request depended on that flag, the deployment
-# would install a new supervisor script and leave the old copy running -- which is how a liveness
-# fix silently failed to take effect once.
+# ── 2b. `update --pod` re-execs the supervisor it just installed ────────────
+# `create` is not the only way in: `update` skips pod_up, so nothing marks the Pod as reused. If
+# the restart request depended on that flag, the deployment would install a new supervisor script
+# and leave the old copy running -- which is how a liveness fix silently failed to take effect once.
 
 before="$(wc -l < "$MOCK_LOG")"
-run_deploy --pod "$COPY_POD_NAME"
-[[ $status -eq 0 ]] || fail "a plain --pod deployment exited $status"
+run_deploy update --pod "$COPY_POD_NAME"
+[[ $status -eq 0 ]] || fail "an update of an existing Pod exited $status"
 tail -n +"$((before + 1))" "$MOCK_LOG" > "$TMP_DIR/bare.log"
 grep -q "\.teellm-supervisor-restart" "$TMP_DIR/bare.log" \
   || fail "a plain --pod deployment did not ask the installed supervisor to re-exec"
@@ -923,6 +922,37 @@ stop_pause_line="$(grep -n "\.teellm-supervisor-pause" "$stop_log" | head -n1 | 
 stop_kill_line="$(grep -n "teellm-service" "$stop_log" | grep -v supervisor-pause | head -n1 | cut -d: -f1)"
 [[ -n "$stop_pause_line" && -n "$stop_kill_line" && "$stop_pause_line" -lt "$stop_kill_line" ]] \
   || fail "stop killed the daemons before pausing the supervisor"
+
+# ── 6b. start: the other end of stop, and nothing beyond it ─────────────────
+# start hands the daemons back to the supervisor already in the Pod. It must not build, sync or
+# copy -- that is update's job, and a start that installed would need the offline ollama bundle on
+# the machine, which a start-only workflow deliberately does not have.
+
+before="$(wc -l < "$MOCK_LOG")"
+build_before="$(grep -c '^DOCKER commit ' "$MOCK_LOG" || true)"
+RUN_OLLAMA_DIR="$TMP_DIR/no-such-bundle"
+run_deploy start
+[[ $status -eq 0 ]] || fail "start exited $status"
+start_log="$TMP_DIR/start.log"
+tail -n +"$((before + 1))" "$MOCK_LOG" > "$start_log"
+grep -q "rm -f .*\.teellm-supervisor-pause" "$start_log" \
+  || fail "start did not resume the Pod supervisor"
+[[ "$(grep -c '^DOCKER commit ' "$MOCK_LOG" || true)" == "$build_before" ]] \
+  || fail "start built an image instead of only starting the services"
+if grep -qE "KUBECTL cp|SSH\[.*tar -xf" "$start_log"; then
+  fail "start copied files into the Pod instead of only resuming the supervisor"
+fi
+
+# A Pod that is not there is reported as that, and is not created: only create touches the Pod
+# lifecycle.
+rm -f "$MOCK_STATE_DIR/pod"
+run_deploy start
+[[ $status -ne 0 ]] || fail "start accepted a Pod that does not exist"
+grep -q "TEE-LLM Pod '$COPY_POD_NAME' does not exist" <<<"$output" \
+  || fail "start did not name the missing Pod"
+[[ -f "$MOCK_STATE_DIR/pod" ]] && fail "start created the Pod"
+touch "$MOCK_STATE_DIR/pod"
+unset RUN_OLLAMA_DIR
 
 # ── 7. delete: the Pod is deleted, and nothing else is ─────────────────────
 

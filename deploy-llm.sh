@@ -1515,6 +1515,79 @@ pod_supervisor_resume() {
   remote_ssh "$(container_exec) sh -lc 'touch \"$TEELLM_WORKDIR/.teellm-supervisor-restart\"; rm -f \"$TEELLM_WORKDIR/.teellm-supervisor-pause\"'"
 }
 
+# Waits until the ollama daemon the supervisor owns answers. Shared by the deployment and by
+# 'start', which resumes an already-installed supervisor and then has to see the same thing the
+# deployment would.
+wait_for_remote_ollama() {
+  step "waiting for remote ollama service to become ready"
+  local ollama_ready=false
+  local wait_start_ts
+  wait_start_ts=$(date +%s)
+  cursor_hide
+  local spin_len=${#SPIN_FRAMES[@]}
+  local i=0
+  for ((attempt=1; attempt<=TEELLM_OLLAMA_READY_TIMEOUT/OLLAMA_READY_INTERVAL; attempt++)); do
+    if remote_ssh "$(container_exec) curl -fsS 'http://$OLLAMA_HOST/api/tags' >/dev/null 2>&1"; then
+      ollama_ready=true
+      break
+    fi
+    if [[ "$IS_TTY" == true ]]; then
+      local now
+      now=$(date +%s)
+      local elapsed=$((now - wait_start_ts))
+      local frame="${SPIN_FRAMES[$i]}"
+      printf "\r   ${CYAN}%s${NC} waiting for remote ollama daemon ${DIM}(%ds / %ds)...${NC}" "$frame" "$elapsed" "$TEELLM_OLLAMA_READY_TIMEOUT"
+      i=$(( (i + 1) % spin_len ))
+    fi
+    sleep "$OLLAMA_READY_INTERVAL"
+  done
+  cursor_show
+  printf "\r\033[K"
+  if [[ "$ollama_ready" != true ]]; then
+    err "remote ollama daemon did not become ready within ${TEELLM_OLLAMA_READY_TIMEOUT}s"
+    remote_ssh "$(container_exec) tail -n 50 '$OLLAMA_LOG_FILE' || true"
+    exit 1
+  fi
+  info "remote ollama daemon ready and responding on http://$OLLAMA_HOST"
+}
+
+# Waits until teellm-service answers over TEE-TLS. The supervisor starts it once ollama answers;
+# there is no separate start step, and adding one would race the supervisor for the port.
+wait_for_remote_teellm_probe() {
+  step "probing remote teellm-service readiness via TEE-TLS 1.3"
+  local teellm_ready=false
+  local wait_start_ts
+  wait_start_ts=$(date +%s)
+  cursor_hide
+  local spin_len=${#SPIN_FRAMES[@]}
+  local i=0
+  for ((attempt=1; attempt<=30; attempt++)); do
+    if remote_ssh "$(container_exec) \"$TEELLM_WORKDIR/teellm-service\" -probe \"https://127.0.0.1:${TEELLM_PORT}\"" >/dev/null 2>&1; then
+      teellm_ready=true
+      break
+    fi
+    if [[ "$IS_TTY" == true ]]; then
+      local now
+      now=$(date +%s)
+      local elapsed=$((now - wait_start_ts))
+      local frame="${SPIN_FRAMES[$i]}"
+      printf "\r   ${CYAN}%s${NC} probing remote teellm-service readiness ${DIM}(%ds / 30s)...${NC}" "$frame" "$elapsed"
+      i=$(( (i + 1) % spin_len ))
+    fi
+    sleep 1
+  done
+  cursor_show
+  printf "\r\033[K"
+  if [[ "$teellm_ready" != true ]]; then
+    err "remote teellm-service did not become ready on https://127.0.0.1:${TEELLM_PORT}"
+    remote_ssh "$(container_exec) \"$TEELLM_WORKDIR/teellm-service\" -probe \"https://127.0.0.1:${TEELLM_PORT}\" || true"
+    remote_ssh "$(container_exec) tail -n 60 '$TEELLM_LOG_FILE' || true"
+    exit 1
+  fi
+  local total_elapsed=$(( $(date +%s) - wait_start_ts ))
+  info "remote teellm-service ready and verified via TEE-TLS 1.3: https://127.0.0.1:${TEELLM_PORT} ${DIM}(took ${total_elapsed}s)${NC}"
+}
+
 # A Pod created with this template runs the supervisor itself as soon as the file is installed.
 # A Pod created before the supervisor existed still has `sleep infinity` as PID 1 and no process
 # that would ever exec the script, so after a short grace period the deployment starts it
@@ -2459,17 +2532,18 @@ Model Management Commands:
   models switch <model>        Verify and switch active model across configurations.
 
 Actions:
-  start        Build binary, incrementally sync model & runtime, hand the daemons to the Pod
-               supervisor, and verify (default). Targets the dedicated TEE-LLM Pod
-               (TEELLM_POD_NAME) unless --pod names another existing Pod.
+  create       Create the dedicated Kata CSV2 Pod named by TEELLM_POD_NAME from an image built
+               from this tree, verify it and hand it to its supervisor (default). See "Creating
+               the Pod" below.
   update       Deploy into the existing TEE-LLM Pod named by TEELLM_POD_NAME: build the binary,
                sync the model & runtime, install the supervisor and configuration, restart the
                daemons and verify. It only updates a Pod that already exists -- it never creates
                or deletes one, and it refuses when the Pod is absent.
+  start        Start the services in an existing Pod: resume its supervisor, then wait for ollama
+               and teellm-service. Builds, syncs and copies nothing. Targets TEELLM_POD_NAME
+               unless --pod names another existing Pod.
   stop         Pause the Pod supervisor and stop its services (teellm-service, ollama, llama-server).
   probe        Probe the TEE-LLM HTTPS endpoint for RFC 8998 TEE-TLS 1.3 readiness.
-  create       Create the dedicated Kata CSV2 Pod named by TEELLM_POD_NAME from an image built
-               from this tree, then verify it. See "Creating the Pod" below.
   delete       Delete the dedicated TEE-LLM Pod, then check the host for kata sandboxes left
                behind by it.
 
@@ -2797,7 +2871,7 @@ while [[ $# -gt 0 ]]; do
   shift
 done
 
-ACTION="${ACTION:-start}"
+ACTION="${ACTION:-create}"
 
 # `create` and `delete` are the operator-facing spellings for the two dedicated-Pod paths; the
 # internals keep using the long-standing CREATE_POD flag and pod-down action so the rest of the
@@ -2892,6 +2966,29 @@ if [[ "$ACTION" == "update" ]]; then
     exit 1
   fi
   info "TEE-LLM Pod '$TARGET_POD' found; updating it in place"
+fi
+
+# ── Start Action Handler ──────────────────────────────────────
+# The other end of 'stop': hand the daemons back to the supervisor that is already in the Pod.
+# Nothing is built, synced or copied -- that is 'update'. Keeping the two apart is what lets start
+# run on a machine that no longer holds the offline ollama bundle.
+
+if [[ "$ACTION" == "start" && "$CREATE_POD" != true ]]; then
+  banner "Starting TEE-LLM Services" "Pod: $TARGET_POD (namespace: ${TARGET_NAMESPACE:-default})"
+  step "verifying remote host connectivity"
+  check_remote_connectivity
+  if ! remote_ssh "kubectl $K_NS get pod '$TARGET_POD' >/dev/null 2>&1"; then
+    err "TEE-LLM Pod '$TARGET_POD' does not exist in namespace '${TARGET_NAMESPACE:-default}'"
+    detail "start only starts a Pod that already exists; it never creates one."
+    detail "Create it first: $(basename "$0") create"
+    exit 1
+  fi
+  step "resuming the Pod supervisor inside remote pod"
+  pod_supervisor_resume
+  wait_for_remote_ollama
+  wait_for_remote_teellm_probe
+  info "teellm-service started in Pod '$TARGET_POD'"
+  exit 0
 fi
 
 # ── Dedicated Pod Teardown Handler ────────────────────────────
@@ -3247,71 +3344,8 @@ deploy_teellm() {
     pod_supervisor_resume
   fi
 
-  step "waiting for remote ollama service to become ready"
-  local ollama_ready=false
-  local wait_start_ts
-  wait_start_ts=$(date +%s)
-  cursor_hide
-  local spin_len=${#SPIN_FRAMES[@]}
-  local i=0
-  for ((attempt=1; attempt<=TEELLM_OLLAMA_READY_TIMEOUT/OLLAMA_READY_INTERVAL; attempt++)); do
-    if remote_ssh "$(container_exec) curl -fsS 'http://$OLLAMA_HOST/api/tags' >/dev/null 2>&1"; then
-      ollama_ready=true
-      break
-    fi
-    if [[ "$IS_TTY" == true ]]; then
-      local now
-      now=$(date +%s)
-      local elapsed=$((now - wait_start_ts))
-      local frame="${SPIN_FRAMES[$i]}"
-      printf "\r   ${CYAN}%s${NC} waiting for remote ollama daemon ${DIM}(%ds / %ds)...${NC}" "$frame" "$elapsed" "$TEELLM_OLLAMA_READY_TIMEOUT"
-      i=$(( (i + 1) % spin_len ))
-    fi
-    sleep "$OLLAMA_READY_INTERVAL"
-  done
-  cursor_show
-  printf "\r\033[K"
-  if [[ "$ollama_ready" != true ]]; then
-    err "remote ollama daemon did not become ready within ${TEELLM_OLLAMA_READY_TIMEOUT}s"
-    remote_ssh "$(container_exec) tail -n 50 '$OLLAMA_LOG_FILE' || true"
-    exit 1
-  fi
-  info "remote ollama daemon ready and responding on http://$OLLAMA_HOST"
-
-  # Probe remote service. The supervisor starts it once ollama answers; there is no separate start
-  # step here, and adding one would race the supervisor for the port.
-  step "probing remote teellm-service readiness via TEE-TLS 1.3"
-  local teellm_ready=false
-  local wait_start_ts
-  wait_start_ts=$(date +%s)
-  cursor_hide
-  local spin_len=${#SPIN_FRAMES[@]}
-  local i=0
-  for ((attempt=1; attempt<=30; attempt++)); do
-    if remote_ssh "$(container_exec) \"$TEELLM_WORKDIR/teellm-service\" -probe \"https://127.0.0.1:${TEELLM_PORT}\"" >/dev/null 2>&1; then
-      teellm_ready=true
-      break
-    fi
-    if [[ "$IS_TTY" == true ]]; then
-      local now
-      now=$(date +%s)
-      local elapsed=$((now - wait_start_ts))
-      local frame="${SPIN_FRAMES[$i]}"
-      printf "\r   ${CYAN}%s${NC} probing remote teellm-service readiness ${DIM}(%ds / 30s)...${NC}" "$frame" "$elapsed"
-      i=$(( (i + 1) % spin_len ))
-    fi
-    sleep 1
-  done
-  cursor_show
-  printf "\r\033[K"
-  if [[ "$teellm_ready" != true ]]; then
-    err "remote teellm-service did not become ready on https://127.0.0.1:${TEELLM_PORT}"
-    remote_ssh "$(container_exec) \"$TEELLM_WORKDIR/teellm-service\" -probe \"https://127.0.0.1:${TEELLM_PORT}\" || true"
-    remote_ssh "$(container_exec) tail -n 60 '$TEELLM_LOG_FILE' || true"
-    exit 1
-  fi
-  local total_elapsed=$(( $(date +%s) - wait_start_ts ))
-  info "remote teellm-service ready and verified via TEE-TLS 1.3: https://127.0.0.1:${TEELLM_PORT} ${DIM}(took ${total_elapsed}s)${NC}"
+  wait_for_remote_ollama
+  wait_for_remote_teellm_probe
 
   # The probe above cannot vouch for the attestation: its client is built with
   # InsecureSkipAttestationVerify set (see runProbe in teellm/cmd/teellm-service), so it passes

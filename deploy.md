@@ -5,7 +5,7 @@
 | 脚本 | 部署对象 |
 |---|---|
 | `deploy.sh` | TEE 训练/推理 Pod 里的 TAA 本体 |
-| `deploy-fhe.sh` | FHE 服务 + TAA 的统一容器，或已有的 FHE Pod |
+| `deploy-fhe.sh` | FHE 服务 + TAA：默认建专用 FHE Pod，也可部署进已有 Pod 或 docker 容器 |
 | `deploy-dataanaylsis.sh` | 数据分析角色（转发给 `deploy.sh`，换基座与配置） |
 | `deploy-llm.sh` | 独立的 TEE-LLM 推理网关 Pod |
 | `deploy-platform-mock.sh` | 平台 mock，需单独启动 |
@@ -15,7 +15,10 @@
 
 ## 通用约定
 
-- **目标 Pod**：`--pod <名字>`。不给时的默认行为见各脚本小节。
+- **动作**：`create`（默认）/ `update` / `start` / `stop` / `probe` / `delete`，互斥。
+  `create` 是唯一创建 Pod 的动作；`start` 只启动 Pod 里的服务（`stop` 的另一端），不构建、
+  不拷贝；`update` 把当前构建装进已有 Pod；`delete` 只删本脚本创建的 Pod。
+- **目标 Pod**：`--pod <名字>` 表示接管已有 Pod。不给时作用于各自脚本的专用 Pod，见各脚本小节。
 - **命名空间**：`--namespace <ns>`，默认 `osr`。
 - **远端主机**：`REMOTE_HOST` / `REMOTE_USER` / `REMOTE_DIR` 环境变量。
 - **SSH 密码**：`--remote-password <密码>`；不给时取脚本内置默认值，口令为空则改用密钥或
@@ -25,17 +28,26 @@
 ## TAA：`deploy.sh`
 
 ```bash
-# 不指定 --pod：在远端创建或复用脚本自己的 Kata CSV2 Pod（默认名 taa-deploy）
-./deploy.sh start
+# 默认动作 create：用当前源码构建生产镜像、创建专用 Kata CSV2 Pod（默认名 taa-deploy）、
+# 校验 Pod 里跑的正是这次构建，然后启动 taa
+./deploy.sh
 
 # 指定模型
-./deploy.sh start --model qwen2.5-coder:7b
+./deploy.sh create --model qwen2.5-coder:7b
 
-# 部署进一个已存在的 Pod：脚本只写文件，不创建、不删除该 Pod
-./deploy.sh start --pod <pod 名> --namespace osr
+# 把当前构建更新进已有 Pod（不创建、不删除 Pod）
+./deploy.sh update
 
-# 停掉服务；Pod 若由本脚本创建，则一并删除（guest 可写层里的数据、密钥、模型都会丢失）
+# 只启停 Pod 里的 taa，Pod 本身留着
 ./deploy.sh stop
+./deploy.sh start
+./deploy.sh probe
+
+# 删除本脚本创建的 Pod（guest 可写层里的数据、密钥、模型一并丢失）
+./deploy.sh delete
+
+# 接管一个不是本脚本创建的 Pod：只 update / start / stop / probe，绝不创建或删除它
+./deploy.sh update --pod <pod 名> --namespace osr
 
 # 只打包生产镜像，不部署
 ./deploy.sh save
@@ -43,22 +55,28 @@
 ./deploy.sh save --archive /tmp/taa-env-production.tar.gz
 
 # 覆盖默认平台端口（TAA 注册/上报使用的端口，默认 18080）
-PLATFORM_PORT=18081 ./deploy.sh start
+PLATFORM_PORT=18081 ./deploy.sh create
 ```
 
-**Pod 生命周期**：不给 `--pod` 时，首次 `start` 会先用当前源码构建生产镜像、上传并推送，
-再创建 Pod；后续 `start` 复用该 Pod，`stop` 删除它。`--pod` 指向的 Pod 永远不由本脚本创建
-或删除。已存在的 Pod 不会因为新镜像而重建 —— 要让新镜像生效，先 `stop` 再 `start`。
+**动作**：`create`（默认）、`update`、`start`、`stop`、`probe`、`delete`、`save`，互斥。
+`start` 只启动 Pod 里的 taa（等价于 `stop` 的另一端），不构建、不拷贝、不创建 Pod；`create`
+才是唯一创建 Pod 的动作。`delete` 只删本脚本创建的 Pod，`--pod` 指定的 Pod 一律拒绝。
+
+**Pod 生命周期**：不给 `--pod` 时，首次 `create` 会先用当前源码构建生产镜像、上传并推送，
+再创建 Pod 并校验；已有 Pod 会被原样保留并校验（guest 可写层里是 SM2 密钥、封存状态和导入的
+数据，重建等于丢数据，而且是第二台常驻内存的机密虚拟机）。要换镜像先 `delete` 再 `create`。
+`--pod` 指向的 Pod 永远不由本脚本创建或删除。
 
 **镜像**：自动构建的镜像推到 `TAA_IMAGE_REGISTRY/TAA_POD_IMAGE_REPO:<YYYYMMDD>`
 （默认 `172.16.10.178:31313/taa-train-infer:<日期>`），当天 tag 可变，因此 Pod 使用
-`imagePullPolicy: Always`。用 `--image` 指定现成镜像则跳过构建，保留 `IfNotPresent`。
+`imagePullPolicy: Always`。用 `--image` 指定现成镜像则跳过构建，只校验文件存在，
+保留 `IfNotPresent`。
 
 **常用参数**
 
 | 参数 | 说明 |
 |---|---|
-| `--pod <名字>` | 部署进已有 Pod；不给则创建/复用 `TAA_POD_NAME`（默认 `taa-deploy`） |
+| `--pod <名字>` | 作用于已有 Pod（`update`/`start`/`stop`/`probe`）；`create`、`delete` 拒绝 |
 | `--namespace <ns>` | 命名空间，默认 `osr` |
 | `--model <名字>` | 写入配置的模型名 |
 | `--port <端口>` | TAA 监听端口（默认 6001） |
@@ -75,41 +93,71 @@ PLATFORM_PORT=18081 ./deploy.sh start
 `latti/latti-server-node:latest`）与 TAA。TAA 在容器内经 `127.0.0.1:58996` 访问 FHE，
 58996 不发布到宿主机；只发布 TAA 的 6001 供平台调用。
 
+有两种部署目标，默认 `pod`：
+
+- `pod`（默认）：Kata CSV2 机密虚拟机 Pod。guest 里没有宿主 bind，所以 `create` 把 FHE 基座
+  镜像、TAA、supervisor、渲染好的配置和 FHE 模型树一起装配成一个镜像，推到本地 registry 后
+  再建 Pod（guest 用自己的 CDH 拉镜像，宿主 `docker load` 不够用）。
+- `container`：宿主上的普通 docker 容器，用 `--target container` 显式选择。
+
 ```bash
-# 打包并部署：本地构建 taa-fhe 镜像、导出归档、上传并 load 到远端
-./deploy-fhe.sh save
-
-# 只部署统一容器（FHE + TAA）
+# 默认动作 create：装配并推送镜像、创建 Pod（默认名 taa-fhe）、校验 Pod 里跑的正是这次构建，
+# 再等 FHE API 与 TAA 就绪
 ./deploy-fhe.sh
+PLATFORM_IP=172.16.10.178:18081 PLATFORM_PUBLIC_KEY=<平台 SM2 公钥> ./deploy-fhe.sh create
 
-# 在本机 docker 上部署，不上传远端
-./deploy-fhe.sh --mode docker
+# 接管一个已存在的 Pod：只更新文件，不创建、不删除 Pod
+./deploy-fhe.sh update --pod <pod 名>
+./deploy-fhe.sh update --pod <pod 名> --namespace osr
 
-# 用打包好的镜像部署
-TAA_IMAGE=taa-fhe:20261019 ./deploy-fhe.sh
+# 只启停 Pod 里的 taa，Pod 本身留着
+./deploy-fhe.sh stop
+./deploy-fhe.sh start
+./deploy-fhe.sh probe
 
-# 把 TAA 部署进已有 Pod（Kubernetes 里的 FHE 实例）
-# 会重渲染配置以匹配 Pod 内的 FHE 数据根，重启 Pod 内的 supervisor 并等待健康检查
-./deploy-fhe.sh --pod <pod 名>
-./deploy-fhe.sh --pod <pod 名> --namespace osr
+# 删除本脚本创建的 Pod（--pod 指定的 Pod 一律拒绝）
+./deploy-fhe.sh delete
 
 # 同一 Pod 里有多个容器时指定容器
-POD_CONTAINER=<容器名> ./deploy-fhe.sh --pod <pod 名>
+POD_CONTAINER=<容器名> ./deploy-fhe.sh update --pod <pod 名>
+
+# 部署到 docker 容器而不是 Pod
+./deploy-fhe.sh --target container
+
+# 用打包好的镜像部署（不装配、不推送，只校验文件存在）
+TAA_IMAGE=taa-fhe:20261019 ./deploy-fhe.sh create
+
+# 只打包镜像，不部署（模型不烤进镜像）
+./deploy-fhe.sh save
 
 # 只看会执行什么
-./deploy-fhe.sh --pod <pod 名> -n
-./deploy-fhe.sh save -n
-
-# 查当前 Pod 名
-kubectl -n osr get pods | grep taa-fhe
+./deploy-fhe.sh -n create
+./deploy-fhe.sh --pod <pod 名> -n update
 ```
+
+**动作**：`create`（默认）、`update`、`start`、`stop`、`probe`、`delete`、`save`，互斥。
+`create` 是唯一创建 Pod 的动作，`update` 只改已有 Pod 里的文件（重渲染配置以匹配 Pod 内的
+FHE 数据根、重启 supervisor 并等健康检查），`start`/`stop` 只通过 supervisor 的 `manual`
+文件启停 taa，`probe` 只报告 TAA 是否应答，`delete` 只删本脚本创建的 Pod。给了 `--pod`
+时脚本只接管这个 Pod：`create` 与 `delete` 会被拒绝（提示改用 `update --pod <名字>`）。
+
+**创建 Pod 需要的身份**：`create` 要求 `PLATFORM_IP` 不是回环地址，并要求有平台 SM2 公钥
+（`PLATFORM_PUBLIC_KEY`，或模板/配置里的 `platform.publicKey`）——TAA 没有公钥会在启动时退出。
+`cc_init_data` 注解默认从宿主上任意一个运行中的 CoCo Pod 复制；没有可复制的就渲染
+`FHE_POD_INITDATA_FILE` 指向的 initdata 文件，也可以用 `FHE_POD_CC_INIT_DATA` 直接给。
+
+**校验而不修复**：`create` 建完 Pod 会逐字节核对 Pod 里的 taa、supervisor 与模型目录是不是
+这次构建的产物，不一致就列出差异并失败，绝不就地“修好”。显式 `TAA_IMAGE` 是操作者自己的
+构建，此时只校验文件存在。
 
 **参数**
 
 | 参数 | 说明 |
 |---|---|
+| `create` / `update` / `start` / `stop` / `probe` / `delete` | 动作，互斥，默认 `create` |
 | `save` | 打包镜像并导出归档（`--image` 指定镜像名，默认 `taa-fhe:<YYYYMMDD>`） |
-| `--pod <名字>` | 部署进已有 Pod，替代启动 docker 容器；不能与 `save` 同用 |
+| `--target pod\|container` | 部署目标，默认 `pod` |
+| `--pod <名字>` | 接管已有 Pod（`update`/`start`/`stop`/`probe`）；不能与 `create`、`save` 同用 |
 | `--namespace <ns>` | Pod 命名空间，默认 `osr` |
 | `--mode remote\|docker` | docker/kubectl 在哪执行：远端（默认）或本机 |
 | `--image <名字>` | `save` 产出的镜像名 |
@@ -117,8 +165,10 @@ kubectl -n osr get pods | grep taa-fhe
 | `-n`, `--dry-run` | 只打印命令 |
 | `--skip-build` | 复用 `TAA_BINARY_PATH` 指向的二进制 |
 
-平台不在 docker 网桥网关时用 `PLATFORM_IP` 指定；其余挂载、端口、GPU、就绪超时等见
-`./deploy-fhe.sh --help`。
+Pod 规格与来源用 `FHE_POD_NAME`、`FHE_POD_CPU`、`FHE_POD_MEMORY`、`FHE_POD_GPU`、
+`FHE_POD_NODE`、`FHE_POD_RUNTIME_CLASS`、`FHE_POD_PULL_POLICY` 调整，镜像推送目标是
+`FHE_IMAGE_REGISTRY`（默认 `<REMOTE_HOST>:31313`）；平台不在 docker 网桥网关时用 `PLATFORM_IP`。
+其余挂载、端口、GPU、就绪超时等见 `./deploy-fhe.sh --help`。
 
 ## 数据分析角色：`deploy-dataanaylsis.sh`
 
@@ -126,7 +176,8 @@ kubectl -n osr get pods | grep taa-fhe
 `/home/jovyan/systemAuthData`。参数与 `deploy.sh` 相同：
 
 ```bash
-./deploy-dataanaylsis.sh start
+./deploy-dataanaylsis.sh create
+./deploy-dataanaylsis.sh stop
 ./deploy-dataanaylsis.sh save
 ```
 
@@ -158,9 +209,11 @@ kubectl -n osr get pods | grep taa-fhe
 ./deploy-llm.sh delete
 ```
 
-**动作**：`start`（默认，向 `TEELLM_POD_NAME` 或 `--pod` 指定的已有 Pod 增量部署）、
-`create`、`update`、`stop`、`probe`、`delete`、`models`。`create`、`update`、`delete`
-恒以专用 Pod `TEELLM_POD_NAME`（默认 `taa-teellm`）为目标，用 `--pod` 指向别的 Pod 会被拒绝。
+**动作**：`create`（默认，构建镜像并建专用 Pod）、`update`、`start`、`stop`、`probe`、
+`delete`、`models`。`start` 只恢复 supervisor 并等服务就绪（`stop` 的另一端），不构建、
+不拷贝；`update` 把当前构建增量部署进已有 Pod。`create`、`update`、`delete` 恒以专用 Pod
+`TEELLM_POD_NAME`（默认 `taa-teellm`）为目标，用 `--pod` 指向别的 Pod 会被拒绝；
+`start`/`stop`/`probe` 默认作用于 `TEELLM_POD_NAME`，也可以用 `--pod` 指向别的已有 Pod。
 
 **常用参数**：`--model <名字>`、`--ollama-dir <路径>`、`--port <端口>`（默认 8443）、
 `--config <路径>`、`--pod <名字>`、`--namespace <ns>`、`--remote-password <密码>`。
@@ -395,9 +448,11 @@ bundle 只带 `pylib`（66 个 wheel）。supervisor 的单例锁用 `flock`，�
 **打包新增**
 
 `/root/taa/taa`、`/root/taa/taa-supervisor.sh`、`/opt/taa-fhe-supervisor.sh`、
-`/root/taa/taa-config.json`（只改 5 个键）。镜像**不含**模型、密钥、redis 数据，
-运行时挂 `/data`、`/data/redis`、`$HOST_TAA_STATE_DIR`。GPU 由宿主 NVIDIA 驱动 +
-nvidia-container-toolkit 提供，镜像自带的只有上面那两个 CUDA 用户态库。
+`/root/taa/taa-config.json`（只改 5 个键）。`save` 与 docker 容器路径的镜像**不含**模型、
+密钥、redis 数据，运行时挂 `/data`、`/data/redis`、`$HOST_TAA_STATE_DIR`；`create` 建 Pod 时
+另外把 FHE 模型树烤进 `/data/models`，因为 Kata guest 里没有宿主 bind。GPU 由宿主 NVIDIA
+驱动 + nvidia-container-toolkit 提供（Pod 里是 `nvidia.com/gpu` 设备），镜像自带的只有上面
+那两个 CUDA 用户态库。
 
 ## 3. 数据分析 — `deploy-dataanaylsis.sh`
 

@@ -86,9 +86,9 @@ cleanup_display() {
 trap cleanup_display EXIT INT TERM
 
 # Kubernetes target: the TAA Pod lives in the osr namespace by default. --pod names a Pod the
-# deployment must not create; when it is not given, remote mode owns a Pod of its own and creates
-# it on the remote host (see ensure_remote_pod). TARGET_POD and TARGET_NAMESPACE in the
-# environment are refused; both are command-line options now.
+# deployment must not create or delete; when it is not given, it owns a Pod of its own and
+# create brings it up on the remote host (see create_taa_pod). TARGET_POD and TARGET_NAMESPACE in
+# the environment are refused; both are command-line options now.
 TARGET_NAMESPACE_ENV_WAS_SET="${TARGET_NAMESPACE+set}"
 TARGET_NAMESPACE="osr"
 TARGET_POD_ENV_WAS_SET="${TARGET_POD+set}"
@@ -630,7 +630,7 @@ create_taa_pod() {
     err "PLATFORM_PUBLIC_KEY is not set, so the new TAA Pod could not start"
     detail "TAA seals every platform message and refuses to start without the platform's SM2 public key."
     detail "It was not found in ${REMOTE_HOST}:$TAA_POD_PLATFORM_KEY_FILE either."
-    detail "Export it first: PLATFORM_PUBLIC_KEY=<hex starting with 04> $(basename "$0") start"
+    detail "Export it first: PLATFORM_PUBLIC_KEY=<hex starting with 04> $(basename "$0") create"
     exit 1
   fi
   TEMP_TAA_POD_MANIFEST="$(mktemp /tmp/taa-pod.XXXXXX.yaml)"
@@ -682,37 +682,6 @@ create_taa_pod() {
   step "holding the daemon baked into the new Pod"
   pause_remote_taa || true
   info "TAA Pod created and Ready: $TARGET_POD"
-}
-
-# Makes sure the deployment has a Pod to work in. An existing Pod is reused and never recreated:
-# its annotations and limits are immutable, and a fresh Pod would throw away the guest's writable
-# layer (data, keys, models) and be a second confidential VM of host-resident memory.
-ensure_remote_pod() {
-  if remote_pod_exists; then
-    if [[ -z "$TARGET_POD_WAS_SET" ]]; then
-      # The Pod this deployment owns should already be Ready. A short wait turns a wedged or
-      # restarting Pod into a clear error here rather than a misleading readiness timeout after
-      # the binary has already been replaced.
-      if ! remote_ssh "kubectl $K_NS wait --for=condition=Ready --timeout=30s pod/'$TARGET_POD' >/dev/null 2>&1"; then
-        err "TAA Pod '$TARGET_POD' exists but did not become Ready within 30s"
-        remote_ssh "kubectl $K_NS describe pod '$TARGET_POD' | tail -n 20" || true
-        detail "It is the Pod this deployment owns. If it is wedged, delete it with:"
-        detail "  $(basename "$0") stop"
-        exit 1
-      fi
-      info "remote target pod verified: ${TARGET_POD} (namespace: ${TARGET_NAMESPACE:-default}, reused, nothing applied)"
-    else
-      info "remote target pod verified: ${TARGET_POD} (namespace: ${TARGET_NAMESPACE:-default})"
-    fi
-    return 0
-  fi
-  if [[ -n "$TARGET_POD_WAS_SET" ]]; then
-    err "target pod '$TARGET_POD' not found in namespace '${TARGET_NAMESPACE:-default}' on remote host"
-    detail "Please check --pod or run 'kubectl get pods -n ${TARGET_NAMESPACE:-default}' on the remote host to check running pods."
-    detail "Leave --pod out to have this deployment create and own a Pod instead."
-    exit 1
-  fi
-  create_taa_pod
 }
 
 # Deletes the deployment-owned TAA Pod. Destructive by design: the guest's writable layer -- the
@@ -773,6 +742,59 @@ strip_teellm_from_image() {
   info "no TEE-LLM or ollama artifacts remain in the image"
 }
 
+# Renders the taa-config.json a packaged image carries into <out_path> and records the model it
+# selected in RENDERED_CONFIG_MODEL. Split out of save_local_docker_image so that create can hold
+# the Pod's copy against exactly the file the image was built from, instead of re-deriving it with
+# a second copy of these rules that could drift.
+render_image_config() {
+  local out_path="$1" template="$2"
+  local target_model
+  if [[ -n "$CLI_MODEL" ]]; then
+    target_model="$CLI_MODEL"
+  else
+    target_model="$(get_taa_config_llm_model "$template")"
+    if [[ -z "$target_model" ]]; then
+      target_model="qwen2.5-coder:3b"
+    fi
+  fi
+
+  ensure_parent_dir "$out_path"
+
+  # The result path is /opt/taa/output/result and not /opt/taa/output, matching every template: a
+  # non-empty model_output_dir overwrites the template's value rather than falling back to it, so
+  # passing the output root here silently rewrote model.output.result and results landed beside
+  # log/ and progress/ instead of in their own directory. The remote path passes empty for both
+  # staging paths and therefore kept the template's value -- which is how the two deployments came
+  # to disagree about the same key.
+  #
+  # The LLM endpoint is passed empty for the same reason: empty means "leave the template alone".
+  # What the packaging host could answer is not the address the shipped image will use -- the Pod
+  # IP changes when the Pod is recreated, and loopback is only right when the gateway shares taa's
+  # network namespace -- so baking it in replaced the template's endpoint with a guess. The image
+  # carries exactly the endpoint configs/taa-production.json names; a deployment that needs a
+  # different one sets LLM_IP at container startup, which still overrides it.
+  # storage.data is left to the template ("") on purpose: deploy-dataanaylsis.sh
+  # renders its copy to /home/jovyan/systemAuthData, where the jupyter runtime
+  # reads imported files, while the shared template keeps /root/taa/data -- the
+  # value the override used to force anyway.
+  write_taa_config "$out_path" "$template" \
+    ":6001" "" "" "" \
+    "/root/taa/models" "" "/root/taa/results" \
+    "" "$target_model" \
+    false "/opt/taa/input" "/opt/taa/output/result" "/root/taa/keys"
+  RENDERED_CONFIG_MODEL="$target_model"
+}
+
+# Renders the taa-config.json update installs into an existing Pod: this deployment's model and
+# LLM endpoint, and no identity block, because the Pod environment carries the identity.
+render_deploy_config() {
+  local out_path="$1"
+  write_taa_config "$out_path" "$TAA_PRODUCTION_CONFIG_TEMPLATE" \
+    "$TAA_CONTAINER_ADDR" "$REMOTE_PLATFORM_IP" "${REMOTE_DOCKER_ID:-}" "${CONTRACT_ID:-}" \
+    "$TAA_WORKDIR/models" "" "$TAA_WORKDIR/results" \
+    "${LLM_IP:-}" "$(resolve_target_model)" false "" "" "$TAA_WORKDIR/keys"
+}
+
 save_local_docker_image() {
   local base_archive="${CUSTOM_BASE_ARCHIVE:-$BASE_DOCKER_IMAGE_ARCHIVE}"
   local base_image="${BASE_DOCKER_IMAGE}"
@@ -812,42 +834,9 @@ save_local_docker_image() {
   step "preparing production configuration from $(basename "$prod_config_template")"
   require_file "production config template not found" "$prod_config_template"
 
-  local target_model
-  if [[ -n "$CLI_MODEL" ]]; then
-    target_model="$CLI_MODEL"
-  else
-    target_model="$(get_taa_config_llm_model "$prod_config_template")"
-    if [[ -z "$target_model" ]]; then
-      target_model="qwen2.5-coder:3b"
-    fi
-  fi
-
   local prod_config_source="$LOCAL_RUN_DIR/export-production-taa-config.json"
-  ensure_parent_dir "$prod_config_source"
-
-  # The result path is /opt/taa/output/result and not /opt/taa/output, matching every template: a
-  # non-empty model_output_dir overwrites the template's value rather than falling back to it, so
-  # passing the output root here silently rewrote model.output.result and results landed beside
-  # log/ and progress/ instead of in their own directory. The remote path passes empty for both
-  # staging paths and therefore kept the template's value -- which is how the two deployments came
-  # to disagree about the same key.
-  #
-  # The LLM endpoint is passed empty for the same reason: empty means "leave the template alone".
-  # What the packaging host could answer is not the address the shipped image will use -- the Pod
-  # IP changes when the Pod is recreated, and loopback is only right when the gateway shares taa's
-  # network namespace -- so baking it in replaced the template's endpoint with a guess. The image
-  # carries exactly the endpoint configs/taa-production.json names; a deployment that needs a
-  # different one sets LLM_IP at container startup, which still overrides it.
-  # storage.data is left to the template ("") on purpose: deploy-dataanaylsis.sh
-  # renders its copy to /home/jovyan/systemAuthData, where the jupyter runtime
-  # reads imported files, while the shared template keeps /root/taa/data -- the
-  # value the override used to force anyway.
-  write_taa_config "$prod_config_source" "$prod_config_template" \
-    ":6001" "" "" "" \
-    "/root/taa/models" "" "/root/taa/results" \
-    "" "$target_model" \
-    false "/opt/taa/input" "/opt/taa/output/result" "/root/taa/keys"
-  info "production config prepared for image (model: $target_model)"
+  render_image_config "$prod_config_source" "$prod_config_template"
+  info "production config prepared for image (model: $RENDERED_CONFIG_MODEL)"
 
   step "creating ephemeral container to assemble image"
   local builder_container="taa-builder-prod-$$"
@@ -946,7 +935,7 @@ save_local_docker_image() {
   echo -e "    ${MUTED}↳ Base Archive     :${NC} ${BOLD}${base_archive}${NC}"
   echo -e "    ${MUTED}↳ Base Image       :${NC} ${base_image}"
   echo -e "    ${MUTED}↳ Config Applied   :${NC} ${BOLD}${prod_config_template}${NC}"
-  echo -e "    ${MUTED}↳ Target Model     :${NC} ${PURPLE}${target_model}${NC}"
+  echo -e "    ${MUTED}↳ Target Model     :${NC} ${PURPLE}${RENDERED_CONFIG_MODEL}${NC}"
   echo -e "    ${MUTED}↳ Image Tag (Date) :${NC} ${BOLD}${GREEN}${target_image}${NC}"
   echo -e "    ${MUTED}↳ Image ID         :${NC} ${image_id}"
   echo -e "    ${MUTED}↳ Uncompressed     :${NC} ${image_size_mb} MB"
@@ -961,22 +950,27 @@ save_local_docker_image() {
 
 usage() {
   cat <<EOF
-Usage: $(basename "$0") [start|stop|save] [--pod <name>] [--namespace <ns>] [--model <name>]
+Usage: $(basename "$0") [create|update|start|stop|probe|delete|save] [--pod <name>] [--namespace <ns>] [--model <name>]
 
 This script deploys to the remote Kata CSV2 Pod over SSH and kubectl.
 
-Actions (mutually exclusive, default: start):
-  start     Deploy and start services (default action).
-  stop      Stop target running services. A Pod created by this script (i.e. when --pod was not
-            given) is deleted as well; an explicitly named Pod is left in place.
+Actions (mutually exclusive, default: create):
+  create    Build the production image from this tree, create the Kata CSV2 Pod, verify that what
+            the Pod carries is exactly this build, and start taa (default action).
+  update    Install the current build into an existing Pod: upload the binary and a re-rendered
+            config, pause, replace, resume. Never creates a Pod.
+  start     Start taa inside an existing Pod. Copies nothing.
+  stop      Stop taa inside an existing Pod. The Pod is left in place.
+  probe     Wait for taa to answer inside an existing Pod; exits non-zero on timeout.
+  delete    Delete the Pod this deployment created, together with its guest writable layer.
   save      Package base image archive ($BASE_DOCKER_IMAGE_ARCHIVE) with production config ($TAA_PRODUCTION_CONFIG_TEMPLATE),
             commit with a date-stamped tag ($DEFAULT_SAVE_IMAGE), and export to an image archive ($DEFAULT_SAVE_ARCHIVE).
             This is a standalone packaging action and does not deploy anything (e.g. $(basename "$0") save).
 
 Options:
   --pod <name>
-      Deploy into the existing Pod <name> instead of creating a dedicated Pod. The named Pod is
-      never created or deleted by this script.
+      Address the existing Pod <name> (update, start, stop, probe). The named Pod is never created
+      or deleted by this script, so create and delete refuse it.
   --namespace <ns>
       Kubernetes namespace of the target Pod (default: osr).
   --model <name> (or --model=<name>)
@@ -988,33 +982,38 @@ Options:
   --archive <path>
       Customize the exported archive file destination (save).
   --image <tag>
-      Image to deploy (start) or the image tag to produce (save). Without it, start builds
-      the production image from this tree and save names it <repo>:<today>.
+      Image create runs the Pod from (no build, presence-only verification), or the image tag save
+      produces. Without it, create builds the production image from this tree and save names it
+      <repo>:<today>.
   --base-archive <path> (or --base <path>)
       Specify a custom base image archive (save).
   --save-config <path>
-      Specify an alternate production configuration template (save).
+      Specify an alternate production configuration template (save, and create's verification).
 
 Note: the platform (or platform-mock) is deployed separately with deploy-platform-mock.sh,
 and Qwen / Ollama / TEE-LLM with deploy-llm.sh.
 
-Remote Pod lifecycle:
-  --pod names the Pod to deploy into. Without it, remote mode creates a dedicated Kata CSV2 Pod
-  (default name: TAA_POD_NAME, i.e. taa-deploy) on the remote host, reuses it on later runs, and
-  deletes it on stop. A Pod named through --pod is never created and never deleted by this script.
-  Before a new Pod is created, the production image is built from the current tree, uploaded to
-  the registry and pushed as TAA_IMAGE_REGISTRY/TAA_POD_IMAGE_REPO:<today>. If the registry already
-  holds a different build under that same-day tag, its manifest is deleted and the tag repushed;
-  an identical build is left alone. An existing Pod is reused as is and is never recreated, so a
-  new image needs '$(basename "$0") stop' first (that deletes the Pod and its guest writable
-  layer). Pass --image to deploy a prebuilt image instead of building one.
-  The Pod's LLM endpoint comes from taa-config.json, which is rewritten on every deploy.
+Pod lifecycle:
+  Only create brings a Pod into existence. Without --pod it owns the dedicated Kata CSV2 Pod
+  (default name: TAA_POD_NAME, i.e. taa-deploy): create builds the production image from the
+  current tree, pushes it as TAA_IMAGE_REGISTRY/TAA_POD_IMAGE_REPO:<today>, creates the Pod and
+  verifies the binary, supervisor and config inside against this tree -- a mismatch fails the run
+  and is listed, never patched. An existing Pod is kept and verified, because its guest writable
+  layer holds the SM2 key pair, the sealed state and the imported data; delete removes it. A Pod
+  named through --pod is only ever updated, started, stopped or probed.
+  Identity (PLATFORM_IP, DOCKER_ID, PLATFORM_PUBLIC_KEY, CONTRACT_ID) is injected into the Pod as
+  environment variables at create time; it is not written into taa-config.json and not verified.
+  The Pod's LLM endpoint comes from taa-config.json, which update rewrites.
 
 Examples:
   # Remote deployment (Kubernetes Pod + SSH)
+  $(basename "$0")
+  $(basename "$0") create --model qwen2.5-coder:7b
+  $(basename "$0") update
   $(basename "$0") start
-  $(basename "$0") start --model qwen2.5-coder:7b
+  $(basename "$0") probe
   $(basename "$0") stop
+  $(basename "$0") delete
 
   # Production image packaging (no deployment)
   $(basename "$0") save
@@ -1629,7 +1628,8 @@ PY
 ACTION=""
 
 if [[ $# -eq 0 ]]; then
-  ACTION="start"
+  # create is the one-shot path: build, create the Pod, verify what it carries, start.
+  ACTION="create"
 else
   while [[ $# -gt 0 ]]; do
     arg="$1"
@@ -1639,29 +1639,13 @@ else
         usage >&2
         exit 1
         ;;
-      start)
-        if [[ -n "$ACTION" && "$ACTION" != "start" ]]; then
-          err "cannot specify multiple actions (start/stop/save)"
+      create|update|start|stop|probe|delete|save)
+        if [[ -n "$ACTION" && "$ACTION" != "$arg" ]]; then
+          err "cannot specify multiple actions ($ACTION and $arg)"
           usage >&2
           exit 1
         fi
-        ACTION="start"
-        ;;
-      stop)
-        if [[ -n "$ACTION" && "$ACTION" != "stop" ]]; then
-          err "cannot specify multiple actions (start/stop/save)"
-          usage >&2
-          exit 1
-        fi
-        ACTION="stop"
-        ;;
-      save)
-        if [[ -n "$ACTION" && "$ACTION" != "save" ]]; then
-          err "cannot specify multiple actions (start/stop/save)"
-          usage >&2
-          exit 1
-        fi
-        ACTION="save"
+        ACTION="$arg"
         ;;
       --pod=*)
         TARGET_POD="${arg#*=}"
@@ -1806,7 +1790,7 @@ else
     shift
   done
 
-  ACTION="${ACTION:-start}"
+  ACTION="${ACTION:-create}"
 fi
 
 # TARGET_POD and TARGET_NAMESPACE in the environment were removed. Silently ignoring them would
@@ -1827,6 +1811,24 @@ fi
 # Pod this script owns and creates is the target.
 if [[ -z "${TARGET_POD:-}" ]]; then
   TARGET_POD="$TAA_POD_NAME"
+fi
+
+# create and delete are the two actions that change which Pods exist, and both only ever act on the
+# Pod this deployment owns. Naming a Pod with --pod says "use this one, do not touch its lifecycle",
+# so the pairing is refused rather than resolved either way.
+if [[ -n "$TARGET_POD_WAS_SET" ]]; then
+  case "$ACTION" in
+    create)
+      err "create creates the Pod this deployment owns; it cannot be combined with --pod"
+      detail "Drop --pod to create '$TAA_POD_NAME', or name an existing Pod and use update, start or stop."
+      exit 1
+      ;;
+    delete)
+      err "delete only removes the Pod this deployment created; '$TARGET_POD' was named with --pod"
+      detail "An explicitly named Pod belongs to the operator. Delete it with kubectl if that is intended."
+      exit 1
+      ;;
+  esac
 fi
 
 cd "$PROJECT_DIR"
@@ -1879,26 +1881,166 @@ wait_for_remote_taa_ready() {
   fi
 }
 
-if [[ "$ACTION" == "stop" ]]; then
-  banner "Stopping Services"
-  step "stopping remote processes"
-  check_remote_connectivity
-  if [[ "$DEPLOY_TAA" == true ]]; then
-    if remote_pod_exists; then
-      # A Pod that is Pending or wedged cannot be exec'd into; that must not stop the deletion
-      # of a Pod this deployment owns, whose memory is host-resident either way.
-      remote_ssh "$(container_exec) sh -lc 'touch \"$TAA_WORKDIR/manual\" && pkill -x taa >/dev/null 2>&1 || true; killall taa >/dev/null 2>&1 || true'" \
-        || warn "could not signal taa inside Pod '$TARGET_POD' (it may not be running)"
-      # Only a Pod this deployment created is deleted. An explicitly named Pod belongs to the
-      # operator, and its guest writable layer is where their data, keys and models live.
-      if [[ -z "$TARGET_POD_WAS_SET" ]]; then
-        delete_taa_pod
-      fi
-    else
-      info "taa Pod '$TARGET_POD' does not exist; nothing to stop"
+# start, stop, probe and update all act on a Pod that must already exist. None of them creates one:
+# that is what create is for, and guessing would put a second confidential VM on the host.
+require_remote_pod() {
+  local want_ready="${1:-}"
+  if ! remote_pod_exists; then
+    err "TAA Pod '$TARGET_POD' does not exist in namespace '${TARGET_NAMESPACE:-default}'"
+    detail "Create it first: $(basename "$0") create"
+    exit 1
+  fi
+  # A wedged or restarting Pod turns into a clear error here rather than a misleading readiness
+  # timeout after the binary has already been replaced.
+  if [[ "$want_ready" == "ready" ]]; then
+    if ! remote_ssh "kubectl $K_NS wait --for=condition=Ready --timeout=30s pod/'$TARGET_POD' >/dev/null 2>&1"; then
+      err "TAA Pod '$TARGET_POD' exists but did not become Ready within 30s"
+      remote_ssh "kubectl $K_NS describe pod '$TARGET_POD' | tail -n 20" || true
+      detail "If it is wedged, replace it with: $(basename "$0") delete"
+      exit 1
     fi
   fi
-  info "all target services stopped cleanly"
+}
+
+# Builds the local artifacts the image is assembled from, into the same paths save_local_docker_image
+# uses. create needs a reference even when the Pod already exists and no image had to be built.
+prepare_image_reference() {
+  local template="${CUSTOM_SAVE_CONFIG:-$TAA_PRODUCTION_CONFIG_TEMPLATE}"
+  require_file "production config template not found" "$template"
+  ensure_go_compiler
+  ensure_parent_dir "$TAA_BINARY_PATH"
+  spin_task "building taa daemon from ./cmd/taa" env CGO_ENABLED=0 GOOS=linux go build -o "$TAA_BINARY_PATH" ./cmd/taa
+  require_file "build failed: taa binary" "$TAA_BINARY_PATH"
+  render_image_config "$LOCAL_RUN_DIR/export-production-taa-config.json" "$template"
+}
+
+# Streams a file out of the Pod and hashes it here, so the check does not depend on a hashing tool
+# existing inside the guest image.
+pod_file_sha256() {
+  local path="$1"
+  remote_ssh "$(container_exec) sh -lc \"cat '$path'\"" 2>/dev/null | sha256sum | awk '{print $1}' || true
+}
+
+VERIFY_FAILURES=()
+
+verify_pod_file() {
+  local label="$1" pod_path="$2"; shift 2
+  local candidate want="" got
+  if ! remote_ssh "$(container_exec) test -s '$pod_path'" >/dev/null 2>&1; then
+    VERIFY_FAILURES+=("$label: not present in the Pod ($pod_path)")
+    return 0
+  fi
+  got="$(pod_file_sha256 "$pod_path")"
+  # Several references are accepted when a file has more than one legitimate rendering: the hash
+  # only has to match one of them.
+  for candidate in "$@"; do
+    local candidate_sha
+    candidate_sha="$(sha256sum "$candidate" | awk '{print $1}')"
+    if [[ -z "$want" ]]; then
+      want="$candidate_sha"
+    fi
+    if [[ "$candidate_sha" == "$got" ]]; then
+      return 0
+    fi
+  done
+  VERIFY_FAILURES+=("$label: the Pod carries ${got:0:12}, this tree built ${want:0:12} ($pod_path)")
+}
+
+# create opens the Pod and reports what is wrong inside it; it never repairs, because a defective
+# image is a build problem and patching it here would make the next create look healthy while the
+# image stayed wrong. Identity is not checked: it arrives as Pod environment variables by design.
+verify_pod_contents() {
+  step "verifying that Pod '$TARGET_POD' runs this tree's build"
+  VERIFY_FAILURES=()
+
+  if [[ -n "$TAA_IMAGE_WAS_SET" ]]; then
+    # --image names a build made elsewhere; this tree has nothing to hold it against.
+    info "--image was given, so only the presence of the payload is checked"
+    local spec label path
+    for spec in "taa binary:$TAA_WORKDIR/taa" "taa supervisor:$TAA_WORKDIR/taa-supervisor.sh" \
+                "taa config:$CONTAINER_TAA_CONFIG_PATH"; do
+      label="${spec%%:*}"; path="${spec#*:}"
+      remote_ssh "$(container_exec) test -s '$path'" >/dev/null 2>&1 ||
+        VERIFY_FAILURES+=("$label: not present in the Pod ($path)")
+    done
+  else
+    prepare_image_reference
+    # The Pod's config legitimately has two renderings: the one create baked in, and the one update
+    # installs, which may carry an LLM endpoint taken from this deployment's environment.
+    render_deploy_config "$LOCAL_RUN_DIR/deploy-taa-config.json"
+    verify_pod_file "taa binary" "$TAA_WORKDIR/taa" "$TAA_BINARY_PATH"
+    verify_pod_file "taa supervisor" "$TAA_WORKDIR/taa-supervisor.sh" "$PROJECT_DIR/deploy/taa-supervisor.sh"
+    verify_pod_file "taa config" "$CONTAINER_TAA_CONFIG_PATH" \
+      "$LOCAL_RUN_DIR/export-production-taa-config.json" "$LOCAL_RUN_DIR/deploy-taa-config.json"
+  fi
+
+  # Presence, not a run: semgrep's own verification belongs to provisioning, where a failure can
+  # still be repaired. Here a missing engine means the image was assembled wrong.
+  local engine="" rules_path=""
+  read -r engine rules_path <<<"$(taa_scan_engine_requirements "${CUSTOM_SAVE_CONFIG:-$TAA_PRODUCTION_CONFIG_TEMPLATE}")"
+  if [[ "$engine" == "semgrep" ]]; then
+    remote_ssh "$(container_exec) sh -lc 'command -v semgrep >/dev/null 2>&1'" >/dev/null 2>&1 ||
+      VERIFY_FAILURES+=("semgrep CLI: not installed in the Pod, so audits would fall back to regex")
+    if [[ -n "$rules_path" ]]; then
+      remote_ssh "$(container_exec) test -e '$rules_path'" >/dev/null 2>&1 ||
+        VERIFY_FAILURES+=("semgrep rules: missing at $rules_path inside the Pod")
+    fi
+  fi
+
+  if (( ${#VERIFY_FAILURES[@]} > 0 )); then
+    err "Pod verification failed: '$TARGET_POD' is not running the build from this tree"
+    local item
+    for item in "${VERIFY_FAILURES[@]}"; do
+      detail "  $item"
+    done
+    detail "Nothing was copied into the Pod: create verifies the image instead of patching it."
+    detail "Run '$(basename "$0") delete' to remove it, then '$(basename "$0")' to rebuild and recreate."
+    exit 1
+  fi
+  info "the Pod carries this tree's taa binary, supervisor and configuration"
+}
+
+if [[ "$ACTION" == "stop" ]]; then
+  banner "Stopping Services"
+  check_remote_connectivity
+  require_remote_pod
+  step "stopping taa inside Pod '$TARGET_POD'"
+  pause_remote_taa || warn "could not signal taa inside Pod '$TARGET_POD' (it may not be running)"
+  info "taa stopped; the Pod is left in place (use 'delete' to remove it)"
+  exit 0
+fi
+
+if [[ "$ACTION" == "start" ]]; then
+  banner "Starting Services"
+  check_remote_connectivity
+  require_remote_pod
+  step "releasing the supervisor inside Pod '$TARGET_POD'"
+  if ! remote_ssh "$(container_exec) sh -lc 'rm -f \"$TAA_WORKDIR/manual\"'"; then
+    err "could not release the supervisor inside Pod '$TARGET_POD'"
+    exit 1
+  fi
+  wait_for_remote_taa_ready || exit 1
+  exit 0
+fi
+
+if [[ "$ACTION" == "probe" ]]; then
+  banner "Probing TAA Service"
+  check_remote_connectivity
+  require_remote_pod
+  wait_for_remote_taa_ready || exit 1
+  exit 0
+fi
+
+if [[ "$ACTION" == "delete" ]]; then
+  banner "Deleting the TAA Pod"
+  check_remote_connectivity
+  if ! remote_pod_exists; then
+    info "TAA Pod '$TARGET_POD' does not exist; nothing to delete"
+    exit 0
+  fi
+  # A wedged guest cannot be signalled; that must not block removing a Pod this deployment owns.
+  pause_remote_taa || warn "could not signal taa inside Pod '$TARGET_POD' (it may not be running)"
+  delete_taa_pod
   exit 0
 fi
 
@@ -1907,13 +2049,47 @@ if [[ "$ACTION" == "save" ]]; then
   exit 0
 fi
 
+if [[ "$ACTION" == "create" ]]; then
+  banner "Creating the TAA Pod" "Host: ${REMOTE_USER}@${REMOTE_HOST} | Pod: ${TARGET_POD}"
+  check_remote_connectivity
+  require_file "taa supervisor script missing" "$PROJECT_DIR/deploy/taa-supervisor.sh"
+  step "checking remote target pod: ${TARGET_POD} (${TARGET_NAMESPACE:-default})"
+  if remote_pod_exists; then
+    # The guest's writable layer holds the SM2 key pair, the sealed state and the imported data, so
+    # an existing Pod is kept and verified rather than replaced under the operator.
+    info "TAA Pod '$TARGET_POD' already exists; verifying it instead of creating a second one"
+  else
+    create_taa_pod
+  fi
+  verify_pod_contents
+  if [[ "${TAA_KEEP_MANUAL:-false}" == true ]]; then
+    warn "TAA_KEEP_MANUAL is enabled; leaving taa paused"
+  else
+    step "starting taa inside Pod '$TARGET_POD'"
+    remote_ssh "$(container_exec) sh -lc 'rm -f \"$TAA_WORKDIR/manual\"'"
+    wait_for_remote_taa_ready || exit 1
+    remote_ssh "$(container_exec) sh -lc 'tail -n 50 $TAA_LOG_FILE || true'"
+  fi
+  banner "Pod Created and Verified" "Pod: ${TARGET_POD} | Namespace: ${TARGET_NAMESPACE:-default}"
+  echo -e "  ${BOLD}${CYAN}● TAA Secure Enclave Daemon${NC}  ${DIM}(In-Container Daemon)${NC}"
+  echo -e "    ${MUTED}↳ Pod         :${NC} ${TARGET_POD} ${DIM}(${TARGET_NAMESPACE:-default})${NC}"
+  echo -e "    ${MUTED}↳ Workdir     :${NC} ${TAA_WORKDIR}"
+  echo -e "    ${MUTED}↳ Config      :${NC} ${CONTAINER_TAA_CONFIG_PATH}"
+  echo -e "    ${MUTED}↳ Log file    :${NC} ${TAA_LOG_FILE}"
+  echo -e "    ${MUTED}↳ Identity    :${NC} Pod environment (${REMOTE_PLATFORM_IP}, ${TAA_POD_DOCKER_ID:-$TARGET_POD})"
+  echo ""
+  exit 0
+fi
+
+# Everything below installs into an existing Pod. It never creates one: that is create's job, and a
+# second confidential VM is not something to bring up as a side effect of a file copy.
 CONTAINER_LABEL="${TARGET_POD}"
 REMOTE_DOCKER_ID="${REMOTE_DOCKER_ID:-$CONTAINER_LABEL}"
 
 DEPLOY_COMPONENTS="taa "
 DEPLOY_TARGET_DESC="${REMOTE_USER}@${REMOTE_HOST}"
 TARGET_MODEL="$(resolve_target_model)"
-banner "Deploying: ${DEPLOY_COMPONENTS}→ ${DEPLOY_TARGET_DESC}" "Target model: ${TARGET_MODEL}"
+banner "Updating TAA in Pod ${TARGET_POD}" "Host: ${DEPLOY_TARGET_DESC} | Target model: ${TARGET_MODEL}"
 
 if [[ "$DEPLOY_TAA" == true ]]; then
   ensure_go_compiler
@@ -1926,28 +2102,21 @@ if [[ "$DEPLOY_TAA" == true ]]; then
   require_file "taa supervisor script missing" "$PROJECT_DIR/deploy/taa-supervisor.sh"
 fi
 
-
-
-
 ensure_remote_ssh
 
 step "checking remote host connectivity: ${REMOTE_USER}@${REMOTE_HOST}"
 check_remote_connectivity
 
 if [[ "$DEPLOY_TAA" == true ]]; then
-  step "checking remote target pod: ${TARGET_POD} (${TARGET_NAMESPACE})"
-  ensure_remote_pod
+  step "checking remote target pod: ${TARGET_POD} (${TARGET_NAMESPACE:-default})"
+  require_remote_pod ready
 fi
 
 if [[ "$DEPLOY_TAA" == true ]]; then
   TAA_CONFIG_TEMPLATE="$TAA_PRODUCTION_CONFIG_TEMPLATE"
   step "writing remote taa config from $(basename "$TAA_CONFIG_TEMPLATE")"
-  INCLUDE_TAA_IDENTITY=false
   # storage.data stays as the template says (see save_local_docker_image).
-  write_taa_config "$REMOTE_TAA_CONFIG_SOURCE" "$TAA_CONFIG_TEMPLATE" \
-    "$TAA_CONTAINER_ADDR" "$REMOTE_PLATFORM_IP" "$REMOTE_DOCKER_ID" "$CONTRACT_ID" \
-    "$TAA_WORKDIR/models" "" "$TAA_WORKDIR/results" \
-    "${LLM_IP:-}" "$TARGET_MODEL" "$INCLUDE_TAA_IDENTITY" "" "" "$TAA_WORKDIR/keys"
+  render_deploy_config "$REMOTE_TAA_CONFIG_SOURCE"
 
   step "uploading taa and config to remote host"
   sshpass -p "$REMOTE_PASSWORD" scp "${SSH_OPTS[@]}" "$TAA_BINARY_PATH" "${REMOTE_USER}@${REMOTE_HOST}:$REMOTE_DIR/$BINARY_NAME.new"
@@ -2010,7 +2179,7 @@ if [[ "$DEPLOY_TAA" == true ]]; then
   remote_ssh "$(container_exec) sh -lc 'tail -n 50 $TAA_LOG_FILE || true'"
 fi
 
-banner "Deploy Complete (Remote)" "All remote services deployed and verified healthy"
+banner "Update Complete" "Pod '${TARGET_POD}' runs the build from this tree"
 if [[ "$DEPLOY_TAA" == true ]]; then
   echo -e "  ${BOLD}${CYAN}● TAA Secure Enclave Daemon${NC}  ${DIM}(In-Container Daemon)${NC}"
   echo -e "    ${MUTED}↳ Container  :${NC} ${CONTAINER_LABEL}:${TAA_WORKDIR} (addr ${TAA_CONTAINER_ADDR})"

@@ -21,17 +21,20 @@ exec "$DIR/ollama" serve
 SH
 chmod +x "$pkg/start-ollama.sh"
 
+# create is the action that needs the local offline bundle: it bakes the runtime and the model
+# into the Pod image. start resumes a Pod that already exists and never reads the bundle, so it
+# cannot be the arm that proves this preflight -- it would pass by doing nothing.
 set +e
 output=$(OLLAMA_LOCAL_DIR="$pkg" \
   OLLAMA_PRUNE_SYNC=false \
   TEELLM_OLLAMA_READY_TIMEOUT=1 \
   OLLAMA_READY_INTERVAL=1 \
-  "$ROOT_DIR/deploy-llm.sh" start 2>&1)
+  "$ROOT_DIR/deploy-llm.sh" create 2>&1)
 status=$?
 set -e
 
 if [[ $status -eq 0 ]]; then
-  echo "expected deploy.sh to reject invalid ollama binary, got success" >&2
+  echo "expected deploy-llm.sh to reject an invalid ollama binary, got success" >&2
   exit 1
 fi
 

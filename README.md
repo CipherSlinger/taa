@@ -522,21 +522,27 @@ An instance whose `server.type` is `fhe` exposes the same API surface as a `tee`
 ### 1. Deployment Target
 
 ```bash
-./deploy.sh [start|stop|save] [taa] [options...]
+./deploy.sh [create|update|start|stop|probe|delete|save] [--pod <name>] [options...]
 ```
 
 Deployment always targets a remote TEE Kata CSV2 Pod via SSH and `kubectl`. The old `docker` (local container) and `remote` words have been removed: `docker`/`local`/`local-docker` fail with an explanatory error, and `remote` is an unknown argument.
 
 ### 2. Supported Actions
 
-- **`start`** (default): Builds the binary, prepares config and certs, and starts TAA in the remote Pod.
-- **`stop`**: Stops TAA in the remote Pod; a Pod this script created is deleted as well.
+The six Pod actions are mutually exclusive and share one vocabulary across `deploy.sh`, `deploy-llm.sh` and `deploy-fhe.sh`: `create` is the only action that brings a Pod into existence, `start` is the other end of `stop` (it starts the service inside an existing target and copies nothing), `update` installs the current build into an existing Pod, `probe` only reports whether the service answers, and `delete` removes the Pod this deployment created.
+
+- **`create`** (default): Builds the production image from this tree, creates the Kata CSV2 Pod (or reuses and verifies it when it already exists), verifies that what the Pod carries is exactly this build, then starts TAA.
+- **`update`**: Installs the current build into an existing Pod: uploads the binary and a re-rendered config, pauses, replaces, resumes. Never creates a Pod.
+- **`start`**: Starts TAA inside an existing Pod. Copies nothing.
+- **`stop`**: Stops TAA inside an existing Pod. The Pod is left in place.
+- **`probe`**: Waits for TAA to answer inside an existing Pod; exits non-zero on timeout.
+- **`delete`**: Deletes the Pod this deployment created, together with its guest writable layer. A Pod named with `--pod` is refused.
 - **`save`**: A standalone packaging action (`./deploy.sh save`) that deploys nothing. Assembles a **TAA-only production image — TAA plus the code scan engine** — and exports it as an archive. It removes every TEE-LLM and ollama artifact the base image may carry (asserting each is gone), installs the supervisor from `deploy/taa-supervisor.sh` instead of inheriting the base image's copy, provisions semgrep offline from a payload archive and verifies it with a real scan, then copies the binary, certificates and generated production config (`configs/taa-production.json`) before `docker commit` + `docker save`. TEE-LLM and ollama are **not** in this image; deploy them separately with `./deploy-llm.sh`. The generated config's `codeAudit.llm.endpoint` is the template's value verbatim — nothing is discovered on the packaging host — so a deployment that needs a different address sets `LLM_IP` at container startup.
 
 ### 3. Component Selection and Platform Address
 
 TAA is the only component `deploy.sh` deploys; `taa` may be given explicitly for compatibility. The platform (or platform-mock) is deployed separately with `./deploy-platform-mock.sh`; `PLATFORM_PORT` and `REMOTE_PLATFORM_IP` only tell TAA where to register.
-- **Note on TEE-LLM / Qwen / Ollama**: The LLM inference service sources live in the `teellm` submodule, but its deployment script sits at the repository root. TEE-LLM needs a real `/dev/csv-guest` to produce a genuine attestation, so it is deployed as a Kata CSV2 Pod on the remote host: run `./deploy-llm.sh` (add `--create-pod` the first time, to create that Pod).
+- **Note on TEE-LLM / Qwen / Ollama**: The LLM inference service sources live in the `teellm` submodule, but its deployment script sits at the repository root. TEE-LLM needs a real `/dev/csv-guest` to produce a genuine attestation, so it is deployed as a Kata CSV2 Pod on the remote host: run `./deploy-llm.sh` (the default action is `create`, which builds and creates that Pod).
 
 ### 4. Container Autostart Supervisor (`deploy/taa-supervisor.sh`)
 
@@ -549,22 +555,28 @@ Inside the TAA container, TAA runs under the supervision of `deploy/taa-supervis
 
 ```bash
 # Remote deployment (Kubernetes Pod + SSH)
-./deploy.sh start                             # Deploy TAA to the remote Pod (platform must already run there)
-./deploy.sh taa                               # Update TAA in the remote Pod
-./deploy.sh stop                              # Stop TAA in the remote Pod
+./deploy.sh                                   # create: build, create the Pod, verify, start (platform must already run there)
+./deploy.sh create --model qwen2.5-coder:7b   # create with an explicit audit model
+./deploy.sh update                            # Install the current build into the existing Pod
+./deploy.sh stop                              # Stop TAA inside the Pod (the Pod stays)
+./deploy.sh start                             # Start TAA inside the Pod again
+./deploy.sh probe                             # Check that TAA answers
+./deploy.sh delete                            # Delete the Pod this deployment created
+./deploy.sh update --pod <name>               # Install into a Pod this script does not own
 
 # Production image packaging (no deployment)
 ./deploy.sh save                              # Build and export the production image archive
-./deploy.sh save --tag my-taa:v1 -o /tmp/taa.tar.gz
+./deploy.sh save --image my-taa:v1 --archive /tmp/taa.tar.gz
 
 # Decoupled TEE-LLM Service (Kata CSV2 Pod on the remote host)
-./deploy-llm.sh --create-pod start            # Build the Pod image from this tree, create the Pod, deploy
+./deploy-llm.sh                               # create: build the Pod image from this tree, create the Pod, deploy
 ./deploy-llm.sh update                        # Update the existing Pod in place (never creates/deletes)
+./deploy-llm.sh start                         # Resume the services in the existing Pod
 ./deploy-llm.sh probe                         # Probe the TEE-TLS endpoint inside the Pod
-./deploy-llm.sh pod-down                      # Delete the dedicated TEE-LLM Pod
+./deploy-llm.sh delete                        # Delete the dedicated TEE-LLM Pod
 ```
 
-> **The first `--create-pod start` builds an image.** `teellm-service` is recompiled from the
+> **The first `create` builds an image.** `teellm-service` is recompiled from the
 > working tree, baked into an image together with the ollama runtime and the model, and pushed
 > to `TEELLM_IMAGE_REGISTRY` before the Pod is created — tens of minutes, because the model is
 > streamed into the layers. The Pod therefore never runs a binary older than the tree being
@@ -572,15 +584,15 @@ Inside the TAA container, TAA runs under the supervision of `deploy/taa-supervis
 > `TEELLM_BUILD_POD_IMAGE=false` to fall back to the newest date tag the registry lists.
 
 > **Creation installs nothing into the Pod.** The image is the Pod's only definition of what it
-> runs, so `--create-pod start` verifies it instead of copying over it: the service and the
+> runs, so `create` verifies it instead of copying over it: the service and the
 > supervisor (both executable), both configs, `.teellm-model`, the ollama binary, its start script
 > and `libllama-server-impl.so`, plus every blob the model's manifest names at the recorded size.
 > A missing item is listed and the run stops with a non-zero exit; nothing is `kubectl cp`-ed in.
 > `./deploy-llm.sh update` remains the path that installs into an existing Pod, and
 > `TEELLM_IMAGE_FORCE_REBUILD=true` rebuilds a defective image.
 
-> **`--create-pod` only creates.** When the Pod already exists the run prints it and stops,
-> naming `./deploy-llm.sh pod-down` as the next step — it neither reuses nor replaces an existing
+> **`create` only creates.** When the Pod already exists the run prints it and stops,
+> naming `./deploy-llm.sh delete` as the next step — it neither reuses nor replaces an existing
 > Pod. Reusing one would deploy into whatever image it happens to run; replacing it in the same
 > path would silently discard the guest's writable layer (the ollama runtime and the model) and
 > change the Pod IP that TAA's `llm.endpoint` points at. To update an existing Pod instead, run
@@ -609,12 +621,13 @@ Inside the TAA container, TAA runs under the supervision of `deploy/taa-supervis
 > explicitly empty address) disables registration, heartbeats and log pushes. The deployment prints
 > `platform reporting: <addr|disabled>` and the service logs the same fact at startup.
 
-> **Remote mode can create its own Pod.** Without `--pod`, `deploy.sh` creates a
+> **`create` can bring up its own Pod.** Without `--pod`, `deploy.sh create` creates a
 > dedicated Kata CSV2 Pod on the remote host (`TAA_POD_NAME`, default `taa-deploy`), waits for it
-> to become Ready, and reuses it on later runs; `stop` deletes that Pod, taking its guest writable
-> layer (data, keys, models) with it. With `--pod <name>`, the deployment only targets that
-> Pod and fails if it does not exist — it never creates or deletes it. `--namespace <ns>` selects
-> the namespace (default `osr`). Pod creation knobs:
+> to become Ready, and verifies what it carries; a Pod that already exists is kept and verified,
+> never rebuilt. `delete` removes that Pod, taking its guest writable layer (data, keys, models)
+> with it; `stop` only stops TAA inside it. With `--pod <name>`, `update`/`start`/`stop`/`probe`
+> only target that Pod and fail if it does not exist — the script never creates or deletes it.
+> `--namespace <ns>` selects the namespace (default `osr`). Pod creation knobs:
 > `TAA_POD_IMAGE`, `TAA_POD_NODE`, `TAA_POD_RUNTIME_CLASS`, `TAA_POD_CPU`, `TAA_POD_MEMORY`,
 > `TAA_POD_READY_TIMEOUT`, `TAA_POD_CC_INIT_DATA` and `TAA_POD_DOCKER_ID`. The template lives at
 > `deploy/manifest/k8s/taa-pod.yaml.tmpl`.
@@ -629,8 +642,8 @@ Inside the TAA container, TAA runs under the supervision of `deploy/taa-supervis
 > also read from `TAA_POD_REGISTRY`, `TAA_POD_IMAGE_REPO` and `TAA_POD_PULL_POLICY`.
 >
 > An existing Pod is reused as is and never recreated, so a new image only reaches the Pod after
-> `./deploy.sh taa stop` (which deletes the Pod and its guest writable layer) followed
-> by a start. The LLM endpoint is not an env var on the Pod — it is written into `taa-config.json`
+> `./deploy.sh delete` (which deletes the Pod and its guest writable layer) followed
+> by `./deploy.sh create`. The LLM endpoint is not an env var on the Pod — it is written into `taa-config.json`
 > on every deploy, so a later `LLM_IP` takes effect without recreating the Pod.
 
 > **Remote deploys provision the code scan engine.** When the config selects the semgrep engine
@@ -678,8 +691,8 @@ Inside the TAA container, TAA runs under the supervision of `deploy/taa-supervis
 > `https://10.0.0.2:8443`). When both are set, `LLM_IP` wins:
 >
 > ```bash
-> ./deploy.sh save --tag my-taa:v1 -o /tmp/taa.tar.gz
-> ./deploy-llm.sh --create-pod start                # TEE-LLM in its own Kata CSV2 Pod
+> ./deploy.sh save --image my-taa:v1 --archive /tmp/taa.tar.gz
+> ./deploy-llm.sh create                            # TEE-LLM in its own Kata CSV2 Pod
 > docker run -e LLM_IP=https://10.0.0.2:8443 my-taa:v1
 > ```
 >
@@ -703,19 +716,30 @@ redis, the FHE api, the worker, the runtime and the CUDA libraries. The script s
 container from it and puts TAA and its supervisor inside that same container, so TAA reaches the
 FHE API at `127.0.0.1:58996` over container loopback.
 
+The targets share one action vocabulary with the other deployment scripts. `create` (the
+default) is the only action that brings a Pod into existence: it assembles one image holding the
+FHE image, TAA, its supervisor, the rendered config and the FHE model tree, pushes it to the local
+registry, creates the Kata CSV2 Pod and verifies what it carries. The plain docker container on
+the deployment host is selected explicitly with `--target container`.
+
 ```bash
 # From a workstation: the default target is root@172.16.10.178 over ssh
-./deploy-fhe.sh
+./deploy-fhe.sh                                 # create: build the image, create the Pod, verify, start
 
-# On the GPU host itself
-./deploy-fhe.sh --local
+# Act on the Pod that create made
+./deploy-fhe.sh stop                            # stop TAA inside the Pod (the Pod stays)
+./deploy-fhe.sh start                           # start TAA inside the Pod again
+./deploy-fhe.sh probe                           # check that TAA answers
+./deploy-fhe.sh delete                          # delete the Pod this deployment created
 
-# Deploy the unified FHE + TAA container
-./deploy-fhe.sh taa
-./deploy-fhe.sh                 # same as taa
+# Install this tree into an existing Pod: files only, never creates or deletes it
+./deploy-fhe.sh update --pod <name>
+
+# The docker container instead of a Pod
+./deploy-fhe.sh --target container
 
 # Package instead of deploy: bake TAA into the FHE image and export an archive
-./deploy-fhe.sh taa save        # -> deploy/out/taa-fhe-<date>.tar.gz
+./deploy-fhe.sh save                            # -> deploy/out/taa-fhe-<date>.tar.gz
 ```
 
 - **One container, one network namespace.** The container runs the image's own
@@ -751,10 +775,14 @@ FHE API at `127.0.0.1:58996` over container loopback.
   locally, the bundle archive is verified against `SHA256SUMS` and loaded first. The image is
   assembled and saved **locally**; on the default remote target it is then uploaded and
   `docker load`ed, and the uploaded copy is kept. Run the result with
-  `TAA_IMAGE=taa-fhe:<date> ./deploy-fhe.sh taa`; a deploy run never loads the FHE bundle
-  archive over a custom tag. `save` is only accepted with the `taa` argument.
-- **Positional modes.** The bare form deploys the unified container, same as `taa`.
-  `platform-mock` is not accepted: run `./deploy-platform-mock.sh` instead.
+  `TAA_IMAGE=taa-fhe:<date> ./deploy-fhe.sh create`; a deploy run never loads the FHE bundle
+  archive over a custom tag. `save` does not bake the model tree in: it produces a container
+  image, not a Pod deployment.
+- **Actions.** `create` / `update` / `start` / `stop` / `probe` / `delete` / `save`, mutually
+  exclusive, default `create`. `create` is the only one that builds an image or creates a Pod;
+  `start` and `stop` only drive the supervisor's `manual` file; `delete` removes only the Pod this
+  deployment created, and refuses one named with `--pod`. `platform-mock` is not accepted: run
+  `./deploy-platform-mock.sh` instead.
 - **Remote by default.** The run targets `REMOTE_HOST` (default `172.16.10.178`) over ssh, the
   same host `deploy.sh` uses, and takes the same credentials (`TARGET_PASSWORD`). It
   stages the bundle's models into `HOST_DATA_DIR/models` (`rsync -a`, no `--delete`, so models
@@ -765,8 +793,8 @@ FHE API at `127.0.0.1:58996` over container loopback.
   `http://127.0.0.1:<port>`, derived by TAA from `server.addr` at startup, and valid in any
   container the image lands in. `REMOTE_HOST`, `REMOTE_USER`, `TARGET_PASSWORD` and
   `REMOTE_DIR` override the target; setting any of the defaults in the environment still wins.
-- **`--local`** deploys on the machine running the script instead, which then needs a CUDA GPU and
-  a writable `HOST_DATA_DIR`/`HOST_TAA_STATE_DIR`.
+- **`--mode docker`** runs docker and kubectl on the machine running the script instead of the
+  remote host, which then needs a CUDA GPU and a writable `HOST_DATA_DIR`/`HOST_TAA_STATE_DIR`.
 - **`-n` / `--dry-run`** prints the whole plan and connects to nothing; it does not need the remote
   to be reachable, or the binaries to be built, or the bundle to be unpacked.
 - **`--skip-build`** uses the binaries already on disk instead of building them.

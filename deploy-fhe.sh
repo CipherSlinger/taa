@@ -103,6 +103,33 @@ POD_CONTAINER="${POD_CONTAINER:-}"
 POD_MODE=0
 POD_PAUSED=0
 
+# ── Deployment target and action ─────────────────────────────────────────────
+# The Pod is the default target: the FHE side has to run inside the confidential
+# VM for TAA's attestation to mean anything, and a Kata guest has no host binds,
+# so the image has to carry the model tree. `--target container` keeps the
+# docker path for a host without Kata.
+DEPLOY_TARGET="${DEPLOY_TARGET:-pod}"
+ACTION=""
+FHE_POD_NAME="${FHE_POD_NAME:-taa-fhe}"
+FHE_POD_TEMPLATE="${FHE_POD_TEMPLATE:-$PROJECT_DIR/deploy/manifest/k8s/fhe-pod.yaml.tmpl}"
+FHE_POD_RUNTIME_CLASS="${FHE_POD_RUNTIME_CLASS:-kata-qemu-csv2}"
+FHE_POD_NODE="${FHE_POD_NODE:-hygon-master}"
+FHE_POD_CPU="${FHE_POD_CPU:-4}"
+FHE_POD_MEMORY="${FHE_POD_MEMORY:-8Gi}"
+# One DCU/GPU for the FHE worker. Empty removes the resource line, which is what
+# a CPU-only deployment needs.
+FHE_POD_GPU="${FHE_POD_GPU-1}"
+FHE_POD_PULL_POLICY_WAS_SET="${FHE_POD_PULL_POLICY+set}"
+FHE_POD_PULL_POLICY="${FHE_POD_PULL_POLICY:-}"
+FHE_POD_READY_TIMEOUT="${FHE_POD_READY_TIMEOUT:-900}"
+FHE_POD_INITDATA_FILE="${FHE_POD_INITDATA_FILE:-}"
+FHE_POD_CC_INIT_DATA="${FHE_POD_CC_INIT_DATA:-}"
+FHE_IMAGE_REGISTRY="${FHE_IMAGE_REGISTRY:-${REMOTE_HOST}:31313}"
+FHE_POD_IMAGE_REPO="${FHE_POD_IMAGE_REPO:-taa-fhe}"
+# A Pod this run names with --pod belongs to the operator; a Pod it names itself
+# is one this deployment created and may delete.
+POD_MANAGED=0
+
 # Two host directories that decide the binds. They are named here as well as in
 # the path block below so --help can print them before anything is resolved.
 HOST_DATA_DIR="${HOST_DATA_DIR:-/opt/fhe-data}"
@@ -152,19 +179,25 @@ step() { STEP=$((STEP + 1)); printf '\n[deploy-fhe] === %s) %s ===\n' "$STEP" "$
 # worse than leaving it. The contract is only that no exit path is silent about
 # what it left.
 TAA_CONTAINER_TOUCHED=0
+POD_FILES_INSTALLED=0
 REPORTING=0
 
 report_left_running() {
   [ "$REPORTING" = 0 ] || return 0
   REPORTING=1
   printf '\n[deploy-fhe] state left on the host (%s):\n' "$1" >&2
-  if [ "$POD_MODE" = 1 ]; then
+  if [ "$POD_MODE" = 1 ] && [ "$POD_FILES_INSTALLED" = 1 ]; then
     printf '[deploy-fhe]   pod %s/%s received TAA files in place; a failed run may have left its supervisor paused\n' \
       "$POD_NAMESPACE" "$TARGET_POD" >&2
     printf '[deploy-fhe]     resume: kubectl -n %s exec %s -- rm -f %s/manual\n' \
       "$POD_NAMESPACE" "$TARGET_POD" "$TAA_WORKDIR" >&2
     printf '[deploy-fhe]     logs  : kubectl -n %s exec %s -- tail -n 60 %s\n' \
       "$POD_NAMESPACE" "$TARGET_POD" "$TAA_LOG_FILE" >&2
+  elif [ "$POD_MODE" = 1 ]; then
+    printf '[deploy-fhe]   pod %s/%s may exist in whatever state the run reached\n' \
+      "$POD_NAMESPACE" "$TARGET_POD" >&2
+    printf '[deploy-fhe]     logs  : kubectl -n %s describe pod %s\n' "$POD_NAMESPACE" "$TARGET_POD" >&2
+    [ "$POD_MANAGED" = 1 ] && printf '[deploy-fhe]     remove: %s delete\n' "$(basename "$0")" >&2
   elif [ "$TAA_CONTAINER_TOUCHED" = 1 ]; then
     printf '[deploy-fhe]   container %s runs the FHE entrypoint and the TAA supervisor\n' "$TAA_CONTAINER_NAME" >&2
     printf '[deploy-fhe]     logs : docker logs --tail 100 %s\n' "$TAA_CONTAINER_NAME" >&2
@@ -195,6 +228,7 @@ on_error() {
     exit "$rc"
   fi
   if declare -F pod_unpause >/dev/null 2>&1; then pod_unpause || true; fi
+  [ -z "$POD_MANIFEST_TMP" ] || rm -f "$POD_MANIFEST_TMP"
   report_left_running "step ${STEP} failed (exit ${rc})"
   exit "$rc"
 }
@@ -202,6 +236,7 @@ on_signal() {
   local sig="${1:-INT}" num
   trap - INT TERM
   if declare -F pod_unpause >/dev/null 2>&1; then pod_unpause || true; fi
+  [ -z "$POD_MANIFEST_TMP" ] || rm -f "$POD_MANIFEST_TMP"
   report_left_running "interrupted"
   num="$(kill -l "$sig" 2>/dev/null)" || num=2
   exit $((128 + num))
@@ -211,6 +246,7 @@ trap 'on_signal INT' INT
 trap 'on_signal TERM' TERM
 
 TAA_RENDER_TMPDIR=""
+POD_MANIFEST_TMP=""
 cleanup_render_out() {
   [ -n "${TAA_RENDER_TMPDIR:-}" ] || return 0
   rm -rf "$TAA_RENDER_TMPDIR"
@@ -265,6 +301,12 @@ shell_quote() {
     out+="$q "
   done
   printf '%s' "${out% }"
+}
+
+# Escapes a value for a sed s|...|...|g replacement: the delimiter, the
+# backslash and the whole-match ampersand.
+sed_escape() {
+  printf '%s' "$1" | sed 's/[|&\\]/\\&/g'
 }
 
 setup_remote_ssh() {
@@ -537,44 +579,69 @@ verify_one() {
 
 usage() {
   cat <<EOF
-Usage: $(basename "$0") [save] [options]
+Usage: $(basename "$0") [create|update|start|stop|probe|delete|save] [options]
 
-Deploy the unified FHE + TAA node. One container is started from the handoff
-image (latti/latti-server-node:latest), which already contains redis, the FHE
-api, the worker and the runtime; TAA and its supervisor are copied into that
-same container. TAA talks to the FHE API at 127.0.0.1:58996 inside the
-container, so 58996 is never published on the host; only TAA's port (6001) is,
-because the platform drives TAA over the host. The deployment host is
-${REMOTE_USER}@${REMOTE_HOST} by default.
+Deploy the unified FHE + TAA node. There are two targets:
 
-Arguments:
-  (no argument)
-      Deploy the unified container: prepare/load the image, stage the models,
-      create the container, inject TAA, wait for both health endpoints and
-      activate the model. The platform TAA registers with is deployed
-      separately (./deploy-platform-mock.sh or the production control plane);
-      set PLATFORM_IP if it is not reachable at the docker bridge gateway.
+  pod (default)  A Kata CSV2 confidential-VM Pod. create builds one image
+                 holding the handoff image, TAA, its supervisor, the rendered
+                 config and the FHE model tree, pushes it to the local
+                 registry and creates the Pod from it. update installs this
+                 tree into an existing Pod with --pod <name>.
+  container      A plain docker container on the deployment host. One container
+                 is started from the handoff image (latti/latti-server-node:latest),
+                 which already contains redis, the FHE api, the worker and the
+                 runtime; TAA and its supervisor are copied into that same
+                 container. TAA talks to the FHE API at 127.0.0.1:58996 inside
+                 the container, so 58996 is never published on the host; only
+                 TAA's port (6001) is, because the platform drives TAA over the
+                 host. Select it with --target container.
+
+The deployment host is ${REMOTE_USER}@${REMOTE_HOST} by default. The platform TAA
+registers with is deployed separately (./deploy-platform-mock.sh or the
+production control plane).
+
+Actions:
+  create (default)
+      Build this tree and deploy it. For a Pod: assemble and push the image,
+      render the manifest, create the Pod, then verify that it carries the
+      binary and model tree just built and that TAA answers. For a container:
+      prepare/load the image, stage the models, create the container, inject
+      TAA, wait for both health endpoints and activate the model. If the
+      named Pod or container already exists it is verified as-is, never
+      repaired.
+  update
+      Install this tree into a target that already exists (--pod <name>, or an
+      existing container --target container). Only the files are replaced.
+  start
+      Start what create started, and nothing else: create the Pod or container
+      if it is missing, then let TAA run. It never builds or copies anything.
+  stop
+      Stop TAA inside the Pod or container through the supervisor's 'manual' file. The target itself keeps running.
+  probe
+      Report whether TAA answers, without changing anything.
+  delete
+      Delete the Pod or container this deployment owns. A Pod named with
+      --pod is refused: this script did not create it, so it will not remove
+      it.
   save
       Package instead of deploy: build TAA into the handoff image (TAA binary,
       deploy/taa-supervisor.sh, the rendered config and the combined
       entrypoint), tag the result TAA_IMAGE (default taa-fhe:<date>), export
       it to TAA_FHE_SAVE_ARCHIVE, then upload and docker-load it on the
-      selected target. Nothing is started. Run the result with
-      TAA_IMAGE=<image> ./deploy-fhe.sh.
+      selected target. Models are not baked in: save produces a container
+      image, not a Pod deployment.
 
 Options:
+  --target pod|container
+      Where to deploy (default: pod). container is the plain docker path.
   --pod <name>
-      Deploy TAA into an existing Kubernetes pod instead of starting a docker
-      container (implies taa; conflicts with save). The pod
-      must already run the TAA supervisor; this copies taa, deploy/taa-supervisor.sh
-      and a re-rendered config into /root/taa, restarts the supervisor in the
-      pod and waits for its health endpoint. The pod env supplies PLATFORM_IP
-      and CONTAINER_DATA_DIR, so the config is rendered against the data root
-      the running FHE side actually uses. The files live in the container's
-      writable layer and are lost when the pod restarts; build them into an
-      image for a durable change.
+      Adopt an existing Pod instead of the one this deployment owns
+      (FHE_POD_NAME). Adopted Pods are updated, started, stopped and probed,
+      never created or deleted by this script. Refused with create and save;
+      use update --pod <name> to install into it.
   --namespace <ns>
-      Namespace of the pod (default: osr).
+      Namespace of the Pod (default: osr).
   -n, --dry-run         Print the commands and execute nothing.
   --mode remote|docker  Where docker and kubectl run: on ${REMOTE_USER}@${REMOTE_HOST}
                         (default) or on the machine running this script.
@@ -638,6 +705,26 @@ Environment:
   POD_CONTAINER=${POD_CONTAINER}
       Container to exec in a multi-container pod; required when the pod has
       more than one container.
+  FHE_POD_NAME=${FHE_POD_NAME}
+      Name of the Pod create builds and delete removes (default: taa-fhe).
+  FHE_POD_CPU=${FHE_POD_CPU}, FHE_POD_MEMORY=${FHE_POD_MEMORY}
+      CPU and memory of that Pod (default: ${FHE_POD_CPU}, ${FHE_POD_MEMORY}).
+      Kata sizes the guest from these, and CSV2 memory is resident from boot.
+  FHE_POD_GPU=${FHE_POD_GPU-1}
+      Value of the nvidia.com/gpu limit (default: 1); empty omits the limit.
+  FHE_POD_NODE=${FHE_POD_NODE}, FHE_POD_RUNTIME_CLASS=${FHE_POD_RUNTIME_CLASS}
+      Node and runtime class the Pod is created with.
+  FHE_POD_PULL_POLICY=${FHE_POD_PULL_POLICY}
+      Image pull policy. Defaults to Always for an image this run pushed under
+      today's tag, IfNotPresent otherwise.
+  FHE_POD_INITDATA_FILE=${FHE_POD_INITDATA_FILE}
+      Vendored initdata rendered into the cc_init_data annotation when no
+      running CoCo Pod is available to copy the annotation from.
+  FHE_POD_CC_INIT_DATA=${FHE_POD_CC_INIT_DATA}
+      The annotation value itself; wins over both of the above.
+  FHE_IMAGE_REGISTRY=${FHE_IMAGE_REGISTRY}
+      Registry the Pod image is pushed to (default: ${REMOTE_HOST}:31313); the
+      guest pulls through its own CDH, so a local docker load is not enough.
   REMOTE_HOST=${REMOTE_HOST}, REMOTE_USER=${REMOTE_USER}
       Remote target; REMOTE_PASSWORD is the ssh password (empty means key or
       agent authentication). REMOTE_DIR=${REMOTE_DIR} holds uploaded files.
@@ -666,6 +753,25 @@ while [ $# -gt 0 ]; do
         exit 1
       fi
       SAVE_ACTION=1
+      ACTION="save"
+      ;;
+    create|update|start|stop|probe|delete)
+      if [ -n "$ACTION" ] && [ "$ACTION" != "$1" ]; then
+        printf '[deploy-fhe] ERROR: cannot specify multiple actions (%s and %s)\n' "$ACTION" "$1" >&2
+        usage >&2
+        exit 1
+      fi
+      ACTION="$1"
+      ;;
+    --target=*) DEPLOY_TARGET="${1#*=}" ;;
+    --target)
+      shift
+      if [ $# -eq 0 ] || [ "${1#-}" != "$1" ]; then
+        printf '[deploy-fhe] ERROR: --target requires pod or container\n' >&2
+        usage >&2
+        exit 1
+      fi
+      DEPLOY_TARGET="$1"
       ;;
     --pod=*)
       TARGET_POD="${1#*=}"
@@ -740,6 +846,23 @@ while [ $# -gt 0 ]; do
   shift
 done
 
+ACTION="${ACTION:-create}"
+
+case "$DEPLOY_TARGET" in
+  pod|container) ;;
+  *)
+    printf '[deploy-fhe] ERROR: --target must be pod or container, not %s\n' "$DEPLOY_TARGET" >&2
+    usage >&2
+    exit 1
+    ;;
+esac
+
+if [ "$SAVE_ACTION" = 1 ] && [ "$DEPLOY_TARGET" != "pod" ]; then
+  printf '[deploy-fhe] ERROR: save does not deploy, so --target %s means nothing to it\n' "$DEPLOY_TARGET" >&2
+  usage >&2
+  exit 1
+fi
+
 # TARGET_POD, POD_NAMESPACE and TARGET_NAMESPACE in the environment were removed. Silently
 # falling back to the container path or the default namespace would deploy somewhere other than
 # what the caller named, so refuse it.
@@ -785,14 +908,31 @@ fi
 # TAA is the only thing this script deploys.
 DEPLOY_TAA=1
 
-# Pod mode replaces the docker container with a pod that the platform already
-# created, so it only makes sense with taa and without save.
-if [ -n "$TARGET_POD" ]; then
-  if [ "$SAVE_ACTION" = 1 ]; then
-    printf '[deploy-fhe] ERROR: --pod cannot be combined with save: a saved image is built here, not deployed into a pod\n' >&2
-    usage >&2
-    exit 1
-  fi
+# Pod mode replaces the docker container with a Kubernetes Pod. --pod names an
+# existing Pod: the deployment installs into it and never creates, starts or
+# removes it. Without --pod the target Pod is the one this deployment owns
+# (FHE_POD_NAME), which create brings into existence and delete removes.
+if [ -n "$TARGET_POD" ] && [ "$DEPLOY_TARGET" = "container" ]; then
+  printf '[deploy-fhe] ERROR: --pod names a Kubernetes Pod, which --target container cannot deploy into\n' >&2
+  usage >&2
+  exit 1
+fi
+if [ -n "$TARGET_POD" ] && [ "$SAVE_ACTION" = 1 ]; then
+  printf '[deploy-fhe] ERROR: --pod cannot be combined with save: a saved image is built here, not deployed into a pod\n' >&2
+  usage >&2
+  exit 1
+fi
+if [ -n "$TARGET_POD" ] && [ "$ACTION" = "create" ]; then
+  printf '[deploy-fhe] ERROR: create builds and creates this deployment'"'"'s own Pod; it cannot be combined with --pod\n' >&2
+  printf '  To install this tree into the existing Pod %s, run: %s update --pod %s\n' \
+    "$TARGET_POD" "$(basename "$0")" "$TARGET_POD" >&2
+  exit 1
+fi
+if [ -z "$TARGET_POD" ] && [ "$DEPLOY_TARGET" = "pod" ] && [ "$SAVE_ACTION" != 1 ]; then
+  TARGET_POD="$FHE_POD_NAME"
+  POD_MANAGED=1
+fi
+if [ -n "$TARGET_POD" ] && [ "$SAVE_ACTION" != 1 ]; then
   if [ -z "$POD_NAMESPACE" ]; then
     printf '[deploy-fhe] ERROR: the namespace is empty\n' >&2
     usage >&2
@@ -810,7 +950,13 @@ if [ -n "$TARGET_POD" ]; then
   fi
   POD_MODE=1
   DEPLOY_TAA=1
-  log "pod mode enabled by --pod=$TARGET_POD"
+  if [ "$POD_MANAGED" = 1 ]; then
+    log "pod mode: this deployment owns $POD_NAMESPACE/$TARGET_POD"
+  elif [ "$ACTION" = "create" ] || [ "$ACTION" = "update" ]; then
+    log "pod mode: installing into the existing Pod $POD_NAMESPACE/$TARGET_POD"
+  else
+    log "pod mode: acting on the existing Pod $POD_NAMESPACE/$TARGET_POD"
+  fi
   POD_KCTL=(kubectl -n "$POD_NAMESPACE")
   [ -z "$POD_CONTAINER" ] || POD_KCTL+=(-c "$POD_CONTAINER")
 fi
@@ -1286,6 +1432,7 @@ deploy_into_pod() {
   if is_dry_run; then
     log "would copy $HOST_TAA_BINARY_PATH, $HOST_START_SH and $pod_config_src into $TARGET_POD:$TAA_WORKDIR as *.new, then mv them over the live files"
   else
+    POD_FILES_INSTALLED=1
     pod_sh "mkdir -p $(shell_quote "$TAA_WORKDIR")"
     pod_cp "$HOST_TAA_BINARY_PATH" "$bin_new"
     pod_cp "$HOST_START_SH" "$sh_new"
@@ -1338,124 +1485,158 @@ deploy_into_pod() {
   log "  NOTE: these files live in the container's writable layer; a pod restart brings back the image's TAA"
 }
 
+# ── Image assembly ───────────────────────────────────────────────────────────
+# Builds $SAVE_IMAGE from the handoff image with TAA, its supervisor and the
+# rendered config baked in. With bake_models=1 the FHE model tree is baked in
+# too: that is what the Pod needs, because a Kata guest has no host binds, and
+# it is what save deliberately does not do (a save archive is a container
+# image, not a deployment).
+assemble_fhe_image() {
+  local bake_models="${1:-0}"
+
+  if [ "$BUILD_BINARIES" = 1 ]; then
+    build_binary "$TAA_BINARY_PATH" ./cmd/taa
+  else
+    log "--skip-build: packaging the binary already at $TAA_BINARY_PATH"
+    if ! is_dry_run && [ ! -f "$TAA_BINARY_PATH" ]; then
+      die "--skip-build was given but $TAA_BINARY_PATH does not exist"
+    fi
+  fi
+  if ! is_dry_run; then
+    docker info >/dev/null 2>&1 || die "docker daemon is not running or accessible on this machine"
+    # The archive wins over an existing tag. `docker image inspect` proves only
+    # that the tag exists, not that it holds the image this bundle ships: a host
+    # that deployed an older bundle keeps that image under the same tag, and
+    # packaging it would silently pair the new binary with the old service. The
+    # archive is verified against SHA256SUMS first, so loading it unconditionally
+    # is what makes the package match the bundle.
+    if [ -f "$FHE_IMAGE_ARCHIVE" ]; then
+      if same_path "$FHE_IMAGE_ARCHIVE" "$BUNDLE_IMAGE_ARCHIVE"; then
+        verify_one image/latti-server-latest.tar.gz "$FHE_IMAGE_ARCHIVE"
+      elif [ -n "$FHE_IMAGE_ARCHIVE_SHA256" ]; then
+        verify_one image/latti-server-latest.tar.gz "$FHE_IMAGE_ARCHIVE" "$FHE_IMAGE_ARCHIVE_SHA256"
+      else
+        warn "FHE_IMAGE_ARCHIVE=$FHE_IMAGE_ARCHIVE is not the archive this bundle ships, so it is NOT covered by SHA256SUMS; set FHE_IMAGE_ARCHIVE_SHA256 to have it verified"
+      fi
+      log "loading base image $FHE_IMAGE from $FHE_IMAGE_ARCHIVE (replacing any image already tagged $FHE_IMAGE)"
+      docker load -i "$FHE_IMAGE_ARCHIVE" || die "failed to load $FHE_IMAGE_ARCHIVE"
+    elif docker image inspect "$FHE_IMAGE" >/dev/null 2>&1; then
+      warn "no archive at $FHE_IMAGE_ARCHIVE; packaging with the image already tagged $FHE_IMAGE, whose version is not checked against the bundle"
+    else
+      die "base image $FHE_IMAGE is not present and no archive was found at $FHE_IMAGE_ARCHIVE"
+    fi
+    docker image inspect "$FHE_IMAGE" >/dev/null 2>&1 \
+      || die "the base image step finished but $FHE_IMAGE is not present"
+    if [ -z "${TAA_RENDER_TMPDIR:-}" ]; then
+      TAA_RENDER_TMPDIR="$(mktemp -d "${TMPDIR:-/tmp}/deploy-fhe-save.XXXXXX")" \
+        || die "cannot create a temporary directory for the rendered config"
+    fi
+    TAA_RENDER_OUT="$TAA_RENDER_TMPDIR/$TAA_CONFIG_FILE"
+    render_taa_config 0
+  else
+    log "would verify and load $FHE_IMAGE from $FHE_IMAGE_ARCHIVE, replacing any image already tagged $FHE_IMAGE"
+    log "would render $TAA_FHE_CONFIG -> $TAA_WORKDIR/$TAA_CONFIG_FILE and bake it into the image"
+  fi
+
+  builder="taa-fhe-builder-$$"
+  SAVE_BUILDER_CONTAINER="$builder"
+  run_local docker run -d --name "$builder" --entrypoint tail "$FHE_IMAGE" -f /dev/null
+  run_local docker exec -i "$builder" sh -lc "mkdir -p '$TAA_WORKDIR'"
+  run_local docker cp "$PROJECT_DIR/deploy/taa-supervisor.sh" "$builder:$TAA_WORKDIR/taa-supervisor.sh"
+  run_local docker cp "$TAA_ENTRYPOINT_SOURCE" "$builder:$TAA_ENTRYPOINT_CONTAINER"
+  run_local docker cp "$TAA_BINARY_PATH" "$builder:$TAA_WORKDIR/$BINARY_NAME"
+  if is_dry_run; then
+    printf '[deploy-fhe] would copy the rendered config -> %s:%s/%s (mode 600)\n' \
+      "$builder" "$TAA_WORKDIR" "$TAA_CONFIG_FILE"
+  else
+    run_local docker cp "$TAA_RENDER_OUT" "$builder:$TAA_WORKDIR/$TAA_CONFIG_FILE"
+  fi
+  run_local docker exec -i "$builder" sh -lc \
+    "chown root:root '$TAA_ENTRYPOINT_CONTAINER' '$TAA_WORKDIR/taa-supervisor.sh' '$TAA_WORKDIR/$BINARY_NAME' '$TAA_WORKDIR/$TAA_CONFIG_FILE' \
+     && chmod +x '$TAA_ENTRYPOINT_CONTAINER' '$TAA_WORKDIR/taa-supervisor.sh' '$TAA_WORKDIR/$BINARY_NAME' \
+     && chmod 600 '$TAA_WORKDIR/$TAA_CONFIG_FILE'"
+  # /opt/entrypoint.sh is the FHE side the combined entrypoint starts; a base
+  # image without it would commit an image that cannot boot.
+  run_local docker exec -i "$builder" sh -lc "test -x /opt/entrypoint.sh" \
+    || die "$FHE_IMAGE does not contain /opt/entrypoint.sh"
+  run_local docker exec -i "$builder" sh -lc \
+    "rm -f '$TAA_WORKDIR/manual' '$TAA_WORKDIR/manual-teellm' '$TAA_WORKDIR/taa.log' '$TAA_WORKDIR/.taa-supervisor.lock'"
+
+  # The Pod path bakes the model tree into the image: a Kata guest has no host
+  # binds, so a model left on the deployment host would simply not exist inside
+  # the VM. Copied before the commit, so one commit captures both.
+  if [ "$bake_models" = "1" ]; then
+    if is_dry_run; then
+      log "would copy $FHE_MODELS_SRC/ -> $builder:$FHE_CONTAINER_DATA_DIR/models"
+    else
+      [ -d "$FHE_MODELS_SRC" ] || die "model directory not found: $FHE_MODELS_SRC"
+      run_local docker exec -i "$builder" sh -lc "mkdir -p '$FHE_CONTAINER_DATA_DIR/models'"
+      run_local docker cp "$FHE_MODELS_SRC/." "$builder:$FHE_CONTAINER_DATA_DIR/models"
+      run_local docker exec -i "$builder" sh -lc "chmod -R a+rX '$FHE_CONTAINER_DATA_DIR/models'"
+    fi
+  fi
+
+  run_local docker commit \
+    -c 'ENTRYPOINT ["/opt/taa-fhe-supervisor.sh"]' \
+    -c 'CMD []' \
+    -c 'WORKDIR /root/taa' \
+    -c 'EXPOSE 58996 6001' \
+    -m "taa-fhe image packaged from $FHE_IMAGE at $(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    "$builder" "$SAVE_IMAGE"
+  run_local docker rm -f "$builder"
+  SAVE_BUILDER_CONTAINER=""
+
+  if ! is_dry_run; then
+    committed="$(docker image inspect --format '{{.Config.Entrypoint}} {{.Config.WorkingDir}} {{json .Config.ExposedPorts}}' "$SAVE_IMAGE" 2>/dev/null || true)"
+    log "packaged image: $committed"
+  fi
+}
+
+# Exports an assembled image, moves it to the deployment host and loads it
+# there. Kept apart from assembly so the Pod path can push the same image
+# instead of loading it into a docker daemon.
+export_fhe_image() {
+  local archive="$1"
+  step "saving the image archive to $archive"
+  if ! is_dry_run; then
+    mkdir -p "$(dirname "$archive")"
+  fi
+  compressor="gzip"
+  if ! is_dry_run && command -v pigz >/dev/null 2>&1; then
+    compressor="pigz"
+  fi
+  save_tmp="${archive}.tmp.$$"
+  if is_dry_run; then
+    log "would run: bash -c set -euo pipefail; docker save $SAVE_IMAGE | $compressor -c > $save_tmp && mv -f $save_tmp $archive"
+  else
+    bash -c "set -euo pipefail; docker save $(shell_quote "$SAVE_IMAGE") | $compressor -c > $(shell_quote "$save_tmp") && mv -f $(shell_quote "$save_tmp") $(shell_quote "$archive")" \
+      || die "failed to export $SAVE_IMAGE to $archive"
+    [ -f "$archive" ] || die "docker save reported success but $archive is not there"
+  fi
+
+  if [ -n "$REMOTE_TARGET" ]; then
+    step "uploading the archive to $REMOTE_TARGET"
+    host_archive="$REMOTE_DIR/$(basename "$archive")"
+    upload_archive "$archive" "$host_archive"
+
+    step "loading $SAVE_IMAGE on $REMOTE_TARGET"
+    run docker load -i "$host_archive"
+    if ! is_dry_run; then
+      host_sh "docker image inspect $(shell_quote "$SAVE_IMAGE") >/dev/null 2>&1" \
+        || die "docker load finished but $SAVE_IMAGE is not present on $REMOTE_TARGET"
+      log "image $SAVE_IMAGE is present on $REMOTE_TARGET"
+      log "archive $host_archive kept on $REMOTE_TARGET"
+    fi
+  else
+    log "local run: $SAVE_IMAGE was committed into this docker daemon; nothing to upload or load"
+  fi
+}
+
 # ── Save path ────────────────────────────────────────────────────────────────
 if [ "$SAVE_ACTION" = 1 ]; then
 step "packaging the taa-fhe image locally ($SAVE_IMAGE)"
-if [ "$BUILD_BINARIES" = 1 ]; then
-  build_binary "$TAA_BINARY_PATH" ./cmd/taa
-else
-  log "--skip-build: packaging the binary already at $TAA_BINARY_PATH"
-  if ! is_dry_run && [ ! -f "$TAA_BINARY_PATH" ]; then
-    die "--skip-build was given but $TAA_BINARY_PATH does not exist"
-  fi
-fi
-if ! is_dry_run; then
-  docker info >/dev/null 2>&1 || die "docker daemon is not running or accessible on this machine"
-  # The archive wins over an existing tag. `docker image inspect` proves only
-  # that the tag exists, not that it holds the image this bundle ships: a host
-  # that deployed an older bundle keeps that image under the same tag, and
-  # packaging it would silently pair the new binary with the old service. The
-  # archive is verified against SHA256SUMS first, so loading it unconditionally
-  # is what makes the package match the bundle.
-  if [ -f "$FHE_IMAGE_ARCHIVE" ]; then
-    if same_path "$FHE_IMAGE_ARCHIVE" "$BUNDLE_IMAGE_ARCHIVE"; then
-      verify_one image/latti-server-latest.tar.gz "$FHE_IMAGE_ARCHIVE"
-    elif [ -n "$FHE_IMAGE_ARCHIVE_SHA256" ]; then
-      verify_one image/latti-server-latest.tar.gz "$FHE_IMAGE_ARCHIVE" "$FHE_IMAGE_ARCHIVE_SHA256"
-    else
-      warn "FHE_IMAGE_ARCHIVE=$FHE_IMAGE_ARCHIVE is not the archive this bundle ships, so it is NOT covered by SHA256SUMS; set FHE_IMAGE_ARCHIVE_SHA256 to have it verified"
-    fi
-    log "loading base image $FHE_IMAGE from $FHE_IMAGE_ARCHIVE (replacing any image already tagged $FHE_IMAGE)"
-    docker load -i "$FHE_IMAGE_ARCHIVE" || die "failed to load $FHE_IMAGE_ARCHIVE"
-  elif docker image inspect "$FHE_IMAGE" >/dev/null 2>&1; then
-    warn "no archive at $FHE_IMAGE_ARCHIVE; packaging with the image already tagged $FHE_IMAGE, whose version is not checked against the bundle"
-  else
-    die "base image $FHE_IMAGE is not present and no archive was found at $FHE_IMAGE_ARCHIVE"
-  fi
-  docker image inspect "$FHE_IMAGE" >/dev/null 2>&1 \
-    || die "the base image step finished but $FHE_IMAGE is not present"
-  if [ -z "${TAA_RENDER_TMPDIR:-}" ]; then
-    TAA_RENDER_TMPDIR="$(mktemp -d "${TMPDIR:-/tmp}/deploy-fhe-save.XXXXXX")" \
-      || die "cannot create a temporary directory for the rendered config"
-  fi
-  TAA_RENDER_OUT="$TAA_RENDER_TMPDIR/$TAA_CONFIG_FILE"
-  render_taa_config 0
-else
-  log "would verify and load $FHE_IMAGE from $FHE_IMAGE_ARCHIVE, replacing any image already tagged $FHE_IMAGE"
-  log "would render $TAA_FHE_CONFIG -> $TAA_WORKDIR/$TAA_CONFIG_FILE and bake it into the image"
-fi
-
-builder="taa-fhe-builder-$$"
-SAVE_BUILDER_CONTAINER="$builder"
-run_local docker run -d --name "$builder" --entrypoint tail "$FHE_IMAGE" -f /dev/null
-run_local docker exec -i "$builder" sh -lc "mkdir -p '$TAA_WORKDIR'"
-run_local docker cp "$PROJECT_DIR/deploy/taa-supervisor.sh" "$builder:$TAA_WORKDIR/taa-supervisor.sh"
-run_local docker cp "$TAA_ENTRYPOINT_SOURCE" "$builder:$TAA_ENTRYPOINT_CONTAINER"
-run_local docker cp "$TAA_BINARY_PATH" "$builder:$TAA_WORKDIR/$BINARY_NAME"
-if is_dry_run; then
-  printf '[deploy-fhe] would copy the rendered config -> %s:%s/%s (mode 600)\n' \
-    "$builder" "$TAA_WORKDIR" "$TAA_CONFIG_FILE"
-else
-  run_local docker cp "$TAA_RENDER_OUT" "$builder:$TAA_WORKDIR/$TAA_CONFIG_FILE"
-fi
-run_local docker exec -i "$builder" sh -lc \
-  "chown root:root '$TAA_ENTRYPOINT_CONTAINER' '$TAA_WORKDIR/taa-supervisor.sh' '$TAA_WORKDIR/$BINARY_NAME' '$TAA_WORKDIR/$TAA_CONFIG_FILE' \
-   && chmod +x '$TAA_ENTRYPOINT_CONTAINER' '$TAA_WORKDIR/taa-supervisor.sh' '$TAA_WORKDIR/$BINARY_NAME' \
-   && chmod 600 '$TAA_WORKDIR/$TAA_CONFIG_FILE'"
-# /opt/entrypoint.sh is the FHE side the combined entrypoint starts; a base
-# image without it would commit an image that cannot boot.
-run_local docker exec -i "$builder" sh -lc "test -x /opt/entrypoint.sh" \
-  || die "$FHE_IMAGE does not contain /opt/entrypoint.sh"
-run_local docker exec -i "$builder" sh -lc \
-  "rm -f '$TAA_WORKDIR/manual' '$TAA_WORKDIR/manual-teellm' '$TAA_WORKDIR/taa.log' '$TAA_WORKDIR/.taa-supervisor.lock'"
-run_local docker commit \
-  -c 'ENTRYPOINT ["/opt/taa-fhe-supervisor.sh"]' \
-  -c 'CMD []' \
-  -c 'WORKDIR /root/taa' \
-  -c 'EXPOSE 58996 6001' \
-  -m "taa-fhe image packaged from $FHE_IMAGE at $(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-  "$builder" "$SAVE_IMAGE"
-run_local docker rm -f "$builder"
-SAVE_BUILDER_CONTAINER=""
-
-if ! is_dry_run; then
-  committed="$(docker image inspect --format '{{.Config.Entrypoint}} {{.Config.WorkingDir}} {{json .Config.ExposedPorts}}' "$SAVE_IMAGE" 2>/dev/null || true)"
-  log "packaged image: $committed"
-fi
-
-step "saving the image archive to $TAA_FHE_SAVE_ARCHIVE"
-if ! is_dry_run; then
-  mkdir -p "$(dirname "$TAA_FHE_SAVE_ARCHIVE")"
-fi
-compressor="gzip"
-if ! is_dry_run && command -v pigz >/dev/null 2>&1; then
-  compressor="pigz"
-fi
-save_tmp="${TAA_FHE_SAVE_ARCHIVE}.tmp.$$"
-if is_dry_run; then
-  log "would run: bash -c set -euo pipefail; docker save $SAVE_IMAGE | $compressor -c > $save_tmp && mv -f $save_tmp $TAA_FHE_SAVE_ARCHIVE"
-else
-  bash -c "set -euo pipefail; docker save $(shell_quote "$SAVE_IMAGE") | $compressor -c > $(shell_quote "$save_tmp") && mv -f $(shell_quote "$save_tmp") $(shell_quote "$TAA_FHE_SAVE_ARCHIVE")" \
-    || die "failed to export $SAVE_IMAGE to $TAA_FHE_SAVE_ARCHIVE"
-  [ -f "$TAA_FHE_SAVE_ARCHIVE" ] || die "docker save reported success but $TAA_FHE_SAVE_ARCHIVE is not there"
-fi
-
-if [ -n "$REMOTE_TARGET" ]; then
-  step "uploading the archive to $REMOTE_TARGET"
-  host_archive="$REMOTE_DIR/$(basename "$TAA_FHE_SAVE_ARCHIVE")"
-  upload_archive "$TAA_FHE_SAVE_ARCHIVE" "$host_archive"
-
-  step "loading $SAVE_IMAGE on $REMOTE_TARGET"
-  run docker load -i "$host_archive"
-  if ! is_dry_run; then
-    host_sh "docker image inspect $(shell_quote "$SAVE_IMAGE") >/dev/null 2>&1" \
-      || die "docker load finished but $SAVE_IMAGE is not present on $REMOTE_TARGET"
-    log "image $SAVE_IMAGE is present on $REMOTE_TARGET"
-    log "archive $host_archive kept on $REMOTE_TARGET"
-  fi
-else
-  log "local run: $SAVE_IMAGE was committed into this docker daemon; nothing to upload or load"
-fi
+assemble_fhe_image 0
+export_fhe_image "$TAA_FHE_SAVE_ARCHIVE"
 
 if is_dry_run; then
   log "would leave $TAA_FHE_SAVE_ARCHIVE for delivery; nothing is deployed by this run"
@@ -1479,6 +1660,390 @@ fi
 exit 0
 fi
 
+# ── Pod creation (create) ────────────────────────────────────────────────────
+# Creates the Pod this deployment owns from an image assembled here: the FHE
+# handoff image plus TAA, its supervisor, the rendered config and the model
+# tree. The image is pushed to the registry before the Pod exists, because the
+# guest pulls through its own CDH and nothing on the deployment host is
+# reachable from inside the VM.
+
+# The image reference the Pod runs. An explicit TAA_IMAGE is the operator's
+# build and is used as given; otherwise this run assembles and pushes one under
+# today's tag in the local registry.
+fhe_pod_image_reference() {
+  if [ -n "$TAA_IMAGE_ENV_WAS_SET" ]; then
+    printf '%s' "$TAA_IMAGE"
+  else
+    printf '%s/%s:%s' "$FHE_IMAGE_REGISTRY" "$FHE_POD_IMAGE_REPO" "$SAVE_DATE_TAG"
+  fi
+}
+
+pod_image_push() {
+  local registry_image="$1"
+  local archive="${TAA_FHE_SAVE_ARCHIVE%.tar.gz}-pod.tar.gz"
+  export_fhe_image "$archive"
+  step "pushing $registry_image to $FHE_IMAGE_REGISTRY"
+  if is_dry_run; then
+    log "would run on ${REMOTE_TARGET:-this host}: docker tag $SAVE_IMAGE $registry_image && docker push $registry_image"
+    return 0
+  fi
+  host_sh "docker tag $(shell_quote "$SAVE_IMAGE") $(shell_quote "$registry_image") && docker push $(shell_quote "$registry_image")" \
+    || die "failed to push $registry_image; check that ${REMOTE_TARGET:-this host} can authenticate to $FHE_IMAGE_REGISTRY"
+  log "image pushed: $registry_image"
+}
+
+# The guest's CDH refuses to pull without this annotation, and there is no way
+# to derive it from the image. A running CoCo Pod on the host is the cheapest
+# source; the vendor initdata file is the fallback and the same input the
+# vendor's own template compresses.
+derive_cc_init_data() {
+  if [ -n "$FHE_POD_CC_INIT_DATA" ]; then
+    printf '%s' "$FHE_POD_CC_INIT_DATA"
+    return 0
+  fi
+  if is_dry_run; then
+    printf '%s' "<cc_init_data>"
+    return 0
+  fi
+  local derived
+  derived="$(host_capture 'kubectl get pods -A -o jsonpath="{range .items[*]}{.metadata.annotations.io\.katacontainers\.config\.runtime\.cc_init_data}{\"\n\"}{end}" 2>/dev/null | awk "NF {print; exit}"' || true)"
+  derived="${derived//$'\r'/}"
+  derived="${derived//$'\n'/}"
+  if [ -z "$derived" ] && [ -n "$FHE_POD_INITDATA_FILE" ]; then
+    derived="$(host_capture "gzip -c $(shell_quote "$FHE_POD_INITDATA_FILE") | base64 -w0" 2>/dev/null || true)"
+    derived="${derived//$'\r'/}"
+    derived="${derived//$'\n'/}"
+    if [ -n "$derived" ]; then
+      log "cc_init_data rendered from ${REMOTE_TARGET:-this host}:$FHE_POD_INITDATA_FILE (no running CoCo Pod to copy it from)"
+    fi
+  fi
+  if [ -z "$derived" ]; then
+    die "could not obtain the cc_init_data annotation from ${REMOTE_TARGET:-this host}"
+  fi
+  printf '%s' "$derived"
+}
+
+pod_file_sha256() {
+  host_sh "$(shell_quote "${POD_KCTL[@]}" exec "$TARGET_POD" -- cat "$1")" 2>/dev/null \
+    | sha256sum | awk '{print $1}'
+}
+
+# Holds what the Pod carries against what this run built. A mismatch is reported
+# and the run fails; nothing is repaired, because a Pod running a different
+# binary than the one just compiled is a deployment that silently lies.
+verify_pod_contents() {
+  local strict="${1:-1}"
+  local failures=() label want got name rest pod_path local_path
+  for label in "taa:$TAA_WORKDIR/$BINARY_NAME:$TAA_BINARY_PATH" \
+               "supervisor:$TAA_WORKDIR/taa-supervisor.sh:$PROJECT_DIR/deploy/taa-supervisor.sh"; do
+    name="${label%%:*}" rest="${label#*:}"
+    pod_path="${rest%%:*}" local_path="${rest#*:}"
+    if ! pod_sh "test -s $(shell_quote "$pod_path")"; then
+      failures+=("$name: $pod_path is missing or empty in the Pod")
+      continue
+    fi
+    # An image the operator named is their build, not this tree's, so only its
+    # presence can be checked.
+    [ "$strict" = 1 ] || continue
+    want="$(sha256sum "$local_path" | awk '{print $1}')"
+    got="$(pod_file_sha256 "$pod_path")"
+    [ "$got" = "$want" ] || failures+=("$name: $pod_path has sha256 ${got:-<unreadable>}, this tree built $want")
+  done
+  if pod_sh "test -d $(shell_quote "$FHE_CONTAINER_DATA_DIR/models")"; then
+    :
+  else
+    failures+=("models: $FHE_CONTAINER_DATA_DIR/models is missing, so the FHE side has nothing to serve")
+  fi
+  if [ "${#failures[@]}" -gt 0 ]; then
+    printf '[deploy-fhe] ERROR: Pod creation failed: %s/%s is not running the build from this tree\n' \
+      "$POD_NAMESPACE" "$TARGET_POD" >&2
+    local item
+    for item in "${failures[@]}"; do
+      printf '[deploy-fhe]   - %s\n' "$item" >&2
+    done
+    exit 1
+  fi
+  log "verified the Pod carries this run's taa, supervisor and model tree"
+}
+
+pod_create() {
+  local pod_image registry_image
+  pod_image="$(fhe_pod_image_reference)"
+
+  if [ -z "$PLATFORM_IP" ]; then
+    die "PLATFORM_IP is not set, so the new Pod would register against the template's 127.0.0.1; export the platform address (for example PLATFORM_IP=172.16.10.178:$PLATFORM_PORT)"
+  fi
+  case "$PLATFORM_IP" in
+    127.0.0.1:*|localhost:*)
+      die "PLATFORM_IP=$PLATFORM_IP is the Pod itself; use the host or platform address the Pod can reach"
+      ;;
+  esac
+  local public_key="${PLATFORM_PUBLIC_KEY:-$(jq -r '.platform.publicKey // empty' "$TAA_FHE_CONFIG" 2>/dev/null || true)}"
+  if [ -z "$public_key" ]; then
+    die "PLATFORM_PUBLIC_KEY is not set and $TAA_FHE_CONFIG has no platform.publicKey; TAA exits at startup without the platform's SM2 public key"
+  fi
+  local docker_id="${DOCKER_ID:-$TARGET_POD}"
+  local contract_id="${CONTRACT_ID:-$(jq -r '.platform.contract // empty' "$TAA_FHE_CONFIG" 2>/dev/null || true)}"
+
+  if [ -n "$TAA_IMAGE_ENV_WAS_SET" ]; then
+    log "using the image named by TAA_IMAGE: $pod_image (nothing is built or pushed)"
+    SAVE_IMAGE="$pod_image"
+  else
+    SAVE_IMAGE="$pod_image"
+    step "assembling the Pod image $SAVE_IMAGE (models from $FHE_MODELS_SRC baked in)"
+    assemble_fhe_image 1
+    pod_image_push "$pod_image"
+  fi
+
+  step "rendering the Pod manifest"
+  local cc_init_data
+  cc_init_data="$(derive_cc_init_data)"
+  local pull_policy="${FHE_POD_PULL_POLICY:-IfNotPresent}"
+  if [ -z "$FHE_POD_PULL_POLICY_WAS_SET" ] && [ -z "$TAA_IMAGE_ENV_WAS_SET" ]; then
+    # A same-day tag is mutable, so the guest must fetch the manifest instead of
+    # trusting a cached copy of an image that was rebuilt under it.
+    pull_policy="Always"
+  fi
+  local gpu_limit=""
+  if [ -n "$FHE_POD_GPU" ]; then
+    gpu_limit="          nvidia.com/gpu: \"$FHE_POD_GPU\""
+  fi
+  [ -f "$FHE_POD_TEMPLATE" ] || die "Pod template not found: $FHE_POD_TEMPLATE"
+  POD_MANIFEST_TMP="$(mktemp "${TMPDIR:-/tmp}/fhe-pod.XXXXXX.yaml")"
+  sed -e "s|__POD_NAME__|$(sed_escape "$TARGET_POD")|g" \
+      -e "s|__NAMESPACE__|$(sed_escape "$POD_NAMESPACE")|g" \
+      -e "s|__NODE_NAME__|$(sed_escape "$FHE_POD_NODE")|g" \
+      -e "s|__IMAGE__|$(sed_escape "$pod_image")|g" \
+      -e "s|__RUNTIME_CLASS__|$(sed_escape "$FHE_POD_RUNTIME_CLASS")|g" \
+      -e "s|__PULL_POLICY__|$(sed_escape "$pull_policy")|g" \
+      -e "s|__CPU__|$(sed_escape "$FHE_POD_CPU")|g" \
+      -e "s|__MEMORY__|$(sed_escape "$FHE_POD_MEMORY")|g" \
+      -e "s|__GPU_LIMIT__|$gpu_limit|g" \
+      -e "s|__DATA_DIR__|$(sed_escape "$FHE_CONTAINER_DATA_DIR")|g" \
+      -e "s|__CC_INIT_DATA__|$(sed_escape "$cc_init_data")|g" \
+      -e "s|__DOCKER_ID__|$(sed_escape "$docker_id")|g" \
+      -e "s|__PLATFORM_IP__|$(sed_escape "$PLATFORM_IP")|g" \
+      -e "s|__PLATFORM_PUBLIC_KEY__|$(sed_escape "$public_key")|g" \
+      -e "s|__CONTRACT_ID__|$(sed_escape "$contract_id")|g" \
+      "$FHE_POD_TEMPLATE" > "$POD_MANIFEST_TMP"
+
+  step "creating the Pod $POD_NAMESPACE/$TARGET_POD (runtimeClassName: $FHE_POD_RUNTIME_CLASS, node: $FHE_POD_NODE, image: $pod_image)"
+  if is_dry_run; then
+    log "dry-run: the manifest is at $POD_MANIFEST_TMP"
+  else
+    if host_sh "$(shell_quote "${POD_KCTL[@]}" get pod "$TARGET_POD" >/dev/null 2>&1)"; then
+      log "Pod $POD_NAMESPACE/$TARGET_POD already exists; verifying it instead of creating a second one"
+      rm -f "$POD_MANIFEST_TMP"
+    else
+      # create, not apply: the name was verified absent a moment ago, and create
+      # turns a race with another operator into an error instead of silently
+      # rewriting a Pod whose spec is immutable.
+      host_sh "$(shell_quote "${POD_KCTL[@]}" create -f -)" < "$POD_MANIFEST_TMP" \
+        || die "failed to create Pod $POD_NAMESPACE/$TARGET_POD"
+      rm -f "$POD_MANIFEST_TMP"
+    fi
+    if ! host_sh "$(shell_quote "${POD_KCTL[@]}" wait --for=condition=Ready --timeout="${FHE_POD_READY_TIMEOUT}s" pod/"$TARGET_POD")"; then
+      host_sh "$(shell_quote "${POD_KCTL[@]}" describe pod "$TARGET_POD")" | tail -n 40 || true
+      die "Pod $POD_NAMESPACE/$TARGET_POD did not become Ready within ${FHE_POD_READY_TIMEOUT}s"
+    fi
+    if ! pod_sh "test -e /dev/csv-guest"; then
+      die "Pod $POD_NAMESPACE/$TARGET_POD has no /dev/csv-guest, so TAA cannot produce a real CSV attestation; expected runtimeClassName $FHE_POD_RUNTIME_CLASS"
+    fi
+  fi
+
+  step "verifying the Pod carries this run's build"
+  if is_dry_run; then
+    log "would compare $TAA_WORKDIR/$BINARY_NAME, $TAA_WORKDIR/taa-supervisor.sh and $FHE_CONTAINER_DATA_DIR/models inside the Pod"
+  elif [ -n "$TAA_IMAGE_ENV_WAS_SET" ]; then
+    verify_pod_contents 0
+  else
+    verify_pod_contents 1
+  fi
+
+  step "waiting for the FHE API and TAA inside the Pod"
+  if is_dry_run; then
+    log "would wait for the FHE API and TCP 127.0.0.1:$TAA_PORT inside the Pod"
+  else
+    if ! wait_for_pod_fhe_health; then
+      pod_sh "tail -n 120 $(shell_quote "$TAA_LOG_FILE")" || true
+      die "the FHE API did not answer inside Pod $POD_NAMESPACE/$TARGET_POD within ${FHE_READY_TIMEOUT}s"
+    fi
+    log "FHE API is ready"
+    activate_pod_models
+    if ! wait_for_pod_taa; then
+      pod_sh "tail -n 80 $(shell_quote "$TAA_LOG_FILE")" || true
+      die "TAA did not answer on 127.0.0.1:$TAA_PORT inside Pod $POD_NAMESPACE/$TARGET_POD (log $TAA_LOG_FILE)"
+    fi
+    log "TAA is answering on 127.0.0.1:$TAA_PORT inside Pod $POD_NAMESPACE/$TARGET_POD"
+  fi
+
+  local pod_ip
+  pod_ip="$(is_dry_run && echo "<new-pod>" || pod_field '{.status.podIP}')"
+  printf '\n[deploy-fhe] Pod created\n'
+  log "Pod        : $POD_NAMESPACE/$TARGET_POD (pod IP ${pod_ip:-unknown})"
+  log "image      : $pod_image"
+  log "data root  : $FHE_CONTAINER_DATA_DIR (models baked into the image)"
+  log "device     : /dev/csv-guest, postStart hook"
+  log "probe      : TCP 127.0.0.1:$TAA_PORT inside the Pod; /v1/taa/* is sealed"
+  log "logs       : kubectl -n $POD_NAMESPACE exec $TARGET_POD -- tail -n 60 $TAA_LOG_FILE"
+  log "stop/start : $(basename "$0") stop | $(basename "$0") start"
+  log "remove     : $(basename "$0") delete"
+}
+
+# The FHE API is a plain HTTP health endpoint, so the probe is a real request
+# rather than a TCP connect; python3 is used because the image ships no curl.
+wait_for_pod_fhe_health() {
+  local deadline=$((SECONDS + FHE_READY_TIMEOUT))
+  while [ "$SECONDS" -lt "$deadline" ]; do
+    if pod_sh "python3 -c 'import sys,urllib.request; urllib.request.urlopen(\"http://127.0.0.1:\" + sys.argv[1] + \"/api/v1/health\", timeout=5).read(1)' $FHE_PORT" >/dev/null 2>&1; then
+      return 0
+    fi
+    sleep "$TAA_READY_INTERVAL"
+  done
+  return 1
+}
+
+# ── Lifecycle helpers ────────────────────────────────────────────────────────
+# TAA's supervisor honours one file inside the workdir: `manual` present stops
+# taa and keeps it stopped, absent lets it start taa again. Both targets use the
+# same protocol, which is what makes stop and start the two ends of one switch.
+pod_stop_taa() {
+  pod_sh "mkdir -p $(shell_quote "$TAA_WORKDIR") && touch $(shell_quote "$TAA_WORKDIR/manual")"
+  pod_sh "pkill -x $(shell_quote "$BINARY_NAME") >/dev/null 2>&1 || true"
+}
+
+pod_start_taa() {
+  pod_sh "rm -f $(shell_quote "$TAA_WORKDIR/manual")"
+}
+
+container_stop_taa() {
+  run docker exec -i "$TAA_CONTAINER_NAME" sh -lc "touch '$TAA_WORKDIR/manual'; pkill -x '$BINARY_NAME' >/dev/null 2>&1 || true"
+}
+
+container_start_taa() {
+  # A stopped container has no supervisor to resume, so it is started first; the
+  # entrypoint then owns the daemons again.
+  if ! container_running; then
+    run docker start "$TAA_CONTAINER_NAME"
+  fi
+  run docker exec -i "$TAA_CONTAINER_NAME" sh -lc "rm -f '$TAA_WORKDIR/manual'"
+}
+
+# The lifecycle actions do not build, load or copy, so they only need the tool
+# that reaches the target, not the bundle this script normally deploys.
+require_target_tool() {
+  is_dry_run && return 0
+  if [ "$POD_MODE" = 1 ]; then
+    if [ -n "$REMOTE_TARGET" ]; then require_host_command kubectl; else require_command kubectl; fi
+  elif [ -n "$REMOTE_TARGET" ]; then
+    require_host_command docker
+  else
+    require_command docker
+  fi
+}
+
+delete_managed_pod() {
+  step "deleting the Pod this deployment created ($POD_NAMESPACE/$TARGET_POD)"
+  if is_dry_run; then
+    log "would run: kubectl -n $POD_NAMESPACE delete pod $TARGET_POD --ignore-not-found --wait=true --timeout=90s"
+    return 0
+  fi
+  host_sh "$(shell_quote "${POD_KCTL[@]}" delete pod "$TARGET_POD" --ignore-not-found --wait=true --timeout=90s)" || true
+  # A VM-backed Pod whose guest is wedged will not answer a graceful delete; its
+  # memory is host-resident, so leaving it behind costs GiB.
+  if host_sh "$(shell_quote "${POD_KCTL[@]}" get pod "$TARGET_POD" >/dev/null 2>&1)"; then
+    warn "Pod $TARGET_POD did not exit within 90s; forcing deletion"
+    host_sh "$(shell_quote "${POD_KCTL[@]}" delete pod "$TARGET_POD" --force --grace-period=0)" || true
+  fi
+  if host_sh "$(shell_quote "${POD_KCTL[@]}" get pod "$TARGET_POD" >/dev/null 2>&1)"; then
+    die "Pod $TARGET_POD is still present after a forced delete"
+  fi
+  log "Pod $POD_NAMESPACE/$TARGET_POD deleted (its writable layer goes with it)"
+}
+
+# 'start', 'stop', 'probe' and 'delete' act on what is already there. Handled
+# before the deployment preflight on purpose: starting a Pod must not require
+# the handoff bundle, the model tree or the config template to be present.
+if [ "$SAVE_ACTION" != 1 ] && [ "$ACTION" != "create" ] && [ "$ACTION" != "update" ]; then
+  require_target_tool
+
+  if [ "$POD_MODE" = 1 ]; then
+    if [ "$ACTION" = "delete" ] && [ "$POD_MANAGED" != 1 ]; then
+      die "delete only removes the Pod this deployment created; $TARGET_POD was named with --pod"
+    fi
+    if ! is_dry_run && ! host_sh "$(shell_quote "${POD_KCTL[@]}" get pod "$TARGET_POD" >/dev/null 2>&1)"; then
+      if [ "$ACTION" = "delete" ]; then
+        log "Pod $POD_NAMESPACE/$TARGET_POD does not exist; nothing to delete"
+        exit 0
+      fi
+      die "Pod $POD_NAMESPACE/$TARGET_POD does not exist on ${REMOTE_TARGET:-this host}; create only creates it, start/stop/probe/update never do"
+    fi
+    case "$ACTION" in
+      stop)
+        step "stopping TAA in pod $POD_NAMESPACE/$TARGET_POD"
+        pod_stop_taa
+        log "TAA stopped; the Pod is left in place (use delete to remove it)"
+        ;;
+      start)
+        step "starting TAA in pod $POD_NAMESPACE/$TARGET_POD"
+        pod_start_taa
+        if ! is_dry_run && ! wait_for_pod_taa; then
+          pod_sh "tail -n 80 $(shell_quote "$TAA_LOG_FILE")" || true
+          die "TAA did not answer on 127.0.0.1:$TAA_PORT inside pod $POD_NAMESPACE/$TARGET_POD (log $TAA_LOG_FILE)"
+        fi
+        log "TAA is answering on 127.0.0.1:$TAA_PORT inside pod $POD_NAMESPACE/$TARGET_POD"
+        ;;
+      probe)
+        step "probing TAA in pod $POD_NAMESPACE/$TARGET_POD"
+        if ! is_dry_run && ! wait_for_pod_taa; then
+          die "TAA did not answer on 127.0.0.1:$TAA_PORT inside pod $POD_NAMESPACE/$TARGET_POD (log $TAA_LOG_FILE)"
+        fi
+        log "TAA is answering on 127.0.0.1:$TAA_PORT inside pod $POD_NAMESPACE/$TARGET_POD"
+        ;;
+      delete)
+        delete_managed_pod
+        ;;
+    esac
+    exit 0
+  fi
+
+  case "$ACTION" in
+    stop)
+      step "stopping TAA in container $TAA_CONTAINER_NAME"
+      container_stop_taa
+      log "TAA stopped; the container is left in place (use delete to remove it)"
+      ;;
+    start)
+      step "starting TAA in container $TAA_CONTAINER_NAME"
+      if ! is_dry_run && ! host_sh "docker ps -a --format '{{.Names}}' | grep -Fxq $(shell_quote "$TAA_CONTAINER_NAME")"; then
+        die "container $TAA_CONTAINER_NAME does not exist on ${REMOTE_TARGET:-this host}; create only creates it"
+      fi
+      container_start_taa
+      if ! is_dry_run && ! wait_for_taa; then
+        host_sh "docker logs --tail 200 $(shell_quote "$TAA_CONTAINER_NAME") 2>&1" || true
+        die "TAA did not accept a TCP connection on ${TAA_PROBE_HOST}:$TAA_PORT within ${TAA_READY_TIMEOUT}s"
+      fi
+      log "TAA is answering on ${TAA_PROBE_HOST}:$TAA_PORT"
+      ;;
+    probe)
+      step "probing TAA on ${TAA_PROBE_HOST}:$TAA_PORT"
+      if ! is_dry_run && ! host_sh "docker ps --format '{{.Names}}' | grep -Fxq $(shell_quote "$TAA_CONTAINER_NAME")"; then
+        die "container $TAA_CONTAINER_NAME is not running on ${REMOTE_TARGET:-this host}"
+      fi
+      if ! is_dry_run && ! wait_for_taa; then
+        die "TAA did not accept a TCP connection on ${TAA_PROBE_HOST}:$TAA_PORT within ${TAA_READY_TIMEOUT}s"
+      fi
+      log "TAA is answering on ${TAA_PROBE_HOST}:$TAA_PORT"
+      ;;
+    delete)
+      step "deleting container $TAA_CONTAINER_NAME"
+      run docker rm -f "$TAA_CONTAINER_NAME"
+      log "container $TAA_CONTAINER_NAME deleted"
+      ;;
+  esac
+  exit 0
+fi
+
 # ── Preflight ────────────────────────────────────────────────────────────────
 if is_dry_run; then
   log "dry-run: nothing will be executed; the tool preflight is skipped"
@@ -1491,6 +2056,11 @@ else
       require_host_command kubectl
     else
       require_command kubectl
+    fi
+    # create assembles the Pod image here unless the operator named one; update
+    # only copies files into a Pod that already exists.
+    if [ "$ACTION" = "create" ] && [ -z "$TAA_IMAGE_ENV_WAS_SET" ]; then
+      require_command docker
     fi
   elif [ -n "$REMOTE_TARGET" ]; then
     for cmd in docker curl rsync; do
@@ -1506,9 +2076,11 @@ else
   fi
 fi
 
-if [ "$POD_MODE" = 1 ] && ! is_dry_run; then
-  # The pod is the deployment target: refuse before touching anything when it
-  # cannot host this run, instead of failing halfway through the copy.
+if [ "$POD_MODE" = 1 ] && [ "$ACTION" = "update" ] && ! is_dry_run; then
+  # update targets a Pod that already exists: refuse before touching anything
+  # when it cannot host this run, instead of failing halfway through the copy.
+  # create is not checked here -- its Pod does not exist yet; pod_create makes
+  # the same checks once the Pod is up.
   host_sh "$(shell_quote "${POD_KCTL[@]}" get pod "$TARGET_POD" >/dev/null 2>&1)" \
     || die "pod $POD_NAMESPACE/$TARGET_POD was not found on ${REMOTE_TARGET:-this host}"
   pod_ready || die "pod $POD_NAMESPACE/$TARGET_POD is not Running and Ready"
@@ -1553,7 +2125,9 @@ if [ "$DEPLOY_TAA" = 1 ] && [ "$POD_MODE" = 0 ]; then
 fi
 
 # ── Build ────────────────────────────────────────────────────────────────────
-if [ "$DEPLOY_TAA" = 1 ]; then
+# pod_create compiles inside assemble_fhe_image, so building here as well would
+# build the same binary twice; update still needs this run's binary to copy.
+if [ "$DEPLOY_TAA" = 1 ] && { [ "$POD_MODE" = 0 ] || [ "$ACTION" = "update" ]; }; then
 step "building the binaries this run deploys"
 if [ "$BUILD_BINARIES" != 1 ]; then
   log "--skip-build: using the binaries already at the paths this run deploys"
@@ -1568,7 +2142,11 @@ fi
 # Pod mode ends the docker path here: staging models, loading the image and
 # creating a container all belong to the platform's pod.
 if [ "$POD_MODE" = 1 ]; then
-  deploy_into_pod
+  case "$ACTION" in
+    create) pod_create ;;
+    update) deploy_into_pod ;;
+    *) die "internal error: action $ACTION reached the pod path" ;;
+  esac
   exit 0
 fi
 

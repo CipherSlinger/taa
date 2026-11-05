@@ -1,0 +1,141 @@
+# ============================================================================
+#  FHE + TAA Pod (Kata CSV2 confidential VM) -- TEMPLATE
+# ----------------------------------------------------------------------------
+#  This is a TEMPLATE, not a file to apply by hand. deploy-fhe.sh renders it
+#  and creates the Pod only when --pod was not given; when the operator names a
+#  Pod, the deployment never creates one.
+#
+#  The Pod runs the unified image `deploy-fhe.sh create` assembles: the FHE
+#  handoff image plus TAA, its supervisor, the rendered config and the FHE
+#  model tree. A Kata guest has no host binds, so everything the container
+#  needs has to come from the image -- which is why `create` bakes the models
+#  in and `save` does not.
+#
+#  Placeholders, all substituted by deploy-fhe.sh:
+#
+#    POD_NAME         metadata.name          (FHE_POD_NAME, default taa-fhe)
+#    NAMESPACE        metadata.namespace     (--namespace, default osr)
+#    IMAGE            containers[0].image    (the image create built and pushed)
+#    PULL_POLICY      imagePullPolicy        (FHE_POD_PULL_POLICY; Always for an auto-built tag)
+#    NODE_NAME        spec.nodeName          (FHE_POD_NODE)
+#    RUNTIME_CLASS    runtimeClassName       (FHE_POD_RUNTIME_CLASS)
+#    CPU, MEMORY      container resources    (FHE_POD_CPU, FHE_POD_MEMORY)
+#    GPU_COUNT        nvidia.com/gpu limit   (FHE_POD_GPU; empty removes the line)
+#    CC_INIT_DATA     cc_init_data annotation, read from a running CoCo Pod or rendered from FHE_POD_INITDATA_FILE
+#    DOCKER_ID        env DOCKER_ID          (DOCKER_ID, default Pod name)
+#    PLATFORM_IP      env PLATFORM_IP        (PLATFORM_IP)
+#    PLATFORM_PUBLIC_KEY env PLATFORM_PUBLIC_KEY (PLATFORM_PUBLIC_KEY, or the rendered config's platform.publicKey)
+#    CONTRACT_ID      env CONTRACT_ID        (CONTRACT_ID)
+#    DATA_DIR         env CONTAINER_DATA_DIR (FHE_CONTAINER_DATA_DIR, default /data)
+#
+#  The placeholders in this comment carry no underscores; the fields below carry
+#  them wrapped in double underscores, so the sed pass substitutes the fields
+#  and leaves the documentation readable.
+# ============================================================================
+apiVersion: v1
+kind: Pod
+metadata:
+  # A literal name, never generateName: a second Pod is a second confidential
+  # VM, and CSV2 encrypted memory is resident from boot, so a stray duplicate
+  # costs tens of GiB until someone notices it.
+  name: __POD_NAME__
+  namespace: __NAMESPACE__
+  labels:
+    app: taa-fhe
+  annotations:
+    # Required. The guest pulls the image through its own CDH, and the host's
+    # trust in the local registry's self-signed certificate does not carry into
+    # the guest. Without this annotation the Pod stops in StartError.
+    io.katacontainers.config.runtime.cc_init_data: __CC_INIT_DATA__
+    # Non-empty on purpose: a hypervisor parameter value is appended to the
+    # config file's own parameters, so an empty value would erase the rdinit=
+    # that boots the guest. These are the same timeouts the production TAA Pod
+    # carries for an in-guest image pull.
+    io.katacontainers.config.hypervisor.kernel_params: "agent.cdh_api_timeout=1200 agent.image_pull_timeout=3600"
+spec:
+  runtimeClassName: __RUNTIME_CLASS__
+  nodeName: __NODE_NAME__
+  nodeSelector:
+    katacontainers.io/kata-runtime: "true"
+  restartPolicy: Always
+  terminationGracePeriodSeconds: 30
+  containers:
+    - name: fhe
+      image: __IMAGE__
+      imagePullPolicy: __PULL_POLICY__
+      # The image's ENTRYPOINT is /opt/taa-fhe-supervisor.sh, which starts the
+      # FHE entrypoint and the TAA supervisor beside it. The supervisor's
+      # `manual` file in /root/taa is what stop/start drive, the same protocol
+      # deploy.sh uses.
+      env:
+        # server.type=fhe lets the environment win over the file, which is what
+        # lets one image go to whichever GPU host is free.
+        - name: CONTRACT_TYPE
+          value: "4"
+        - name: CONTAINER_DATA_DIR
+          value: "__DATA_DIR__"
+        - name: DOCKER_ID
+          value: "__DOCKER_ID__"
+        - name: PLATFORM_IP
+          value: "__PLATFORM_IP__"
+        # TAA seals every message it sends and exits at startup without this
+        # key. The image carries the one the config was rendered from; this
+        # value overrides it, so a rotated key needs no rebuild.
+        - name: PLATFORM_PUBLIC_KEY
+          value: "__PLATFORM_PUBLIC_KEY__"
+        - name: CONTRACT_ID
+          value: "__CONTRACT_ID__"
+        - name: TZ
+          value: "Asia/Shanghai"
+      securityContext:
+        privileged: true
+        allowPrivilegeEscalation: true
+        runAsNonRoot: false
+        runAsUser: 0
+      # The CSV2 guest kernel registers a csv-guest misc device, but /dev inside
+      # the container is a fresh tmpfs: /proc/misc lists the device while /dev
+      # stays empty, and TAA then has no hardware device to attest with. The
+      # minor number is not stable -- read it. Failure here is deliberately not
+      # fatal: the deploy gate checks for the device and names the cause.
+      lifecycle:
+        postStart:
+          exec:
+            command:
+              - /bin/sh
+              - -c
+              - |
+                if [ -e /dev/csv-guest ]; then
+                  chmod 666 /dev/csv-guest 2>/dev/null || true
+                  exit 0
+                fi
+                retry=0
+                while [ ! -r /sys/class/misc/csv-guest/dev ] && [ "$retry" -lt 60 ]; do
+                  retry=$((retry + 1))
+                  sleep 1
+                done
+                if [ -r /sys/class/misc/csv-guest/dev ]; then
+                  dev=$(cat /sys/class/misc/csv-guest/dev 2>/dev/null || true)
+                  major=${dev%%:*}
+                  minor=${dev##*:}
+                  if [ -n "$major" ] && [ -n "$minor" ]; then
+                    mknod /dev/csv-guest c "$major" "$minor" 2>/dev/null || true
+                    chmod 666 /dev/csv-guest 2>/dev/null || true
+                  else
+                    echo "csv guest device major/minor invalid: $dev" >&2
+                  fi
+                else
+                  echo "csv guest device info missing, skip init in postStart" >&2
+                fi
+                exit 0
+      resources:
+        # Kata sizes the guest from the limits (default_memory + limits.memory,
+        # default_vcpus + limits.cpu). Requests equal the limits because CSV2
+        # encrypted memory is resident from boot: it is a permanent host cost,
+        # not a burstable request.
+        limits:
+          cpu: "__CPU__"
+          memory: "__MEMORY__"
+__GPU_LIMIT__
+        requests:
+          cpu: "__CPU__"
+          memory: "__MEMORY__"

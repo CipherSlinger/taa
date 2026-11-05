@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Verifies the deployment-owned TAA Pod path: without --pod, `deploy.sh taa`
-# creates a Kata CSV2 Pod on the remote host, reuses it on later runs, and deletes it on stop.
-# When --pod names a Pod, the deployment never creates or deletes a Pod.
+# Verifies the deployment-owned TAA Pod path: without --pod, `deploy.sh create` creates a Kata
+# CSV2 Pod on the remote host, later runs reuse and verify it, and `delete` removes it. When --pod
+# names a Pod, the deployment never creates or deletes a Pod.
 #
 # The traps this test guards are not visible in a successful deployment, so each one gets a
 # negative control:
@@ -13,7 +13,8 @@
 #     operator did not ask for;
 #   * a Pod without /dev/csv-guest must fail the deploy, since TAA would then attest without a
 #     hardware device and nothing in the flow would say so;
-#   * stop must delete a Pod the deployment created, and must not delete an operator's Pod.
+#   * delete must remove a Pod the deployment created, and must refuse an operator's Pod;
+#   * stop only stops the daemon and never removes the Pod.
 #
 # The script runs from a throwaway repository root, which keeps the whole test independent of the
 # real checkout, its build products and the semgrep payload.
@@ -214,13 +215,31 @@ fail() {
 
 kubectl_lines() { grep -c '^KUBECTL ' "$MOCK_LOG" || true; }
 
+# ── 0. create and delete only ever act on the Pod this deployment owns ──────
+#
+# --pod says "use this Pod, do not touch its lifecycle", so pairing it with the two actions that
+# change which Pods exist is refused before anything reaches the host.
+
+for action in create delete; do
+  set +e
+  output="$(PATH="$MOCK_BIN:$PATH" timeout 60 "$REPO/deploy.sh" "$action" --pod operator-pod 2>&1)"
+  status=$?
+  set -e
+  [[ $status -ne 0 ]] || fail "$action accepted --pod"
+  grep -q "cannot be combined with --pod\|delete only removes the Pod this deployment created" \
+    <<<"$output" || fail "$action --pod was refused without saying why"
+done
+[[ "$(kubectl_lines)" == "0" ]] || fail "a refused create/delete still reached the cluster"
+
 # ── 1. First run: --pod not given, the Pod does not exist yet ────────────────
+#
+# No action argument: create is the default, so a bare invocation is the one-shot deployment.
 
 rm -f "$MOCK_STATE_DIR/applied.yaml" "$MOCK_STATE_DIR/apply-count"
 touch "$MOCK_STATE_DIR/csv_device"
 
-run_deploy start
-[[ $status -eq 0 ]] || fail "start exited $status"
+run_deploy
+[[ $status -eq 0 ]] || fail "the default action (create) exited $status"
 
 [[ "$(cat "$MOCK_STATE_DIR/apply-count" 2>/dev/null || echo 0)" == "1" ]] \
   || fail "the Pod was applied $(cat "$MOCK_STATE_DIR/apply-count" 2>/dev/null || echo 0) times, expected exactly one"
@@ -283,25 +302,25 @@ grep -q "taa service listening on" <<<"$output" \
 
 # ── 2. Second run: the Pod exists and is reused ─────────────────────────────
 
-run_deploy start
+run_deploy create
 [[ $status -eq 0 ]] || fail "the second run exited $status"
 [[ "$(cat "$MOCK_STATE_DIR/apply-count")" == "1" ]] \
   || fail "the second run applied the manifest again instead of reusing the Pod"
-grep -q "remote target pod verified: $POD_NAME" <<<"$output" \
+grep -q "already exists; verifying it instead of creating a second one" <<<"$output" \
   || fail "the second run did not report the reused Pod"
 
-# ── 3. Negative control: an explicitly named Pod that does not exist ────────
+# ── 3. Negative control: update never creates a Pod --pod names ─────────────
 
 rm -f "$MOCK_STATE_DIR/pod" "$MOCK_STATE_DIR/apply-count"
 before="$(wc -l < "$MOCK_LOG")"
 set +e
 output="$(PATH="$MOCK_BIN:$PATH" \
   TAA_READY_TIMEOUT=2 TAA_READY_INTERVAL=1 TAA_SCAN_ENGINE_PROVISION=skip \
-  timeout 300 "$REPO/deploy.sh" start --pod operator-pod 2>&1)"
+  timeout 300 "$REPO/deploy.sh" update --pod operator-pod 2>&1)"
 status=$?
 set -e
 [[ $status -ne 0 ]] || fail "a missing explicitly named Pod was accepted"
-grep -q "target pod 'operator-pod' not found" <<<"$output" || fail "the missing Pod was not named"
+grep -q "TAA Pod 'operator-pod' does not exist" <<<"$output" || fail "the missing Pod was not named"
 tail -n +"$((before + 1))" "$MOCK_LOG" > "$TMP_DIR/explicit-missing.log"
 if grep -q "KUBECTL create" "$TMP_DIR/explicit-missing.log"; then
   fail "an explicit --pod still created a Pod instead of failing"
@@ -310,29 +329,29 @@ fi
 # ── 4. Negative control: a Pod without /dev/csv-guest ───────────────────────
 
 rm -f "$MOCK_STATE_DIR/pod" "$MOCK_STATE_DIR/apply-count" "$MOCK_STATE_DIR/csv_device"
-run_deploy start
+run_deploy create
 [[ $status -ne 0 ]] || fail "a Pod without /dev/csv-guest was accepted"
 grep -q "/dev/csv-guest" <<<"$output" || fail "the missing device was not named in the error"
 touch "$MOCK_STATE_DIR/csv_device"
 
-# ── 5. stop deletes the deployment-owned Pod ────────────────────────────────
+# ── 5. delete removes the deployment-owned Pod ──────────────────────────────
 
 rm -f "$MOCK_STATE_DIR/pod" "$MOCK_STATE_DIR/apply-count"
-run_deploy start
-[[ $status -eq 0 ]] || fail "the setup run for stop exited $status"
+run_deploy create
+[[ $status -eq 0 ]] || fail "the setup run for delete exited $status"
 before="$(wc -l < "$MOCK_LOG")"
-run_deploy stop
-[[ $status -eq 0 ]] || fail "stop exited $status"
-[[ -f "$MOCK_STATE_DIR/pod" ]] && fail "the deployment-owned Pod survived stop"
-tail -n +"$((before + 1))" "$MOCK_LOG" > "$TMP_DIR/stop.log"
-grep -q "KUBECTL delete pod $POD_NAME" "$TMP_DIR/stop.log" \
-  || fail "stop did not delete the deployment-owned Pod"
+run_deploy delete
+[[ $status -eq 0 ]] || fail "delete exited $status"
+[[ -f "$MOCK_STATE_DIR/pod" ]] && fail "the deployment-owned Pod survived delete"
+tail -n +"$((before + 1))" "$MOCK_LOG" > "$TMP_DIR/delete.log"
+grep -q "KUBECTL delete pod $POD_NAME" "$TMP_DIR/delete.log" \
+  || fail "delete did not remove the deployment-owned Pod"
 grep -q "TAA Pod '$POD_NAME' deleted" <<<"$output" || fail "the deletion was not reported"
 
-# ── 6. stop leaves an explicitly named Pod in place ─────────────────────────
+# ── 6. stop leaves the Pod in place; delete refuses an explicitly named Pod ──
 
 rm -f "$MOCK_STATE_DIR/pod" "$MOCK_STATE_DIR/apply-count"
-run_deploy start
+run_deploy create
 [[ $status -eq 0 ]] || fail "the setup run for the explicit stop exited $status"
 before="$(wc -l < "$MOCK_LOG")"
 set +e
@@ -342,28 +361,39 @@ output="$(PATH="$MOCK_BIN:$PATH" \
 status=$?
 set -e
 [[ $status -eq 0 ]] || fail "stop with an explicit --pod exited $status"
-[[ -f "$MOCK_STATE_DIR/pod" ]] || fail "stop deleted an explicitly named Pod"
+[[ -f "$MOCK_STATE_DIR/pod" ]] || fail "stop removed the Pod instead of only stopping taa"
 tail -n +"$((before + 1))" "$MOCK_LOG" > "$TMP_DIR/stop-explicit.log"
 if grep -q "KUBECTL delete" "$TMP_DIR/stop-explicit.log"; then
-  fail "stop deleted an explicitly named Pod"
+  fail "stop deleted the Pod"
 fi
 
-# ── 7. stop still deletes an owned Pod it cannot exec into ──────────────────
+set +e
+output="$(PATH="$MOCK_BIN:$PATH" \
+  TAA_READY_TIMEOUT=2 TAA_READY_INTERVAL=1 TAA_SCAN_ENGINE_PROVISION=skip \
+  timeout 300 "$REPO/deploy.sh" delete --pod "$POD_NAME" 2>&1)"
+status=$?
+set -e
+[[ $status -ne 0 ]] || fail "delete accepted an explicitly named Pod"
+grep -q "delete only removes the Pod this deployment created" <<<"$output" \
+  || fail "the refusal to delete an operator's Pod was not explained"
+[[ -f "$MOCK_STATE_DIR/pod" ]] || fail "delete removed an explicitly named Pod"
+
+# ── 7. delete still removes an owned Pod it cannot exec into ────────────────
 #
 # A Pending or wedged Pod cannot be exec'd into, but its guest memory is host-resident: refusing
 # to delete it because the kill failed would leave tens of GiB behind.
 
 rm -f "$MOCK_STATE_DIR/pod" "$MOCK_STATE_DIR/apply-count" "$MOCK_STATE_DIR/exec_fails"
-run_deploy start
-[[ $status -eq 0 ]] || fail "the setup run for the wedged stop exited $status"
+run_deploy create
+[[ $status -eq 0 ]] || fail "the setup run for the wedged delete exited $status"
 touch "$MOCK_STATE_DIR/exec_fails"
 before="$(wc -l < "$MOCK_LOG")"
-run_deploy stop
-[[ $status -eq 0 ]] || fail "stop on a Pod it cannot exec into exited $status"
-[[ -f "$MOCK_STATE_DIR/pod" ]] && fail "an owned Pod survived stop only because exec failed"
-tail -n +"$((before + 1))" "$MOCK_LOG" > "$TMP_DIR/stop-wedged.log"
-grep -q "KUBECTL delete pod $POD_NAME" "$TMP_DIR/stop-wedged.log" \
-  || fail "stop did not delete an owned Pod it could not exec into"
+run_deploy delete
+[[ $status -eq 0 ]] || fail "delete on a Pod it cannot exec into exited $status"
+[[ -f "$MOCK_STATE_DIR/pod" ]] && fail "an owned Pod survived delete only because exec failed"
+tail -n +"$((before + 1))" "$MOCK_LOG" > "$TMP_DIR/delete-wedged.log"
+grep -q "KUBECTL delete pod $POD_NAME" "$TMP_DIR/delete-wedged.log" \
+  || fail "delete did not remove an owned Pod it could not exec into"
 rm -f "$MOCK_STATE_DIR/exec_fails"
 
 # ── 8. A new Pod is refused before creation without the platform key ─────────
@@ -382,7 +412,7 @@ output="$(PATH="$MOCK_BIN:$PATH" env -u TARGET_POD -u TAA_POD_NAME -u TAA_IMAGE 
   -u PLATFORM_PUBLIC_KEY -u TAA_POD_PLATFORM_PUBLIC_KEY -u TAA_POD_CC_INIT_DATA \
   TAA_READY_TIMEOUT=2 TAA_READY_INTERVAL=1 TAA_POD_TAA_READY_TIMEOUT=5 \
   TAA_SCAN_ENGINE_PROVISION=skip \
-  timeout 300 "$REPO/deploy.sh" --image "$DEFAULT_IMAGE" start 2>&1)"
+  timeout 300 "$REPO/deploy.sh" --image "$DEFAULT_IMAGE" create 2>&1)"
 status=$?
 set -e
 mv "$TMP_DIR/platform-key.json" "$KEY_FILE"
@@ -412,7 +442,7 @@ output="$(PATH="$MOCK_BIN:$PATH" env -u TARGET_POD -u TAA_POD_NAME -u TAA_IMAGE 
   TAA_POD_INITDATA_FILE="$TMP_DIR/initdata.v1.toml" \
   TAA_READY_TIMEOUT=2 TAA_READY_INTERVAL=1 TAA_POD_TAA_READY_TIMEOUT=5 \
   TAA_SCAN_ENGINE_PROVISION=skip \
-  timeout 300 "$REPO/deploy.sh" --image "$DEFAULT_IMAGE" start 2>&1)"
+  timeout 300 "$REPO/deploy.sh" --image "$DEFAULT_IMAGE" create 2>&1)"
 status=$?
 set -e
 [[ $status -eq 0 ]] || fail "the deployment did not fall back to the initdata file (exit $status)"
@@ -437,7 +467,7 @@ output="$(PATH="$MOCK_BIN:$PATH" env -u TARGET_POD -u TAA_POD_NAME -u TAA_IMAGE 
   PLATFORM_PUBLIC_KEY="-----BEGIN PUBLIC KEY-----" \
   TAA_READY_TIMEOUT=2 TAA_READY_INTERVAL=1 TAA_POD_TAA_READY_TIMEOUT=5 \
   TAA_SCAN_ENGINE_PROVISION=skip \
-  timeout 300 "$REPO/deploy.sh" --image "$DEFAULT_IMAGE" start 2>&1)"
+  timeout 300 "$REPO/deploy.sh" --image "$DEFAULT_IMAGE" create 2>&1)"
 status=$?
 set -e
 [[ $status -ne 0 ]] || fail "a malformed platform key was accepted"
@@ -448,4 +478,4 @@ if grep -q "KUBECTL create" "$TMP_DIR/bad-key.log"; then
   fail "a Pod was created with a malformed platform key"
 fi
 
-echo "PASS: TAA Pod creation, reuse, device gate and stop-deletion behave as specified"
+echo "PASS: TAA Pod creation, reuse, device gate, stop and delete behave as specified"
