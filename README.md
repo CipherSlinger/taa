@@ -606,11 +606,12 @@ Inside the TAA container, TAA runs under the supervision of `deploy/taa-supervis
 > explicitly empty address) disables registration, heartbeats and log pushes. The deployment prints
 > `platform reporting: <addr|disabled>` and the service logs the same fact at startup.
 
-> **Remote mode can create its own Pod.** When `TARGET_POD` is unset, `deploy.sh` creates a
+> **Remote mode can create its own Pod.** Without `--pod`, `deploy.sh` creates a
 > dedicated Kata CSV2 Pod on the remote host (`TAA_POD_NAME`, default `taa-deploy`), waits for it
 > to become Ready, and reuses it on later runs; `stop` deletes that Pod, taking its guest writable
-> layer (data, keys, models) with it. When `TARGET_POD` is set, the deployment only targets that
-> Pod and fails if it does not exist — it never creates or deletes it. Pod creation knobs:
+> layer (data, keys, models) with it. With `--pod <name>`, the deployment only targets that
+> Pod and fails if it does not exist — it never creates or deletes it. `--namespace <ns>` selects
+> the namespace (default `osr`). Pod creation knobs:
 > `TAA_POD_IMAGE`, `TAA_POD_NODE`, `TAA_POD_RUNTIME_CLASS`, `TAA_POD_CPU`, `TAA_POD_MEMORY`,
 > `TAA_POD_READY_TIMEOUT`, `TAA_POD_CC_INIT_DATA` and `TAA_POD_DOCKER_ID`. The template lives at
 > `deploy/manifest/k8s/taa-pod.yaml.tmpl`.
@@ -625,7 +626,7 @@ Inside the TAA container, TAA runs under the supervision of `deploy/taa-supervis
 > also read from `TAA_POD_REGISTRY`, `TAA_POD_IMAGE_REPO` and `TAA_POD_PULL_POLICY`.
 >
 > An existing Pod is reused as is and never recreated, so a new image only reaches the Pod after
-> `TARGET_POD= ./deploy.sh taa stop` (which deletes the Pod and its guest writable layer) followed
+> `./deploy.sh taa stop` (which deletes the Pod and its guest writable layer) followed
 > by a start. The LLM endpoint is not an env var on the Pod — it is written into `taa-config.json`
 > on every deploy, so a later `LLM_IP` takes effect without recreating the Pod.
 

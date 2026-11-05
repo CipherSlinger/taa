@@ -141,12 +141,11 @@ printf 'not-a-real-payload\n' > "$BUNDLE"
 run_deploy() {
   set +e
   output="$(PATH="$MOCK_BIN:$PATH" \
-    TARGET_POD=mock-taa-pod \
     TAA_KEEP_MANUAL=true \
     TAA_BINARY_PATH="$TMP_DIR/bin/taa" \
     REMOTE_TAA_CONFIG_SOURCE="$TMP_DIR/remote-taa-config.json" \
     LOCAL_RUN_DIR="$TMP_DIR/run" \
-    timeout 300 "$ROOT_DIR/deploy.sh" taa 2>&1)"
+    timeout 300 "$ROOT_DIR/deploy.sh" taa --pod mock-taa-pod 2>&1)"
   status=$?
   set -e
 }

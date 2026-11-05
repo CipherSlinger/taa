@@ -88,16 +88,18 @@ PASSWORD="${TARGET_PASSWORD:-Osrd@2026}"
 REMOTE_DIR="${REMOTE_DIR:-/root/taa-fhe}"
 REMOTE_TARGET="${REMOTE_TARGET:-${REMOTE_USER}@${REMOTE_HOST}}"
 
-# Pod deployment (pod=<name>). A Kubernetes pod replaces the docker container on
+# Pod deployment (--pod <name>). A Kubernetes pod replaces the docker container on
 # this host, so this mode copies the TAA files into an existing pod instead of
 # creating a container. The pod env carries the platform identity and the FHE
 # service decides the data root; both are read from the pod, never guessed.
-TARGET_POD="${TARGET_POD:-}"
-POD_NAMESPACE="${POD_NAMESPACE:-${TARGET_NAMESPACE:-osr}}"
+TARGET_POD_ENV_WAS_SET="${TARGET_POD+set}"
+TARGET_POD=""
+POD_NAMESPACE_ENV_WAS_SET="${POD_NAMESPACE+set}"
+TARGET_NAMESPACE_ENV_WAS_SET="${TARGET_NAMESPACE+set}"
+POD_NAMESPACE="osr"
 POD_CONTAINER="${POD_CONTAINER:-}"
 POD_MODE=0
 POD_PAUSED=0
-POD_ARG_SEEN=0
 
 # Two host directories that decide the binds. They are named here as well as in
 # the path block below so --help can print them before anything is resolved.
@@ -413,7 +415,7 @@ upload_archive() {
   log "uploaded $src -> $REMOTE_TARGET:$dest"
 }
 
-# ── Pod helpers (pod=<name>) ─────────────────────────────────────────────────
+# ── Pod helpers (--pod <name>) ───────────────────────────────────────────────
 # kubectl runs on the deployment host, exactly like docker does, so every
 # command goes through host_sh/host_capture and --local/--remote stay symmetric.
 POD_UID=""
@@ -549,19 +551,6 @@ Arguments:
   (no argument)
       Deploy the unified container, same as taa.
 
-  pod=<name>
-      Deploy TAA into an existing Kubernetes pod instead of starting a docker
-      container (implies taa; conflicts with save). The pod
-      must already run the TAA supervisor; this copies taa, deploy/taa-supervisor.sh
-      and a re-rendered config into /root/taa, restarts the supervisor in the
-      pod and waits for its health endpoint. The pod env supplies PLATFORM_IP
-      and CONTAINER_DATA_DIR, so the config is rendered against the data root
-      the running FHE side actually uses. The files live in the container's
-      writable layer and are lost when the pod restarts; build them into an
-      image for a durable change.
-  namespace=<ns>
-      Namespace of the pod (default: POD_NAMESPACE, else osr).
-
   save
       Package instead of deploy, and only with the taa argument: build
       TAA into the handoff image (TAA binary, deploy/taa-supervisor.sh, the rendered
@@ -572,6 +561,18 @@ Arguments:
       TAA_IMAGE=taa-fhe:<date> ./deploy-fhe.sh taa.
 
 Options:
+  --pod <name>
+      Deploy TAA into an existing Kubernetes pod instead of starting a docker
+      container (implies taa; conflicts with save). The pod
+      must already run the TAA supervisor; this copies taa, deploy/taa-supervisor.sh
+      and a re-rendered config into /root/taa, restarts the supervisor in the
+      pod and waits for its health endpoint. The pod env supplies PLATFORM_IP
+      and CONTAINER_DATA_DIR, so the config is rendered against the data root
+      the running FHE side actually uses. The files live in the container's
+      writable layer and are lost when the pod restarts; build them into an
+      image for a durable change.
+  --namespace <ns>
+      Namespace of the pod (default: osr).
   -n, --dry-run         Print the commands and execute nothing.
   --remote              Deploy to ${REMOTE_USER}@${REMOTE_HOST} (default).
   --local               Deploy on the machine running this script.
@@ -628,10 +629,6 @@ Environment:
       Redis persistence, mounted at /data/redis. Kept apart from the
       directory a leftover compose stack's redis writes, whose RDB the
       image's older redis cannot read.
-  TARGET_POD=${TARGET_POD}
-      Setting this enables pod mode, same as pod=<name>.
-  POD_NAMESPACE=${POD_NAMESPACE}
-      Namespace of the pod; namespace=<ns> wins over it.
   POD_CONTAINER=${POD_CONTAINER}
       Container to exec in a multi-container pod; required when the pod has
       more than one container.
@@ -670,11 +667,40 @@ while [ $# -gt 0 ]; do
       fi
       SAVE_ACTION=1
       ;;
-    pod=*)
-      TARGET_POD="${1#pod=}"
-      POD_ARG_SEEN=1
+    --pod=*)
+      TARGET_POD="${1#*=}"
+      if [ -z "$TARGET_POD" ]; then
+        printf '[deploy-fhe] ERROR: --pod requires a Pod name argument\n' >&2
+        usage >&2
+        exit 1
+      fi
       ;;
-    namespace=*) POD_NAMESPACE="${1#namespace=}" ;;
+    --pod)
+      shift
+      if [ $# -eq 0 ] || [ "${1#-}" != "$1" ]; then
+        printf '[deploy-fhe] ERROR: --pod requires a Pod name argument\n' >&2
+        usage >&2
+        exit 1
+      fi
+      TARGET_POD="$1"
+      ;;
+    --namespace=*)
+      POD_NAMESPACE="${1#*=}"
+      if [ -z "$POD_NAMESPACE" ]; then
+        printf '[deploy-fhe] ERROR: --namespace requires a namespace argument\n' >&2
+        usage >&2
+        exit 1
+      fi
+      ;;
+    --namespace)
+      shift
+      if [ $# -eq 0 ] || [ "${1#-}" != "$1" ]; then
+        printf '[deploy-fhe] ERROR: --namespace requires a namespace argument\n' >&2
+        usage >&2
+        exit 1
+      fi
+      POD_NAMESPACE="$1"
+      ;;
     -n|--dry-run) DRY_RUN=1 ;;
     --remote) REMOTE_TARGET="${REMOTE_USER}@${REMOTE_HOST}" ;;
     --local) REMOTE_TARGET="" ;;
@@ -685,6 +711,20 @@ while [ $# -gt 0 ]; do
   esac
   shift
 done
+
+# TARGET_POD, POD_NAMESPACE and TARGET_NAMESPACE in the environment were removed. Silently
+# falling back to the container path or the default namespace would deploy somewhere other than
+# what the caller named, so refuse it.
+if [ -n "$TARGET_POD_ENV_WAS_SET" ]; then
+  printf '[deploy-fhe] ERROR: TARGET_POD is no longer supported; pass --pod <name> instead\n' >&2
+  usage >&2
+  exit 1
+fi
+if [ -n "$POD_NAMESPACE_ENV_WAS_SET" ] || [ -n "$TARGET_NAMESPACE_ENV_WAS_SET" ]; then
+  printf '[deploy-fhe] ERROR: namespace environment variables are no longer supported; pass --namespace <ns> instead\n' >&2
+  usage >&2
+  exit 1
+fi
 
 # TAA is the only thing this script deploys.
 DEPLOY_TAA=1
@@ -698,7 +738,7 @@ fi
 # created, so it only makes sense with taa and without save.
 if [ -n "$TARGET_POD" ]; then
   if [ "$SAVE_ACTION" = 1 ]; then
-    printf '[deploy-fhe] ERROR: pod= cannot be combined with save: a saved image is built here, not deployed into a pod\n' >&2
+    printf '[deploy-fhe] ERROR: --pod cannot be combined with save: a saved image is built here, not deployed into a pod\n' >&2
     usage >&2
     exit 1
   fi
@@ -720,9 +760,7 @@ if [ -n "$TARGET_POD" ]; then
   POD_MODE=1
   DEPLOY_MODE=taa
   DEPLOY_TAA=1
-  if [ "$POD_ARG_SEEN" = 0 ]; then
-    log "pod mode enabled by TARGET_POD=$TARGET_POD"
-  fi
+  log "pod mode enabled by --pod=$TARGET_POD"
   POD_KCTL=(kubectl -n "$POD_NAMESPACE")
   [ -z "$POD_CONTAINER" ] || POD_KCTL+=(-c "$POD_CONTAINER")
 fi
@@ -1081,7 +1119,7 @@ install_taa_files() {
   fi
 }
 
-# ── Pod deployment (pod=<name>) ──────────────────────────────────────────────
+# ── Pod deployment (--pod <name>) ────────────────────────────────────────────
 # The pod, its image and the FHE side belong to the platform: this path only
 # replaces TAA's files and re-renders the config against the data root the
 # running FHE service really uses. It never creates, starts or removes the pod.

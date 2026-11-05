@@ -13,16 +13,16 @@
 
 # 把 TAA 部署进已有 pod（Kubernetes 里的 FHE 实例）
 # 会重渲染配置以匹配 pod 内的 FHE 数据根，重启 pod 内的 supervisor 并等待健康检查
-./deploy-fhe.sh pod=<pod 名>
+./deploy-fhe.sh --pod <pod 名>
 
-# 默认命名空间 osr；其它命名空间用 namespace=<ns> 或 POD_NAMESPACE=<ns>
-./deploy-fhe.sh namespace=osr pod=<pod 名>
+# 默认命名空间 osr；其它命名空间用 --namespace <ns>
+./deploy-fhe.sh --namespace osr --pod <pod 名>
 
 # 同一 pod 里有多个容器时指定容器
-POD_CONTAINER=<容器名> ./deploy-fhe.sh pod=<pod 名>
+POD_CONTAINER=<容器名> ./deploy-fhe.sh --pod <pod 名>
 
 # 只看会执行什么
-./deploy-fhe.sh pod=<pod 名> -n
+./deploy-fhe.sh --pod <pod 名> -n
 
 # 查当前 pod 名
 kubectl -n osr get pods | grep taa-fhe
@@ -41,17 +41,17 @@ TAA_IMAGE=taa-fhe:20261019 ./deploy-fhe.sh taa
 
 ```bash
 # 将 taa 更新到目标 pod 中
-TARGET_POD=taa-env-slim-v2-20261016-7104e03003ae0072-f7fbbf8f5-kkdb2 ./deploy.sh taa 
+./deploy.sh taa --pod taa-env-slim-v2-20261016-7104e03003ae0072-f7fbbf8f5-kkdb2
 
 ./deploy.sh taa
 ./deploy.sh taa stop    # 删除对应的 pod
 ./deploy.sh save        # 打包生产镜像（不部署任何东西）
 ```
 
-不指定 `TARGET_POD` 时，`./deploy.sh taa` 会在远端创建并接管一个 Kata CSV2 Pod
+不指定 `--pod` 时，`./deploy.sh taa` 会在远端创建并接管一个 Kata CSV2 Pod
 （默认名 `taa-deploy`），后续部署复用它，`./deploy.sh taa stop` 停止并删除该 Pod
-（连带 guest 可写层里的数据、密钥和模型）。显式给出 `TARGET_POD` 时脚本只部署进该 Pod，
-既不会创建也不会删除它。
+（连带 guest 可写层里的数据、密钥和模型）。用 `--pod <名字>` 指定 Pod 时脚本只部署进该 Pod，
+既不会创建也不会删除它。`--namespace <ns>` 指定命名空间，默认 `osr`。
 
 新建 Pod 之前，脚本会先用当前源码构建生产镜像、上传到远端并推送到 registry，tag 为当天日期
 （默认 `172.16.10.178:31313/taa-train-infer:<YYYYMMDD>`）。若 registry 上同名当天 tag 已经是

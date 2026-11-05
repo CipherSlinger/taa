@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Verifies the deployment-owned TAA Pod path: when TARGET_POD is unset, `deploy.sh taa`
+# Verifies the deployment-owned TAA Pod path: without --pod, `deploy.sh taa`
 # creates a Kata CSV2 Pod on the remote host, reuses it on later runs, and deletes it on stop.
-# When TARGET_POD is set, the deployment never creates or deletes a Pod.
+# When --pod names a Pod, the deployment never creates or deletes a Pod.
 #
 # The traps this test guards are not visible in a successful deployment, so each one gets a
 # negative control:
@@ -215,7 +215,7 @@ fail() {
 
 kubectl_lines() { grep -c '^KUBECTL ' "$MOCK_LOG" || true; }
 
-# ── 1. First run: TARGET_POD unset, the Pod does not exist yet ──────────────
+# ── 1. First run: --pod not given, the Pod does not exist yet ────────────────
 
 rm -f "$MOCK_STATE_DIR/applied.yaml" "$MOCK_STATE_DIR/apply-count"
 touch "$MOCK_STATE_DIR/csv_device"
@@ -296,16 +296,16 @@ grep -q "remote target pod verified: $POD_NAME" <<<"$output" \
 rm -f "$MOCK_STATE_DIR/pod" "$MOCK_STATE_DIR/apply-count"
 before="$(wc -l < "$MOCK_LOG")"
 set +e
-output="$(PATH="$MOCK_BIN:$PATH" TARGET_POD=operator-pod \
+output="$(PATH="$MOCK_BIN:$PATH" \
   READY_TIMEOUT=2 READY_INTERVAL=1 TAA_SCAN_ENGINE_PROVISION=skip \
-  timeout 300 "$REPO/deploy.sh" taa start 2>&1)"
+  timeout 300 "$REPO/deploy.sh" taa start --pod operator-pod 2>&1)"
 status=$?
 set -e
 [[ $status -ne 0 ]] || fail "a missing explicitly named Pod was accepted"
 grep -q "target pod 'operator-pod' not found" <<<"$output" || fail "the missing Pod was not named"
 tail -n +"$((before + 1))" "$MOCK_LOG" > "$TMP_DIR/explicit-missing.log"
 if grep -q "KUBECTL create" "$TMP_DIR/explicit-missing.log"; then
-  fail "an explicit TARGET_POD still created a Pod instead of failing"
+  fail "an explicit --pod still created a Pod instead of failing"
 fi
 
 # ── 4. Negative control: a Pod without /dev/csv-guest ───────────────────────
@@ -337,12 +337,12 @@ run_deploy taa start
 [[ $status -eq 0 ]] || fail "the setup run for the explicit stop exited $status"
 before="$(wc -l < "$MOCK_LOG")"
 set +e
-output="$(PATH="$MOCK_BIN:$PATH" TARGET_POD="$POD_NAME" \
+output="$(PATH="$MOCK_BIN:$PATH" \
   READY_TIMEOUT=2 READY_INTERVAL=1 TAA_SCAN_ENGINE_PROVISION=skip \
-  timeout 300 "$REPO/deploy.sh" taa stop 2>&1)"
+  timeout 300 "$REPO/deploy.sh" taa stop --pod "$POD_NAME" 2>&1)"
 status=$?
 set -e
-[[ $status -eq 0 ]] || fail "stop with an explicit TARGET_POD exited $status"
+[[ $status -eq 0 ]] || fail "stop with an explicit --pod exited $status"
 [[ -f "$MOCK_STATE_DIR/pod" ]] || fail "stop deleted an explicitly named Pod"
 tail -n +"$((before + 1))" "$MOCK_LOG" > "$TMP_DIR/stop-explicit.log"
 if grep -q "KUBECTL delete" "$TMP_DIR/stop-explicit.log"; then

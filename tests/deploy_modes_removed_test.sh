@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
 # Verifies that the local deployment modes are gone and fail loudly instead of falling through
 # to a deployment: `deploy.sh` no longer has a `docker` target (nor its `local` aliases), and
-# `deploy-platform-mock.sh` no longer has a `local` target. Every check here stops in argument
-# parsing, so the test never reaches SSH, docker or kubectl.
+# `deploy-platform-mock.sh` no longer has a `local` target. It also verifies that the target Pod
+# and namespace have exactly one spelling each -- `--pod` and `--namespace` -- and that the
+# environment variables and positional `name=value` forms they replaced are refused.
+# Every check here stops in argument parsing, so the test never reaches SSH, docker or kubectl.
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -60,4 +62,45 @@ run_capture out "$MOCK_DEPLOY" local start || rc=$?
 grep -q 'local mode has been removed' <<<"$out" \
   || fail "deploy-platform-mock.sh local start did not explain that the mode is gone"
 
-echo "PASS: removed deployment modes and the 'remote' word fail with an explanatory error"
+# The target Pod and namespace are command-line options: --pod and --namespace. The environment
+# variables and positional name=value forms they replaced are refused before the run reaches
+# anything, so a stale invocation cannot quietly deploy to the default Pod or namespace.
+expect_refused() {
+  local description="$1" expected="$2"
+  shift 2
+  local rc=0
+  run_capture out env "$@" || rc=$?
+  [[ "$rc" -ne 0 ]] || fail "$description exited 0"
+  grep -q -- "$expected" <<<"$out" || fail "$description did not explain the removal"
+}
+
+expect_refused "deploy.sh TARGET_POD" "TARGET_POD is no longer supported" \
+  TARGET_POD=stale "$DEPLOY" taa start
+expect_refused "deploy.sh TARGET_NAMESPACE" "TARGET_NAMESPACE is no longer supported" \
+  TARGET_NAMESPACE=stale "$DEPLOY" taa start
+expect_refused "deploy-llm.sh TARGET_POD" "TARGET_POD is no longer supported" \
+  TARGET_POD=stale "$ROOT_DIR/deploy-llm.sh" stop
+expect_refused "deploy-llm.sh TARGET_NAMESPACE" "TARGET_NAMESPACE is no longer supported" \
+  TARGET_NAMESPACE=stale "$ROOT_DIR/deploy-llm.sh" stop
+expect_refused "deploy-fhe.sh TARGET_POD" "TARGET_POD is no longer supported" \
+  TARGET_POD=stale "$ROOT_DIR/deploy-fhe.sh" taa
+expect_refused "deploy-fhe.sh POD_NAMESPACE" "namespace environment variables are no longer supported" \
+  POD_NAMESPACE=stale "$ROOT_DIR/deploy-fhe.sh" taa
+expect_refused "deploy.sh pod=..." "unknown argument: pod=stale" \
+  "$DEPLOY" taa start pod=stale
+expect_refused "deploy-llm.sh pod=..." "unknown argument: pod=stale" \
+  "$ROOT_DIR/deploy-llm.sh" pod=stale start
+expect_refused "deploy-fhe.sh namespace=..." "unknown argument: namespace=stale" \
+  "$ROOT_DIR/deploy-fhe.sh" namespace=stale --pod stale
+
+for script in "$DEPLOY" "$ROOT_DIR/deploy-llm.sh" "$ROOT_DIR/deploy-fhe.sh"; do
+  run_capture help "$script" --help
+  grep -q -- '--pod <name>' <<<"$help" \
+    || fail "$(basename "$script") --help does not document --pod <name>"
+  grep -q -- '--namespace <ns>' <<<"$help" \
+    || fail "$(basename "$script") --help does not document --namespace <ns>"
+  grep -qE 'TARGET_POD|TARGET_NAMESPACE|POD_NAMESPACE' <<<"$help" \
+    && fail "$(basename "$script") --help still documents a removed namespace/Pod variable"
+done
+
+echo "PASS: removed deployment modes, the 'remote' word and the old Pod/namespace spellings fail with an explanatory error"

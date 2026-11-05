@@ -85,11 +85,15 @@ cleanup_display() {
 }
 trap cleanup_display EXIT INT TERM
 
-# Kubernetes target: the TAA Pod lives in the osr namespace by default. An explicit TARGET_POD
-# names a Pod the deployment must not create; when it is unset, remote mode owns a Pod of its own
-# and creates it on the remote host (see ensure_remote_pod).
-TARGET_NAMESPACE="${TARGET_NAMESPACE:-osr}"
-TARGET_POD_WAS_SET="${TARGET_POD:+set}"
+# Kubernetes target: the TAA Pod lives in the osr namespace by default. --pod names a Pod the
+# deployment must not create; when it is not given, remote mode owns a Pod of its own and creates
+# it on the remote host (see ensure_remote_pod). TARGET_POD and TARGET_NAMESPACE in the
+# environment are refused; both are command-line options now.
+TARGET_NAMESPACE_ENV_WAS_SET="${TARGET_NAMESPACE+set}"
+TARGET_NAMESPACE="osr"
+TARGET_POD_ENV_WAS_SET="${TARGET_POD+set}"
+TARGET_POD=""
+TARGET_POD_WAS_SET=""
 TAA_POD_NAME="${TAA_POD_NAME:-taa-deploy}"
 
 # Project and remote host: local source tree, SSH login, and the remote working directory.
@@ -98,7 +102,7 @@ REMOTE_USER="${REMOTE_USER:-root}"
 REMOTE_HOST="${REMOTE_HOST:-172.16.10.178}"
 REMOTE_DIR="${REMOTE_DIR:-/root/taa}"
 
-# Parameters of the Pod created when TARGET_POD was not set. The defaults mirror the production
+# Parameters of the Pod created when --pod was not given. The defaults mirror the production
 # TAA Pod on the host (kata-qemu-csv2, 3 CPU, 98Gi), because CSV2 encrypted memory is sized from
 # the limits and is resident from boot.
 #
@@ -596,7 +600,7 @@ REMOTE_PUSH
   rm -f "$archive"
 }
 
-# Creates the deployment-owned TAA Pod. Reached only when TARGET_POD was not set and no Pod with
+# Creates the deployment-owned TAA Pod. Reached only when --pod was not given and no Pod with
 # that name exists, so an immutable-Pod rewrite cannot happen here. The rendered manifest uses |
 # as the delimiter because the injected base64 value contains / and + but never |.
 create_taa_pod() {
@@ -608,7 +612,7 @@ create_taa_pod() {
   fi
   local cc_init_data docker_id pod_namespace
   # An empty namespace in the manifest is not the same as "the context's namespace", so resolve
-  # what kubectl itself would use. The common case (TARGET_NAMESPACE=osr) never gets here.
+  # what kubectl itself would use. The common case (the default osr namespace) never gets here.
   pod_namespace="$TARGET_NAMESPACE"
   if [[ -z "$pod_namespace" ]]; then
     pod_namespace="$(remote_ssh "kubectl config view --minify -o jsonpath='{..namespace}' 2>/dev/null" || true)"
@@ -695,7 +699,7 @@ ensure_remote_pod() {
         err "TAA Pod '$TARGET_POD' exists but did not become Ready within 30s"
         remote_ssh "kubectl $K_NS describe pod '$TARGET_POD' | tail -n 20" || true
         detail "It is the Pod this deployment owns. If it is wedged, delete it with:"
-        detail "  TARGET_POD= $(basename "$0") remote taa stop"
+        detail "  $(basename "$0") taa stop"
         exit 1
       fi
       info "remote target pod verified: ${TARGET_POD} (namespace: ${TARGET_NAMESPACE:-default}, reused, nothing applied)"
@@ -706,8 +710,8 @@ ensure_remote_pod() {
   fi
   if [[ -n "$TARGET_POD_WAS_SET" ]]; then
     err "target pod '$TARGET_POD' not found in namespace '${TARGET_NAMESPACE:-default}' on remote host"
-    detail "Please check TARGET_POD or run 'kubectl get pods -n ${TARGET_NAMESPACE:-default}' on the remote host to check running pods."
-    detail "Leave TARGET_POD unset to have this deployment create and own a Pod instead."
+    detail "Please check --pod or run 'kubectl get pods -n ${TARGET_NAMESPACE:-default}' on the remote host to check running pods."
+    detail "Leave --pod out to have this deployment create and own a Pod instead."
     exit 1
   fi
   create_taa_pod
@@ -715,7 +719,7 @@ ensure_remote_pod() {
 
 # Deletes the deployment-owned TAA Pod. Destructive by design: the guest's writable layer -- the
 # data, keys and models the deployment put there -- goes with it, which is why this only runs when
-# the Pod is one this deployment created (TARGET_POD was left unset).
+# the Pod is one this deployment created (--pod was not given).
 delete_taa_pod() {
   step "deleting the deployment-owned TAA Pod ($TARGET_POD in $TARGET_NAMESPACE)"
   remote_ssh "kubectl $K_NS delete pod '$TARGET_POD' --ignore-not-found --wait=true --timeout=90s" || true
@@ -959,19 +963,24 @@ save_local_docker_image() {
 
 usage() {
   cat <<EOF
-Usage: $(basename "$0") [start|stop|save] [taa] [--model <name>]
+Usage: $(basename "$0") [start|stop|save] [taa] [--pod <name>] [--namespace <ns>] [--model <name>]
 
 This script deploys to the remote Kata CSV2 Pod over SSH and kubectl.
 
 Actions (mutually exclusive, default: start):
   start     Deploy and start services (default action).
-  stop      Stop target running services. A Pod created by this script (i.e. when TARGET_POD was
-            not set) is deleted as well; an explicitly named Pod is left in place.
+  stop      Stop target running services. A Pod created by this script (i.e. when --pod was not
+            given) is deleted as well; an explicitly named Pod is left in place.
   save      Package base image archive ($BASE_DOCKER_IMAGE_ARCHIVE) with production config ($TAA_PRODUCTION_CONFIG_TEMPLATE),
             commit with a date-stamped tag ($DEFAULT_SAVE_IMAGE), and export to an image archive ($DEFAULT_SAVE_ARCHIVE).
             This is a standalone packaging action and does not deploy anything (e.g. $(basename "$0") save).
 
 Options:
+  --pod <name>
+      Deploy into the existing Pod <name> instead of creating a dedicated Pod. The named Pod is
+      never created or deleted by this script.
+  --namespace <ns>
+      Kubernetes namespace of the target Pod (default: osr).
   --model <name> (or --model=<name>)
       Explicitly specify the LLM audit model (overriding config files).
   --archive <path> (or --output <path>, -o <path>)
@@ -989,16 +998,15 @@ Component selection:
   Note: Qwen / Ollama / TEE-LLM inference service is managed independently via deploy-llm.sh.
 
 Remote Pod lifecycle:
-  TARGET_POD names the Pod to deploy into. When it is unset, remote mode creates a dedicated Kata
-  CSV2 Pod (default name: TAA_POD_NAME, i.e. taa-deploy) on the remote host, reuses it on later
-  runs, and deletes it on stop. A Pod named explicitly through TARGET_POD is never created and
-  never deleted by this script.
+  --pod names the Pod to deploy into. Without it, remote mode creates a dedicated Kata CSV2 Pod
+  (default name: TAA_POD_NAME, i.e. taa-deploy) on the remote host, reuses it on later runs, and
+  deletes it on stop. A Pod named through --pod is never created and never deleted by this script.
   Before a new Pod is created, the production image is built from the current tree, uploaded to
   the registry and pushed as TAA_POD_REGISTRY/TAA_POD_IMAGE_REPO:<today>. If the registry already
   holds a different build under that same-day tag, its manifest is deleted and the tag repushed;
   an identical build is left alone. An existing Pod is reused as is and is never recreated, so a
-  new image needs 'TARGET_POD= ./deploy.sh taa stop' first (that deletes the Pod and its guest
-  writable layer). Set TAA_POD_IMAGE explicitly to skip the build and pin an image.
+  new image needs '$(basename "$0") taa stop' first (that deletes the Pod and its guest writable
+  layer). Set TAA_POD_IMAGE explicitly to skip the build and pin an image.
   The Pod's LLM endpoint comes from taa-config.json, which is rewritten on every deploy.
 
 Examples:
@@ -1015,12 +1023,8 @@ Examples:
 
 Environment overrides:
   # Kubernetes / Pod
-  TARGET_POD=${TARGET_POD:-<unset>}
-      目标 TAA Pod 名称。未设置时由脚本创建并管理一个 Pod（见下方 TAA_POD_*）。
-  TARGET_NAMESPACE=${TARGET_NAMESPACE}
-      Kubernetes 命名空间；置空时使用当前/默认命名空间。
   TAA_POD_NAME=${TAA_POD_NAME}
-      TARGET_POD 未设置时创建/复用的 Pod 名称（默认 taa-deploy）。
+      --pod 未给出时创建/复用的 Pod 名称（默认 taa-deploy）。
   TAA_POD_IMAGE=${TAA_POD_IMAGE}
       新建 Pod 使用的镜像。未设置时，每次新建 Pod 前都会用当前源码构建生产镜像并推送到
       registry（见 TAA_POD_REGISTRY / TAA_POD_IMAGE_REPO）；显式设置则跳过构建，原样使用。
@@ -1662,6 +1666,42 @@ else
         fi
         ACTION="save"
         ;;
+      --pod=*)
+        TARGET_POD="${arg#*=}"
+        if [[ -z "$TARGET_POD" ]]; then
+          err "--pod requires a Pod name argument"
+          usage >&2
+          exit 1
+        fi
+        TARGET_POD_WAS_SET="set"
+        ;;
+      --pod)
+        shift
+        if [[ $# -eq 0 || "$1" == -* ]]; then
+          err "--pod requires a Pod name argument"
+          usage >&2
+          exit 1
+        fi
+        TARGET_POD="$1"
+        TARGET_POD_WAS_SET="set"
+        ;;
+      --namespace=*)
+        TARGET_NAMESPACE="${arg#*=}"
+        if [[ -z "$TARGET_NAMESPACE" ]]; then
+          err "--namespace requires a namespace argument"
+          usage >&2
+          exit 1
+        fi
+        ;;
+      --namespace)
+        shift
+        if [[ $# -eq 0 || "$1" == -* ]]; then
+          err "--namespace requires a namespace argument"
+          usage >&2
+          exit 1
+        fi
+        TARGET_NAMESPACE="$1"
+        ;;
       --archive=*|--output=*)
         CUSTOM_SAVE_ARCHIVE="${arg#*=}"
         ;;
@@ -1749,8 +1789,22 @@ else
   ACTION="${ACTION:-start}"
 fi
 
-# Resolve the effective Pod name. TAA is the only thing deployed here, so an unset TARGET_POD
-# always means the Pod this script owns and creates.
+# TARGET_POD and TARGET_NAMESPACE in the environment were removed. Silently ignoring them would
+# aim the run at a Pod or namespace the caller did not name, so refuse before anything touches the
+# remote host.
+if [[ -n "$TARGET_POD_ENV_WAS_SET" ]]; then
+  err "TARGET_POD is no longer supported; pass --pod <name> instead"
+  usage >&2
+  exit 1
+fi
+if [[ -n "$TARGET_NAMESPACE_ENV_WAS_SET" ]]; then
+  err "TARGET_NAMESPACE is no longer supported; pass --namespace <ns> instead"
+  usage >&2
+  exit 1
+fi
+
+# Resolve the effective Pod name. TAA is the only thing deployed here, so when --pod is absent the
+# Pod this script owns and creates is the target.
 if [[ -z "${TARGET_POD:-}" ]]; then
   TARGET_POD="$TAA_POD_NAME"
 fi

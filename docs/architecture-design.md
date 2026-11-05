@@ -628,7 +628,7 @@ USERDATA = taaPublicKey.X || taaPublicKey.Y
 # 远程 Kubernetes 部署
 ./deploy.sh                             # 部署 TAA
 ./deploy.sh taa                         # 指定组件（兼容写法）
-TARGET_POD=<pod> ./deploy.sh taa        # 指定目标 Pod
+./deploy.sh taa --pod <pod>             # 指定目标 Pod（--namespace <ns>，默认 osr）
 
 # 生产镜像打包（不部署）
 ./deploy.sh save                        # 打包镜像与归档

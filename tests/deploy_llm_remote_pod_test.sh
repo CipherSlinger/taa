@@ -5,7 +5,7 @@
 # evidence and TAA rejects every handshake. The traps this test guards are not visible in a
 # successful deployment, so each one gets a negative control:
 #
-#   * the deployment must never aim at TARGET_POD's default, which is a *TAA* Pod that also has
+#   * the deployment must never aim at the default target Pod, which is a *TAA* Pod that also has
 #     /dev/csv-guest -- every gate would pass while the service landed in the wrong Pod;
 #   * a second run must not create a second Pod (a second confidential VM is tens of GiB of
 #     host-resident encrypted memory, and a new IP that TAA's endpoint no longer points at);
@@ -16,8 +16,9 @@
 #     errors out if it is told to read a chain that is not there;
 #   * an invocation with no action keyword must reach that same Pod path, since the target keyword
 #     that used to say so is gone -- a bare run is now the only way to start a deployment;
-#   * updating an existing Pod is the `update` action: it never creates or deletes one, and the
-#     retired `--pod <name> start` spelling must be refused rather than quietly do something else.
+#   * updating an existing Pod is the `update` action: it never creates or deletes one, and any
+#     other spelling of the target Pod (the TARGET_POD environment variable, a positional
+#     `pod=<name>`) is refused rather than quietly aiming the run somewhere else.
 #
 # The script is run from a throwaway repository root, which is what makes the last case reachable
 # and keeps the whole test independent of the teellm submodule and of the real ollama bundle.
@@ -549,10 +550,10 @@ if grep -q "^SCP\[.*teellm-service" "$MOCK_LOG"; then
   fail "the creation uploaded a service binary for the Pod to install"
 fi
 
-# The deployment body must address the TEE-LLM Pod and nothing else. Aimed at the default TARGET_POD
+# The deployment body must address the TEE-LLM Pod and nothing else. Aimed at the default target
 # it would still pass every gate -- that Pod has /dev/csv-guest too -- and fail in production.
 if grep -q "$DEFAULT_POD_NAME" "$MOCK_LOG"; then
-  fail "a command was aimed at the default TARGET_POD ($DEFAULT_POD_NAME)"
+  fail "a command was aimed at the default target Pod ($DEFAULT_POD_NAME)"
 fi
 grep -q "$COPY_POD_NAME" "$MOCK_LOG" || fail "no command addressed the TEE-LLM Pod"
 
@@ -633,18 +634,18 @@ grep -q "pod-down" <<<"$output" || fail "the refusal does not tell the operator 
 [[ "$(grep -c '^DOCKER commit ' "$MOCK_LOG" || true)" == "$build_before" ]] \
   || fail "an image was built for a Pod that already exists"
 
-# ── 2b. A bare TARGET_POD run re-execs the supervisor it just installed ──────
-# `--create-pod` is not the only way in: a plain `TARGET_POD=... ./deploy-llm.sh` skips pod_up, so
+# ── 2b. A plain `start --pod` re-execs the supervisor it just installed ──────
+# `--create-pod` is not the only way in: a plain `--pod <name> start` skips pod_up, so
 # nothing marks the Pod as reused. If the restart request depended on that flag, the deployment
 # would install a new supervisor script and leave the old copy running -- which is how a liveness
 # fix silently failed to take effect once.
 
 before="$(wc -l < "$MOCK_LOG")"
-TARGET_POD="$COPY_POD_NAME" run_deploy
-[[ $status -eq 0 ]] || fail "a bare TARGET_POD deployment exited $status"
+run_deploy --pod "$COPY_POD_NAME"
+[[ $status -eq 0 ]] || fail "a plain --pod deployment exited $status"
 tail -n +"$((before + 1))" "$MOCK_LOG" > "$TMP_DIR/bare.log"
 grep -q "\.teellm-supervisor-restart" "$TMP_DIR/bare.log" \
-  || fail "a bare TARGET_POD deployment did not ask the installed supervisor to re-exec"
+  || fail "a plain --pod deployment did not ask the installed supervisor to re-exec"
 
 # A Pod this run did not create is the only case that still installs into it, and it still has to
 # hand the daemons to the supervisor rather than start or stop them behind its back -- and pause it
@@ -821,15 +822,15 @@ rm -f "$MOCK_STATE_DIR/pod"
 # and stop/pod-down need something to act on.
 touch "$MOCK_STATE_DIR/pod"
 
-# ── 4. Negative control: --create-pod with a different explicit TARGET_POD ───
+# ── 4. Negative control: --create-pod with a different explicit --pod ───────
 
 before="$(kubectl_lines)"
 set +e
-output="$(PATH="$MOCK_BIN:$PATH" TARGET_POD=some-other-pod \
-  timeout 300 "$REPO/deploy-llm.sh" --create-pod start 2>&1)"
+output="$(PATH="$MOCK_BIN:$PATH" \
+  timeout 300 "$REPO/deploy-llm.sh" --create-pod start --pod some-other-pod 2>&1)"
 status=$?
 set -e
-[[ $status -ne 0 ]] || fail "--create-pod overrode an explicit TARGET_POD"
+[[ $status -ne 0 ]] || fail "--create-pod overrode an explicit --pod"
 grep -q "addresses the TEE-LLM Pod" <<<"$output" || fail "the refusal does not explain the conflict"
 [[ "$(kubectl_lines)" == "$before" ]] || fail "the refusal happened only after touching the cluster"
 
@@ -893,7 +894,7 @@ run_deploy pod-down
 [[ -f "$MOCK_STATE_DIR/pod" ]] && fail "the TEE-LLM Pod survived pod-down"
 grep -q "TEE-LLM Pod '$COPY_POD_NAME' deleted" <<<"$output" || fail "pod-down did not report the deletion"
 if grep -q "$DEFAULT_POD_NAME" "$MOCK_LOG"; then
-  fail "pod-down was aimed at the default TARGET_POD ($DEFAULT_POD_NAME)"
+  fail "pod-down was aimed at the default target Pod ($DEFAULT_POD_NAME)"
 fi
 pod_down_log="$TMP_DIR/pod-down.log"
 tail -n +"$((before + 1))" "$MOCK_LOG" > "$pod_down_log"
@@ -1074,9 +1075,9 @@ fi
 cp "$TMP_DIR/deploy-llm.sh.pristine" "$REPO/deploy-llm.sh"
 
 # ── 14. update: only an existing Pod, and it never creates or deletes one ───
-# The retired spelling `--pod <name> start` used to do this job, which left the target to a flag
-# and the lifecycle to whatever the run happened to do. update names its own target and refuses
-# the cases that would take the Pod's lifecycle out of the operator's hands.
+# update names its own target and refuses the cases that would take the Pod's lifecycle out of
+# the operator's hands. The target Pod has exactly one spelling, --pod; the removed spellings are
+# refused before anything touches the cluster, so a stale script cannot quietly deploy elsewhere.
 
 apply_before="$(cat "$MOCK_STATE_DIR/apply-count")"
 delete_before="$(grep -c '^KUBECTL delete ' "$MOCK_LOG" || true)"
@@ -1088,7 +1089,7 @@ run_deploy update
   || fail "update deleted something"
 grep -q "updating it in place" <<<"$output" || fail "update did not report touching the existing Pod"
 if grep -q "$DEFAULT_POD_NAME" "$MOCK_LOG"; then
-  fail "update was aimed at the default TARGET_POD ($DEFAULT_POD_NAME)"
+  fail "update was aimed at the default target Pod ($DEFAULT_POD_NAME)"
 fi
 
 # A Pod that is not there is reported as that, and is not created: update's whole contract is that
@@ -1104,13 +1105,28 @@ grep -q -- "--create-pod start" <<<"$output" \
 [[ "$(cat "$MOCK_STATE_DIR/apply-count")" == "$apply_before" ]] \
   || fail "update applied a manifest for a Pod it then refused to create"
 
-# The retired spelling fails before it touches anything, and points at the action that replaced it.
+# The removed target-Pod spellings fail before they touch anything: --pod is the only one left,
+# so a stale script must be told to change rather than silently fall back to the default Pod.
 before="$(kubectl_lines)"
-run_deploy --pod "$COPY_POD_NAME" start
-[[ $status -ne 0 ]] || fail "'--pod <name> start' was accepted"
-grep -q "no longer supported" <<<"$output" || fail "the refusal does not say the spelling is retired"
-grep -q "deploy-llm.sh update" <<<"$output" || fail "the refusal does not point at the update action"
+RUN_ENV=(TARGET_POD="$COPY_POD_NAME")
+run_deploy start
+RUN_ENV=()
+[[ $status -ne 0 ]] || fail "the TARGET_POD environment variable was accepted"
+grep -q "TARGET_POD is no longer supported" <<<"$output" \
+  || fail "the refusal does not say the environment variable is retired"
+grep -q -- "--pod <name>" <<<"$output" || fail "the refusal does not point at --pod"
 [[ "$(kubectl_lines)" == "$before" ]] || fail "the refusal happened only after touching the cluster"
+
+RUN_ENV=(TARGET_NAMESPACE=demo-ns)
+run_deploy start
+RUN_ENV=()
+[[ $status -ne 0 ]] || fail "the TARGET_NAMESPACE environment variable was accepted"
+grep -q "TARGET_NAMESPACE is no longer supported" <<<"$output" \
+  || fail "the refusal does not say the namespace variable is retired"
+
+run_deploy pod="$COPY_POD_NAME" start
+[[ $status -ne 0 ]] || fail "the positional 'pod=<name>' spelling was accepted"
+[[ "$(kubectl_lines)" == "$before" ]] || fail "a removed spelling reached the cluster"
 
 # Creating and updating are different actions; asking for both is refused rather than resolved.
 run_deploy --create-pod update

@@ -261,12 +261,14 @@ FORCE_QWEN_COPY="${FORCE_QWEN_COPY:-false}"
 OLLAMA_PRUNE_SYNC="${OLLAMA_PRUNE_SYNC:-true}"
 
 # Kubernetes & Remote settings
-TARGET_NAMESPACE="${TARGET_NAMESPACE:-osr}"
-# Whether the caller named a Pod. Captured before the default below, so that --create-pod can tell
-# "the operator asked for this Pod" from "the script filled in a default" and refuse the pairing
-# instead of quietly deploying a TEE-LLM Pod they did not ask for.
-TARGET_POD_WAS_SET="${TARGET_POD+set}"
-TARGET_POD="${TARGET_POD:-taa-env-slim-v2-20260916-b2038037072e1052-54f554445c-n2pnv}"
+TARGET_NAMESPACE_ENV_WAS_SET="${TARGET_NAMESPACE+set}"
+TARGET_NAMESPACE="osr"
+# Whether the caller named a Pod with --pod. Captured before the default below, so that
+# --create-pod can tell "the operator asked for this Pod" from "the script filled in a default"
+# and refuse the pairing instead of quietly deploying a TEE-LLM Pod they did not ask for.
+TARGET_POD_ENV_WAS_SET="${TARGET_POD+set}"
+TARGET_POD_WAS_SET=""
+TARGET_POD="taa-env-slim-v2-20260916-b2038037072e1052-54f554445c-n2pnv"
 REMOTE_HOST="${REMOTE_HOST:-172.16.10.178}"
 REMOTE_USER="${REMOTE_USER:-root}"
 PASSWORD="${TARGET_PASSWORD:-${PASSWORD:-Osrd@2026}}"
@@ -283,8 +285,8 @@ K_NS="${TARGET_NAMESPACE:+-n $TARGET_NAMESPACE}"
 # chain, so it cannot tell that mock report from hardware at the handshake -- which is why the
 # deployment itself refuses to run without the device. A kata-qemu-csv2 Pod has it, because its
 # guest init creates it -- which is the whole reason this Pod exists, and why --create-pod
-# deploys into it rather than into the TAA Pod that TARGET_POD defaults to (that Pod has the
-# device too, but it is not where teellm-service should run, and aiming the deployment at it
+# deploys into it rather than into the TAA Pod that a plain start targets by default (that Pod has
+# the device too, but it is not where teellm-service should run, and aiming the deployment at it
 # would make every later gate pass while the service never reaches the Pod the endpoint points
 # at).
 TEELLM_POD_NAME="${TEELLM_POD_NAME:-taa-teellm}"
@@ -460,7 +462,7 @@ check_remote_connectivity() {
 check_remote_pod() {
   if ! remote_ssh "kubectl $K_NS get pod '$TARGET_POD' >/dev/null 2>&1"; then
     err "target pod '$TARGET_POD' not found in namespace '${TARGET_NAMESPACE:-default}' on remote host"
-    detail "Please check TARGET_POD or run 'kubectl get pods -n ${TARGET_NAMESPACE:-default}' on remote host."
+    detail "Please check --pod or run 'kubectl get pods -n ${TARGET_NAMESPACE:-default}' on remote host."
     exit 1
   fi
   info "remote target pod verified: ${TARGET_POD} (namespace: ${TARGET_NAMESPACE:-default})"
@@ -1462,7 +1464,7 @@ pod_supervisor_pause() {
 
 # Lifting the pause is also when an installed supervisor script takes effect: the restart request
 # makes the running copy re-exec the file the deployment just moved into place. The request is
-# made unconditionally. Whether the Pod came from pod_up or was named by a bare TARGET_POD run,
+# made unconditionally. Whether the Pod came from pod_up or was named by --pod on a plain start,
 # and whether the container command or the fallback started the supervisor, the copy in memory may
 # predate the installed file -- a conditional request once left a stale supervisor running after
 # its replacement had been installed, and the fix it carried never took effect. Re-execing a copy
@@ -2434,7 +2436,7 @@ Options:
       Specify local directory containing offline Ollama package and models.
   --create-pod
       Deploy into a dedicated Kata CSV2 Pod named by TEELLM_POD_NAME, creating it if it is absent,
-      instead of into TARGET_POD. The Pod exists to give teellm-service a real /dev/csv-guest:
+      instead of into the Pod a plain start targets by default. The Pod exists to give teellm-service a real /dev/csv-guest:
       without that device it serves mock evidence, and TAA cannot tell that evidence apart from
       hardware at the handshake. Creating the Pod builds teellm-service from this working tree,
       bakes it plus the ollama runtime and model into an image, pushes that image and runs the Pod
@@ -2447,17 +2449,17 @@ Options:
       This path only creates: when the Pod already exists the run stops and asks for 'pod-down'
       first, because reusing it would deploy into whatever image it happens to run, and replacing
       it would throw away the guest's writable layer unannounced.
-      If TARGET_POD is set explicitly it must equal TEELLM_POD_NAME, or the run is refused.
+      If --pod is given it must equal TEELLM_POD_NAME, or the run is refused.
   --port <port> (or --port=<port>)
       Specify TEE-LLM service listening port (default: $TEELLM_PORT).
   --config <path> (or --config=<path>)
       Specify path to alternate service JSON configuration template.
-  --pod <name> (or --pod=<name>, pod=<name>)
-      Address the Pod named <name> for stop, probe and pod-down; same as setting TARGET_POD, and
-      it wins over the variable. 'start' no longer takes this flag: updating an existing Pod is
-      'update', which is aimed at TEELLM_POD_NAME, and creating one is '--create-pod start'.
-      Setting TARGET_POD in the environment still names the target of a start aimed at some other
-      existing Pod.
+  --pod <name> (or --pod=<name>)
+      Address the Pod named <name> for start, stop, probe and pod-down. For --create-pod, update
+      and pod-down the target is the dedicated TEE-LLM Pod (TEELLM_POD_NAME); naming a different
+      Pod on those paths is refused rather than silently overridden.
+  --namespace <ns> (or --namespace=<ns>)
+      Kubernetes namespace of the target Pod (default: osr).
   -h, --help, help
       Display this help documentation.
 
@@ -2472,10 +2474,6 @@ Environment overrides:
       Working directory inside the TEE-LLM Pod.
   CONTAINER_OLLAMA_DIR=${CONTAINER_OLLAMA_DIR}
       Ollama deployment directory inside the TEE-LLM Pod.
-  TARGET_NAMESPACE=${TARGET_NAMESPACE}
-      Remote Kubernetes namespace (the TEE-LLM Pod's namespace too).
-  TARGET_POD=${TARGET_POD}
-      Remote Kubernetes target Pod name.
   TEELLM_POD_NAME=${TEELLM_POD_NAME}
       Name of the dedicated TEE-LLM Pod (--create-pod, pod-down).
   TEELLM_POD_IMAGE=${TEELLM_POD_IMAGE}
@@ -2579,7 +2577,6 @@ CLI_MODEL=""
 CLI_OLLAMA_DIR=""
 CLI_PORT=""
 CLI_CONFIG=""
-POD_FLAG_WAS_SET=""
 
 while [[ $# -gt 0 ]]; do
   arg="$1"
@@ -2683,10 +2680,7 @@ while [[ $# -gt 0 ]]; do
       ;;
     # Names the Pod to install into. Setting TARGET_POD_WAS_SET is what keeps --create-pod honest:
     # the check that refuses a mis-aimed dedicated-Pod command keys off "the operator named a Pod".
-    # POD_FLAG_WAS_SET is narrower: it is what retires the '--pod <name> start' spelling, which is
-    # a change to the command line only. TARGET_POD in the environment still selects a start target
-    # for a deployment into some other existing Pod.
-    --pod=*|pod=*)
+    --pod=*)
       TARGET_POD="${arg#*=}"
       if [[ -z "$TARGET_POD" ]]; then
         err "--pod requires a Pod name argument"
@@ -2694,7 +2688,6 @@ while [[ $# -gt 0 ]]; do
         exit 1
       fi
       TARGET_POD_WAS_SET="set"
-      POD_FLAG_WAS_SET="set"
       ;;
     --pod)
       shift
@@ -2705,7 +2698,23 @@ while [[ $# -gt 0 ]]; do
       fi
       TARGET_POD="$1"
       TARGET_POD_WAS_SET="set"
-      POD_FLAG_WAS_SET="set"
+      ;;
+    --namespace=*)
+      TARGET_NAMESPACE="${arg#*=}"
+      if [[ -z "$TARGET_NAMESPACE" ]]; then
+        err "--namespace requires a namespace argument"
+        usage >&2
+        exit 1
+      fi
+      ;;
+    --namespace)
+      shift
+      if [[ $# -eq 0 || "$1" == -* ]]; then
+        err "--namespace requires a namespace argument"
+        usage >&2
+        exit 1
+      fi
+      TARGET_NAMESPACE="$1"
       ;;
     -h|--help|help)
       usage
@@ -2722,12 +2731,17 @@ done
 
 ACTION="${ACTION:-start}"
 
-# The --pod/start combination is retired. It used to be how an existing Pod was updated, which
-# left the target to a flag; update names its own target, so the two can no longer disagree.
-if [[ "$ACTION" == "start" && "$POD_FLAG_WAS_SET" == "set" ]]; then
-  err "'--pod <name> start' is no longer supported"
-  detail "To update an existing TEE-LLM Pod, run: $(basename "$0") update"
-  detail "To create it, run: $(basename "$0") --create-pod start"
+# TARGET_POD and TARGET_NAMESPACE in the environment were removed. Silently falling back to the
+# defaults would aim the run at a Pod or namespace the caller did not name, so refuse before
+# anything reaches the cluster.
+if [[ -n "$TARGET_POD_ENV_WAS_SET" ]]; then
+  err "TARGET_POD is no longer supported; pass --pod <name> instead"
+  usage >&2
+  exit 1
+fi
+if [[ -n "$TARGET_NAMESPACE_ENV_WAS_SET" ]]; then
+  err "TARGET_NAMESPACE is no longer supported; pass --namespace <ns> instead"
+  usage >&2
   exit 1
 fi
 
@@ -2741,11 +2755,11 @@ if [[ "$CREATE_POD" == true || "$ACTION" == "pod-down" || "$ACTION" == "update" 
   # An explicitly named Pod wins the argument: overriding it would aim the deployment at a Pod
   # the operator named, which is exactly the silent mis-target these paths have to prevent.
   if [[ "$TARGET_POD_WAS_SET" == "set" && "$TARGET_POD" != "$TEELLM_POD_NAME" ]]; then
-    err "this command addresses the TEE-LLM Pod '$TEELLM_POD_NAME', but TARGET_POD names '$TARGET_POD'"
-    detail "Unset TARGET_POD, or set TEELLM_POD_NAME=$TARGET_POD to treat that Pod as the TEE-LLM Pod."
+    err "this command addresses the TEE-LLM Pod '$TEELLM_POD_NAME', but --pod names '$TARGET_POD'"
+    detail "Drop --pod, or set TEELLM_POD_NAME=$TARGET_POD to treat that Pod as the TEE-LLM Pod."
     exit 1
   fi
-  # Unconditional, default or not: TARGET_POD defaults to a TAA environment Pod, which has
+  # Unconditional, default or not: the default target is a TAA environment Pod, which has
   # /dev/csv-guest as well, so a mis-aimed deployment passes every gate below while teellm-service
   # ends up in a Pod that the printed endpoint does not point at -- and pod-down would delete TAA
   # itself.
