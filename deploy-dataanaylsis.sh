@@ -9,7 +9,8 @@
 # and the same image can be deployed as another role by injecting another value.
 #
 # What this script adds is the deployment shape the data-analysis tasks need: the jupyter base
-# image, the role, and the packed image names.
+# image, the role, and a role-owned image repository and Pod name (`taa-dataanaylsis`), so this
+# role never builds over the tee role's image or contends for its Pod.
 #
 # The state sealing key source is not rendered: TAA detects /dev/csv-guest at startup and uses the
 # CSV hardware key inside a guest, the SM2 derivation everywhere else. Remote deployment and image
@@ -27,6 +28,14 @@ export BASE_DOCKER_IMAGE_ARCHIVE="$BASE_ARCHIVE"
 # 3 is data analysis in TAA's CONTRACT_TYPE mapping; the Pod carries it and the daemon resolves the
 # role from it before it reads the config.
 export TAA_POD_CONTRACT_TYPE=3
+# The role gets its own image repository and Pod name. Sharing deploy.sh's defaults would put
+# this role's image (a jupyter base) and the tee role's image (a taa-env base) under one mutable
+# same-day tag, where each build overwrites the other and any cache keyed by the tag can hand a
+# deployment the other role's image; a shared Pod name also means one role's Pod blocks the
+# other's create, since a Pod's role cannot be changed in place. Both variables keep a value the
+# operator set.
+export TAA_POD_IMAGE_REPO="${TAA_POD_IMAGE_REPO:-taa-dataanaylsis}"
+export TAA_POD_NAME="${TAA_POD_NAME:-taa-dataanaylsis}"
 # The shared template still selects semgrep, so deploy.sh would otherwise install the payload into
 # the image (save) or the pod (remote). The role disables the engine at startup, and this base
 # image ships neither the payload nor a use for it.
@@ -36,27 +45,7 @@ export TAA_SCAN_ENGINE_PROVISION=skip
 # flavour.
 unset LLM_IP TAA_LLM_ENDPOINT
 
-# deploy.sh derives its save defaults from the taa-env image (including the
-# archive basename), so a save run gets both names here unless the caller
-# already chose them. --archive and --image are deploy.sh's own.
-args=("$@")
-want_save=false
-has_image=false
-has_archive=false
-for arg in "${args[@]}"; do
-  case "$arg" in
-    save) want_save=true ;;
-    --image|--image=*) has_image=true ;;
-    --archive|--archive=*) has_archive=true ;;
-  esac
-done
-
-if [[ "$want_save" == true ]]; then
-  date_tag="$(date +%Y%m%d)"
-  [[ "$has_image" == true ]] || args+=(--image "taa-dataanaylsis:$date_tag")
-  [[ "$has_archive" == true ]] || args+=(--archive "$PROJECT_DIR/deploy/out/taa-dataanaylsis-$date_tag.tar.gz")
-fi
-
 log "role: CONTRACT_TYPE=3 (data-anaylsis), data under /home/jovyan/systemAuthData"
 log "base image: $BASE_IMAGE"
-exec "$PROJECT_DIR/deploy.sh" "${args[@]}"
+log "image/Pod name: $TAA_POD_IMAGE_REPO"
+exec "$PROJECT_DIR/deploy.sh" "$@"

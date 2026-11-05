@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Verifies what deploy-dataanaylsis.sh hands to deploy.sh, without building, connecting or
 # rendering anything: the role is injected as CONTRACT_TYPE=3, the shared config template is used
-# unmodified (no rendered copy), the semgrep payload stays out, and save keeps its own image and
-# archive names.
+# unmodified (no rendered copy), the semgrep payload stays out, and the role owns its image
+# repository and Pod name so it cannot build over the tee role's image or contend for its Pod.
 #
 # The script under test execs "$PROJECT_DIR/deploy.sh", so a stub in the same throwaway directory
 # stands in for the real deployment and records the environment it received.
@@ -24,6 +24,8 @@ printf 'BASE_IMAGE=%s\n' "${BASE_DOCKER_IMAGE:-<unset>}"
 printf 'BASE_ARCHIVE=%s\n' "${BASE_DOCKER_IMAGE_ARCHIVE:-<unset>}"
 printf 'SCAN_PROVISION=%s\n' "${TAA_SCAN_ENGINE_PROVISION:-<unset>}"
 printf 'CONFIG_TEMPLATE=%s\n' "${TAA_PRODUCTION_CONFIG_TEMPLATE:-<unset>}"
+printf 'IMAGE_REPO=%s\n' "${TAA_POD_IMAGE_REPO:-<unset>}"
+printf 'POD_NAME=%s\n' "${TAA_POD_NAME:-<unset>}"
 printf 'LLM_IP=%s\n' "${LLM_IP:-<unset>}"
 printf 'LLM_ENDPOINT=%s\n' "${TAA_LLM_ENDPOINT:-<unset>}"
 STUB
@@ -47,14 +49,27 @@ grep -qx 'CONFIG_TEMPLATE=<unset>' <<<"$out" \
 grep -qx 'LLM_IP=<unset>' <<<"$out" || fail "LLM_IP was not dropped"
 grep -qx 'LLM_ENDPOINT=<unset>' <<<"$out" || fail "TAA_LLM_ENDPOINT was not dropped"
 
-# save keeps the data-analysis image and archive names, derived from the caller's date.
-date_tag="$(date +%Y%m%d)"
-out="$("$TMP_DIR/deploy-dataanaylsis.sh" save 2>&1)"
-grep -qx "ARG=--image" <<<"$out" || fail "save did not pass --image"
-grep -qx "ARG=taa-dataanaylsis:$date_tag" <<<"$out" \
-  || fail "save no longer defaults to the data-analysis image name"
-grep -qx "ARG=--archive" <<<"$out" || fail "save did not pass --archive"
-grep -q "ARG=.*/deploy/out/taa-dataanaylsis-$date_tag.tar.gz$" <<<"$out" \
-  || fail "save no longer defaults to the data-analysis archive name"
+# The role owns both names: a shared repository would let the two roles overwrite each other's
+# image under one same-day tag, and a shared Pod name would make one role's Pod block the other's.
+grep -qx 'IMAGE_REPO=taa-dataanaylsis' <<<"$out" \
+  || fail "the role does not own its image repository"
+grep -qx 'POD_NAME=taa-dataanaylsis' <<<"$out" \
+  || fail "the role does not own its Pod name"
 
-echo "PASS: deploy-dataanaylsis.sh injects CONTRACT_TYPE=3, keeps the shared config unrendered and preserves the save names"
+# An operator's own names win over both defaults.
+out="$(env TAA_POD_IMAGE_REPO=custom-repo TAA_POD_NAME=custom-pod \
+  "$TMP_DIR/deploy-dataanaylsis.sh" 2>&1)"
+grep -qx 'IMAGE_REPO=custom-repo' <<<"$out" || fail "an explicit image repository was overridden"
+grep -qx 'POD_NAME=custom-pod' <<<"$out" || fail "an explicit Pod name was overridden"
+
+# save needs no extra arguments: deploy.sh derives both names from the repository, so a save run
+# and a create run land on the same image and archive.
+out="$("$TMP_DIR/deploy-dataanaylsis.sh" save 2>&1)"
+grep -qx 'IMAGE_REPO=taa-dataanaylsis' <<<"$out" \
+  || fail "save no longer selects the data-analysis image repository"
+grep -qx 'ARG=save' <<<"$out" || fail "save was not passed through"
+if grep -q '^ARG=--image' <<<"$out" || grep -q '^ARG=--archive' <<<"$out"; then
+  fail "save still overrides the names deploy.sh now derives from the repository"
+fi
+
+echo "PASS: deploy-dataanaylsis.sh injects CONTRACT_TYPE=3, keeps the shared config unrendered, and owns its image repository and Pod name"

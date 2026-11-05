@@ -192,11 +192,14 @@ Pod 规格与来源用 `FHE_POD_NAME`、`FHE_POD_CPU`、`FHE_POD_MEMORY`、`FHE_
 ./deploy-dataanaylsis.sh save
 ```
 
-注意默认 Pod 名与 `deploy.sh` 相同（`taa-deploy`），同一集群里同时跑 TEE 和数据分析时用
-`TAA_POD_NAME` 指定不同的名字，否则 `create` 会落到同名 Pod 上。
+角色拥有自己的镜像仓库（`TAA_POD_IMAGE_REPO=taa-dataanaylsis`）和 Pod 名
+（`TAA_POD_NAME=taa-dataanaylsis`）。不能和 tee 角色共用：同一天两个角色都往
+`<repo>:<YYYYMMDD>` 推镜像，基座不同却同名，后建的会覆盖先建的，任何按 tag 缓存的地方都可能
+把另一个角色的镜像交给这次部署；Pod 名同理，环境变量不能原地改，两种角色抢同一个名字只会让
+后一个 `create` 被角色校验拒绝。两个变量都可以由调用方覆盖。
 
-`save` 未显式指定时，默认镜像名 `taa-dataanaylsis:<YYYYMMDD>`、归档
-`deploy/out/taa-dataanaylsis-<YYYYMMDD>.tar.gz`。
+`save` 的镜像名与归档名也由仓库名推出，与 `create` 落到同一处：
+`taa-dataanaylsis:<YYYYMMDD>`、`deploy/out/taa-dataanaylsis-<YYYYMMDD>.tar.gz`。
 
 ## TEE-LLM 推理网关：`deploy-llm.sh`
 

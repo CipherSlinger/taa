@@ -226,11 +226,12 @@ BASE_DOCKER_IMAGE="${BASE_DOCKER_IMAGE:-taa-env:slim-v2}"
 # Packaging names follow one rule across this repository: <repo>:<YYYYMMDD>, with the archive
 # named after the image (<repo>-<YYYYMMDD>.tar.gz) under deploy/out. The tag carries only the
 # date, never the base image's tag, so the packaged image is not mistaken for the base it was
-# derived from (deploy-dataanaylsis.sh delegates save here, deploy-fhe.sh and the builder built
-# into deploy-llm.sh follow the same rule). The name is independent of BASE_DOCKER_IMAGE:
-# pointing --base at another image changes what goes in, not what comes out.
-DEFAULT_SAVE_IMAGE="taa-train-infer:${SAVE_DATE_TAG}"
-DEFAULT_SAVE_ARCHIVE="$PROJECT_DIR/deploy/out/taa-train-infer-${SAVE_DATE_TAG}.tar.gz"
+# derived from (deploy-fhe.sh and the builder built into deploy-llm.sh follow the same rule). The
+# name is independent of BASE_DOCKER_IMAGE: pointing --base at another image changes what goes in,
+# not what comes out, and a role that needs its own repository sets TAA_POD_IMAGE_REPO once and
+# gets the same name from both `save` and `create`.
+DEFAULT_SAVE_IMAGE="${TAA_POD_IMAGE_REPO}:${SAVE_DATE_TAG}"
+DEFAULT_SAVE_ARCHIVE="$PROJECT_DIR/deploy/out/${TAA_POD_IMAGE_REPO}-${SAVE_DATE_TAG}.tar.gz"
 CUSTOM_SAVE_IMAGE=""
 CUSTOM_SAVE_ARCHIVE=""
 CUSTOM_BASE_ARCHIVE=""
@@ -1208,8 +1209,17 @@ require_command() {
   command -v "$name" >/dev/null 2>&1 || { err "command '$name' is required but not installed or not in PATH"; exit 1; }
 }
 
+# The daemon is built twice in one `create`: once into the image and once to verify what the Pod
+# carries, and the two files are compared byte for byte. They can only match when both builds use
+# the same compiler, so the toolchain is chosen once per run and kept: picking again on a host
+# that has both a local Go and the snap one prepended the other the second time, and a perfectly
+# good image then failed its own verification with two different hashes.
 ensure_go_compiler() {
-  # 优先检测本地已安装的高版本 Go 路径（例如 /usr/local/go/bin、/snap/bin）
+  if [[ -n "${TAA_GO_COMPILER_READY:-}" ]]; then
+    return 0
+  fi
+
+  # Prefer a locally installed newer Go (e.g. /usr/local/go/bin, /snap/bin).
   for candidate in /usr/local/go/bin /snap/bin; do
     if [[ -x "$candidate/go" ]]; then
       local current_go
@@ -1245,6 +1255,8 @@ ensure_go_compiler() {
       fi
     fi
   fi
+
+  TAA_GO_COMPILER_READY=1
 }
 
 get_taa_config_llm_model() {
