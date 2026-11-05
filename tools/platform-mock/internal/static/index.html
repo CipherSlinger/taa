@@ -21,28 +21,20 @@
 
   <!-- Top: Unified platform registration and service connection control panel -->
   <section class="card" id="card-attestation" style="display:flex; flex-direction:column; margin-bottom:24px;">
-    <!-- Row 1: Platform registration status and global record operations -->
+    <!-- Row 1: instance identity. Everything below belongs to the instance picked
+         here, so the selector leads the card instead of sitting in the toolbar. -->
     <div class="card-head" style="margin-bottom:12px; padding-bottom:10px; flex-wrap:wrap; gap:12px;">
-      <div style="display:flex; align-items:center; gap:12px; flex-wrap:wrap;">
+      <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
         <h2 style="margin:0;">平台注册</h2>
-      </div>
-      <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
-        <button type="button" id="taaPublicKeyBtn" class="secondary" onclick="openTaaPublicKeyModal()" disabled title="查看 TAA 注册公钥">
-          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="margin-right:2px; vertical-align:-1px;">
-            <path d="M21 2l-2 2m-1.5 1.5L14 9l-1.5-1.5L11 9l-1.5-1.5L8 9a5.5 5.5 0 1 0 3 7.5L21 6.5V2z"></path>
-          </svg>公钥
-        </button>
-        <button id="registerBodyBtn" class="secondary" onclick="openRegisterBodyModal()" disabled>查看注册返回</button>
-        <button class="secondary" onclick="refreshStatus()">刷新状态</button>
+        <label for="instanceSelect" id="instanceSelectLabel" style="font-size:13px; font-weight:650; white-space:nowrap; margin:0; display:none;">实例</label>
+        <select id="instanceSelect" style="display:none; max-width:260px; padding:6px 10px; font-size:13px; border-radius:6px; border:1px solid var(--line); background:var(--bg);" title="选择要查看的 TAA 实例"></select>
+        <button type="button" id="instanceDeleteBtn" class="secondary" style="display:none; padding:6px 12px; font-size:13px;" onclick="deleteSelectedInstance()" title="删除该实例的本地记录（Pod 已删除后清理）">删除实例</button>
       </div>
     </div>
 
     <!-- Row 2: TAA service address and health check toolbar -->
     <div style="display:flex; align-items:center; justify-content:space-between; gap:12px; background:var(--panel-sub); border:1px solid var(--line); border-radius:10px; padding:10px 14px; margin-bottom:12px; flex-wrap:wrap;">
-      <div style="display:flex; align-items:center; gap:10px; flex:1; min-width:280px;">
-        <label for="instanceSelect" id="instanceSelectLabel" style="font-size:13px; font-weight:650; white-space:nowrap; margin:0; display:none;">实例</label>
-        <select id="instanceSelect" style="display:none; max-width:260px; padding:6px 10px; font-size:13px; border-radius:6px; border:1px solid var(--line); background:var(--bg);" title="选择要查看的 TAA 实例"></select>
-        <button type="button" id="instanceDeleteBtn" class="secondary" style="display:none; padding:6px 12px; font-size:13px;" onclick="deleteSelectedInstance()" title="删除该实例的本地记录（Pod 已删除后清理）">删除实例</button>
+      <div style="display:flex; align-items:center; gap:10px; flex:1; min-width:280px; flex-wrap:wrap;">
         <span style="font-size:13px; font-weight:650; white-space:nowrap;">TAA 服务地址</span>
         <!-- Not an input any more: the address is detected from the registration and the
              console calls whichever target that produced, so the field was a value nobody
@@ -73,16 +65,28 @@
       </div>
     </div>
 
-    <!-- Row 3: Attestation operations. TEE only: the FHE instance runs on a plain
-         GPU host and has no CSV guest to attest to. -->
-    <div class="card-compact" data-console="tee" style="min-height:auto;">
-      <input type="hidden" id="attestRequestId" value="req-mock-attest-001">
-      <div id="attestationResult" class="test-result" style="display:none;"></div>
-      <div class="actions" style="margin-top:0; display:flex; gap:8px; flex-wrap:wrap;">
+    <!-- Row 3: actions on the selected instance. The registration records and the
+         attestation report both belong to one instance, so they share a toolbar
+         below it rather than sitting in the card's corners. Attestation is TEE
+         only: the FHE instance runs on a plain GPU host and has no CSV guest. -->
+    <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+      <button type="button" id="taaPublicKeyBtn" class="secondary" onclick="openTaaPublicKeyModal()" disabled title="查看 TAA 注册公钥">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="margin-right:2px; vertical-align:-1px;">
+          <path d="M21 2l-2 2m-1.5 1.5L14 9l-1.5-1.5L11 9l-1.5-1.5L8 9a5.5 5.5 0 1 0 3 7.5L21 6.5V2z"></path>
+        </svg>公钥
+      </button>
+      <button id="registerBodyBtn" class="secondary" onclick="openRegisterBodyModal()" disabled>查看注册返回</button>
+      <button class="secondary" onclick="refreshStatus()">刷新状态</button>
+      <span data-console="tee" style="display:inline-flex; align-items:center; gap:8px; margin-left:4px; padding-left:12px; border-left:1px solid var(--line);">
         <button onclick="testGetAttestation()">获取远程证明报告</button>
         <button id="saveReportBtn" class="success" onclick="saveAttestationReport()" disabled>保存报告文件</button>
         <button type="button" class="secondary" id="attestationBodyBtn" style="padding:6px 12px; font-size:13px; display:none;" onclick="openInteractionModal('attestation', 'primary')">查看返回</button>
-      </div>
+      </span>
+    </div>
+
+    <div class="card-compact" data-console="tee" style="min-height:auto; margin-top:10px;">
+      <input type="hidden" id="attestRequestId" value="req-mock-attest-001">
+      <div id="attestationResult" class="test-result" style="display:none;"></div>
     </div>
   </section>
 

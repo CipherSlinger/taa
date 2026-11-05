@@ -1991,6 +1991,25 @@ func TestHealthCheckIntegratedIntoRegistration(t *testing.T) {
 	if !strings.Contains(indexHTML, `<span id="statusText">未注册</span>`) {
 		t.Fatal("statusText should default to 未注册")
 	}
+
+	// The registration and attestation buttons act on the selected instance, so the
+	// selector leads the card and both button groups share one toolbar below the
+	// address row instead of sitting in the card corners.
+	selectorIdx := strings.Index(indexHTML, `id="instanceSelect"`)
+	pubKeyBtnIdx := strings.Index(indexHTML, `id="taaPublicKeyBtn"`)
+	attestBtnIdx := strings.Index(indexHTML, `testGetAttestation()`)
+	if selectorIdx == -1 || pubKeyBtnIdx == -1 || attestBtnIdx == -1 {
+		t.Fatalf("instance actions missing: selector=%d pubkey=%d attest=%d", selectorIdx, pubKeyBtnIdx, attestBtnIdx)
+	}
+	if selectorIdx > targetPillIdx {
+		t.Fatal("instance selector should lead the card, above the service address row")
+	}
+	if pubKeyBtnIdx < targetPillIdx || attestBtnIdx < pubKeyBtnIdx {
+		t.Fatal("registration and attestation actions should share one toolbar below the address row")
+	}
+	if !strings.Contains(indexHTML, `data-console="tee" style="display:inline-flex; align-items:center; gap:8px; margin-left:4px;`) {
+		t.Fatal("the attestation button group should stay TEE-only")
+	}
 }
 
 func TestIndexHTMLModalTabsAndLegacySectionRemoval(t *testing.T) {
