@@ -63,16 +63,30 @@ function genId(prefix) {
   return prefix + '-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 6);
 }
 
+// id fields are read-only labels, but the hidden attestation requestId is still an
+// input, so write to whichever one the element actually is.
 function randomizeField(id, prefix) {
-  const input = document.getElementById(id);
-  if (!input) return '';
+  const field = document.getElementById(id);
+  if (!field) return '';
   const newId = genId(prefix || 'id');
-  input.value = newId;
-  input.classList.remove('input-flash-success');
-  void input.offsetWidth;
-  input.classList.add('input-flash-success');
-  setTimeout(() => input.classList.remove('input-flash-success'), 1200);
+  if (typeof field.value === 'string') {
+    field.value = newId;
+  } else {
+    field.textContent = newId;
+  }
+  field.classList.remove('input-flash-success');
+  void field.offsetWidth;
+  field.classList.add('input-flash-success');
+  setTimeout(() => field.classList.remove('input-flash-success'), 1200);
   return newId;
+}
+
+// readIdField returns the current id whether it is shown as a label or an input.
+function readIdField(id) {
+  const field = document.getElementById(id);
+  if (!field) return '';
+  const text = typeof field.value === 'string' ? field.value : field.textContent;
+  return (text || '').trim();
 }
 
 function randomizeImportModelIds() {
@@ -168,10 +182,11 @@ async function refreshFheUploadOptions() {
 }
 
 async function submitFheTask() {
+  randomizeFheIds();
   const evalKeyFile = (document.getElementById('fheEvalKeyFile') || {}).value || '';
   const inputZip = (document.getElementById('fheInputZip') || {}).value || '';
-  const requestId = ((document.getElementById('fheRequestId') || {}).value || '').trim();
-  const taskId = ((document.getElementById('fheTaskId') || {}).value || '').trim();
+  const requestId = readIdField('fheRequestId');
+  const taskId = readIdField('fheTaskId');
 
   if (!evalKeyFile) {
     showResult('fheSubmitResult', false, '请先选择 evalKey 文件');
@@ -1639,12 +1654,13 @@ function openHealthResultModal() {
 }
 
 async function testImport() {
+  randomizeImportIds();
   showResultRunning('importResult', '正在请求...');
   const importBody = buildImportBody(
     document.getElementById('importResourceUrl').value,
-    document.getElementById('importRequestId').value,
+    readIdField('importRequestId'),
     '',
-    document.getElementById('importTaskId').value.trim(),
+    readIdField('importTaskId'),
   );
   recordInteraction('import', {
     title: '/v1/taa/import 接口详情',
@@ -1675,6 +1691,7 @@ function onImportModelUsePublicKeyToggle(el) {
 }
 
 async function testImportModel() {
+  randomizeImportModelIds();
   showResultRunning('importModelResult', '正在请求...');
   setReportModelImportPending();
   setReportAuditPending();
@@ -1688,9 +1705,9 @@ async function testImportModel() {
     const pubKey = usePubKey && globalKeyPair.publicKey ? globalKeyPair.publicKey.trim() : '';
     const importModelBody = buildImportBody(
       document.getElementById('importModelResourceUrl').value,
-      document.getElementById('importModelRequestId').value,
+      readIdField('importModelRequestId'),
       pubKey,
-      document.getElementById('importModelTaskId').value.trim(),
+      readIdField('importModelTaskId'),
       runtimeConfig,
     );
     recordInteraction('importModel', {

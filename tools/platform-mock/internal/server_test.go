@@ -2430,9 +2430,9 @@ func TestAdvancedUIPolishVisualDashboardAndStepperComponents(t *testing.T) {
 		".log-filter-group",
 		".log-filter-btn",
 		".id-input-row",
-		".btn-field-random",
 		".id-inputs-cols",
 		".id-input-col",
+		".id-field-value",
 		"mark.hl-match",
 	}
 	for _, pat := range requiredCSSPatterns {
@@ -2519,7 +2519,7 @@ func TestUILayoutKeyModalAndSideBySideInputs(t *testing.T) {
 		t.Fatal("indexHTML should not have legacy registerPublicKeyBox inline in card-attestation")
 	}
 
-	// 3. Verify card-importModel has randomize button on the left of requestId and taskId
+	// 3. Verify card-importModel shows requestId and taskId as read-only labels
 	modelCardIdx := strings.Index(indexHTML, `id="card-importModel"`)
 	if modelCardIdx == -1 {
 		t.Fatal("indexHTML missing id=\"card-importModel\"")
@@ -2530,18 +2530,19 @@ func TestUILayoutKeyModalAndSideBySideInputs(t *testing.T) {
 		modelSection = modelSection[:importCardIdx]
 	}
 
-	randModelBtnIdx := strings.Index(modelSection, `randomizeImportModelIds()`)
-	modelReqIdIdx := strings.Index(modelSection, `id="importModelRequestId"`)
-	modelTaskIdIdx := strings.Index(modelSection, `id="importModelTaskId"`)
-
-	if randModelBtnIdx == -1 || modelReqIdIdx == -1 || modelTaskIdIdx == -1 {
-		t.Fatalf("card-importModel elements missing: rand=%d req=%d task=%d", randModelBtnIdx, modelReqIdIdx, modelTaskIdIdx)
+	if strings.Contains(modelSection, "btn-field-random") || strings.Contains(modelSection, "randomizeImportModelIds(") {
+		t.Fatal("card-importModel should not have a random-id button; the ids are generated when the test is sent")
 	}
-	if randModelBtnIdx > modelReqIdIdx || randModelBtnIdx > modelTaskIdIdx {
-		t.Fatal("randomize button in card-importModel must be positioned before (to the left of) requestId and taskId")
+	for _, want := range []string{
+		`<span class="id-field-value" id="importModelRequestId">`,
+		`<span class="id-field-value" id="importModelTaskId">`,
+	} {
+		if !strings.Contains(modelSection, want) {
+			t.Fatalf("card-importModel missing %s", want)
+		}
 	}
 
-	// 4. Verify card-import has randomize button on the left of requestId and taskId
+	// 4. Verify card-import shows requestId and taskId as read-only labels
 	cardImportStartIdx := strings.Index(indexHTML, `id="card-import"`)
 	if cardImportStartIdx == -1 {
 		t.Fatal("indexHTML missing id=\"card-import\"")
@@ -2552,18 +2553,33 @@ func TestUILayoutKeyModalAndSideBySideInputs(t *testing.T) {
 		importSection = importSection[:cardLogIdx]
 	}
 
-	randImportBtnIdx := strings.Index(importSection, `randomizeImportIds()`)
-	importReqIdIdx := strings.Index(importSection, `id="importRequestId"`)
-	importTaskIdIdx := strings.Index(importSection, `id="importTaskId"`)
-
-	if randImportBtnIdx == -1 || importReqIdIdx == -1 || importTaskIdIdx == -1 {
-		t.Fatalf("card-import elements missing: rand=%d req=%d task=%d", randImportBtnIdx, importReqIdIdx, importTaskIdIdx)
+	if strings.Contains(importSection, "btn-field-random") || strings.Contains(importSection, "randomizeImportIds(") {
+		t.Fatal("card-import should not have a random-id button; the ids are generated when the test is sent")
 	}
-	if randImportBtnIdx > importReqIdIdx || randImportBtnIdx > importTaskIdIdx {
-		t.Fatal("randomize button in card-import must be positioned before (to the left of) requestId and taskId")
+	for _, want := range []string{
+		`<span class="id-field-value" id="importRequestId">`,
+		`<span class="id-field-value" id="importTaskId">`,
+	} {
+		if !strings.Contains(importSection, want) {
+			t.Fatalf("card-import missing %s", want)
+		}
 	}
 
-	// 5. Verify model card title and status pills side-by-side layout
+	// 5. Each send handler generates fresh ids before it reads them
+	for _, want := range []string{
+		"randomizeImportModelIds();",
+		"randomizeImportIds();",
+		"randomizeFheIds();",
+		"readIdField('importModelRequestId')",
+		"readIdField('importRequestId')",
+		"readIdField('fheRequestId')",
+	} {
+		if !strings.Contains(frontendBundle, want) {
+			t.Fatalf("frontendBundle missing %s", want)
+		}
+	}
+
+	// 6. Verify model card title and status pills side-by-side layout
 	cssBytes, err := staticFS.ReadFile("static/css/components.css")
 	if err != nil {
 		t.Fatalf("failed to read static/css/components.css: %v", err)
