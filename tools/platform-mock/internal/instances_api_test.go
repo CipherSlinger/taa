@@ -298,3 +298,52 @@ func TestConsoleStatusLenientBeforeRegistration(t *testing.T) {
 		t.Fatalf("entries = %v, want an empty array", payload.Result.Entries)
 	}
 }
+
+// The registration carries no explicit server type, so the console's kind is
+// derived from the report: an FHE instance registers an empty attestation and
+// verifiedPass false, while a TEE instance submits one. The empty-report case is
+// the FHE one because that is all the platform was told.
+func TestRegistrationKindIsDerivedFromTheReport(t *testing.T) {
+	cases := []struct {
+		name string
+		reg  registerState
+		want string
+	}{
+		{"not registered", registerState{}, ""},
+		{"fhe empty report", registerState{Received: true, Accepted: true}, instanceKindFHE},
+		{"tee report", registerState{Received: true, Accepted: true, AttestationSize: 1024, VerifiedPass: true}, instanceKindTEE},
+		{"tee report that failed verification", registerState{Received: true, Accepted: true, AttestationSize: 1024}, instanceKindTEE},
+		// A report recorded only as the base64 request field (persisted state
+		// from before the decoded size was kept) still identifies a TEE.
+		{"tee base64 only", registerState{Received: true, Accepted: true, AttestationBase64: "AA=="}, instanceKindTEE},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := registrationKind(tc.reg); got != tc.want {
+				t.Fatalf("kind = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestInstancesEndpointReportsTheDerivedKind(t *testing.T) {
+	mgr := newInstanceManager(t.TempDir(), Config{})
+	mgr.getOrCreate("docker-tee").register.set(registerState{
+		Received: true, Accepted: true, DockerID: "docker-tee", AttestationSize: 1024, VerifiedPass: true,
+	})
+	mgr.getOrCreate("docker-fhe").register.set(registerState{
+		Received: true, Accepted: true, DockerID: "docker-fhe",
+	})
+
+	items, _ := instanceListPayload(mgr)
+	kinds := make(map[string]string, len(items))
+	for _, item := range items {
+		kinds[item.DockerID] = item.Kind
+	}
+	if kinds["docker-tee"] != instanceKindTEE {
+		t.Fatalf("docker-tee kind = %q, want %q", kinds["docker-tee"], instanceKindTEE)
+	}
+	if kinds["docker-fhe"] != instanceKindFHE {
+		t.Fatalf("docker-fhe kind = %q, want %q", kinds["docker-fhe"], instanceKindFHE)
+	}
+}

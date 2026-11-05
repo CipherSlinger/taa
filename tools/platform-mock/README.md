@@ -97,6 +97,12 @@ The platform mock provides an embedded single-page Web console accessible by ope
 - **Model Ingress & Audit**: Upload model packages, inspect static AST rule violations, and observe Ollama LLM semantic verification outcomes.
 - **Real-Time Progress & Logs**: Displays real-time progress bars, streamed terminal logs (`modelLog`), and TAA daemon operational logs (`taaLog`).
 - **Execution Control**: Send graceful stop commands (`/v1/taa/stopTraining`) to interrupt running workloads.
+- **Instance-Kind Panels**: the console shows the TEE or FHE panel set for the instance
+  selected in the 平台注册 card; there is no separate mode switch. The registration carries
+  no explicit server type, so `GET /api/instances` derives `kind` from the report (empty
+  attestation and `verifiedPass=false` ⇒ `fhe`, otherwise `tee`) and the selector labels
+  each entry with it. An unattested TEE instance registers the same way as FHE and is shown
+  as FHE, because that is all the platform was told.
 - **TEE-LLM Instance**: the mock polls the instance's plaintext `/v1/llm/*` routes, so the console
   gives it a dedicated card (TEE mode only): the address discovered, the instance's per-process
   `dockerId` (`teellm-<10 digits>`; a change means the instance was restarted or rebuilt, and the
@@ -124,7 +130,8 @@ flag: instance identity is the registration's `dockerId`.
   `/api/upload`, `/api/taa-target`, `/api/fhe/submit`) accept `?dockerId=`; absent means the
   most recently accepted registration. Global endpoints (`/api/instances`, `/api/uploads*`,
   `/api/crypto/*`, `/api/request-logs/*`) ignore it. `GET /api/instances` returns the instance
-  list and `defaultDockerId`.
+  list, each instance's derived `kind` (`tee` or `fhe`) and `defaultDockerId`. Selecting an
+  instance also switches the console panels to that kind.
 - **Proxying**: `/taa/*` proxies to the selected instance and strips `dockerId` before
   forwarding.
 

@@ -15,11 +15,11 @@ let lastPhaseSwitchResp = null;
 let lastRegisterModalTitle = '平台注册返回 body';
 let lastRegisterModalBody = null;
 
-// ── Console mode: which kind of TAA instance this console stands in for ──
-// Both instance types register, report and run tasks through the same endpoints,
-// so nothing the mock receives says which one it is serving. The mode is therefore
-// the operator's choice, and what it changes is which panels are worth showing:
-// a TEE instance audits and attests, an FHE instance does neither.
+// ── Console mode: which panels the selected TAA instance needs ──
+// The mode is not an operator preference. It follows the instance chosen in the
+// selector, using the kind the mock derives from that instance's registration:
+// a TEE instance audits and attests, an FHE instance does neither, so showing
+// the other set of panels would be wrong for whichever instance is selected.
 //
 // The panels are tagged tee-only / fhe-only in the markup and the CSS hides the
 // set that does not match body[data-mode]. That is deliberately not a script that
@@ -30,53 +30,14 @@ const CONSOLE_MODES = {
   fhe: { badge: 'FHE Compute Console', title: 'TAA 平台模拟器 · FHE' },
 };
 
-const CONSOLE_MODE_STORAGE_KEY = 'platform-mock-console-mode';
 let consoleMode = 'tee';
 
-// readStoredConsoleMode is defensive because the storage can throw rather than
-// return null: a private window, or site data turned off, makes the accessor
-// itself raise. A console that refuses to render over a remembered preference is
-// worse than one that forgets it.
-function readStoredConsoleMode() {
-  try {
-    return localStorage.getItem(CONSOLE_MODE_STORAGE_KEY);
-  } catch (_) {
-    return null;
-  }
-}
-
-function storeConsoleMode(mode) {
-  try {
-    localStorage.setItem(CONSOLE_MODE_STORAGE_KEY, mode);
-  } catch (_) {
-    // Nothing to do: the mode still applies to this page view.
-  }
-}
-
-// resolveConsoleMode picks the mode this page opens in: an explicit ?mode= wins,
-// so a link or a deployment script can open straight into one console, then the
-// remembered one, then TEE.
-function resolveConsoleMode() {
-  let requested = '';
-  try {
-    requested = new URLSearchParams(location.search).get('mode') || '';
-  } catch (_) {
-    requested = '';
-  }
-  requested = requested.trim().toLowerCase();
-  if (CONSOLE_MODES[requested]) return requested;
-  const stored = (readStoredConsoleMode() || '').trim().toLowerCase();
-  if (CONSOLE_MODES[stored]) return stored;
-  return 'tee';
-}
-
-// setConsoleMode switches the console and remembers the choice. Every panel that
-// differs between the two is selected by the body attribute this sets, so there is
-// nothing else to keep in sync here.
-function setConsoleMode(mode, persist = true) {
-  const next = String(mode || '').trim().toLowerCase();
-  if (!CONSOLE_MODES[next]) return consoleMode;
-
+// applyConsoleKind switches the console to the kind of the selected instance.
+// An unknown kind (no registration yet, or a rejected one) keeps the TEE layout,
+// which is the useful default: the page has to render something before an
+// instance exists, and the registration panels themselves are shared.
+function applyConsoleKind(kind) {
+  const next = CONSOLE_MODES[kind] ? kind : 'tee';
   consoleMode = next;
   document.body.dataset.mode = next;
 
@@ -84,19 +45,7 @@ function setConsoleMode(mode, persist = true) {
   const badge = document.getElementById('consoleBadge');
   if (badge) badge.textContent = meta.badge;
   document.title = meta.title;
-
-  document.querySelectorAll('.console-mode-btn[data-mode]').forEach(btn => {
-    const active = btn.dataset.mode === next;
-    btn.classList.toggle('active', active);
-    btn.setAttribute('aria-pressed', active ? 'true' : 'false');
-  });
-
-  if (persist) storeConsoleMode(next);
   return consoleMode;
-}
-
-function initConsoleMode() {
-  setConsoleMode(resolveConsoleMode(), false);
 }
 
 // DOM Helpers
@@ -1921,8 +1870,8 @@ async function detectTAAProxy() {
 
 // ── Application Lifecycle Bootstrapping ──
 document.addEventListener('DOMContentLoaded', () => {
-  // First, so the page never paints the wrong console's panels on the way in.
-  initConsoleMode();
+  // The instance list is what decides the console mode, so the selector loads
+  // before the panels do their first refresh.
   initInstanceSelector();
   detectTAAProxy();
   setupResourceUrlDropZones();

@@ -38,9 +38,38 @@ func requireMethod(w http.ResponseWriter, r *http.Request, method string) bool {
 	return true
 }
 
+// Instance kinds the console can show. The registration has no explicit server
+// type field, so the kind is inferred from the report it carries.
+const (
+	instanceKindTEE = "tee"
+	instanceKindFHE = "fhe"
+)
+
+// registrationKind derives the instance kind from its registration.
+//
+// An FHE instance is not a TEE: it writes an empty attestation file and keeps
+// verifiedPass false, which is the only difference the platform can see. A TEE
+// instance submits a CPU/CSV report and verifies it, so any report content is
+// enough to call it a TEE even when verification failed.
+//
+// The inference is not exact: a TEE instance running without /dev/csv-guest
+// registers the same way as FHE (empty report, verifiedPass false) and is shown
+// as FHE. That matches what the platform was told - it has no attestation to
+// distinguish the two.
+func registrationKind(reg registerState) string {
+	if !reg.Received {
+		return ""
+	}
+	if reg.AttestationSize > 0 || reg.AttestationBase64 != "" || reg.VerifiedPass {
+		return instanceKindTEE
+	}
+	return instanceKindFHE
+}
+
 // instanceSummary is the console's one-line view of a registered instance.
 type instanceSummary struct {
 	DockerID      string `json:"dockerId"`
+	Kind          string `json:"kind"`
 	Accepted      bool   `json:"accepted"`
 	Received      bool   `json:"received"`
 	ReceivedAt    string `json:"receivedAt"`
@@ -65,6 +94,7 @@ func summarizeInstance(mgr *instanceManager, b *instanceStores) instanceSummary 
 	reg := b.register.get()
 	return instanceSummary{
 		DockerID:      b.dockerID,
+		Kind:          registrationKind(reg),
 		Accepted:      reg.Accepted,
 		Received:      reg.Received,
 		ReceivedAt:    reg.ReceivedAt,

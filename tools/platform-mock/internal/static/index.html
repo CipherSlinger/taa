@@ -11,13 +11,6 @@
 <body data-mode="tee">
 <main>
   <header style="margin-bottom: 22px;">
-    <!-- Top-left: which kind of TAA instance this console is standing in for.
-         Both instance types register here the same way, so the console is the
-         operator's to pick rather than something the registration reveals. -->
-    <div class="console-mode-bar" id="consoleModeBar" role="group" aria-label="控制台模式" style="margin-bottom: 12px;">
-      <button type="button" class="console-mode-btn active" data-mode="tee" onclick="setConsoleMode('tee')">TEE 机密计算</button>
-      <button type="button" class="console-mode-btn" data-mode="fhe" onclick="setConsoleMode('fhe')">FHE 同态计算</button>
-    </div>
     <div style="display:flex; align-items:center; justify-content:space-between; gap:16px; flex-wrap:wrap; margin-bottom: 6px;">
       <h1>
         TAA 平台模拟器

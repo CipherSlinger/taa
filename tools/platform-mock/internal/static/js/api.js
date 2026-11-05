@@ -43,6 +43,16 @@ function mockFetch(url, opts) {
 }
 
 let instanceListSignature = null;
+// instanceKinds maps dockerId to the kind the mock derived from that instance's
+// registration. It is refreshed with the list; the console mode reads it on
+// selection so the panels follow the instance without another request.
+let instanceKinds = {};
+
+function instanceKindLabel(kind) {
+  if (kind === 'tee') return 'TEE';
+  if (kind === 'fhe') return 'FHE';
+  return '';
+}
 
 function setInstanceSelectorVisibility(show) {
   document.getElementById('instanceSelect').style.display = show ? '' : 'none';
@@ -54,18 +64,23 @@ function applyInstanceList(list, defaultId) {
   const sel = document.getElementById('instanceSelect');
   if (!sel) return;
   // Rebuilding identical options closes an open dropdown, so only touch the DOM
-  // when the instance set or the default actually changed.
-  const signature = list.map((item) => (item.dockerId || '') + '|' + (item.accepted ? '1' : '0')).join(',') + '#' + (defaultId || '');
+  // when the instance set, a kind or the default actually changed. The kind is
+  // part of the signature because a re-registration can change it while the
+  // dockerId stays the same.
+  const signature = list.map((item) => (item.dockerId || '') + '|' + (item.accepted ? '1' : '0') + '|' + (item.kind || '')).join(',') + '#' + (defaultId || '');
   if (signature !== instanceListSignature) {
     instanceListSignature = signature;
+    instanceKinds = {};
     const previous = sel.value || currentInstanceDockerId;
     sel.innerHTML = '';
     list.forEach((item) => {
       const opt = document.createElement('option');
       opt.value = item.dockerId || '';
       const name = item.dockerId || '(legacy)';
-      opt.textContent = item.accepted ? name : name + ' (未注册)';
+      const kind = instanceKindLabel(item.kind);
+      opt.textContent = (item.accepted ? name : name + ' (未注册)') + (kind ? ' · ' + kind : '');
       sel.appendChild(opt);
+      if (item.dockerId) instanceKinds[item.dockerId] = item.kind || '';
     });
     if (previous && list.some((item) => (item.dockerId || '') === previous)) {
       sel.value = previous;
@@ -76,7 +91,15 @@ function applyInstanceList(list, defaultId) {
     sel.value = defaultId || '';
   }
   currentInstanceDockerId = sel.value;
+  applySelectedInstanceKind();
   setInstanceSelectorVisibility(list.length > 1);
+}
+
+// applySelectedInstanceKind drives the panel set from the selected instance.
+function applySelectedInstanceKind() {
+  if (typeof applyConsoleKind === 'function') {
+    applyConsoleKind(instanceKinds[currentInstanceDockerId]);
+  }
 }
 
 let instancesInFlight = false;
@@ -120,6 +143,9 @@ function initInstanceSelector() {
   if (sel) {
     sel.addEventListener('change', () => {
       currentInstanceDockerId = sel.value;
+      // The selected instance's kind decides which panels apply, before the
+      // refreshes below run.
+      applySelectedInstanceKind();
       // A paused panel skips its fetch, so clear the flags before refreshing.
       if (typeof resetLogPauseForInstanceChange === 'function') resetLogPauseForInstanceChange();
       if (typeof refreshStatus === 'function') refreshStatus();

@@ -2769,16 +2769,15 @@ func TestUploadEncryptModeMapping(t *testing.T) {
 	}
 }
 
-// TestConsoleModePanelsAreTaggedAndHidden is the guard for the TEE/FHE console
-// switch, which is otherwise a set of agreements no compiler checks.
+// TestConsoleModeFollowsTheSelectedInstance is the guard for the TEE/FHE panel
+// split, which is otherwise a set of agreements no compiler checks.
 //
 // The mode is carried by body[data-mode] and the panels differ by being tagged
 // data-console="tee" / "fhe" in the markup, so three separate things have to line
-// up for the switch to do anything: the markup has to carry the tags, the
-// stylesheet has to hide both sets, and the script has to know both mode names.
-// Any one of them missing leaves a console that looks switched but is not - a TEE
-// panel still showing under an FHE heading, or a button calling a function that is
-// not there.
+// up: the markup has to carry the tags, the stylesheet has to hide both sets, and
+// the script has to apply the selected instance's kind. Any one of them missing
+// leaves a console that looks switched but is not - a TEE panel still showing
+// under an FHE heading, or a mode no instance can ever select.
 //
 // Both directions of the hiding rule are asserted separately because they fail
 // differently: without the fhe arm the FHE console quietly keeps every TEE panel,
@@ -2790,7 +2789,7 @@ func TestUploadEncryptModeMapping(t *testing.T) {
 // back - which is exactly what the audit pill did before this was an attribute.
 // A class-based selector would pass this test and still be wrong, so the rule is
 // asserted in the form that survives.
-func TestConsoleModePanelsAreTaggedAndHidden(t *testing.T) {
+func TestConsoleModeFollowsTheSelectedInstance(t *testing.T) {
 	css, err := staticFS.ReadFile("static/css/components.css")
 	if err != nil {
 		t.Fatalf("read the embedded components.css: %v", err)
@@ -2810,22 +2809,27 @@ func TestConsoleModePanelsAreTaggedAndHidden(t *testing.T) {
 		if !strings.Contains(frontendBundle, `data-console="`+mode+`"`) {
 			t.Errorf("no element is tagged data-console=%q, so the switch has nothing to act on", mode)
 		}
+		if !strings.Contains(frontendBundle, mode+": {") {
+			t.Errorf("CONSOLE_MODES has no %q entry, so applyConsoleKind would refuse it", mode)
+		}
 	}
 
-	// The switch itself: one button per mode, and each mode named in the script.
-	for _, mode := range []string{"tee", "fhe"} {
-		if !strings.Contains(frontendBundle, `data-mode="`+mode+`"`) {
-			t.Errorf("no console-mode button carries data-mode=%q", mode)
-		}
-		if !strings.Contains(frontendBundle, mode+": {") {
-			t.Errorf("CONSOLE_MODES has no %q entry, so setConsoleMode would refuse it", mode)
-		}
+	// The mode is derived from the registration, not picked by the operator: the
+	// top-left switch is gone and the instance selector is what applies it.
+	if strings.Contains(frontendBundle, "console-mode-btn") {
+		t.Error("the console-mode switch is still in the markup, but the mode follows the selected instance")
 	}
-	if !strings.Contains(frontendBundle, "function setConsoleMode(") {
-		t.Error("setConsoleMode is missing, but the console-mode buttons call it")
+	if strings.Contains(frontendBundle, "setConsoleMode(") {
+		t.Error("setConsoleMode is still defined, so a mode can still be set without an instance")
 	}
-	if !strings.Contains(frontendBundle, "function initConsoleMode(") {
-		t.Error("initConsoleMode is missing, so nothing applies the mode on load")
+	for _, want := range []string{
+		"function applyConsoleKind(",
+		"applySelectedInstanceKind();",
+		"applyConsoleKind(instanceKinds[currentInstanceDockerId])",
+	} {
+		if !strings.Contains(frontendBundle, want) {
+			t.Errorf("frontendBundle missing %q, so the selected instance never sets the mode", want)
+		}
 	}
 
 	// The body has to carry a mode before the script runs, or the first paint shows
