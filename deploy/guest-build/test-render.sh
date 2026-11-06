@@ -182,6 +182,25 @@ check "kata: a re-render does not stack tokens" "1" \
 check_contains "kata: a re-render carries the new value" 'taa.platform_ip=10.0.0.1' "$again"
 check_absent "kata: a re-render drops the old value" 'taa.platform_ip=172.16.10.116:18080' "$again"
 
+# default_memory is a runtime dependency, not a tuning knob: a CSV2 guest sizes
+# its writable root at about half of it and the CDH unpacks the image there. The
+# override has to replace the template's value (never add a second key) and has
+# to appear even when the template has none.
+python3 "$RENDER" kata-config --template "$pkg/config/kata-config.toml" \
+  --section hypervisor.qemu --bundle-dir "$bundle" \
+  --memory-mib 23552 --out "$tmp_dir/kata-mem.toml" >/dev/null
+check "memory: the override replaces the template value" "23552" \
+  "$(sed -n 's/^default_memory = //p' "$tmp_dir/kata-mem.toml")"
+check "memory: exactly one key survives" "1" \
+  "$(grep -c '^default_memory = ' "$tmp_dir/kata-mem.toml")"
+
+sed 's/^default_memory = .*/# default_memory removed/' "$pkg/config/kata-config.toml" > "$tmp_dir/kata-no-mem.toml"
+python3 "$RENDER" kata-config --template "$tmp_dir/kata-no-mem.toml" \
+  --section hypervisor.qemu --bundle-dir "$bundle" \
+  --memory-mib 23552 --out "$tmp_dir/kata-mem-added.toml" >/dev/null
+check "memory: a template without the key still gets the override" "23552" \
+  "$(sed -n 's/^default_memory = //p' "$tmp_dir/kata-mem-added.toml")"
+
 # ── 2b. the editable identity file ─────────────────────────────────────────
 # The package ships one file an operator is meant to edit on the target host;
 # install.sh re-renders the Kata config from it. What matters here is that the
@@ -264,7 +283,64 @@ else
   failures=$((failures + 1))
 fi
 
-# ── 3. containerd merge/strip ──────────────────────────────────────────────
+# ── 3. the Pod image archive ───────────────────────────────────────────────
+# A CoCo guest pulls the image through CDH from the registry the Pod names, so
+# the host's docker daemon is not in that path. The package therefore ships the
+# archive and install.sh pushes it when the registry lacks the tag. What has to
+# hold here: the archive lands under a name derived from the image reference,
+# keeps its own suffix, is covered by SHA256SUMS, and package-info reports it.
+image_archive="$tmp_dir/test-image.tar.gz"
+printf 'not a real image\n' > "$image_archive"
+image_pkg="$tmp_dir/image-pkg"
+# package-info resolves the handler's ConfigPath back to this directory, so the
+# package has to be rendered for the location it ends up in. The other render
+# tests deliberately render for a remote path; these two need a self-consistent
+# package to ask package-info about.
+env "${common_env[@]}" DIST_DIR="$image_pkg" REMOTE_HOST=invalid.invalid \
+  REMOTE_PACKAGE_DIR="$image_pkg" REMOTE_BUNDLE_DIR="$image_pkg/bundle" \
+  REMOTE_KATA_CONFIG="$image_pkg/config/kata-config.toml" \
+  TEST_IMAGE=172.16.10.178:31313/taa-env:fixture-tag \
+  TEST_IMAGE_ARCHIVE="$image_archive" "$BUILD" render >/dev/null
+
+image_name="172.16.10.178_31313_taa-env_fixture-tag.tar.gz"
+check "image: the archive is packaged under a name derived from the image" "present" \
+  "$([[ -f "$image_pkg/image/$image_name" ]] && echo present || echo absent)"
+check "image: the packaged bytes are the archive's" "same" \
+  "$(cmp -s "$image_archive" "$image_pkg/image/$image_name" && echo same || echo different)"
+check "image: SHA256SUMS covers the archive" "1" \
+  "$(cd "$image_pkg" && grep -c "image/$image_name" SHA256SUMS)"
+check "image: package-info reports the archive" "image/$image_name" \
+  "$(python3 "$RENDER" package-info --dir "$image_pkg" | sed -n 's/^TEST_IMAGE_ARCHIVE=//p' | tr -d "'")"
+check "image: package-info reports the image reference" "172.16.10.178:31313/taa-env:fixture-tag" \
+  "$(python3 "$RENDER" package-info --dir "$image_pkg" | sed -n 's/^TEST_IMAGE=//p' | tr -d "'")"
+
+# Without an archive the package is still installable; install.sh then requires
+# the registry to hold the image already. Empty means exactly that, not "broken".
+noimg_pkg="$tmp_dir/noimg-pkg"
+env "${common_env[@]}" DIST_DIR="$noimg_pkg" REMOTE_HOST=invalid.invalid \
+  REMOTE_PACKAGE_DIR="$noimg_pkg" REMOTE_BUNDLE_DIR="$noimg_pkg/bundle" \
+  REMOTE_KATA_CONFIG="$noimg_pkg/config/kata-config.toml" \
+  "$BUILD" render >/dev/null
+check "image: no archive means no image/ directory" "absent" \
+  "$([[ -d "$noimg_pkg/image" ]] && echo present || echo absent)"
+check "image: no archive reports empty" "" \
+  "$(python3 "$RENDER" package-info --dir "$noimg_pkg" | sed -n 's/^TEST_IMAGE_ARCHIVE=//p' | tr -d "'")"
+
+# A missing archive is a render error, not a package that silently expects the
+# image to be somewhere else.
+missing_pkg="$tmp_dir/missing-pkg"
+missing_out="$(env "${common_env[@]}" DIST_DIR="$missing_pkg" REMOTE_HOST=invalid.invalid \
+  TEST_IMAGE_ARCHIVE="$tmp_dir/definitely-not-here.tar" "$BUILD" render 2>&1 || true)"
+check_contains "image: a missing archive fails the render" "TEST_IMAGE_ARCHIVE does not exist" "$missing_out"
+check "image: a failed render never creates the package" "absent" \
+  "$([[ -d "$missing_pkg" ]] && echo present || echo absent)"
+
+# A plain .tar keeps its own suffix; the name is not allowed to claim gzip.
+check "image: a .tar archive keeps .tar" "172.16.10.178_31313_taa-env_fixture-tag.tar" \
+  "$(python3 "$RENDER" image-archive-name --image 172.16.10.178:31313/taa-env:fixture-tag \
+      --like "$tmp_dir/plain.tar")"
+
+# ── 4. containerd merge/strip ──────────────────────────────────────────────
 cat > "$tmp_dir/containerd.toml" <<'TOML'
 version = 2
 

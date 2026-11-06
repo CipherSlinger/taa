@@ -86,6 +86,18 @@ if ! pkg_settings="$(python3 "$pkg_dir/render.py" package-info --dir "$pkg_dir")
 fi
 # package-info quotes every value, so eval is safe.
 eval "$pkg_settings"
+
+# curl and docker are needed only to place the Pod image into its registry, so
+# they are required only when the package ships an archive: curl probes the
+# registry, docker imports the archive and pushes it.
+if [[ -n "$TEST_IMAGE_ARCHIVE" ]]; then
+  for cmd in curl docker; do
+    if ! command -v "$cmd" >/dev/null 2>&1; then
+      echo "error: 包内带有镜像归档，但宿主缺少 $cmd" >&2
+      exit 1
+    fi
+  done
+fi
 kata_section="$KATA_HYPERVISOR_SECTION"
 identity_file="$pkg_dir/$PACKAGE_IDENTITY_FILE"
 echo "runtime handler: $RUNTIME_HANDLER (ConfigPath $REMOTE_KATA_CONFIG)"
@@ -210,7 +222,84 @@ else
 fi
 
 echo
-echo "== 4. 创建 RuntimeClass 与测试 Pod =="
+echo "== 4. 确保 test Pod 镜像已进 registry =="
+# A CoCo guest pulls the container image itself through CDH; the host's docker
+# daemon is not in that path, so `docker load` alone leaves the Pod in
+# StartError with an image-pull error. The package therefore ships the image as
+# a `docker save` archive, and it has to end up in the registry the Pod names.
+#
+# The check is on the registry, not on local docker images: a host that already
+# has the tag locally can still have a Pod failing, because CDH never looks
+# there. Only when the registry answers 404 is the archive loaded and pushed.
+if [[ -n "$TEST_IMAGE_ARCHIVE" ]]; then
+  image_archive="$pkg_dir/$TEST_IMAGE_ARCHIVE"
+  if [[ ! -f "$image_archive" ]]; then
+    echo "error: 包内声明的镜像归档不存在: $image_archive" >&2
+    exit 1
+  fi
+  image_repo="${TEST_IMAGE%:*}"
+  image_tag="${TEST_IMAGE##*:}"
+  registry_host="${image_repo%%/*}"
+  if [[ "$registry_host" == "$image_repo" || "$image_repo" != */* ]]; then
+    echo "error: TEST_IMAGE 必须写成 <registry>/<repo>:<tag> 才能推送: $TEST_IMAGE" >&2
+    exit 1
+  fi
+  repo_path="${image_repo#*/}"
+  manifest_url="https://$registry_host/v2/$repo_path/manifests/$image_tag"
+  accept="Accept: application/vnd.docker.distribution.manifest.v2+json"
+  if curl -skf --max-time 10 -H "$accept" -o /dev/null "$manifest_url" 2>/dev/null; then
+    echo "registry 已有该镜像，跳过: $TEST_IMAGE"
+  else
+    echo "registry 缺少该镜像，从包内导入: $image_archive"
+    if [[ "$dry_run" == "1" ]]; then
+      echo "dry-run: sudo docker load -i $image_archive"
+      echo "dry-run: sudo docker tag <archive 内的引用> $TEST_IMAGE"
+      echo "dry-run: sudo docker push $TEST_IMAGE"
+    else
+      # The archive's own RepoTags are not reliable: an image saved as
+      # `taa-env:slim-v2` loads without the registry prefix, while the Pod asks
+      # for `172.16.10.178:31313/taa-env:slim-v2`. docker load reports the
+      # reference it actually restored, and the tag is added on top of that so
+      # the push lands under the name CDH will request.
+      if ! load_out="$(sudo docker load -i "$image_archive" 2>&1)"; then
+        printf '%s\n' "$load_out" >&2
+        echo "error: 导入镜像归档失败: $image_archive" >&2
+        exit 1
+      fi
+      printf '%s\n' "$load_out"
+      # An archive can carry several tags. Prefer one whose repository matches
+      # the Pod's, so a multi-image archive still resolves to the intended
+      # image; fall back to the first when none matches (a differently-named
+      # build).
+      loaded_refs="$(sed -n 's/^Loaded image: //p' <<<"$load_out")"
+      loaded_ref=""
+      while IFS= read -r ref; do
+        [[ -n "$ref" ]] || continue
+        if [[ "${ref%%:*}" == *"$repo_path" ]]; then loaded_ref="$ref"; break; fi
+        [[ -n "$loaded_ref" ]] || loaded_ref="$ref"
+      done <<<"$loaded_refs"
+      if [[ -z "$loaded_ref" ]]; then
+        echo "error: 无法从 docker load 输出判断镜像引用，归档可能不含 RepoTags" >&2
+        echo "hint: 归档需由 docker save 生成，且带 RepoTags" >&2
+        exit 1
+      fi
+      if ! sudo docker tag "$loaded_ref" "$TEST_IMAGE"; then
+        echo "error: 无法把 $loaded_ref 标记为 $TEST_IMAGE" >&2
+        exit 1
+      fi
+      if ! sudo docker push "$TEST_IMAGE"; then
+        echo "error: 推送镜像到 registry 失败: $TEST_IMAGE" >&2
+        echo "hint: 确认 $registry_host 可从本机推送，或手工把该归档 load 并 push 后重试" >&2
+        exit 1
+      fi
+    fi
+  fi
+else
+  echo "包内未携带镜像归档，要求 registry 已存在: $TEST_IMAGE"
+fi
+
+echo
+echo "== 5. 创建 RuntimeClass 与测试 Pod =="
 run kubectl apply -f "$pkg_dir/k8s/runtimeclass.yaml"
 run kubectl delete pod "$TEST_POD_NAME" --ignore-not-found --wait=true
 run kubectl apply -f "$pkg_dir/k8s/test-pod.yaml"
@@ -223,7 +312,7 @@ if [[ "$dry_run" == "1" ]]; then
 fi
 
 echo
-echo "== 5. 等待测试 Pod Ready =="
+echo "== 6. 等待测试 Pod Ready =="
 if ! kubectl wait --for=condition=Ready "pod/$TEST_POD_NAME" --timeout=180s; then
   echo "error: test Pod did not become Ready within 180s; status and events follow" >&2
   kubectl get pod "$TEST_POD_NAME" -o wide >&2 || true
@@ -233,7 +322,7 @@ fi
 kubectl get pod "$TEST_POD_NAME" -o wide
 
 echo
-echo "== 6. 校验 QEMU 使用了本包的 initrd =="
+echo "== 7. 校验 QEMU 使用了本包的 initrd =="
 if ps -eo args= | grep -F "qemu" | grep -F "$REMOTE_BUNDLE_DIR/initramfs.img" | grep -v grep >/dev/null; then
   echo "verified QEMU is using: $REMOTE_BUNDLE_DIR/initramfs.img"
 else
@@ -243,7 +332,7 @@ else
 fi
 
 echo
-echo "== 7. 度量核对 =="
+echo "== 8. 度量核对 =="
 # The expected MEASUREMENT is recomputed here from the config that was just
 # rendered onto this host. That is the only input that can differ from the
 # build host: the kernel, initrd and OVMF are the package's own bytes, and the
@@ -280,12 +369,18 @@ else
   if [[ -z "$qpid" ]]; then
     echo "warning: 找不到使用本 bundle 的 QEMU 进程，无法重算 MEASUREMENT" >&2
   else
-    tr '\0' '\n' < "/proc/$qpid/cmdline" | grep -A1 -- '^-append$' | tail -n1 > "$append_file" || true
-    if [[ ! -s "$append_file" ]]; then
+    # /proc/<pid>/cmdline separates argv entries with NUL, so translating NUL to
+    # newline already leaves the -append value newline-terminated. Capture it
+    # through a command substitution (which strips that trailing newline) and
+    # write exactly one back: measure.py replaces only the final byte with NUL,
+    # so a second trailing newline would be hashed and yield a digest that never
+    # matches the running VM.
+    append_value="$(tr '\0' '\n' < "/proc/$qpid/cmdline" |
+      grep -A1 -- '^-append$' | tail -n1 || true)"
+    if [[ -z "$append_value" ]]; then
       echo "warning: 未能从 /proc/$qpid/cmdline 取到 -append" >&2
     else
-      # measure.py replaces the trailing newline with NUL, like the vendor tool.
-      printf '\n' >> "$append_file"
+      printf '%s\n' "$append_value" > "$append_file"
       if ! actual_measure="$(python3 "$pkg_dir/measure.py" digest \
         --ovmf "$REMOTE_BUNDLE_DIR/OVMF.fd" \
         --kernel "$REMOTE_BUNDLE_DIR/vmlinuz" \

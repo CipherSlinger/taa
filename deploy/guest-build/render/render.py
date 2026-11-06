@@ -113,12 +113,21 @@ def read_identity_file(path):
 
 
 def render_kata_config(template, section, bundle_dir, out, extra_params=(),
-                       replace_identity=False):
-    """Point one hypervisor section at the TAA bundle; leave everything else."""
+                       replace_identity=False, memory_mib=None):
+    """Point one hypervisor section at the TAA bundle; leave everything else.
+
+    memory_mib overrides the section's default_memory. It is not cosmetic: a
+    CSV2 guest's writable root is a tmpfs capped at roughly half the guest RAM,
+    and the CDH unpacks the container image into it. At the stock 2048 the
+    slim-v2 image (1.92 GB unpacked) fails with "Failed to unpack layer" and
+    the Pod lands in StartError -- which reads like an initrd problem but is not
+    one. The template's value is sized for a minimal guest image, not this one.
+    """
     path = Path(template)
     lines = path.read_text().splitlines()
     out_lines = []
-    seen = {"kernel": False, "initrd": False, "firmware": False, "kernel_params": False}
+    seen = {"kernel": False, "initrd": False, "firmware": False, "kernel_params": False,
+            "default_memory": False}
     in_target = False
     target_seen = False
 
@@ -153,6 +162,12 @@ def render_kata_config(template, section, bundle_dir, out, extra_params=(),
             params = with_extra([RDINIT])
             out_lines.append(f'kernel_params = {toml_string(" ".join(params))}')
             seen["kernel_params"] = True
+        # A template without default_memory still gets the requested value:
+        # silently keeping the default would boot a guest too small for the
+        # image, and that failure reads as an unrelated unpack error.
+        if memory_mib is not None and not seen["default_memory"]:
+            out_lines.append(f"default_memory = {memory_mib}")
+            seen["default_memory"] = True
 
     for line in lines:
         table = table_path(line)
@@ -198,6 +213,12 @@ def render_kata_config(template, section, bundle_dir, out, extra_params=(),
             params = with_extra(params)
             out_lines.append(f'kernel_params = {toml_string(" ".join(params))}')
             seen["kernel_params"] = True
+            continue
+        if memory_mib is not None and active_key(line, "default_memory"):
+            # Replace rather than append: the section must keep exactly one
+            # default_memory, and a duplicate key is invalid TOML.
+            out_lines.append(f"default_memory = {memory_mib}")
+            seen["default_memory"] = True
             continue
         out_lines.append(line)
 
@@ -335,6 +356,35 @@ def collect_settings(path):
     return settings
 
 
+def image_tar_name(image, suffix=".tar"):
+    """Return the filename the packaged copy of `image` is stored under.
+
+    The name keeps the image reference legible: `172.16.10.178:31313/taa-env`
+    `:slim-v2` becomes `172.16.10.178_31313_taa-env_slim-v2.tar`. Only
+    characters that cannot appear in a filename are rewritten, so the mapping is
+    easy to check by eye when someone has to find the image for a tag by hand.
+
+    `suffix` follows the archive as supplied, so a gzipped `docker save` output
+    keeps its `.tar.gz` and a reader is not told it holds a plain tar. docker
+    load sniffs the format either way; the name is for people.
+    """
+    return re.sub(r"[/:]", "_", image) + suffix
+
+
+# Archive suffixes docker load accepts, longest first so `.tar.gz` is not read
+# as `.gz` of `.tar`.
+IMAGE_ARCHIVE_SUFFIXES = (".tar.gz", ".tgz", ".tar")
+
+
+def archive_suffix(path):
+    """Return the recognized archive suffix of `path`, or `.tar` if none matches."""
+    name = str(path)
+    for suffix in IMAGE_ARCHIVE_SUFFIXES:
+        if name.endswith(suffix):
+            return suffix
+    return ".tar"
+
+
 def package_info(pkg_dir):
     """Derive the installer's settings from the package itself.
 
@@ -427,6 +477,21 @@ def package_info(pkg_dir):
         raise SystemExit(f"{pod_file}: metadata.name is missing")
     node_name = pod.get("spec", {}).get("nodeName", "")
 
+    containers = pod.get("spec", {}).get("containers") or []
+    if not containers or not containers[0].get("image"):
+        raise SystemExit(f"{pod_file}: spec.containers[0].image is missing")
+    image = containers[0]["image"]
+    # image_archive names the packaged copy of the Pod image, if there is one.
+    # A CoCo guest pulls the image itself through CDH, so loading it into the
+    # host's docker is not enough -- it has to reach the registry the Pod names.
+    # An empty value means "the image is expected to be there already".
+    image_archive = ""
+    for suffix in IMAGE_ARCHIVE_SUFFIXES:
+        archive_path = pkg / "image" / image_tar_name(image, suffix)
+        if archive_path.is_file():
+            image_archive = str(archive_path.relative_to(pkg))
+            break
+
     info = {
         "RUNTIME_HANDLER": handler,
         "RUNTIME_TYPE": fields["runtime_type"],
@@ -439,6 +504,8 @@ def package_info(pkg_dir):
         "KATA_HYPERVISOR_SECTION": section,
         "TEST_POD_NAME": pod_name,
         "TEST_NODE_NAME": node_name,
+        "TEST_IMAGE": image,
+        "TEST_IMAGE_ARCHIVE": image_archive,
     }
     return info
 
@@ -511,6 +578,14 @@ def main(argv=None):
         help="file of `taa.<key>=<value>` lines; replaces the whole identity set, "
         "so a removed line also removes the parameter",
     )
+    kata.add_argument(
+        "--memory-mib",
+        type=int,
+        metavar="MIB",
+        help="override the section's default_memory; a CSV2 guest sizes its "
+        "writable root at about half of this, and the container image is "
+        "unpacked into it",
+    )
     kata.add_argument("--out", required=True)
 
     merge = sub.add_parser("containerd-merge", help="add or replace the runtime handler")
@@ -540,6 +615,17 @@ def main(argv=None):
     )
     info.add_argument("--dir", required=True, help="package root")
 
+    archive_name = sub.add_parser(
+        "image-archive-name",
+        help="print the filename a packaged image archive is stored under",
+    )
+    archive_name.add_argument("--image", required=True)
+    archive_name.add_argument(
+        "--like",
+        default="",
+        help="source archive whose suffix the packaged name should keep",
+    )
+
     k8s = sub.add_parser("k8s", help="write RuntimeClass and test Pod manifests")
     k8s.add_argument("--handler", required=True)
     k8s.add_argument("--pod", required=True)
@@ -561,6 +647,7 @@ def main(argv=None):
             args.out,
             params,
             replace_identity=bool(args.param_file),
+            memory_mib=args.memory_mib,
         )
     elif args.command == "containerd-merge":
         containerd_merge(
@@ -582,6 +669,8 @@ def main(argv=None):
     elif args.command == "package-info":
         for key, value in package_info(args.dir).items():
             print(f"{key}={shlex.quote(value)}")
+    elif args.command == "image-archive-name":
+        print(image_tar_name(args.image, archive_suffix(args.like) if args.like else ".tar"))
     elif args.command == "k8s":
         render_k8s(args.handler, args.pod, args.node, args.image, args.annotations, args.out_dir)
     return 0

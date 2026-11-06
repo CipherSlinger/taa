@@ -203,9 +203,17 @@ REMOTE_BUNDLE_DIR="$REMOTE_PACKAGE_DIR/$PACKAGE_BUNDLE_SUBDIR"
 # /etc. Derived, never overridable: package_info resolves ConfigPath back to this
 # exact path, so a package rendered with any other value could not install.
 PACKAGE_KATA_CONFIG="config/kata-config.toml"
+PACKAGE_IMAGE_SUBDIR="image"
 REMOTE_KATA_CONFIG="$REMOTE_PACKAGE_DIR/$PACKAGE_KATA_CONFIG"
 CONTAINERD_CONFIG="${CONTAINERD_CONFIG:-/etc/containerd/config.toml}"
 KATA_HYPERVISOR_SECTION="${KATA_HYPERVISOR_SECTION:-hypervisor.qemu}"
+# Guest RAM, in MiB. This is a runtime dependency, not a tuning knob: a CSV2
+# guest's writable root is a tmpfs capped at roughly half the guest RAM, and the
+# CDH unpacks the container image into it. The base template's 2048 leaves ~1 GiB
+# for an image that unpacks to 1.92 GB, so the pull fails with "Failed to unpack
+# layer" and the Pod lands in StartError -- which reads like an initrd failure
+# but is not one. Empty means "keep the template's value".
+KATA_DEFAULT_MEMORY="${KATA_DEFAULT_MEMORY:-}"
 RUNTIME_HANDLER="${RUNTIME_HANDLER:-kata-qemu-csv2-taa}"
 RUNTIME_TYPE="${RUNTIME_TYPE:-io.containerd.kata-qemu-csv2.v2}"
 RUNTIME_PATH="${RUNTIME_PATH:-/opt/kata/bin/containerd-shim-kata-v2}"
@@ -222,6 +230,12 @@ TEST_POD_NAME="${TEST_POD_NAME:-test-kata-csv2-taa}"
 # default is an image from the registry on the host itself (the same one the
 # CoCo Pods already running here pull successfully).
 TEST_IMAGE="${TEST_IMAGE:-172.16.10.178:31313/taa-env:slim-v2-20260916}"
+# Optional `docker save` archive of TEST_IMAGE. When set, the package carries it
+# under image/ and install.sh loads and pushes it if the registry lacks the tag.
+# A CoCo guest pulls the image itself through CDH, so the archive has to reach
+# the registry, not just the host's docker daemon. Empty means "expect the
+# registry to already hold the image".
+TEST_IMAGE_ARCHIVE="${TEST_IMAGE_ARCHIVE:-}"
 # A CoCo guest pulls the container image itself through CDH, and it trusts the
 # registry only if the Pod carries the init-data that configures it (on this
 # host cc_init_data embeds a cdh.toml with extra_root_certificates). Without it
@@ -279,6 +293,7 @@ Environment overrides:
                                           (derived; always the packaged copy)
   REMOTE_BUNDLE_DIR                       derived as $REMOTE_PACKAGE_DIR/bundle
   KATA_HYPERVISOR_SECTION=$KATA_HYPERVISOR_SECTION
+  KATA_DEFAULT_MEMORY=${KATA_DEFAULT_MEMORY:-(keep the template's default_memory)}
   RUNTIME_HANDLER=$RUNTIME_HANDLER
   RUNTIME_TYPE=$RUNTIME_TYPE
   RUNTIME_PATH=$RUNTIME_PATH
@@ -287,6 +302,7 @@ Environment overrides:
   TEST_NODE_NAME=$TEST_NODE_NAME
   TEST_POD_NAME=$TEST_POD_NAME
   TEST_IMAGE=$TEST_IMAGE
+  TEST_IMAGE_ARCHIVE=${TEST_IMAGE_ARCHIVE:-(none; the registry must already hold TEST_IMAGE)}
   TEST_POD_ANNOTATIONS=$TEST_POD_ANNOTATIONS
   TAA_ADDR=$TAA_ADDR
   TAA_PLATFORM_IP=$TAA_PLATFORM_IP
@@ -1027,8 +1043,31 @@ render_package() {
     fi
   done
 
+  # The Pod's image travels with the package when one is supplied. A CoCo guest
+  # pulls it through CDH from the registry the Pod names, so the archive is not
+  # for the host's docker: install.sh imports it and pushes it to that registry
+  # only when the registry is missing the tag. Without an archive the package
+  # still installs, it just requires the image to be there already.
+  #
+  # Resolved before $out_dir is touched: a missing archive must fail the render,
+  # not leave a half-written package or destroy the previous one.
+  local archive_name=""
+  if [[ -n "$TEST_IMAGE_ARCHIVE" ]]; then
+    if [[ ! -f "$TEST_IMAGE_ARCHIVE" ]]; then
+      echo "error: TEST_IMAGE_ARCHIVE does not exist: $TEST_IMAGE_ARCHIVE" >&2
+      exit 1
+    fi
+    archive_name="$(python3 "$RENDER_DIR/render.py" image-archive-name \
+      --image "$TEST_IMAGE" --like "$TEST_IMAGE_ARCHIVE")"
+  fi
+
   rm -rf "$out_dir"
   mkdir -p "$out_dir/config" "$out_dir/k8s" "$out_dir/$PACKAGE_BUNDLE_SUBDIR"
+  if [[ -n "$archive_name" ]]; then
+    mkdir -p "$out_dir/$PACKAGE_IMAGE_SUBDIR"
+    cp "$TEST_IMAGE_ARCHIVE" "$out_dir/$PACKAGE_IMAGE_SUBDIR/$archive_name"
+  fi
+
   cp -L "$INITRD_OUT" "$out_dir/$PACKAGE_BUNDLE_SUBDIR/initramfs.img"
   cp -L "$MEASURE_KERNEL" "$out_dir/$PACKAGE_BUNDLE_SUBDIR/vmlinuz"
   cp -L "$MEASURE_OVMF" "$out_dir/$PACKAGE_BUNDLE_SUBDIR/OVMF.fd"
@@ -1055,11 +1094,14 @@ IDENTITY
     done
   } > "$out_dir/config/identity.txt"
 
+  local -a memory_args=()
+  [[ -n "$KATA_DEFAULT_MEMORY" ]] && memory_args=(--memory-mib "$KATA_DEFAULT_MEMORY")
   python3 "$RENDER_DIR/render.py" kata-config \
     --template "$template" \
     --section "$KATA_HYPERVISOR_SECTION" \
     --bundle-dir "$REMOTE_BUNDLE_DIR" \
     --param-file "$out_dir/config/identity.txt" \
+    "${memory_args[@]+"${memory_args[@]}"}" \
     --out "$out_dir/$PACKAGE_KATA_CONFIG"
 
   python3 "$RENDER_DIR/render.py" containerd-fragment \
@@ -1183,6 +1225,7 @@ MEASURE
 - \`k8s/runtimeclass.yaml\` / \`k8s/test-pod.yaml\` — 运行时类与测试 Pod（安装脚本从后者
   读 Pod 名与节点名）
 - \`install.sh\` / \`render.py\` / \`measure.py\` — 安装脚本、合并器与度量计算器
+$(if [[ -n "$TEST_IMAGE_ARCHIVE" ]]; then printf -- '- `%s/` — 测试 Pod 镜像的 `docker save` 归档。CoCo guest 由 CDH 自己从 registry 拉镜像，宿主机 docker 不在那条路径上，所以 install.sh 会先查 registry，缺这个 tag 时导入归档并推送过去\n' "$PACKAGE_IMAGE_SUBDIR"; fi)
 - \`config/identity.txt\` — **可在宿主机上编辑的部署身份**（见下文）
 - \`SHA256SUMS\` — 不可变文件的校验和（\`config/identity.txt\` 与由它渲染的
   \`$PACKAGE_KATA_CONFIG\` 不在其中，这两个文件本来就允许在宿主机上改）
@@ -1435,10 +1478,10 @@ case "$cmd" in
     # makes the output safe to `eval` even when a value contains spaces.
     for key in REMOTE_USER REMOTE_HOST REMOTE_BUNDLE_DIR REMOTE_PACKAGE_DIR REMOTE_BASE_INITRD_SRC \
                REMOTE_KATA_CONFIG_SRC REMOTE_KATA_CONFIG PACKAGE_KATA_CONFIG \
-               KATA_HYPERVISOR_SECTION \
+               KATA_HYPERVISOR_SECTION KATA_DEFAULT_MEMORY \
                RUNTIME_HANDLER RUNTIME_TYPE RUNTIME_PATH SNAPSHOTTER \
                CONTAINERD_CONFIG KATA_CONFIG_TEMPLATE DIST_DIR \
-               TEST_NODE_NAME TEST_POD_NAME TEST_IMAGE TEST_POD_ANNOTATIONS \
+               TEST_NODE_NAME TEST_POD_NAME TEST_IMAGE TEST_IMAGE_ARCHIVE TEST_POD_ANNOTATIONS \
                OUT_DIR INITRD_OUT BASE_INITRD; do
       printf '%s=%q\n' "$key" "${!key}"
     done
