@@ -95,8 +95,8 @@ func RunWithConfig(ctx context.Context, cfg config.StartupConfig) error {
 	// only execs after this process is up. Measured on 2026-10-10 in a booting test VM:
 	// "dial tcp 172.16.10.116:8443: connect: network is unreachable". A fatal probe is
 	// therefore unsatisfiable there by construction, and it fails in the worst way --
-	// taa-init sees TAA die, refuses to hand the VM over to kata-agent (TAA_REQUIRED=1),
-	// and the sandbox is never created.
+	// taa-init sees TAA die before kata-agent (and with it the Pod's network) is ever
+	// started, so no sandbox is created and every later API call has nothing to reach.
 	//
 	// failClosed is still honoured where it is load-bearing: the pre-audit probe in the
 	// controller runs with the network up and refuses the import when the gateway is
@@ -294,6 +294,17 @@ func RunWithConfig(ctx context.Context, cfg config.StartupConfig) error {
 	pState := stateStore.GetState()
 	if pState != nil {
 		state.RestoreFromPersistentState(pState)
+	}
+
+	// The retrier has to be running before the recovery paths below, which enqueue
+	// their own notifications: a queue restored from the previous process is only
+	// drained if something is already watching it. Starting it after the restore
+	// makes the restored entries visible, and tying it to the process context makes
+	// shutdown wait for the worker.
+	reportOutbox := state.StartReportOutbox(ctx)
+	defer reportOutbox.Stop()
+
+	if pState != nil {
 		if pState.ActiveTask != nil && pState.ActiveTask.Status == "RUNNING" {
 			log.Printf("detected interrupted active task during startup, executing crash recovery: taskId=%s, type=%s",
 				pState.ActiveTask.TaskID, pState.ActiveTask.Type)

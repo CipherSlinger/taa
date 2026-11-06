@@ -1,13 +1,12 @@
 #!/usr/bin/env bash
-# Unit tests for the two pure helpers in taa-init.sh.
+# Unit tests for the pure helpers in taa-init.sh.
 #
 # The wrapper itself cannot be run here: it is PID 1 inside a CSV2 guest and
-# needs /dev/console, a mounted /proc and a /dev it may mknod in. Its two
-# decision helpers, however, are plain shell over files, and they are the parts
-# that silently produce a wrong verdict -- a wrong csv-guest minor degrades
-# attestation to an empty report, and a wrong wait verdict either blocks a
-# healthy boot or lets a degraded one through. So they are tested with fixtures
-# instead of left to the next hardware run.
+# needs /dev/console, a mounted /proc and a /dev it may mknod in. Its decision
+# helpers, however, are plain shell over files, and they are the parts that
+# silently produce a wrong verdict -- a wrong csv-guest minor degrades
+# attestation to an empty report. So they are tested with fixtures instead of
+# left to the next hardware run.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -80,32 +79,6 @@ printf '  7 not-csv-guest\n' >"$decoy"
 check "does not match a name that merely contains csv-guest" "" \
   "$(CSV_MISC_FILE="$decoy" CSV_SYSDEV_FILE="$missing_sysdev" resolve_csv_minor)"
 
-echo "== wait_for_attestation_verdict =="
-
-ok_log="$WORK_DIR/ok.log"
-printf 'starting\nattestation report verified successfully\n' >"$ok_log"
-set +e
-wait_for_attestation_verdict "$ok_log" 5
-check "verified report -> 0" "0" "$?"
-
-degraded_log="$WORK_DIR/degraded.log"
-printf 'starting\nWARNING: continuing with empty report\n' >"$degraded_log"
-wait_for_attestation_verdict "$degraded_log" 5
-check "degraded report -> 1" "1" "$?"
-
-# Neither line appears: the wait must expire (2) rather than report success.
-# This is the case that would otherwise let a Pod reach Ready with an empty
-# attestation report, which is exactly what the gate exists to prevent.
-silent_log="$WORK_DIR/silent.log"
-printf 'starting\n' >"$silent_log"
-wait_for_attestation_verdict "$silent_log" 1
-check "no verdict -> 2" "2" "$?"
-
-# A missing log is the same class as a silent one.
-wait_for_attestation_verdict "$WORK_DIR/does-not-exist.log" 1
-check "missing log -> 2" "2" "$?"
-set -e
-
 echo "== apply_cmdline_identity =="
 
 # The kernel command line is host-provided input read by PID 1, so these tests
@@ -114,17 +87,17 @@ echo "== apply_cmdline_identity =="
 
 cmdline="$WORK_DIR/cmdline"
 cat >"$cmdline" <<'EOF'
-BOOT_IMAGE=/vmlinuz rdinit=/usr/local/bin/taa-init console=hvc0 taa.platform_ip=10.1.2.3:18080 taa.docker_id=fixture-docker-id taa.platform_public_key=04ab taa.llm_endpoint=https://10.1.2.3:8443 taa.required=0
+BOOT_IMAGE=/vmlinuz rdinit=/usr/local/bin/taa-init console=hvc0 taa.platform_ip=10.1.2.3:18080 taa.docker_id=fixture-docker-id taa.platform_public_key=04ab taa.llm_endpoint=https://10.1.2.3:8443
 EOF
 
 got="$(
   export CMDLINE_FILE="$cmdline"
   apply_cmdline_identity >/dev/null 2>&1
-  printf '%s|%s|%s|%s' "${PLATFORM_IP:-}" "${DOCKER_ID:-}" \
-    "${PLATFORM_PUBLIC_KEY:-}" "${TAA_REQUIRED:-}"
+  printf '%s|%s|%s' "${PLATFORM_IP:-}" "${DOCKER_ID:-}" \
+    "${PLATFORM_PUBLIC_KEY:-}"
 )"
 check "maps taa.* tokens onto the deployment names" \
-  '10.1.2.3:18080|fixture-docker-id|04ab|0' "$got"
+  '10.1.2.3:18080|fixture-docker-id|04ab' "$got"
 
 # The env file is the build-time fallback; the command line is the deployment's
 # current identity and has to win.

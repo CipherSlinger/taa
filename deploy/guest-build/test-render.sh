@@ -119,13 +119,11 @@ common_env=(
   TAA_CONTRACT_TYPE=fixture-contract-type
   TAA_LLM_ENDPOINT=https://172.16.10.116:8443
   TAA_ADDR=0.0.0.0:6001
-  TAA_REQUIRED=1
-  TAA_REQUIRE_ATTESTATION=1
 )
 
 # The identity tokens render_package appends to kernel_params, in emission
 # order. Kept in one place so the config and cmdline expectations cannot drift.
-identity_params="taa.platform_ip=172.16.10.116:18080 taa.docker_id=fixture-docker-id taa.platform_public_key=04$(printf 'a%.0s' {1..128}) taa.platform_sm2_id=fixture-sm2-id taa.contract_id=fixture-contract-id taa.contract_type=fixture-contract-type taa.llm_endpoint=https://172.16.10.116:8443 taa.addr=0.0.0.0:6001 taa.required=1 taa.require_attestation=1"
+identity_params="taa.platform_ip=172.16.10.116:18080 taa.docker_id=fixture-docker-id taa.platform_public_key=04$(printf 'a%.0s' {1..128}) taa.platform_sm2_id=fixture-sm2-id taa.contract_id=fixture-contract-id taa.contract_type=fixture-contract-type taa.llm_endpoint=https://172.16.10.116:8443 taa.addr=0.0.0.0:6001"
 
 # ── 1. render produces a self-contained package, offline ────────────────────
 pkg="$tmp_dir/a/pkg"
@@ -169,7 +167,7 @@ python3 "$RENDER" kata-config --template "$pkg/config/kata-config.toml" \
 again="$(cat "$tmp_dir/kata-again.toml")"
 check "kata: a re-render never duplicates a key" "" \
   "$(grep -o 'taa\.[a-z0-9_]*=' "$tmp_dir/kata-again.toml" | sort | uniq -d)"
-check "kata: a re-render keeps every identity key" "10" \
+check "kata: a re-render keeps every identity key" "8" \
   "$(grep -o 'taa\.[a-z0-9_]*=' "$tmp_dir/kata-again.toml" | sort -u | wc -l)"
 check "kata: a re-render does not stack tokens" "1" \
   "$(grep -o 'taa\.platform_ip=' "$tmp_dir/kata-again.toml" | wc -l)"
@@ -185,7 +183,7 @@ check_absent "kata: a re-render drops the old value" 'taa.platform_ip=172.16.10.
 identity_file="$pkg/config/identity.txt"
 check "identity: the package ships config/identity.txt" "present" \
   "$([[ -f "$identity_file" ]] && echo present || echo absent)"
-check "identity: holds exactly the ten tokens" "$identity_params" \
+check "identity: holds exactly the eight tokens" "$identity_params" \
   "$(grep -vE '^[[:space:]]*(#|$)' "$identity_file" | tr '\n' ' ' | sed 's/ $//')"
 
 # Re-rendering from the delivered file must reproduce the delivered config:
@@ -209,7 +207,7 @@ edited_cfg="$(cat "$tmp_dir/kata-edited.toml")"
 check_contains "identity: an edited value replaces the old one" 'taa.docker_id=edited-docker-id' "$edited_cfg"
 check_absent "identity: the old value is gone" 'taa.docker_id=fixture-docker-id' "$edited_cfg"
 check_absent "identity: a deleted line removes the parameter" 'taa.contract_type=' "$edited_cfg"
-check "identity: the other keys survive" "9" \
+check "identity: the other keys survive" "7" \
   "$(grep -o 'taa\.[a-z0-9_]*=' "$tmp_dir/kata-edited.toml" | sort -u | wc -l)"
 
 identity_reject() {

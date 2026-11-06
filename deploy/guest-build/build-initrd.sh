@@ -79,19 +79,11 @@ TAA_SEMGREP_PAYLOAD_DIR="${TAA_SEMGREP_PAYLOAD_DIR:-$SCRIPT_DIR/semgrep-payload}
 # registration with the management platform, and a failed registration is just a
 # warning inside TAA. deploy/all still require the env file by default, because
 # the production flow wants registration to succeed.
-# With TAA_REQUIRED=1, a TAA that fails to start or fails attestation keeps
-# kata-agent from starting, so the Pod stays NotReady.
 TAA_ADDR_DEFAULT="0.0.0.0:6001"
-TAA_REQUIRED_DEFAULT="1"
-TAA_REQUIRE_ATTESTATION_DEFAULT="1"
 
 TAA_ADDR="${TAA_ADDR:-$TAA_ADDR_DEFAULT}"
 TAA_PLATFORM_IP="${TAA_PLATFORM_IP:-}"
 TAA_DOCKER_ID="${TAA_DOCKER_ID:-}"
-TAA_REQUIRED="${TAA_REQUIRED:-$TAA_REQUIRED_DEFAULT}"
-# 1 = only release kata-agent once TAA has self-verified its report, which makes
-# "the attestation is real" a precondition for the Pod reaching Ready.
-TAA_REQUIRE_ATTESTATION="${TAA_REQUIRE_ATTESTATION:-$TAA_REQUIRE_ATTESTATION_DEFAULT}"
 ALLOW_MISSING_TAA_ENV="${ALLOW_MISSING_TAA_ENV:-0}"
 
 # The deployment's startup settings. The Pod's environment cannot reach the
@@ -174,8 +166,6 @@ taa_env_file_needed() {
     return 0
   fi
   [[ "$TAA_ADDR" != "$TAA_ADDR_DEFAULT" ]] && return 0
-  [[ "$TAA_REQUIRED" != "$TAA_REQUIRED_DEFAULT" ]] && return 0
-  [[ "$TAA_REQUIRE_ATTESTATION" != "$TAA_REQUIRE_ATTESTATION_DEFAULT" ]] && return 0
   [[ -n "$TAA_PLATFORM_SM2_ID$TAA_CONTRACT_ID$TAA_CONTRACT_TYPE$TAA_LLM_ENDPOINT" ]] && return 0
   return 1
 }
@@ -301,8 +291,6 @@ Environment overrides:
   TAA_CONTRACT_ID=$TAA_CONTRACT_ID
   TAA_CONTRACT_TYPE=$TAA_CONTRACT_TYPE
   TAA_LLM_ENDPOINT=$TAA_LLM_ENDPOINT
-  TAA_REQUIRED=$TAA_REQUIRED
-  TAA_REQUIRE_ATTESTATION=$TAA_REQUIRE_ATTESTATION
   ALLOW_MISSING_TAA_ENV=$ALLOW_MISSING_TAA_ENV
   SKIP_REMOTE_BASE_CHECK=$SKIP_REMOTE_BASE_CHECK
   SKIP_REMOTE_KATA_TEMPLATE_CHECK=${SKIP_REMOTE_KATA_TEMPLATE_CHECK:-0}
@@ -349,8 +337,6 @@ Notes:
   the CSV2 measurement, so the identity is still covered by MEASUREMENT -- but
   it is also visible to the host in QEMU's -append, so secrets belong nowhere
   near it (TAASECRETKEY is never carried at all).
-  TAA_REQUIRE_ATTESTATION=1 makes the TAA attestation self-verification a
-  precondition for starting kata-agent, so a Ready Pod implies a real report.
   The injected TAA must be statically linked; build it with
   CGO_ENABLED=0 GOOS=linux go build -o bin/taa ./cmd/taa
 EOF
@@ -453,9 +439,8 @@ check_build_inputs() {
   fi
 
   # TAA exits 1 at startup without the platform public key. An initrd built
-  # without one is not "unregistered but working": taa-init sees the process die,
-  # and with TAA_REQUIRED=1 it holds kata-agent forever, so the Pod never gets
-  # past ContainerCreating. Refuse at build time with the sources that can fix it.
+  # without one is not "unregistered but working": TAA dies at boot and every
+  # later API call fails. Refuse at build time with the sources that can fix it.
   ensure_platform_public_key
   if [[ -z "$TAA_PLATFORM_PUBLIC_KEY" && "$ALLOW_MISSING_TAA_ENV" != "1" ]]; then
     echo "error: 没有平台 SM2 公钥，guest 内的 TAA 会启动即退出" >&2
@@ -674,8 +659,6 @@ build_initrd() {
       printf 'export CONTRACT_ID=%q\n' "$TAA_CONTRACT_ID"
       printf 'export CONTRACT_TYPE=%q\n' "$TAA_CONTRACT_TYPE"
       printf 'export TAA_LLM_ENDPOINT=%q\n' "$TAA_LLM_ENDPOINT"
-      printf 'export TAA_REQUIRED=%q\n' "$TAA_REQUIRED"
-      printf 'export TAA_REQUIRE_ATTESTATION=%q\n' "$TAA_REQUIRE_ATTESTATION"
     } > "$BUILD_WORK_DIR/extra/etc/default/taa.env"
   fi
 
@@ -1133,8 +1116,6 @@ render_package() {
   add_kernel_param contract_type "$TAA_CONTRACT_TYPE"
   add_kernel_param llm_endpoint "$TAA_LLM_ENDPOINT"
   add_kernel_param addr "$TAA_ADDR"
-  add_kernel_param required "$TAA_REQUIRED"
-  add_kernel_param require_attestation "$TAA_REQUIRE_ATTESTATION"
 
   rm -rf "$out_dir"
   mkdir -p "$out_dir/config" "$out_dir/k8s"
@@ -1150,10 +1131,9 @@ render_package() {
 # TAA 部署身份：每行一个 `taa.<key>=<value>`，原样写进内核命令行。
 # 改完本文件后重新执行 `sudo bash install.sh` 即生效：install.sh 会按它重新
 # 渲染 config/kata-config.toml 并重建测试 Pod，不需要回构建机重新 render。
-# 只允许下列 10 个键；值不能含空白字符；删掉一行就是去掉对应参数。
+# 只允许下列 8 个键；值不能含空白字符；删掉一行就是去掉对应参数。
 #   taa.platform_ip  taa.docker_id  taa.platform_public_key  taa.platform_sm2_id
 #   taa.contract_id  taa.contract_type  taa.llm_endpoint  taa.addr
-#   taa.required  taa.require_attestation
 # 不要在这里放密钥：内核命令行在宿主机的 `ps` 与日志里可见。
 IDENTITY
     local param
@@ -1388,13 +1368,12 @@ install.sh 会重渲染配置、删掉旧 Pod 再重建（新 Pod 才会带上�
 不需要回构建机重新 render，也不需要重建 initrd。identity.txt 里删掉一行，
 对应的参数就会从命令行上消失。
 
-只允许这 10 个键，写错键名、重复键、空值或含空白字符的值都会让 install.sh
+只允许这 8 个键，写错键名、重复键、空值或含空白字符的值都会让 install.sh
 直接报错退出，不会带上一个 guest 会静默忽略的参数：
 
 \`\`\`
 taa.platform_ip  taa.docker_id  taa.platform_public_key  taa.platform_sm2_id
 taa.contract_id  taa.contract_type  taa.llm_endpoint  taa.addr
-taa.required  taa.require_attestation
 \`\`\`
 
 内核命令行本身也在 CSV2 度量范围内，所以改身份改的是 MEASUREMENT：install.sh

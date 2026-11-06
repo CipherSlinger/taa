@@ -32,11 +32,6 @@ CMDLINE_FILE="${CMDLINE_FILE:-/proc/cmdline}"
 CSV_DEV=/dev/csv-guest
 CSV_MAJOR=10
 
-# The two log lines that carry TAA's attestation verdict
-# (internal/app/taa/app.go:548 and :569).
-ATTESTATION_OK_PATTERN="attestation report verified successfully"
-ATTESTATION_DEGRADED_PATTERN="continuing with empty report"
-
 log() { echo "taa-init: $*" >"$CONSOLE" 2>/dev/null || true; }
 
 # Deployment identity can also arrive on the kernel command line as
@@ -57,8 +52,6 @@ cmdline_env_name() {
     contract_type)       echo CONTRACT_TYPE ;;
     llm_endpoint)        echo TAA_LLM_ENDPOINT ;;
     addr)                echo TAA_ADDR ;;
-    required)            echo TAA_REQUIRED ;;
-    require_attestation) echo TAA_REQUIRE_ATTESTATION ;;
     *) return 1 ;;
   esac
 }
@@ -106,35 +99,15 @@ resolve_csv_minor() {
   return 0
 }
 
-# Wait for TAA to state its verdict in the log:
-#   0 = self-verification passed   1 = degraded to an empty report   2 = timeout
-# Why wait at all: on attestation failure TAA only writes a WARNING plus an empty
-# report and keeps running (app.go:548), so "the process is alive" and "the Pod is
-# Ready" are both worthless as evidence. This line is the only one that counts.
-wait_for_attestation_verdict() {
-  local log_file="$1"
-  local max_wait="$2"
-  local i=0
-  while [ "$i" -lt "$max_wait" ]; do
-    if [ -r "$log_file" ]; then
-      if grep -q "$ATTESTATION_OK_PATTERN" "$log_file" 2>/dev/null; then return 0; fi
-      if grep -q "$ATTESTATION_DEGRADED_PATTERN" "$log_file" 2>/dev/null; then return 1; fi
-    fi
-    sleep 1
-    i=$((i + 1))
-  done
-  return 2
-}
-
 # ===== main flow (local tests source only the part above this line) =====
 
-# Read the build-time /etc/default/taa.env. It carries the wrapper switches
-# (TAA_ADDR, TAA_REQUIRED, TAA_REQUIRE_ATTESTATION) and the deployment identity
-# TAA reads at startup (PLATFORM_IP, DOCKER_ID, PLATFORM_PUBLIC_KEY,
-# PLATFORM_SM2_ID, CONTRACT_ID, CONTRACT_TYPE, TAA_LLM_ENDPOINT). This file is
-# the guest's fallback environment; the same names can be overridden from the
-# kernel command line (see apply_cmdline_identity below), which is what lets a
-# deployment change its identity without rebuilding the image.
+# Read the build-time /etc/default/taa.env. It carries the wrapper switch
+# (TAA_ADDR) and the deployment identity TAA reads at startup (PLATFORM_IP,
+# DOCKER_ID, PLATFORM_PUBLIC_KEY, PLATFORM_SM2_ID, CONTRACT_ID, CONTRACT_TYPE,
+# TAA_LLM_ENDPOINT). This file is the guest's fallback environment; the same
+# names can be overridden from the kernel command line (see
+# apply_cmdline_identity below), which is what lets a deployment change its
+# identity without rebuilding the image.
 if [ -r "$ENV_FILE" ]; then
   . "$ENV_FILE"
 fi
@@ -142,22 +115,6 @@ fi
 cd / || true
 
 TAA_ADDR="${TAA_ADDR:-0.0.0.0:6001}"
-TAA_REQUIRED="${TAA_REQUIRED:-1}"
-TAA_REQUIRE_ATTESTATION="${TAA_REQUIRE_ATTESTATION:-1}"
-ATTESTATION_TIMEOUT="${ATTESTATION_TIMEOUT:-60}"
-
-# With TAA_REQUIRED=1, do not step aside for kata-agent: the Pod stays NotReady.
-# That is deliberate fail-closed behaviour.
-fail_taa_required() {
-  log "$1"
-  if [ "$TAA_REQUIRED" = "1" ]; then
-    if [ -r "$TAA_LOG" ]; then
-      cat "$TAA_LOG" >"$CONSOLE" 2>&1 || true
-    fi
-    log "TAA_REQUIRED=1; not starting kata-agent"
-    while true; do sleep 3600; done
-  fi
-}
 
 # 1) Mount /proc and /sys. This script runs before kata-agent, so both are still
 #    empty (mounting them is init's job) and the minor lookup below needs them.
@@ -186,9 +143,11 @@ if [ ! -e "$CSV_DEV" ]; then
   fi
 fi
 
-# 3) Start TAA. The gate is "config is readable" -- that file is a hard dependency
-#    (TAA exits 1 without it). PLATFORM_IP/DOCKER_ID only affect registration,
-#    and a failed registration is already just a warning (app.go:135).
+# 3) Start TAA. A missing config is logged and the boot continues: TAA is the
+#    daemon every later step talks to, but the VM itself has to come up, so
+#    nothing here may hold kata-agent hostage. PLATFORM_IP/DOCKER_ID only affect
+#    registration, and a failed registration is already just a warning
+#    (app.go:135).
 #
 #    PID 1 inherits the kernel's default PATH (/sbin:/usr/sbin:/bin:/usr/bin),
 #    which does not include /usr/local/bin. TAA resolves the semgrep CLI through
@@ -198,30 +157,15 @@ fi
 PATH="/usr/local/bin:$PATH"
 export PATH
 
-TAA_PID=""
 if [ -r "$TAA_CONFIG" ]; then
   "$TAA_BIN" -config "$TAA_CONFIG" -addr "$TAA_ADDR" >"$TAA_LOG" 2>&1 &
-  TAA_PID="$!"
-else
-  fail_taa_required "missing $TAA_CONFIG; not starting TAA"
-fi
-
-# 4) Liveness probe. A live process is not a working service; this only proves it
-#    did not exit immediately.
-if [ -n "$TAA_PID" ]; then
+  taa_pid="$!"
+  # Liveness probe. A live process is not a working service; this only proves it
+  # did not exit immediately, and it is reported rather than acted on.
   sleep 2
-  kill -0 "$TAA_PID" >/dev/null 2>&1 || fail_taa_required "TAA exited immediately"
-fi
-
-# 5) Attestation gate. Neither step above shows that the report is real, so the
-#    acceptance criterion is moved forward into the boot path.
-if [ -n "$TAA_PID" ] && [ "$TAA_REQUIRE_ATTESTATION" = "1" ]; then
-  wait_for_attestation_verdict "$TAA_LOG" "$ATTESTATION_TIMEOUT"
-  case "$?" in
-    0) log "attestation self-verification passed" ;;
-    1) fail_taa_required "attestation degraded to an empty report (see log above)" ;;
-    *) fail_taa_required "no attestation verdict in $TAA_LOG after ${ATTESTATION_TIMEOUT}s" ;;
-  esac
+  kill -0 "$taa_pid" >/dev/null 2>&1 || log "WARNING: TAA exited immediately; see $TAA_LOG"
+else
+  log "WARNING: missing $TAA_CONFIG; not starting TAA"
 fi
 
 exec /sbin/init "$@"

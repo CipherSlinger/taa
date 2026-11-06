@@ -60,10 +60,6 @@ export TEST_POD_ANNOTATIONS='{"io.katacontainers.config.runtime.cc_init_data":"<
 # osr pod 的 2c928086a11a54d301a11acb7d1c0000，否则平台会看到两个实例共用一个身份。
 export TAA_PLATFORM_IP=172.16.10.178:18080
 export TAA_DOCKER_ID=kata-csv2-taa-test-0001
-# 证明闸门：1（默认）= TAA 自校验不通过就不启动 kata-agent，Pod 停在 NotReady
-export TAA_REQUIRE_ATTESTATION=1
-# TAA_REQUIRED：1（默认）= TAA 起不来时同样不让 kata-agent 启动
-export TAA_REQUIRED=1
 ```
 
 ---
@@ -159,11 +155,10 @@ TAA_DOCKER_ID="${TAA_DOCKER_ID}" \
 `base 条目数 + 追加条数`**，不等就说明有重复或丢失，脚本会拒绝发布。
 
 如果你暂时只想构建，不想生成 `/etc/default/taa.env`，可以不设置 `TAA_PLATFORM_IP` / `TAA_DOCKER_ID`，但后续 `deploy` 可能会拒绝。
-注意：只要 `TAA_ADDR` / `TAA_REQUIRED` / `TAA_REQUIRE_ATTESTATION` 中任何一个偏离默认值，
-env 文件仍会生成（否则构建期覆盖会静默失效）。
+注意：只要 `TAA_ADDR` 偏离默认值，env 文件仍会生成（否则构建期覆盖会静默失效）。
 
-证明闸门：默认 `TAA_REQUIRE_ATTESTATION=1`，即 TAA 的自校验不通过就不启动 kata-agent，
-Pod 停在 NotReady。要观察"降级也能起来"的行为才需要 `TAA_REQUIRE_ATTESTATION=0`。
+开机路径不再有证明闸门：TAA 起不来、或证明自校验降级为空报告时，`taa-init` 只把结论
+写进串口和 guest 的 `/tmp/taa.log`，然后照常 `exec /sbin/init`，Pod 仍会 Ready。
 
 ---
 
@@ -363,7 +358,6 @@ python3 "$pkg/measure.py" digest \
 - `TEST_POD_NAME=test-kata-csv2-taa`
 - `TEST_IMAGE=172.16.10.178:31313/taa-env:slim-v2-20260916`（宿主本地 registry；guest 无外网）
 - `TEST_POD_ANNOTATIONS='{}'`（该宿主上需填 `cc_init_data`，见 §0）
-- `TAA_REQUIRED=1`、`TAA_REQUIRE_ATTESTATION=1`（证明闸门）
 - `TAA_PLATFORM_IP`、`TAA_DOCKER_ID`：平台注册身份，必须成对。由**驱动**给默认值
   （`172.16.10.116:${PLATFORM_PORT}` / `kata-csv2-taa-test-0001`；平台跑在自己的宿主上，
   不跟随 `REMOTE_HOST`），直接调 `build-initrd.sh` 时默认仍为空。用

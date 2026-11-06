@@ -28,8 +28,6 @@ IDENTITY_KEYS = (
     "contract_type",
     "llm_endpoint",
     "addr",
-    "required",
-    "require_attestation",
 )
 
 
