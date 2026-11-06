@@ -90,6 +90,26 @@ p {
   }
 }
 
+/* The two log streams are read against each other: the model writes them and
+   TAA relays them, so a wide screen puts them side by side. They stack once a
+   half column would squeeze the terminal toolbar onto too many rows. */
+.log-panels-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0 20px;
+  align-items: start;
+}
+
+.log-panels-col {
+  min-width: 0;
+}
+
+@media (max-width: 1100px) {
+  .log-panels-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
 .taa-addr-bar {
   background: var(--panel);
   border: 1px solid var(--line);

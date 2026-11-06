@@ -2327,6 +2327,23 @@ func TestTaaLogConsoleRendering(t *testing.T) {
 			t.Errorf("frontendBundle missing %q", s)
 		}
 	}
+
+	// The model log and the TAA log are read against each other, so both cards
+	// must sit inside the same two-column grid.
+	gridIdx := strings.Index(html, `class="log-panels-grid"`)
+	taaIdx := strings.Index(html, `id="card-taaLog"`)
+	modelIdx := strings.Index(html, `id="card-modelLog"`)
+	if gridIdx == -1 || taaIdx < gridIdx || modelIdx < gridIdx {
+		t.Errorf("both log cards should sit inside .log-panels-grid: grid=%d taa=%d model=%d", gridIdx, taaIdx, modelIdx)
+	}
+
+	layoutBytes, err := staticFS.ReadFile("static/css/layout.css")
+	if err != nil {
+		t.Fatalf("failed to read static/css/layout.css: %v", err)
+	}
+	if !strings.Contains(string(layoutBytes), ".log-panels-grid") {
+		t.Error("layout.css should define the .log-panels-grid two-column layout")
+	}
 }
 
 func TestDashboardAggregatedStatus(t *testing.T) {
