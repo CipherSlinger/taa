@@ -2337,6 +2337,12 @@ func TestTaaLogConsoleRendering(t *testing.T) {
 		t.Errorf("both log cards should sit inside .log-panels-grid: grid=%d taa=%d model=%d", gridIdx, taaIdx, modelIdx)
 	}
 
+	// The card titles live inside their cards now, so neither label is emitted as
+	// a standalone heading above the section anymore.
+	if strings.Contains(html, `<h2>模型终端日志</h2>`) || strings.Contains(html, `<h2>TAA 运行日志</h2>`) {
+		t.Error("log card titles should be rendered inside the card header, not above the section")
+	}
+
 	layoutBytes, err := staticFS.ReadFile("static/css/layout.css")
 	if err != nil {
 		t.Fatalf("failed to read static/css/layout.css: %v", err)

@@ -499,13 +499,15 @@
   <div class="log-panels-grid">
     <div class="log-panels-col">
       <!-- TAA 运行日志 -->
-      <h2>TAA 运行日志</h2>
       <section class="card" id="card-taaLog">
-        <div style="display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:12px; flex-wrap:wrap;">
-          <div class="status" style="font-size:16px;">
-            <span id="taaLogStatusDot" class="dot status-pill pending"></span>
-            <span id="taaLogStatusText">等待日志上报...</span>
-            <span class="muted" style="font-size:12px;">(/v1/taa/taaLog)</span>
+        <div class="card-head" style="margin-bottom:12px; padding-bottom:10px; gap:12px;">
+          <div class="card-title-group">
+            <h2 style="margin:0;">TAA 运行日志</h2>
+            <div class="status" style="font-size:13px;">
+              <span id="taaLogStatusDot" class="dot status-pill pending"></span>
+              <span id="taaLogStatusText">等待日志上报...</span>
+              <span class="muted" style="font-size:12px;">(/v1/taa/taaLog)</span>
+            </div>
           </div>
           <div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
             <span class="muted" id="taaLogCount" style="font-size:13px;">0 条日志</span>
@@ -545,13 +547,15 @@
     </div>
     <div class="log-panels-col">
       <!-- 模型终端日志 -->
-      <h2>模型终端日志</h2>
       <section class="card" id="card-modelLog">
-        <div style="display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:12px; flex-wrap:wrap;">
-          <div class="status" style="font-size:16px;">
-            <span id="modelLogStatusDot" class="dot status-pill pending"></span>
-            <span id="modelLogStatusText">等待日志上报...</span>
-            <span class="muted" style="font-size:12px;">(/v1/taa/modelLog)</span>
+        <div class="card-head" style="margin-bottom:12px; padding-bottom:10px; gap:12px;">
+          <div class="card-title-group">
+            <h2 style="margin:0;">模型终端日志</h2>
+            <div class="status" style="font-size:13px;">
+              <span id="modelLogStatusDot" class="dot status-pill pending"></span>
+              <span id="modelLogStatusText">等待日志上报...</span>
+              <span class="muted" style="font-size:12px;">(/v1/taa/modelLog)</span>
+            </div>
           </div>
           <div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
             <span class="muted" id="modelLogCount" style="font-size:13px;">0 条日志</span>
