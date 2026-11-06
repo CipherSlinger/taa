@@ -284,6 +284,80 @@ button:disabled {
   align-items: center;
 }
 
+/* Compact controls for the registration card. It carries the instance selector
+   and the actions bound to that instance; at the default button size those read
+   as a wall of equally loud controls, so the card uses small buttons grouped by
+   what they operate on, with one filled primary per group. */
+button.btn-sm {
+  padding: 5px 10px;
+  font-size: 12px;
+  font-weight: 600;
+  border-radius: 6px;
+  gap: 5px;
+}
+
+button.btn-icon {
+  padding: 5px 7px;
+  border-radius: 6px;
+  color: var(--muted);
+}
+
+button.secondary.btn-icon:hover:not(:disabled) {
+  color: var(--text);
+}
+
+.instance-action-bar {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  flex-wrap: wrap;
+}
+
+/* The detected target is an address, often longer than the row: keep it on one
+   line and ellipsize inside the pill instead of spilling past its border. The
+   full value is on the badge's title. */
+#taaTargetPill {
+  max-width: 100%;
+  min-width: 0;
+}
+
+#taaProxyBadge {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.action-group {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.action-group + .action-group {
+  padding-left: 18px;
+  border-left: 1px solid var(--line);
+}
+
+.action-group-label {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: .06em;
+  color: var(--muted);
+  margin-right: 2px;
+}
+
+@media (max-width: 480px) {
+  .instance-action-bar {
+    gap: 10px;
+  }
+  .action-group + .action-group {
+    padding-left: 0;
+    border-left: 0;
+  }
+}
+
 .icon-btn-compact {
   width: 26px;
   height: 26px;

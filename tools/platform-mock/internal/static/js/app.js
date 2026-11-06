@@ -1635,7 +1635,11 @@ async function testHealth() {
     setHealthState('dot bad status-pill bad', '不可达', '不可达', 'var(--bad)');
     recordInteraction('health', { primaryContent: lastHealthData, respBody: lastHealthData, statusCode: 500 });
   } finally {
-    if (btn) btn.disabled = false;
+    if (btn) {
+      btn.disabled = false;
+      // The card hides 查看结果 until a check has produced a result.
+      btn.style.display = 'inline-flex';
+    }
   }
 }
 
@@ -1865,6 +1869,7 @@ async function detectTAAProxy() {
       if (pill) pill.className = 'status-pill ok';
       if (badge) {
         badge.textContent = '代理 ' + payload.taaTarget;
+        badge.title = badge.textContent;
         badge.style.color = 'var(--ok)';
       }
     } else {
@@ -1872,6 +1877,7 @@ async function detectTAAProxy() {
       if (pill) pill.className = 'status-pill pending';
       if (badge) {
         badge.textContent = '未检测到 TAA Pod，直连 ' + fallbackAddr;
+        badge.title = badge.textContent;
         badge.style.color = 'var(--bad)';
       }
     }
@@ -1880,6 +1886,7 @@ async function detectTAAProxy() {
     if (pill) pill.className = 'status-pill bad';
     if (badge) {
       badge.textContent = '检测失败，直连 ' + fallbackAddr;
+      badge.title = badge.textContent;
       badge.style.color = 'var(--bad)';
     }
   }

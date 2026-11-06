@@ -171,7 +171,11 @@ async function testGetAttestation() {
     if (ok) {
       _lastAttestationBase64 = attB64;
       _lastAttestationValues = attValues;
-      if (saveBtn) saveBtn.disabled = false;
+      // The card hides the result actions until there is a report to act on.
+      if (saveBtn) {
+        saveBtn.disabled = false;
+        saveBtn.style.display = 'inline-flex';
+      }
     }
     if (typeof lastRegisterModalTitle !== 'undefined') {
       lastRegisterModalTitle = '/v1/taa/getAttestation 返回 body';
@@ -180,7 +184,7 @@ async function testGetAttestation() {
     const regBodyBtn = document.getElementById('registerBodyBtn');
     if (regBodyBtn) regBodyBtn.disabled = false;
     const attestBtn = document.getElementById('attestationBodyBtn');
-    if (attestBtn) attestBtn.style.display = 'inline-block';
+    if (attestBtn) attestBtn.style.display = 'inline-flex';
     if (statusEl) statusEl.textContent = ok ? '已获取远程证明报告 (HTTP ' + res.status + ')' : '获取远程证明报告失败';
     if (dot) dot.className = 'dot ' + (ok ? 'ok' : 'bad');
     if (typeof recordInteraction === 'function') {
@@ -209,7 +213,7 @@ async function testGetAttestation() {
     const regBodyBtn = document.getElementById('registerBodyBtn');
     if (regBodyBtn) regBodyBtn.disabled = false;
     const attestBtn = document.getElementById('attestationBodyBtn');
-    if (attestBtn) attestBtn.style.display = 'inline-block';
+    if (attestBtn) attestBtn.style.display = 'inline-flex';
     if (statusEl) statusEl.textContent = '获取远程证明报告失败';
     if (dot) dot.className = 'dot bad';
     if (typeof recordInteraction === 'function') {
@@ -227,7 +231,7 @@ async function testGetAttestation() {
 
 function saveAttestationReport() {
   if (!_lastAttestationBase64) {
-    alert('没有可保存的报告，请先点击"获取远程证明报告"获取报告');
+    alert('没有可保存的报告，请先点击"获取证明报告"获取报告');
     return;
   }
   const bytes = base64ToUint8Array(_lastAttestationBase64);

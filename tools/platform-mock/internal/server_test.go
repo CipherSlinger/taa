@@ -2007,8 +2007,17 @@ func TestHealthCheckIntegratedIntoRegistration(t *testing.T) {
 	if pubKeyBtnIdx < targetPillIdx || attestBtnIdx < pubKeyBtnIdx {
 		t.Fatal("registration and attestation actions should share one toolbar below the address row")
 	}
-	if !strings.Contains(indexHTML, `data-console="tee" style="display:inline-flex; align-items:center; gap:8px; margin-left:4px;`) {
-		t.Fatal("the attestation button group should stay TEE-only")
+	if !strings.Contains(indexHTML, `<div class="action-group" data-console="tee">`) {
+		t.Fatal("the attestation action group should stay TEE-only")
+	}
+	// Result actions stay hidden until the card has a result to act on.
+	for _, want := range []string{
+		`style="display:none;" disabled>查看结果`,
+		`style="display:none;" disabled>保存报告`,
+	} {
+		if !strings.Contains(indexHTML, want) {
+			t.Fatalf("indexHTML missing hidden-until-ready action %q", want)
+		}
 	}
 }
 
@@ -2466,6 +2475,9 @@ func TestAdvancedUIPolishVisualDashboardAndStepperComponents(t *testing.T) {
 		".id-inputs-cols",
 		".id-input-col",
 		".id-field-value",
+		".instance-action-bar",
+		".action-group-label",
+		"button.btn-sm",
 		"mark.hl-match",
 	}
 	for _, pat := range requiredCSSPatterns {
