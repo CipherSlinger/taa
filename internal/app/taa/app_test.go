@@ -523,8 +523,13 @@ func TestProbeInferenceService_UnhealthyEndpoint(t *testing.T) {
 // inference service (fail-closed)"). The fail-closed guarantee lives in the pre-audit
 // probe instead, which runs with the network up.
 func TestRunWithConfig_MissingPlatformPublicKeyIsFatal(t *testing.T) {
+	// The role is irrelevant to this assertion, but types 1-3 now wait for
+	// /dev/csv-guest before choosing the state sealing key, and this unit test has
+	// no CSV guest. Starting as fhe keeps the gate out of the way without changing
+	// the step that fails (the envelope keys are resolved before attestation).
 	cfg := config.StartupConfig{
-		KeysDir: filepath.Join(t.TempDir(), "keys"),
+		ServerType: config.ServerTypeFHE,
+		KeysDir:    filepath.Join(t.TempDir(), "keys"),
 	}
 
 	err := RunWithConfig(context.Background(), cfg)
@@ -546,6 +551,10 @@ func TestRunWithConfig_LLMProbeFailureDoesNotAbortStartup(t *testing.T) {
 	}
 
 	cfg := config.StartupConfig{
+		// fhe for the same reason as above: the gated roles would wait for a CSV
+		// guest node this unit test does not have, and the key-pair step that has to
+		// fail comes before attestation either way.
+		ServerType: config.ServerTypeFHE,
 		LLM: config.LLMConfig{
 			Enabled:            true,
 			FailClosed:         true,

@@ -197,6 +197,7 @@ sequenceDiagram
 │     └─ TAASECRETKEY 非空 → 用 csv-hw 硬件密钥 + CONTRACT_ID 恢复    │
 │     └─ 否则从 storage.keys 加载/生成 SM2 密钥对（私钥 0600）        │
 │     └─ 解析状态密封密钥：sm2（由 SM2 私钥派生）或 csv-hw（硬件）    │
+│     └─ 类型 1-3 先等 /dev/csv-guest 可用（无上限）再决定密钥来源    │
 │     └─ 打开 keys/state.sealed；密钥来源切换或解封失败时归档重建     │
 │  3b. 装配信封密钥：平台 SM2 公钥 + TAA 私钥 + SM2 ID_A              │
 │     └─ 公钥缺失/非法 → FATAL（没有明文降级），且必须在证明与注册前   │
@@ -249,7 +250,7 @@ sequenceDiagram
 |---|---|---|
 | `server` | `addr`、`type` | `type`：`tee`（默认）/ `fhe` / `data-anaylsis` |
 | `platform` | `ip`、`endpoint`、`dockerID`、`contract`、`publicKey` | 平台地址与实例身份；`contract` 参与 `taaSecretKey` 派生；`publicKey` 是信封用的平台 SM2 公钥，环境变量 `PLATFORM_PUBLIC_KEY` 优先于它 |
-| `storage` | `model`、`data`、`result`、`keys` | 目录；状态密封密钥来源不再配置，启动时按 `/dev/csv-guest` 是否存在自动选择硬件密钥或 SM2 派生 |
+| `storage` | `model`、`data`、`result`、`keys` | 目录；状态密封密钥来源不再配置，启动时按 `/dev/csv-guest` 是否存在自动选择硬件密钥或 SM2 派生（类型 1-3 先等该节点出现，无上限） |
 | `model` | `input`、`output.result` / `.log` / `.progress` | 训练输入/输出/日志/进度路径 |
 | `codeAudit` | `enabled`、`codeScan.engine`（`regex`/`semgrep`）、`codeScan.rulesPath`、`codeScan.timeoutSeconds`、`binaryAudit`、`resultCheck`、`llm` | 审计总开关及各通道参数 |
 | `fhe` | `endpoint`、`dataDir`、`keyCacheDir`、`pollIntervalMs`、`requestTimeoutMs`、`activateModelOnImport` | 仅 `server.type=fhe` 必填 |
@@ -270,7 +271,7 @@ CSV2 机密 VM 的 initrd 使用 `configs/taa-production.json`（写入 `/etc/ta
 
 运行状态（当前阶段、模型/数据摘要、`ExportPublicKey`、`RuntimeConfig`、在飞任务、未决审计标记）密封写入 `storage.keys/state.sealed`，由 `internal/store` 管理：
 
-- 密封密钥来源：`sm2` 由 TAA SM2 私钥派生；`csv-hw` 由 `/dev/csv-guest` 硬件密钥派生。共享模板写 `csv-hw`，`fhe` 角色在加载时解析为 `sm2`（fhe 不在 CSV guest 内，没有该硬件密钥）。
+- 密封密钥来源：`sm2` 由 TAA SM2 私钥派生；`csv-hw` 由 `/dev/csv-guest` 硬件密钥派生。共享模板写 `csv-hw`，`fhe` 角色在加载时解析为 `sm2`（fhe 不在 CSV guest 内，没有该硬件密钥）。类型 1-3 在决定来源前先等 `/dev/csv-guest` 出现（5s→30s 退避、无上限，`internal/app/taa/startup_gate.go`），否则一次错过 postStart 钩子的启动会用 SM2 派生密钥密封，下一次启动切到 `csv-hw` 时把这份状态归档为 drifted。
 - 来源切换或解封认证失败时，旧状态归档为 `<keys>/.orphaned.<unix>` 并初始化干净状态，而不是带病继续。
 - 重启时若发现 `RUNNING` 在飞任务，执行崩溃恢复：失败任务归档为 `.failed-<taskId>-<timestamp>`、清理临时文件与孤儿进程、补写失败报告、双轨补偿上报；连续恢复 3 次仍失败则进入熔断，归档为 `.dead-letter`。
 - 后台审计可能比导入任务活得更久，因此单独记录 `AuditPending`；重启时据此对账，并把中断的审计作为参考结论上报平台。
@@ -527,7 +528,7 @@ TAA 作为服务端注册的路由（`internal/controller/router.go`）：
 1. TAA 启动时派生 64 字节 USERDATA（SM2 公钥 X‖Y，见 §7.2）
 2. 由 `internal/attestation` 的**进程内纯 Go 实现**（`pkg/csvattest`，ioctl 读写 `/dev/csv-guest`）取回 CSV 硬件报告
 3. 报告写入容器工作目录下的 `attestation.report`（同目录另落 `nonce.bin`），随后自校验：只验证报告内嵌的 PEK 证书对报告本体的签名，**不校验证书链**（HRK/HSK/CEK 按机器签发，校验它会让镜像与设备绑定）
-4. 实例类型 1-3（tee 训练/推理、data-anaylsis）把步骤 2、3 放在**注册闸门**里：`/dev/csv-guest` 不存在或报告无法生成/自校验通过就不注册，后台按 5s→30s 退避无上限重试（`internal/app/taa/registration_gate.go`）；设备出现并证明通过后才注册，`verifiedPass=true`。这覆盖 Kata CSV2 Pod 的 postStart 钩子与 TAA 启动的竞态。`fhe`（类型 4）不等待，启动即用空报告注册
+4. 实例类型 1-3（tee 训练/推理、data-anaylsis）把步骤 2、3 放在**注册闸门**里：`/dev/csv-guest` 不存在或报告无法生成/自校验通过就不注册，后台按 5s→30s 退避无上限重试（`internal/app/taa/startup_gate.go`）；设备出现并证明通过后才注册，`verifiedPass=true`。这覆盖 Kata CSV2 Pod 的 postStart 钩子与 TAA 启动的竞态。同一个等待也决定密封密钥来源（`awaitStateSealingKeySource`）：设备出现后才选来源，避免一次错过竞态的启动用 SM2 派生密钥密封、下次启动再归档重建。`fhe`（类型 4）不等待，启动即用空报告注册，并按当前检测结果选来源
 5. 注册时报告以 Base64 编码发送给平台
 6. `/v1/taa/getAttestation` 可重新生成报告（复用启动时的 USERDATA，30s 超时，同一时刻只允许一个）
 

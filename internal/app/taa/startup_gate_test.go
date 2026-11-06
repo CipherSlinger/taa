@@ -2,6 +2,7 @@ package taa
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sync/atomic"
@@ -9,6 +10,7 @@ import (
 	"time"
 
 	"taa/internal/config"
+	"taa/internal/store"
 )
 
 func touchDevice(t *testing.T, path string) {
@@ -217,5 +219,88 @@ func TestRegisterInstanceDoesNotRegisterWithoutAttestation(t *testing.T) {
 			case <-time.After(50 * time.Millisecond):
 			}
 		})
+	}
+}
+
+// TestWaitForCSVDevicePicksUpTheNode pins the wait that precedes the sealing
+// key source decision: a node that appears after startup is still picked up,
+// which is what keeps the node race from choosing the SM2-derived key.
+func TestWaitForCSVDevicePicksUpTheNode(t *testing.T) {
+	device := filepath.Join(t.TempDir(), "csv-guest")
+
+	go func() {
+		time.Sleep(20 * time.Millisecond)
+		_ = os.WriteFile(device, nil, 0o600)
+	}()
+
+	if !waitForCSVDevice(context.Background(), device, 2*time.Millisecond, 5*time.Millisecond) {
+		t.Fatal("waitForCSVDevice did not pick up a device that appeared while waiting")
+	}
+}
+
+// TestWaitForCSVDeviceStopsWhenTheProcessStops pins that the wait is unbounded
+// only until the process stops, not forever against cancellation.
+func TestWaitForCSVDeviceStopsWhenTheProcessStops(t *testing.T) {
+	device := filepath.Join(t.TempDir(), "csv-guest")
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	if waitForCSVDevice(ctx, device, time.Millisecond, 5*time.Millisecond) {
+		t.Fatal("waitForCSVDevice reported success after the context was cancelled")
+	}
+}
+
+// TestAwaitStateSealingKeySourceUsesTheDeviceForGatedRoles pins that instance
+// types 1-3 seal with the CSV hardware key once the node is there.
+func TestAwaitStateSealingKeySourceUsesTheDeviceForGatedRoles(t *testing.T) {
+	for _, serverType := range []string{config.ServerTypeTEE, config.ServerTypeDataAnalysis} {
+		t.Run(serverType, func(t *testing.T) {
+			device := filepath.Join(t.TempDir(), "csv-guest")
+			touchDevice(t, device)
+
+			source, err := awaitStateSealingKeySource(context.Background(), serverType, device)
+			if err != nil {
+				t.Fatalf("awaitStateSealingKeySource: %v", err)
+			}
+			if source != store.KeySourceCSVHW {
+				t.Fatalf("source = %q, want %q", source, store.KeySourceCSVHW)
+			}
+		})
+	}
+}
+
+// TestAwaitStateSealingKeySourceFHEReadsImmediately pins that type 4 keeps the
+// old behavior: no wait, and the SM2-derived key when there is no CSV guest.
+func TestAwaitStateSealingKeySourceFHEReadsImmediately(t *testing.T) {
+	device := filepath.Join(t.TempDir(), "csv-guest")
+
+	done := make(chan error, 1)
+	go func() {
+		source, err := awaitStateSealingKeySource(context.Background(), config.ServerTypeFHE, device)
+		if err == nil && source != store.KeySourceSM2 {
+			err = fmt.Errorf("source = %q, want %q", source, store.KeySourceSM2)
+		}
+		done <- err
+	}()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("an fhe instance waited for a CSV guest device")
+	}
+}
+
+// TestAwaitStateSealingKeySourceStopsWithTheProcess pins that a cancelled
+// process aborts the wait instead of sealing with a source it never saw.
+func TestAwaitStateSealingKeySourceStopsWithTheProcess(t *testing.T) {
+	device := filepath.Join(t.TempDir(), "csv-guest")
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	if _, err := awaitStateSealingKeySource(ctx, config.ServerTypeDataAnalysis, device); err == nil {
+		t.Fatal("awaitStateSealingKeySource returned a source after the context was cancelled")
 	}
 }

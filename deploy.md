@@ -489,7 +489,7 @@ HOME/WORKDIR = `/home/jovyan`，EXPOSE 8888。
 脚本因此导出 `TAA_SCAN_ENGINE_PROVISION=skip`，让 `save` 打包与远程部署两条路都不再装这个镜像
 用不上的 payload。
 密封密钥来源不需要渲染：TAA 启动时按 `/dev/csv-guest` 是否存在自动选择硬件密钥或 SM2 派生，
-打包与远端两种路径行为一致。
+类型 1-3 会先等该节点出现（无上限）再决定来源，打包与远端两种路径行为一致。
 
 打包时 ENTRYPOINT 被覆盖为统一的 `bash /root/taa/taa-supervisor.sh`（基座的 `tini -g --`
 不再使用），这个角色装的是组合版（`deploy/dataanaylsis/taa-supervisor.sh`）：PID 1 先以 `HOME=/home/jovyan` 起

@@ -9,7 +9,7 @@ import (
 	"taa/internal/store"
 )
 
-// Startup registration is gated on attestation for every role except fhe.
+// Startup gates for every role except fhe.
 //
 // Instance types 1-3 (tee training, tee inference, data analysis) run inside
 // the CSV guest and must prove themselves before the platform is told about
@@ -20,6 +20,12 @@ import (
 // fhe instance registers with. They wait, without a window, until the node is
 // present and a report can be generated and self-verified, and register only
 // then. An fhe instance (type 4) is not a TEE and keeps registering immediately.
+//
+// The same race decides where the state sealing key comes from, so those roles
+// wait for the node before choosing that source as well (see
+// awaitStateSealingKeySource). Choosing early would seal the state with the
+// SM2-derived key on a boot that merely lost the race, and the next boot would
+// then archive that state as drifted once csv-hw wins.
 const (
 	attestationWaitInitialDelay = 5 * time.Second
 	attestationWaitMaxDelay     = 30 * time.Second
@@ -80,8 +86,7 @@ func waitForAttestation(
 	attest func(context.Context) (bool, error),
 	initialDelay, maxDelay time.Duration,
 ) bool {
-	delay := initialDelay
-	for attempt := 1; ; attempt++ {
+	return pollUntil(ctx, initialDelay, maxDelay, func(attempt int) bool {
 		if detectStateSealingKeySource(devicePath) == store.KeySourceCSVHW {
 			verified, err := attest(ctx)
 			if verified {
@@ -98,7 +103,54 @@ func waitForAttestation(
 		} else if attempt <= 5 || attempt%20 == 0 {
 			log.Printf("[INFO] [attestation] %s is not available yet; not registering (attempt %d, retrying, no limit)", devicePath, attempt)
 		}
+		return false
+	})
+}
 
+// waitForCSVDevice blocks until devicePath exists, with the same backoff and
+// the same absence of an attempt limit as waitForAttestation. It is used before
+// the state sealing key source is chosen.
+func waitForCSVDevice(ctx context.Context, devicePath string, initialDelay, maxDelay time.Duration) bool {
+	return pollUntil(ctx, initialDelay, maxDelay, func(attempt int) bool {
+		if detectStateSealingKeySource(devicePath) == store.KeySourceCSVHW {
+			log.Printf("[INFO] [sealing] %s is available; the state sealing key comes from the CSV hardware", devicePath)
+			return true
+		}
+		if attempt <= 5 || attempt%20 == 0 {
+			log.Printf("[INFO] [sealing] %s is not available yet; waiting before choosing the state sealing key (attempt %d, retrying, no limit)", devicePath, attempt)
+		}
+		return false
+	})
+}
+
+// awaitStateSealingKeySource picks the state sealing key source for this
+// startup. Instance types 1-3 wait for /dev/csv-guest first, without a window,
+// so a boot that lost the postStart race still seals with csv-hw instead of
+// briefly using the SM2-derived key and forcing a key-drift archive on the next
+// boot. An fhe instance is not a CSV guest: it never waits and keeps the
+// immediate detection (which yields the SM2-derived key).
+func awaitStateSealingKeySource(ctx context.Context, serverType, devicePath string) (store.KeySource, error) {
+	if serverType != config.ServerTypeFHE {
+		if !waitForCSVDevice(ctx, devicePath, attestationWaitInitialDelay, attestationWaitMaxDelay) {
+			return "", ctx.Err()
+		}
+	}
+
+	source := detectStateSealingKeySource(devicePath)
+	if source == store.KeySourceSM2 {
+		log.Printf("CSV guest device %s not found; sealing persistent state with the SM2-derived key", devicePath)
+	}
+	return source, nil
+}
+
+// pollUntil calls check with exponential backoff until it reports true. There
+// is no attempt limit: it returns false only when ctx is cancelled first.
+func pollUntil(ctx context.Context, initialDelay, maxDelay time.Duration, check func(attempt int) bool) bool {
+	delay := initialDelay
+	for attempt := 1; ; attempt++ {
+		if check(attempt) {
+			return true
+		}
 		select {
 		case <-ctx.Done():
 			return false

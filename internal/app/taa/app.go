@@ -117,9 +117,13 @@ func RunWithConfig(ctx context.Context, cfg config.StartupConfig) error {
 	//    CSV 环境下同时导出可经 TAASECRETKEY 带回的私钥密文
 	keysDir := normalizeKeysDir(cfg.KeysDir)
 	secretEnv := os.Getenv(taaSecretKeyEnv)
-	sealingSource := detectStateSealingKeySource(csvGuestDevicePath)
-	if sealingSource == store.KeySourceSM2 {
-		log.Printf("CSV guest device %s not found; sealing persistent state with the SM2-derived key", csvGuestDevicePath)
+	// The source is chosen only once the CSV guest node is usable. For types 1-3 the
+	// node may still be on its way (a Kata CSV2 Pod creates it in a postStart hook,
+	// racing this process), and sealing with the SM2-derived key for that one boot
+	// would make the next boot archive the state as drifted when csv-hw wins.
+	sealingSource, err := awaitStateSealingKeySource(ctx, cfg.ServerType, csvGuestDevicePath)
+	if err != nil {
+		return err
 	}
 	material, err := resolveStartupKeyMaterial(
 		keysDir, sealingSource, cfg.Contract,
