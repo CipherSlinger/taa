@@ -13,7 +13,8 @@
 #
 # Commands:
 #   up      build -> launch -> verify             (the whole flow)
-#   build | launch | fetch-base                   (single steps, passed through)
+#   push    compile -> build -> render -> upload  (place the package, no install)
+#   build | launch | upload | fetch-base          (single steps, passed through)
 #   render  Render the delivery package locally (Kata config, containerd
 #           fragment + merger, K8s manifests, install.sh, checksums). No host
 #           access; also what `launch` renders before uploading.
@@ -126,10 +127,12 @@ Usage: $0 <command> [options]
 
 Commands:
   up            生成 initrd -> 打包上传 -> 配置并拉起测试 Pod -> 验证 TAA（推荐入口）
+  push          编译 TAA -> 构建 initrd -> 本地渲染 -> 整包上传到宿主机（不安装）
   build         只构建本地 initrd（等价于 build-initrd.sh build）
   render        只在本地生成交付包（Kata 配置 / 可编辑的部署身份 / containerd
                 handler / K8s YAML / 安装脚本 / 校验和 / initrd+内核+OVMF），
                 不访问宿主机
+  upload        本地渲染 -> 整包上传（不安装；等价于 build-initrd.sh upload）
   launch        本地渲染 -> 整包上传 -> 在远端安装并拉起测试 Pod（宿主上不复制任何文件）
   fetch-base    从远端拉取权威 base 资产（等价于 build-initrd.sh fetch-base）
   verify        只读校验：TCP 探活 + 启动日志里的证明自检结论
@@ -362,7 +365,7 @@ preflight() {
   esac
 
   case "$step" in
-    launch|up)
+    launch|up|push)
       require_cmd ssh
       check_remote_sudo
       # The initrd must carry a registration identity or render refuses to
@@ -379,10 +382,14 @@ preflight() {
           exit 1
         fi
       fi
-      ensure_pod_annotations
-      if [[ "$TEST_IMAGE" == "busybox:latest" ]]; then
-        echo "note: 这台宿主的 guest 拉不到 Docker Hub（实测 CDH 报 error sending request for index.docker.io）" >&2
-        echo "note: 本地 registry 里有 172.16.10.178:31313/taa-env:slim-v2-20260916（verify 用 guest 内的 /dev/tcp 与 /tmp/taa.log，不需要 curl）" >&2
+      # `push` stops before the Pod exists, so the annotation discovery (an ssh to
+      # read another Pod) and the image note would only cost time and say nothing.
+      if [[ "$step" != "push" ]]; then
+        ensure_pod_annotations
+        if [[ "$TEST_IMAGE" == "busybox:latest" ]]; then
+          echo "note: 这台宿主的 guest 拉不到 Docker Hub（实测 CDH 报 error sending request for index.docker.io）" >&2
+          echo "note: 本地 registry 里有 172.16.10.178:31313/taa-env:slim-v2-20260916（verify 用 guest 内的 /dev/tcp 与 /tmp/taa.log，不需要 curl）" >&2
+        fi
       fi
       ;;
   esac
@@ -853,10 +860,28 @@ case "$cmd" in
     echo
     echo "全流程完成。清理用：$0 delete（先看 $0 delete --dry-run）"
     ;;
-  build|launch|fetch-base|render)
+  push)
+    # Steps 1-4 of the flow, stopping before anything is installed: compile the
+    # binary, build the initrd, render the package and upload it whole. The host
+    # is left exactly as it was apart from having the files in place, so the
+    # install can be done (or repeated) later without another build.
+    preflight build
+    preflight push
+    echo "=== 1/3 编译 TAA 并构建 initrd ==="
+    "$BUILD_INITRD" build
+    echo
+    echo "=== 2/3 本地渲染并上传交付包到 $REMOTE ==="
+    "$BUILD_INITRD" upload
+    echo
+    echo "=== 3/3 未安装 ==="
+    echo "在宿主机上安装：ssh $REMOTE 'cd $REMOTE_PACKAGE_DIR && sudo bash install.sh'"
+    echo "或跑 '$0 launch' / '$0 up' 完成安装与验证。"
+    ;;
+  build|launch|upload|fetch-base|render)
     case "$cmd" in
       build) preflight build ;;
       launch) preflight launch ;;
+      upload) preflight push ;;
     esac
     exec "$BUILD_INITRD" "$cmd"
     ;;

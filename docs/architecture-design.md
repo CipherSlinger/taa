@@ -648,7 +648,7 @@ USERDATA = taaPublicKey.X || taaPublicKey.Y
 ./deploy-llm.sh [--create-pod] [start|stop|probe|pod-down]
 
 # CSV2 机密 VM（initrd 内跑 TAA）
-./deploy-taa-vm.sh up|build|deploy|launch|render|verify|delete
+./deploy-taa-vm.sh up|push|build|launch|upload|render|fetch-base|verify|delete
 ```
 
 `docker`、`local`、`local-docker` 与 `remote` 四种写法都已移除，传入会报错退出；`qwen` 组件名保留但只打印指向 teellm 命令的提示。完整参数与环境变量清单见 `./deploy.sh --help` 与 `deploy.md`。

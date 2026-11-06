@@ -243,10 +243,10 @@ MEASURE_SMP="${MEASURE_SMP:-}"
 MEASURE_APPEND="${MEASURE_APPEND:-}"
 
 # 打印支持的子命令和主要环境变量覆盖项。脚本默认执行 build，
-# 因此本地反复调试是安全的；只有显式指定 deploy、launch 或 all 时才会触碰远程服务器。
+# 因此本地反复调试是安全的；只有显式指定 upload、launch 或 all 时才会触碰远程服务器。
 usage() {
   cat <<EOF
-Usage: $0 [build|fetch-base|deploy|render|launch|all|print-config]
+Usage: $0 [build|fetch-base|render|upload|launch|all|print-config]
 
 Commands:
   build       Build $INITRD_OUT from $BASE_INITRD and inject TAA + init wrapper.
@@ -255,6 +255,9 @@ Commands:
   render      Render the Kata config, containerd handler, K8s manifests, the
               install script and the guest bundle (initrd, kernel, OVMF) into
               $DIST_DIR. Local only; no host access.
+  upload      Render the package and upload the whole thing to
+              $REMOTE_PACKAGE_DIR on $REMOTE. No install: the host is only
+              given the files, untouched by install.sh.
   launch      Render locally, upload the whole package, then install it on
               $REMOTE and create a test Pod. Nothing is copied on the host.
   all         Run build, then launch.
@@ -1305,16 +1308,11 @@ EOF
   done < <(find "$out_dir" -type f | LC_ALL=C sort)
 }
 
-launch_remote() {
-  require_cmd ssh scp python3
-
-  echo "确保 Kata 配置模板在本地"
-  ensure_kata_template
-
-  # The rendered Pod carries nodeName only when it is known. Resolve it now,
-  # read-only, so both the launcher and the delivered package agree.
-  if [[ -z "$TEST_NODE_NAME" ]]; then
-    TEST_NODE_NAME="$(ssh "$REMOTE" 'bash -s' <<'REMOTE_NODE' || true
+# The rendered Pod carries nodeName only when it is known. Resolve it now,
+# read-only, so both the launcher and the delivered package agree.
+resolve_test_node_name() {
+  [[ -n "$TEST_NODE_NAME" ]] && return 0
+  TEST_NODE_NAME="$(ssh "$REMOTE" 'bash -s' <<'REMOTE_NODE' || true
 set -u
 for candidate in "$(hostname)" "$(hostname -s)"; do
   if kubectl get node "$candidate" >/dev/null 2>&1; then
@@ -1325,58 +1323,56 @@ done
 exit 1
 REMOTE_NODE
 )"
-    TEST_NODE_NAME="${TEST_NODE_NAME//$'\r'/}"
-    TEST_NODE_NAME="${TEST_NODE_NAME//$'\n'/}"
-    if [[ -z "$TEST_NODE_NAME" ]]; then
-      echo "error: could not determine Kubernetes node name for $REMOTE" >&2
-      echo "hint: set TEST_NODE_NAME to the node name shown by 'kubectl get nodes'" >&2
-      exit 1
-    fi
+  TEST_NODE_NAME="${TEST_NODE_NAME//$'\r'/}"
+  TEST_NODE_NAME="${TEST_NODE_NAME//$'\n'/}"
+  if [[ -z "$TEST_NODE_NAME" ]]; then
+    echo "error: could not determine Kubernetes node name for $REMOTE" >&2
+    echo "hint: set TEST_NODE_NAME to the node name shown by 'kubectl get nodes'" >&2
+    exit 1
   fi
   export TEST_NODE_NAME
+}
 
-  local render_dir
-  render_dir="$(mktemp -d /tmp/taa-render.XXXXXX)"
-  cleanup_render() { rm -rf "${render_dir:-}"; }
-  trap cleanup_render EXIT
+# A rendered copy kept outside the temporary directory, for inspecting or handing
+# the exact package to somebody else.
+keep_render_copy() {
+  local dir="$1"
+  [[ "${LAUNCH_KEEP_DIST:-0}" == "1" ]] || return 0
+  rm -rf "$DIST_DIR"
+  mkdir -p "$(dirname "$DIST_DIR")"
+  cp -a "$dir" "$DIST_DIR"
+  echo "保留交付包: $DIST_DIR"
+}
 
-  echo "本地渲染"
-  render_package "$render_dir"
+# Upload a rendered package and make it the one at $REMOTE_PACKAGE_DIR. The host
+# is only written here: scp cannot sudo, so the bytes land in a temporary
+# directory first and are moved into place as root. Nothing is installed, and no
+# file is copied anywhere else on the host -- the Kata config and the files QEMU
+# boots are read straight out of this directory.
+upload_package_dir() {
+  local local_dir="$1"
+  require_cmd ssh scp
 
-  if [[ "${LAUNCH_KEEP_DIST:-0}" == "1" ]]; then
-    rm -rf "$DIST_DIR"
-    mkdir -p "$(dirname "$DIST_DIR")"
-    cp -a "$render_dir" "$DIST_DIR"
-    echo "保留交付包: $DIST_DIR"
-  fi
-
-  echo "上传并安装到 $REMOTE"
   local remote_tmp
-  remote_tmp="$(ssh "$REMOTE" 'mktemp -d /tmp/taa-launch.XXXXXX')"
+  remote_tmp="$(ssh "$REMOTE" 'mktemp -d /tmp/taa-upload.XXXXXX')"
   remote_tmp="${remote_tmp//$'\r'/}"
   remote_tmp="${remote_tmp//$'\n'/}"
   if [[ -z "$remote_tmp" ]]; then
     echo "error: could not create a remote temporary directory" >&2
     exit 1
   fi
-  scp -q -r "$render_dir/." "$REMOTE:$remote_tmp/"
 
-  # Forward the explicit skip flags the pre-check already honours: install.sh
-  # repeats both checks on the host, and silently dropping an operator override
-  # would turn a deliberate bypass into a hard failure.
-  local install_flags=""
-  [[ "${SKIP_REMOTE_BASE_CHECK:-0}" == "1" ]] && install_flags+=" --skip-base-check"
-  [[ "${SKIP_REMOTE_KATA_TEMPLATE_CHECK:-0}" == "1" ]] && install_flags+=" --skip-template-check"
+  echo "上传交付包到 $REMOTE"
+  if ! scp -q -r "$local_dir/." "$REMOTE:$remote_tmp/"; then
+    ssh "$REMOTE" "rm -rf $(printf '%q' "$remote_tmp")" || true
+    echo "error: 上传失败，未改动 $REMOTE_PACKAGE_DIR" >&2
+    exit 1
+  fi
 
-  # The package is uploaded to a temporary directory because scp cannot sudo,
-  # then moved into place as root. It has to be kept: the Kata config and the
-  # files QEMU boots live inside it, so install.sh references the persisted copy
-  # and nothing is installed under /etc or copied anywhere else on the host.
-  ssh "$REMOTE" "bash -s -- $(printf '%q ' "$remote_tmp" "$REMOTE_PACKAGE_DIR")$install_flags" <<'REMOTE_INSTALL'
+  ssh "$REMOTE" "bash -s -- $(printf '%q ' "$remote_tmp" "$REMOTE_PACKAGE_DIR")" <<'REMOTE_UPLOAD'
 set -euo pipefail
 staging="$1"
 package_dir="$2"
-shift 2
 
 cleanup() { sudo rm -rf "$staging"; }
 trap cleanup EXIT
@@ -1385,6 +1381,68 @@ sudo mkdir -p "$(dirname "$package_dir")"
 sudo rm -rf "$package_dir"
 sudo mv "$staging" "$package_dir"
 trap - EXIT
+REMOTE_UPLOAD
+
+  echo "交付包已就位: $REMOTE:$REMOTE_PACKAGE_DIR"
+}
+
+# Steps 3-4 of the flow: render on this machine, then upload the whole package.
+# Deliberately does not run install.sh, so a package can be placed on a host that
+# is not ready to take it (another handler still in use, a different operator
+# doing the install) without touching containerd or kata.
+upload_remote() {
+  require_cmd ssh scp python3
+
+  echo "确保 Kata 配置模板在本地"
+  ensure_kata_template
+  resolve_test_node_name
+
+  local render_dir
+  render_dir="$(mktemp -d /tmp/taa-render.XXXXXX)"
+  cleanup_render() { rm -rf "${render_dir:-}"; }
+  trap cleanup_render EXIT
+
+  echo "本地渲染"
+  render_package "$render_dir"
+  keep_render_copy "$render_dir"
+
+  upload_package_dir "$render_dir"
+
+  echo
+  echo "尚未安装。在该宿主机上安装："
+  echo "  ssh $REMOTE 'cd $REMOTE_PACKAGE_DIR && sudo bash install.sh'"
+  echo "或直接跑 '$0 launch'（渲染 + 上传 + 安装并拉起测试 Pod）"
+}
+
+launch_remote() {
+  require_cmd ssh scp python3
+
+  echo "确保 Kata 配置模板在本地"
+  ensure_kata_template
+  resolve_test_node_name
+
+  local render_dir
+  render_dir="$(mktemp -d /tmp/taa-render.XXXXXX)"
+  cleanup_render() { rm -rf "${render_dir:-}"; }
+  trap cleanup_render EXIT
+
+  echo "本地渲染"
+  render_package "$render_dir"
+  keep_render_copy "$render_dir"
+
+  upload_package_dir "$render_dir"
+
+  # Forward the explicit skip flags the pre-check already honours: install.sh
+  # repeats both checks on the host, and silently dropping an operator override
+  # would turn a deliberate bypass into a hard failure.
+  local install_flags=""
+  [[ "${SKIP_REMOTE_BASE_CHECK:-0}" == "1" ]] && install_flags+=" --skip-base-check"
+  [[ "${SKIP_REMOTE_KATA_TEMPLATE_CHECK:-0}" == "1" ]] && install_flags+=" --skip-template-check"
+
+  ssh "$REMOTE" "bash -s -- $(printf '%q ' "$REMOTE_PACKAGE_DIR")$install_flags" <<'REMOTE_INSTALL'
+set -euo pipefail
+package_dir="$1"
+shift
 
 sudo bash "$package_dir/install.sh" "$@"
 
@@ -1405,6 +1463,9 @@ case "$cmd" in
     ;;
   render)
     render_package "$DIST_DIR"
+    ;;
+  upload)
+    upload_remote
     ;;
   launch)
     launch_remote

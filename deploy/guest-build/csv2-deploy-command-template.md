@@ -182,6 +182,16 @@ Kata 配置里的 `kernel`/`initrd`/`firmware` 直接指向这几个包内路径
 `${REMOTE_PACKAGE_DIR}`（默认 `/root/taa-images/package`）即可，`install.sh` 会从包内
 取全部启动文件。
 
+渲染加整包上传可以合并成一步（不安装）：
+
+```bash
+./build-initrd.sh upload
+# 或者在仓库根：./deploy-taa-vm.sh push（连编译和构建 initrd 一起做）
+```
+
+`upload` 只把包原子地放到宿主机的 `${REMOTE_PACKAGE_DIR}`，不跑 `install.sh`，
+因此不会动 containerd、Kata 配置或任何 Pod。
+
 ---
 
 ## 4. 配置 Kata / containerd / RuntimeClass 并拉起测试 Pod
@@ -385,8 +395,9 @@ python3 "$pkg/measure.py" digest \
 ## 7. 备注
 
 - 这份模板**不执行部署**，只整理可复制命令。
-- 合一入口与清理见仓库根的 `deploy-taa-vm.sh`：`up` / `render` / `verify` /
-  `delete [--dry-run] [--force]` / `print-config`（打印解析后的实际取值，确认这次会用什么）；
+- 合一入口与清理见仓库根的 `deploy-taa-vm.sh`：`up` / `push`（编译 + 构建 + 打包上传，
+  不安装）/ `render` / `upload` / `verify` / `delete [--dry-run] [--force]` /
+  `print-config`（打印解析后的实际取值，确认这次会用什么）；
   离线自测是根目录的 `./test-deploy-taa-vm.sh` 和 `deploy/guest-build/test-render.sh`。
 - 真实密码、证书、环境变量值请按现场环境填入，不要直接写死到仓库。
 - `build-initrd.sh` 已没有 `deploy` 子命令：宿主上不再复制任何文件。`build` 只构建、

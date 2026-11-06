@@ -272,6 +272,24 @@ sudo_checks="$(grep -c 'id -u' "$SCRIPT_DIR/deploy/guest-build/render/install.sh
 check "install.sh: sudo precheck for launch" "1" "$sudo_checks"
 check_contains "install.sh: the precheck explains the hint" 'NOPASSWD sudoers' "$install_src"
 
+# `push` stops before install: it compiles, builds, renders and uploads, and the
+# host-side write it performs is the package move alone. The point of the split
+# is that a package can be placed without touching containerd or kata.
+check_contains "driver: push compiles and uploads without installing" '=== 3/3 未安装 ===' "$driver_src"
+check_contains "driver: push goes through the upload step" '"$BUILD_INITRD" upload' "$driver_src"
+check_contains "build-initrd.sh: upload is its own command" 'upload_remote' "$(cat "$BUILD")"
+check_contains "build-initrd.sh: upload hands over the install command" '尚未安装' "$(cat "$BUILD")"
+# upload renders and uploads; the install happens in launch, one function away.
+# The hint it prints names install.sh, so the assertion is on the invocation
+# (`sudo bash ...$package_dir/install.sh`), which lives in launch's heredoc.
+upload_body="$(sed -n '/^upload_remote() {/,/^}/p' "$BUILD")"
+if [[ "$upload_body" == *"REMOTE_INSTALL"* || "$upload_body" == *'sudo bash "$package_dir/install.sh"'* ]]; then
+  echo "FAIL build-initrd.sh: upload runs install.sh" >&2
+  failures=$((failures + 1))
+else
+  echo "ok   build-initrd.sh: upload never runs install.sh"
+fi
+
 # ── 4. argv handling ────────────────────────────────────────────────────────
 "$DRIVER" help >/dev/null 2>&1 && echo "ok   help exits 0" ||
   { echo "FAIL help did not exit 0" >&2; failures=$((failures + 1)); }
