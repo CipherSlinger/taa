@@ -207,40 +207,38 @@ func RunWithConfig(ctx context.Context, cfg config.StartupConfig) error {
 	// is absent). Leaving it absent would turn every registration attempt on an fhe
 	// instance into "attestation report file is not accessible" instead of the
 	// empty-attestation registration the degraded TEE path already produces.
-	verifiedPass := false
+	//
+	// Instance types 1-3 generate their report inside the registration gate
+	// (registration_gate.go) instead: /dev/csv-guest may not exist yet when this
+	// process starts, and these roles must not register before a verified report
+	// exists, so generation is deferred rather than degraded to an empty file.
 	if cfg.ServerType == config.ServerTypeFHE {
 		log.Printf("[INFO] [attestation] instance type is fhe: remote attestation is not provided by this instance")
 		if err := os.WriteFile(fixedAttestationFile, nil, 0o600); err != nil {
 			return fmt.Errorf("write empty attestation report: %w", err)
 		}
 	} else {
-		var err error
-		verifiedPass, err = prepareAttestationReport(ctx, userData)
-		if err != nil {
-			return err
-		}
+		log.Printf("[INFO] [attestation] instance type %s: attestation and platform registration wait for %s", cfg.ServerType, csvGuestDevicePath)
 	}
 
 	// 5. 向管控平台注册本 TAA 实例，通知平台就绪并提交度量报告与公钥
-	if err := registerPlatform(ctx, platformIP, dockerID, keyPair.PublicKeyPEM, timestamp, verifiedPass, material.taaSecretKey); err != nil {
-		log.Printf("[WARN] [register] platform register failed, continuing startup: %v", err)
-		// The first attempt is expected to fail in a Kata CSV2 guest: it runs before
-		// the sandbox network exists (see register_retry.go). Keep trying in the
-		// background so the platform still learns about this instance, and keep using
-		// the boot-time timestamp so the payload stays consistent with the report
-		// attached to it (the platform's view of a registration is last-write-wins).
-		go func() {
-			err := retryRegister(ctx, registerRetryInitialDelay, registerRetryMaxDelay, registerRetryWindow,
-				func(attemptCtx context.Context) error {
-					return registerPlatform(attemptCtx, platformIP, dockerID, keyPair.PublicKeyPEM, timestamp, verifiedPass, material.taaSecretKey)
-				})
-			if err != nil {
-				log.Printf("[WARN] [register] platform register retries gave up: %v", err)
-			}
-		}()
-	} else {
-		log.Printf("[INFO] [register] platform register completed")
-	}
+	//
+	// The role's policy lives in registerInstance: fhe registers immediately with
+	// the empty report, types 1-3 only after a verified report exists. The
+	// boot-time timestamp is reused on every attempt so the payload stays
+	// consistent with the report attached to it (the platform's view of a
+	// registration is last-write-wins).
+	registerInstance(ctx, cfg.ServerType,
+		func(attemptCtx context.Context, verifiedPass bool) error {
+			return registerPlatform(attemptCtx, platformIP, dockerID, keyPair.PublicKeyPEM, timestamp, verifiedPass, material.taaSecretKey)
+		},
+		func(attemptCtx context.Context) bool {
+			return waitForAttestation(attemptCtx, csvGuestDevicePath,
+				func(attestCtx context.Context) (bool, error) {
+					return prepareAttestationReport(attestCtx, userData)
+				},
+				attestationWaitInitialDelay, attestationWaitMaxDelay)
+		})
 	logGeneratedTAAKeyPair(keyPair)
 
 	// 6. 构建安全策略配置并确保模型/数据/结果目录已就绪

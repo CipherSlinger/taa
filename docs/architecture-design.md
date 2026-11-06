@@ -53,6 +53,7 @@ sequenceDiagram
     CSV-->>TAA: 返回 CSV 远程证明报告 (attestation.report)
     TAA->>Platform: POST /v1/taa/register (证明报告 + SM2 公钥 + 宿主元数据)
     Note over TAA: 首次注册失败时后台退避重试（guest 网络晚于 TAA 就绪）
+    Note over TAA,CSV: 类型 1-3 未检测到 /dev/csv-guest 或证明不可用时一律不注册，后台无上限重试
     Platform->>Platform: 验证硬件背书与 USERDATA 绑定关系
 
     %% 阶段 2：模型下发与异步审计
@@ -201,10 +202,11 @@ sequenceDiagram
 │     └─ 公钥缺失/非法 → FATAL（没有明文降级），且必须在证明与注册前   │
 │     └─ 装上出站密封钩子：此后的注册与全部上报都走信封               │
 │  4. 计算 USERDATA = taaPublicKey.X || taaPublicKey.Y                │
-│  5. 生成远程证明报告 attestation.report 并自校验                    │
-│     └─ tee：进程内 ioctl；生成/校验失败只告警，verifiedPass=false   │
-│     └─ fhe：不尝试证明，写空报告，verifiedPass 保持 false           │
+│  5. 生成远程证明报告 attestation.report 并自校验（类型 1-3 在闸门内）│
+│     └─ tee / data-anaylsis：等 /dev/csv-guest 可用、报告自校验通过   │
+│     └─ fhe (4)：不尝试证明，写空报告，verifiedPass 保持 false        │
 │  6. POST /v1/taa/register → 平台注册                                │
+│     └─ 类型 1-3：设备或报告未就绪时不注册，后台无上限重试            │
 │     └─ 携带: dockerId, attestation(base64), taaPublicKey,           │
 │              taaSecretKey(可选), timestamp, verifiedPass            │
 │     └─ 失败则后台指数退避重试（时间戳沿用启动时刻）                 │
@@ -525,10 +527,11 @@ TAA 作为服务端注册的路由（`internal/controller/router.go`）：
 1. TAA 启动时派生 64 字节 USERDATA（SM2 公钥 X‖Y，见 §7.2）
 2. 由 `internal/attestation` 的**进程内纯 Go 实现**（`pkg/csvattest`，ioctl 读写 `/dev/csv-guest`）取回 CSV 硬件报告
 3. 报告写入容器工作目录下的 `attestation.report`（同目录另落 `nonce.bin`），随后自校验：只验证报告内嵌的 PEK 证书对报告本体的签名，**不校验证书链**（HRK/HSK/CEK 按机器签发，校验它会让镜像与设备绑定）
-4. 注册时报告以 Base64 编码发送给平台
-5. `/v1/taa/getAttestation` 可重新生成报告（复用启动时的 USERDATA，30s 超时，同一时刻只允许一个）
+4. 实例类型 1-3（tee 训练/推理、data-anaylsis）把步骤 2、3 放在**注册闸门**里：`/dev/csv-guest` 不存在或报告无法生成/自校验通过就不注册，后台按 5s→30s 退避无上限重试（`internal/app/taa/registration_gate.go`）；设备出现并证明通过后才注册，`verifiedPass=true`。这覆盖 Kata CSV2 Pod 的 postStart 钩子与 TAA 启动的竞态。`fhe`（类型 4）不等待，启动即用空报告注册
+5. 注册时报告以 Base64 编码发送给平台
+6. `/v1/taa/getAttestation` 可重新生成报告（复用启动时的 USERDATA，30s 超时，同一时刻只允许一个）
 
-> 生成失败**不致命**——记 `WARNING` 后写一份空报告继续启动，PEK 签名自校验失败同样只记 `WARNING` 而放行（见 `internal/app/taa/app.go` 的 `prepareAttestationReport`）。
+> 对 `fhe` 实例和 `/v1/taa/getAttestation` 触发的生成，失败不致命——记 `WARNING` 后写空报告继续，PEK 签名自校验失败同样只记 `WARNING` 而放行（见 `internal/app/taa/app.go` 的 `prepareAttestationReport`）。类型 1-3 的启动注册闸门不适用这条降级：生成或自校验失败只表示继续等待，不会注册。
 > `server.type=fhe` 实例不是 TEE：不尝试生成，直接写空报告，`verifiedPass` 保持 `false`，平台不能把 "fhe" 读成 "已证明"。
 
 ### 7.2 USERDATA 构成
