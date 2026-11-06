@@ -924,3 +924,28 @@ func TestPrepareAttestationReport(t *testing.T) {
 		}
 	})
 }
+
+// TestInstanceTypeNameReportsTheResolvedRole pins the startup banner to the
+// role that was resolved, not to the branch that builds the server. Before
+// this, every non-fhe role printed "tee", so a data-analysis instance launched
+// with CONTRACT_TYPE=3 announced itself as tee.
+func TestInstanceTypeNameReportsTheResolvedRole(t *testing.T) {
+	cases := []struct {
+		name       string
+		serverType string
+		want       string
+	}{
+		{"default", "", config.ServerTypeTEE},
+		{"tee", config.ServerTypeTEE, config.ServerTypeTEE},
+		{"data analysis", config.ServerTypeDataAnalysis, config.ServerTypeDataAnalysis},
+		{"fhe", config.ServerTypeFHE, config.ServerTypeFHE},
+		{"surrounding spaces", " data-anaylsis ", config.ServerTypeDataAnalysis},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := instanceTypeName(tc.serverType); got != tc.want {
+				t.Fatalf("instanceTypeName(%q) = %q, want %q", tc.serverType, got, tc.want)
+			}
+		})
+	}
+}

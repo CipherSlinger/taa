@@ -283,7 +283,7 @@ func RunWithConfig(ctx context.Context, cfg config.StartupConfig) error {
 		})
 		log.Printf("instance type: fhe (endpoint=%s, dataDir=%s)", cfg.FHE.Endpoint, cfg.FHE.DataDir)
 	} else {
-		log.Printf("instance type: tee")
+		log.Printf("instance type: %s", instanceTypeName(cfg.ServerType))
 	}
 
 	state.SetEnvelopeKeys(envelopeKeys)
@@ -790,6 +790,17 @@ func buildSecurityConfig(cfg config.StartupConfig) (controller.SecurityConfig, e
 			CooldownSec:             cfg.LLM.CooldownSec,
 		},
 	}, nil
+}
+
+// instanceTypeName returns the role name printed in the startup banner. Every
+// role except fhe shares the same server path, so naming the branch "tee" hid
+// the data-analysis role; report the role that was actually resolved instead.
+// An empty value falls back to tee, the role LoadStartupConfig defaults to.
+func instanceTypeName(serverType string) string {
+	if role := strings.TrimSpace(serverType); role != "" {
+		return role
+	}
+	return config.ServerTypeTEE
 }
 
 // buildFHERunner returns the FHE runner for this instance, or nil when the
