@@ -134,7 +134,7 @@ pkg="$tmp_dir/a/pkg"
 env "${common_env[@]}" DIST_DIR="$pkg" REMOTE_HOST=invalid.invalid "$BUILD" render >/dev/null
 
 for f in config/kata-config.toml config/identity.txt config/containerd-runtime-handler.toml \
-         k8s/runtimeclass.yaml k8s/test-pod.yaml manifest.env SHA256SUMS \
+         k8s/runtimeclass.yaml k8s/test-pod.yaml SHA256SUMS \
          install.sh render.py measure.py cmdline.txt README.md \
          bundle/initramfs.img bundle/vmlinuz bundle/OVMF.fd; do
   if [[ -f "$pkg/$f" ]]; then
@@ -367,33 +367,45 @@ assert "annotations" not in pod["metadata"], "annotations should be omitted when
 PY
 echo "ok   k8s: unknown node and empty annotations are omitted"
 
-# ── 5. manifest and checksums ──────────────────────────────────────────────
-manifest="$(cat "$pkg/manifest.env")"
-check_contains "manifest: records the runtime handler" 'RUNTIME_HANDLER=kata-qemu-csv2-taa' "$manifest"
-check_contains "manifest: records the bundle directory" "REMOTE_BUNDLE_DIR=$bundle" "$manifest"
-check_contains "manifest: records the template source" \
-  'KATA_CONFIG_TEMPLATE_SRC=/opt/kata/share/defaults/kata-containers/configuration-qemu-csv2.toml' "$manifest"
-check_contains "manifest: records the measurement cmdline" \
-  'KERNEL_PARAMS=rdinit=/usr/local/bin/taa-init\ console=ttyS0\ quiet' "$manifest"
-check "manifest: template sha is recorded" "1" \
-  "$(sed -n 's/^KATA_CONFIG_TEMPLATE_SHA256=//p' "$pkg/manifest.env" | tr -d "'" | grep -cE '^[0-9a-f]{64}$')"
+# ── 5. package self-description ────────────────────────────────────────────
+# The package carries no parameter sheet: install.sh asks render.py to read the
+# handler, the ConfigPath and the boot assets back out of the files themselves.
+# Render one where it will live, so the absolute paths resolve.
+self_pkg="$tmp_dir/self/pkg"
+env "${common_env[@]}" REMOTE_PACKAGE_DIR="$self_pkg" DIST_DIR="$self_pkg" \
+  REMOTE_HOST=invalid.invalid "$BUILD" render >/dev/null
+info="$(python3 "$self_pkg/render.py" package-info --dir "$self_pkg")"
+check_contains "package-info: reports the runtime handler" "RUNTIME_HANDLER=kata-qemu-csv2-taa" "$info"
+check_contains "package-info: reports the runtime type" \
+  "RUNTIME_TYPE=io.containerd.kata-qemu-csv2.v2" "$info"
+check_contains "package-info: reports the snapshotter" "SNAPSHOTTER=nydus" "$info"
+check_contains "package-info: derives the bundle directory" "REMOTE_BUNDLE_DIR=$self_pkg/bundle" "$info"
+check_contains "package-info: derives the ConfigPath" \
+  "REMOTE_KATA_CONFIG=$self_pkg/config/kata-config.toml" "$info"
+check_contains "package-info: derives the hypervisor section" \
+  "KATA_HYPERVISOR_SECTION=hypervisor.qemu" "$info"
+check_contains "package-info: derives the Pod name" "TEST_POD_NAME=test-kata-csv2-taa" "$info"
+check_contains "package-info: derives the node name" "TEST_NODE_NAME=fixture-node" "$info"
+
+# A package moved after rendering names files that are no longer beside it. That
+# is the check the manifest used to carry, now made from the package's own text.
+moved_pkg="$tmp_dir/moved/pkg"
+mkdir -p "$tmp_dir/moved"
+mv "$self_pkg" "$moved_pkg"
+out="$(python3 "$moved_pkg/render.py" package-info --dir "$moved_pkg" 2>&1 || true)"
+check_contains "package-info: refuses a moved package" "does not point at" "$out"
 
 # ── 5b. expected MEASUREMENT ───────────────────────────────────────────────
 MEASURE="$SCRIPT_DIR/render/measure.py"
 expected_cmdline="tsc=reliable no_timer_check rcupdate.rcu_expedited=1 i8042.direct=1 i8042.dumbkbd=1 i8042.nopnp=1 i8042.noaux=1 noreplace-smp reboot=k cryptomgr.notests net.ifnames=0 pci=lastbus=0 console=hvc0 console=hvc1 debug panic=1 nr_cpus=3 selinux=0 scsi_mod.scan=none agent.log=debug agent.debug_console agent.debug_console_vport=1026 rdinit=/usr/local/bin/taa-init console=ttyS0 quiet $identity_params"
 check "measure: cmdline follows the rendered config" "$expected_cmdline" "$(cat "$pkg/cmdline.txt")"
-check_contains "manifest: measurement status is computed" 'MEASUREMENT_STATUS=computed' "$manifest"
-check_contains "manifest: records the SMP" 'MEASUREMENT_SMP=3' "$manifest"
-check "manifest: records a 64-hex MEASUREMENT" "1" \
-  "$(sed -n 's/^MEASUREMENT_HEX=//p' "$pkg/manifest.env" | tr -d "'" | grep -cE '^[0-9a-f]{64}$')"
 
-measure_hex="$(sed -n 's/^MEASUREMENT_HEX=//p' "$pkg/manifest.env" | tr -d "'")"
-direct_hex="$(python3 "$MEASURE" digest \
+measure_hex="$(python3 "$MEASURE" digest \
   --ovmf "$tmp_dir/fixture-ovmf.fd" \
   --kernel "$tmp_dir/fixture-vmlinuz" \
   --initrd "$tmp_dir/fixture-initrd.img" \
   --cmdline "$pkg/cmdline.txt" | sed -n 's/^hex=//p')"
-check "measure: manifest value matches a direct recompute" "$measure_hex" "$direct_hex"
+check "measure: a 64-hex digest is produced" "1" "$(grep -cE '^[0-9a-f]{64}$' <<<"$measure_hex")"
 check_contains "README: shows the expected hex" "$measure_hex" "$(cat "$pkg/README.md")"
 check_contains "README: points at cmdline.txt" 'cmdline.txt' "$(cat "$pkg/README.md")"
 
@@ -522,16 +534,18 @@ else
   echo "FAIL install.sh: --help failed" >&2
   failures=$((failures + 1))
 fi
-check_contains "install.sh: guards the template sha" 'Kata 配置模板与本包不一致' "$(cat "$pkg/install.sh")"
-check_contains "install.sh: guards the base initrd sha" 'base initrd 与构建时不一致' "$(cat "$pkg/install.sh")"
-check_contains "install.sh: guards every bundle digest" '与本包记录的摘要不一致' "$(cat "$pkg/install.sh")"
+check_absent "install.sh: carries no parameter sheet" 'manifest.env' "$(cat "$pkg/install.sh")"
+check_contains "install.sh: derives its settings from the package" \
+  'package-info --dir' "$(cat "$pkg/install.sh")"
+check_contains "install.sh: refuses a package that does not describe itself" \
+  '交付包自校验失败' "$(cat "$pkg/install.sh")"
 check_contains "install.sh: recomputes MEASUREMENT from the running QEMU" \
   '/proc/$qpid/cmdline' "$(cat "$pkg/install.sh")"
 check_contains "install.sh: compares against the expected value" '与实际启动的 VM 一致' "$(cat "$pkg/install.sh")"
 check_contains "install.sh: re-renders from the editable identity" \
   '--param-file "$identity_file"' "$(cat "$pkg/install.sh")"
-check_contains "install.sh: recomputes the expectation after an identity edit" \
-  '部署身份与交付时不同' "$(cat "$pkg/install.sh")"
+check_contains "install.sh: rebuilds the expectation from the current config" \
+  '预期 MEASUREMENT (hex)' "$(cat "$pkg/install.sh")"
 check_contains "install.sh: recreates the Pod so the new command line takes effect" \
   'kubectl delete pod' "$(cat "$pkg/install.sh")"
 check_contains "install.sh: verifies the package first" 'sha256sum -c --quiet SHA256SUMS' "$(cat "$pkg/install.sh")"
@@ -541,7 +555,7 @@ check_contains "install.sh: supports dry-run" '--dry-run' "$(cat "$pkg/install.s
 drv_pkg="$tmp_dir/drv/pkg"
 env "${common_env[@]}" DIST_DIR="$drv_pkg" REMOTE_HOST=invalid.invalid \
   "$DRIVER" render >/dev/null
-if [[ -f "$drv_pkg/manifest.env" && -f "$drv_pkg/config/kata-config.toml" ]]; then
+if [[ -f "$drv_pkg/config/kata-config.toml" && -f "$drv_pkg/install.sh" ]]; then
   echo "ok   driver: render reaches the renderer without a host preflight"
 else
   echo "FAIL driver: render did not produce a package" >&2

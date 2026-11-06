@@ -215,17 +215,22 @@ cd /home/hjy/taa/deploy/guest-build
 - `config/containerd-runtime-handler.toml` — containerd handler 片段（供审阅）
 - `k8s/runtimeclass.yaml`、`k8s/test-pod.yaml`
 - `install.sh`、`render.py`、`measure.py` — 包内自带的安装器、合并器与度量计算器
-- `manifest.env` — 本次交付的全部参数，以及度量输入/结果（`KERNEL_PARAMS`、
-  `OVMF_SHA256`、`KERNEL_SHA256`、`INITRD_SHA256`、`MEASUREMENT_HEX`、
-  `MEASUREMENT_BASE64`、`MEASUREMENT_CMDLINE`、`MEASUREMENT_SMP`）
 - `cmdline.txt` — 计算预期度量所用的 QEMU `-append` 原文
 - `SHA256SUMS` — 包内文件校验和（含 `bundle/` 三份）
 - `README.md` — 包内使用说明，含预期 MEASUREMENT
 
 渲染是离线的：`REMOTE_HOST` 不参与，也不执行 ssh/scp。Kata 配置模板来自
-`fetch-base` 拉下来的宿主权威副本 `base/configuration-qemu-csv2.toml`；
-宿主的模板变了就要重新 `fetch-base` 再 `render`，否则安装时会因模板 sha 不一致而拒绝
-（宿主没有这个文件时只告警——包内已带全部启动文件）。
+`fetch-base` 拉下来的宿主权威副本 `base/configuration-qemu-csv2.toml`。
+`launch`/`upload` 在渲染前会把这份缓存与宿主上的原件比 sha，不一致就拒绝
+（`SKIP_KATA_TEMPLATE_CHECK=1` 可显式跳过）；纯本地 `render` 不做这项比对。
+包一旦交付出去就不再依赖宿主的 Kata 模板：启动文件与完整配置都在包里。
+
+包里没有参数清单：`install.sh` 在宿主上调用 `render.py package-info`，从
+`config/containerd-runtime-handler.toml` 读出 handler 与 `ConfigPath`，从
+`config/kata-config.toml` 读出 hypervisor 段与三份启动文件路径，并校验这些绝对路径
+确实指向本目录内的文件。包绑定的是渲染时的绝对路径 `REMOTE_PACKAGE_DIR`，不是宿主
+本身：换宿主时只要整包放到同一个绝对路径就直接可用；放到别的路径则 `install.sh`
+拒绝安装并提示重新渲染。
 
 `render` 会从**包内**这三份文件算出预期 MEASUREMENT：
 
@@ -259,8 +264,9 @@ TEST_POD_ANNOTATIONS="${TEST_POD_ANNOTATIONS}" \
 
 `install.sh` 会自动完成：
 
-1. 校验包内 `SHA256SUMS`、宿主 Kata 模板 sha（宿主没有该模板时只告警），
-   以及包内 bundle 三个文件的存在与 sha256
+1. 校验包内 `SHA256SUMS`，并用 `render.py package-info` 自校验：`ConfigPath` 必须
+   指回包内配置，Kata 配置里的 `kernel`/`initrd`/`firmware` 必须就是包内 `bundle/`
+   下的三份文件
 2. 使用包内的 Kata 配置 `$REMOTE_PACKAGE_DIR/config/kata-config.toml`
    （它已经在 `render` 时指向同一包内的 `bundle/`），不再往 `/etc` 装第二份
 3. 在 `containerd` 中新增 runtime handler：
@@ -272,8 +278,9 @@ TEST_POD_ANNOTATIONS="${TEST_POD_ANNOTATIONS}" \
 7. 创建测试 Pod（带 `TEST_POD_ANNOTATIONS`）
 8. 等待 Pod Ready；超时会打印 Pod 状态与 `Events:` 再退出
 9. 校验 QEMU 是否使用了包内的 initrd
-10. 从 QEMU 的 `/proc/<pid>/cmdline` 取实际 `-append`，用包内 `measure.py` 重算
-    MEASUREMENT，并与包内预期值对照（不一致只告警，并打印实际 cmdline）
+10. 先按当前 `config/kata-config.toml` 在本机重算预期 MEASUREMENT，再从 QEMU 的
+    `/proc/<pid>/cmdline` 取实际 `-append` 重算，两者对照（不一致只告警，并打印
+    实际 cmdline）。包里不存构建期的记录值：唯一可变输入就是这份配置
 
 手工在目标宿主上安装同一个包时：
 
@@ -284,10 +291,10 @@ sudo bash install.sh --dry-run   # 先看会改什么
 sudo bash install.sh
 ```
 
-`install.sh` 支持 `--dry-run`、`--skip-template-check`、`--skip-base-check`；
-包里的 `manifest.env` 记录绝对路径与节点名，所以包是**目标宿主特定**的：换宿主，
-或换了 `REMOTE_PACKAGE_DIR`（包内路径会跟着变），都要重新 `render`。`install.sh`
-发现包被挪过位置会直接拒绝并提示放回原处。
+`install.sh` 只支持 `--dry-run`；其余可用环境变量是 `CONTAINERD_CONFIG`、
+`RESTART_KUBELET` 与 `MEASURE_SMP`。包内的绝对路径在 `render` 时就写进了两份配置，
+所以包绑定 `REMOTE_PACKAGE_DIR` 这个位置：换宿主照搬整包即可，换了目录就要重新
+`render`。`install.sh` 发现包被挪过位置会直接拒绝并提示重新渲染。
 
 `TEST_IMAGE` 默认就是宿主上**已有**的镜像 `172.16.10.178:31313/taa-env:slim-v2-20260916`
 （本地 registry，guest 拉得通，且带 curl 供 verify 使用）。改成 Docker Hub 上的 tag 会等满
@@ -402,7 +409,7 @@ python3 "$pkg/measure.py" digest \
 - 真实密码、证书、环境变量值请按现场环境填入，不要直接写死到仓库。
 - `build-initrd.sh` 已没有 `deploy` 子命令：宿主上不再复制任何文件。`build` 只构建、
   `render` 只打包、`launch` 上传整包后交给包内 `install.sh`。本地 `base/` 与宿主不一致时，
-  `install.sh` 会在模板 sha 校验处拒绝（宿主没有模板文件时只告警）。
+  `launch`/`upload` 会在渲染前的模板 sha 比对处拒绝，`install.sh` 本身不再比模板。
 - base 资产**不入库**（`base/*.img`、`base/*.container`、`base/*.fd`、`base/*.toml`、`out/`、
   `dist/` 已在 `.gitignore` 里）：
   宿主机是权威，入库的副本只会静默过期——历史上那份 `out/kata-containers-initrd-taa-csv.initrd`

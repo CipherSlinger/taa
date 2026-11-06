@@ -22,7 +22,7 @@ semgrep-payload/
 base/*.toml
 
 # Rendered delivery packages (Kata config, containerd fragment, K8s manifests,
-# manifest.env, SHA256SUMS). Derived state: rebuild with `render`.
+# SHA256SUMS, guest bundle). Derived state: rebuild with `render`.
 dist/
 
 # Python bytecode from the renderer (render/render.py).

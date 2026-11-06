@@ -165,8 +165,8 @@ Environment:
                                           （可选，随身份写进交付包的 config/identity.txt）
   RUNTIME_HANDLER=$RUNTIME_HANDLER
   REMOTE_KATA_CONFIG=$REMOTE_KATA_CONFIG
-                                          （runtime handler 的 ConfigPath；默认就是交付包里的
-                                          $PACKAGE_KATA_CONFIG，宿主机不再另存一份）
+                                          （runtime handler 的 ConfigPath；派生值，永远是交付包里的
+                                          $PACKAGE_KATA_CONFIG，宿主机不另存一份）
   TAA_SRC=$TAA_SRC                （指向其它二进制时跳过重新编译）
   TAA_SKIP_GO_BUILD=${TAA_SKIP_GO_BUILD:-0}     （=1 跳过编译，直接注入现有 bin/taa）
 

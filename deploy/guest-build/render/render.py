@@ -304,6 +304,145 @@ def containerd_strip(config, handler):
     Path(config).write_text("\n".join(out_lines) + "\n")
 
 
+def toml_value(raw):
+    raw = raw.strip()
+    if raw.startswith('"'):
+        return json.loads(raw)
+    return raw
+
+
+def collect_settings(path):
+    """Map table path -> {key: value} for simple `key = value` lines.
+
+    Only the subset the package writes is understood: one assignment per line,
+    quoted or bare values, no inline tables or arrays of interest. Stdlib only,
+    and no tomllib -- the installer runs on the target host, whose python3 may
+    predate 3.11.
+    """
+    settings = {}
+    current = ()
+    for line in Path(path).read_text().splitlines():
+        parts = table_path(line)
+        if parts is not None:
+            current = tuple(parts)
+            settings.setdefault(current, {})
+            continue
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#") or "=" not in stripped:
+            continue
+        key, _, value = stripped.partition("=")
+        settings.setdefault(current, {})[key.strip()] = toml_value(value)
+    return settings
+
+
+def package_info(pkg_dir):
+    """Derive the installer's settings from the package itself.
+
+    The package no longer carries a parameter sheet: everything install.sh needs
+    is already written into the files it ships, and the paths follow from where
+    the package sits. This is also the check that a package was not moved after
+    rendering -- the Kata config names absolute bundle paths, so a directory that
+    does not contain them is not the directory the config was rendered for.
+
+    Emits shell-safe `KEY=value` lines; install.sh evals them.
+    """
+    pkg = Path(pkg_dir).resolve()
+    fragment = pkg / "config" / "containerd-runtime-handler.toml"
+    kata_config = pkg / "config" / "kata-config.toml"
+    pod_file = pkg / "k8s" / "test-pod.yaml"
+    bundle = pkg / "bundle"
+
+    for path in (fragment, kata_config, pod_file):
+        if not path.is_file():
+            raise SystemExit(f"package is incomplete, missing {path}")
+
+    settings = collect_settings(fragment)
+    runtimes = [
+        table for table in settings
+        if len(table) == 5
+        and table[:4] == ("plugins", "io.containerd.grpc.v1.cri", "containerd", "runtimes")
+    ]
+    if len(runtimes) != 1:
+        raise SystemExit(
+            f"{fragment}: expected exactly one runtime handler table, found {len(runtimes)}"
+        )
+    base = runtimes[0]
+    handler = base[4]
+    fields = settings[base]
+    options = settings.get(base + ("options",), {})
+    if not fields.get("runtime_type"):
+        raise SystemExit(f"{fragment}: missing runtime_type for handler {handler}")
+    if not options.get("ConfigPath"):
+        raise SystemExit(f"{fragment}: missing options.ConfigPath for handler {handler}")
+
+    # The handler has to point at this directory's own config: the package is the
+    # runtime dependency, and a ConfigPath from somewhere else either means the
+    # package was moved or the two files came from different renders.
+    config_path = Path(options["ConfigPath"])
+    if not config_path.is_absolute() or config_path.resolve() != kata_config:
+        raise SystemExit(
+            f"{fragment}: ConfigPath {options['ConfigPath']} does not point at {kata_config}\n"
+            "hint: the package was moved after rendering, or it is incomplete"
+        )
+
+    kata = collect_settings(kata_config)
+    sections = [
+        table for table in kata
+        if len(table) == 2 and table[0] == "hypervisor" and "kernel" in kata[table]
+    ]
+    if len(sections) != 1:
+        raise SystemExit(
+            f"{kata_config}: expected exactly one hypervisor section with kernel=, "
+            f"found {len(sections)}"
+        )
+    section = ".".join(sections[0])
+    values = kata[sections[0]]
+    expected_assets = {
+        "kernel": bundle / "vmlinuz",
+        "initrd": bundle / "initramfs.img",
+        "firmware": bundle / "OVMF.fd",
+    }
+    for key, expected in expected_assets.items():
+        actual = Path(values.get(key, ""))
+        if actual.resolve() != expected.resolve():
+            raise SystemExit(
+                f"{kata_config}: {key} = {values.get(key)!r} does not point at {expected}\n"
+                "hint: the package was moved or assembled from different renders"
+            )
+        if not expected.is_file():
+            raise SystemExit(
+                f"package is incomplete, missing {expected}\n"
+                "hint: re-render on the build host; the package ships initrd, kernel and OVMF"
+            )
+    # Report the paths exactly as the config spells them: these strings are what
+    # QEMU and containerd will use, and install.sh greps for them in /proc.
+    bundle = Path(values["initrd"]).parent
+
+    try:
+        pod = json.loads(pod_file.read_text())
+    except json.JSONDecodeError as exc:
+        raise SystemExit(f"{pod_file}: not valid JSON ({exc})") from exc
+    pod_name = pod.get("metadata", {}).get("name", "")
+    if not pod_name:
+        raise SystemExit(f"{pod_file}: metadata.name is missing")
+    node_name = pod.get("spec", {}).get("nodeName", "")
+
+    info = {
+        "RUNTIME_HANDLER": handler,
+        "RUNTIME_TYPE": fields["runtime_type"],
+        "RUNTIME_PATH": fields.get("runtime_path", ""),
+        "SNAPSHOTTER": fields.get("snapshotter", ""),
+        "REMOTE_KATA_CONFIG": options["ConfigPath"],
+        "REMOTE_BUNDLE_DIR": str(bundle),
+        "PACKAGE_KATA_CONFIG": str(kata_config.relative_to(pkg)),
+        "PACKAGE_IDENTITY_FILE": "config/identity.txt",
+        "KATA_HYPERVISOR_SECTION": section,
+        "TEST_POD_NAME": pod_name,
+        "TEST_NODE_NAME": node_name,
+    }
+    return info
+
+
 def render_k8s(handler, pod_name, node_name, image, annotations_json, out_dir):
     try:
         annotations = json.loads(annotations_json)
@@ -395,6 +534,12 @@ def main(argv=None):
     strip.add_argument("--config", required=True)
     strip.add_argument("--handler", required=True)
 
+    info = sub.add_parser(
+        "package-info",
+        help="derive the installer's settings from a rendered package (KEY=value lines)",
+    )
+    info.add_argument("--dir", required=True, help="package root")
+
     k8s = sub.add_parser("k8s", help="write RuntimeClass and test Pod manifests")
     k8s.add_argument("--handler", required=True)
     k8s.add_argument("--pod", required=True)
@@ -434,6 +579,9 @@ def main(argv=None):
         Path(args.out).write_text("\n".join(block) + "\n")
     elif args.command == "containerd-strip":
         containerd_strip(args.config, args.handler)
+    elif args.command == "package-info":
+        for key, value in package_info(args.dir).items():
+            print(f"{key}={shlex.quote(value)}")
     elif args.command == "k8s":
         render_k8s(args.handler, args.pod, args.node, args.image, args.annotations, args.out_dir)
     return 0

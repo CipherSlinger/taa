@@ -253,10 +253,15 @@ check_contains "build-initrd.sh: deploy compares the baked platform key" '烘焙
 check_contains "driver: supplies the LLM endpoint" 'TAA_LLM_ENDPOINT:-https://172.16.10.116:8443' "$driver_src"
 
 # The Kata config ships inside the package and the handler references it in
-# place; install.sh must therefore recognise "source and target are the same
-# file" instead of failing in install(1). delete has to leave that copy to the
-# package removal, and only after the handler is gone.
-check_contains "install.sh: skips the copy when the config is the packaged file" '-ef "$REMOTE_KATA_CONFIG"' "$(cat "$SCRIPT_DIR/deploy/guest-build/render/install.sh")"
+# place, so install.sh never copies it: it derives the ConfigPath from the
+# package and refuses a package whose paths resolve elsewhere. delete has to
+# leave that copy to the package removal, and only after the handler is gone.
+check_contains "install.sh: derives the ConfigPath from the package" 'package-info --dir' "$(cat "$SCRIPT_DIR/deploy/guest-build/render/install.sh")"
+# grep -c exits 1 on a zero count, which `set -e` would turn into a failed test
+# run instead of the assertion it is here to make.
+kata_installs="$(grep -c 'install -o root -g root -m 0644 "$package_kata_config" "$REMOTE_KATA_CONFIG"' \
+  "$SCRIPT_DIR/deploy/guest-build/render/install.sh" || true)"
+check "install.sh: installs nothing under /etc for the Kata config" "0" "$kata_installs"
 check_contains "delete: leaves an in-package Kata config to the package removal" '位于交付包内，随交付包删除' "$driver_src"
 
 # build-initrd.sh has no mutating remote step left: launch uploads the package

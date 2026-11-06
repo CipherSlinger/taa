@@ -200,10 +200,10 @@ REMOTE_BUNDLE_DIR="$REMOTE_PACKAGE_DIR/$PACKAGE_BUNDLE_SUBDIR"
 # The Kata config the runtime handler points at (containerd's ConfigPath). It is
 # rendered into the delivery package and the handler points at the packaged file,
 # so the package is the host's only copy and install.sh installs nothing under
-# /etc. An explicit REMOTE_KATA_CONFIG still wins; install.sh then installs the
-# rendered file there instead.
+# /etc. Derived, never overridable: package_info resolves ConfigPath back to this
+# exact path, so a package rendered with any other value could not install.
 PACKAGE_KATA_CONFIG="config/kata-config.toml"
-REMOTE_KATA_CONFIG="${REMOTE_KATA_CONFIG:-$REMOTE_PACKAGE_DIR/$PACKAGE_KATA_CONFIG}"
+REMOTE_KATA_CONFIG="$REMOTE_PACKAGE_DIR/$PACKAGE_KATA_CONFIG"
 CONTAINERD_CONFIG="${CONTAINERD_CONFIG:-/etc/containerd/config.toml}"
 KATA_HYPERVISOR_SECTION="${KATA_HYPERVISOR_SECTION:-hypervisor.qemu}"
 RUNTIME_HANDLER="${RUNTIME_HANDLER:-kata-qemu-csv2-taa}"
@@ -232,7 +232,11 @@ TEST_IMAGE="${TEST_IMAGE:-172.16.10.178:31313/taa-env:slim-v2-20260916}"
 # working Pod when the test image lives behind a private registry:
 #   TEST_POD_ANNOTATIONS="$(kubectl get pod <working> -o jsonpath='{.metadata.annotations}')"
 TEST_POD_ANNOTATIONS="${TEST_POD_ANNOTATIONS:-{\}}"
-SKIP_REMOTE_BASE_CHECK="${SKIP_REMOTE_BASE_CHECK:-0}"
+# Render-time only: the cached base Kata config is compared against the host's
+# copy before it is used as a template. install.sh no longer repeats this check;
+# the package carries the whole rendered config, so a different host Kata is a
+# warning there, not a refusal.
+SKIP_KATA_TEMPLATE_CHECK="${SKIP_KATA_TEMPLATE_CHECK:-0}"
 # The kernel and OVMF the package ships, and the inputs of the expected CSV2
 # MEASUREMENT. render() requires both to exist; the initrd is $INITRD_OUT, so
 # `build` has to run first. MEASURE_APPEND replaces the auto-derived QEMU
@@ -274,7 +278,7 @@ Environment overrides:
   REMOTE_KATA_CONFIG_SRC=$REMOTE_KATA_CONFIG_SRC
   REMOTE_PACKAGE_DIR=$REMOTE_PACKAGE_DIR
   REMOTE_KATA_CONFIG=$REMOTE_KATA_CONFIG
-                                          (defaults to the packaged copy)
+                                          (derived; always the packaged copy)
   REMOTE_BUNDLE_DIR                       derived as $REMOTE_PACKAGE_DIR/bundle
   KATA_HYPERVISOR_SECTION=$KATA_HYPERVISOR_SECTION
   RUNTIME_HANDLER=$RUNTIME_HANDLER
@@ -296,8 +300,7 @@ Environment overrides:
   TAA_CONTRACT_TYPE=$TAA_CONTRACT_TYPE
   TAA_LLM_ENDPOINT=$TAA_LLM_ENDPOINT
   ALLOW_MISSING_TAA_ENV=$ALLOW_MISSING_TAA_ENV
-  SKIP_REMOTE_BASE_CHECK=$SKIP_REMOTE_BASE_CHECK
-  SKIP_REMOTE_KATA_TEMPLATE_CHECK=${SKIP_REMOTE_KATA_TEMPLATE_CHECK:-0}
+  SKIP_KATA_TEMPLATE_CHECK=$SKIP_KATA_TEMPLATE_CHECK
   CONTAINERD_CONFIG=$CONTAINERD_CONFIG
   KATA_CONFIG_TEMPLATE=$KATA_CONFIG_TEMPLATE
   DIST_DIR=$DIST_DIR
@@ -910,8 +913,8 @@ ensure_kata_template() {
     mv "$KATA_CONFIG_TEMPLATE.part" "$KATA_CONFIG_TEMPLATE"
   fi
 
-  if [[ "${SKIP_REMOTE_KATA_TEMPLATE_CHECK:-0}" == "1" ]]; then
-    echo "warning: SKIP_REMOTE_KATA_TEMPLATE_CHECK=1，跳过模板一致性校验" >&2
+  if [[ "$SKIP_KATA_TEMPLATE_CHECK" == "1" ]]; then
+    echo "warning: SKIP_KATA_TEMPLATE_CHECK=1，跳过模板一致性校验" >&2
     return 0
   fi
 
@@ -928,7 +931,7 @@ ensure_kata_template() {
     echo "error: 本地 Kata 配置模板与远端不一致" >&2
     echo "       local:  $local_sha  $KATA_CONFIG_TEMPLATE" >&2
     echo "       remote: $remote_sha  $REMOTE_KATA_CONFIG_SRC" >&2
-    echo "hint: 重新运行 $0 fetch-base 刷新模板，或设置 SKIP_REMOTE_KATA_TEMPLATE_CHECK=1" >&2
+    echo "hint: 重新运行 $0 fetch-base 刷新模板，或设置 SKIP_KATA_TEMPLATE_CHECK=1" >&2
     exit 1
   fi
   echo "Kata 配置模板一致: $local_sha"
@@ -1121,51 +1124,12 @@ IDENTITY
     exit 1
   fi
 
-  local kernel_params template_sha base_sha initrd_sha kernel_sha ovmf_sha
-  kernel_params="$(sed -n 's/^kernel_params = "\(.*\)"$/\1/p' "$out_dir/config/kata-config.toml" | head -n 1)"
-  template_sha="$(sha256sum "$template" | awk '{print $1}')"
-  base_sha=""
-  [[ -f "$BASE_INITRD" ]] && base_sha="$(sha256sum "$BASE_INITRD" | awk '{print $1}')"
+  # The digests the README quotes. The bundle files are hashed where they land
+  # in the package, so the numbers describe what will actually boot.
+  local initrd_sha kernel_sha ovmf_sha
   initrd_sha="$(sha256sum "$out_dir/$PACKAGE_BUNDLE_SUBDIR/initramfs.img" | awk '{print $1}')"
   kernel_sha="$(sha256sum "$out_dir/$PACKAGE_BUNDLE_SUBDIR/vmlinuz" | awk '{print $1}')"
   ovmf_sha="$(sha256sum "$out_dir/$PACKAGE_BUNDLE_SUBDIR/OVMF.fd" | awk '{print $1}')"
-
-  {
-    printf 'RUNTIME_HANDLER=%q\n' "$RUNTIME_HANDLER"
-    printf 'RUNTIME_TYPE=%q\n' "$RUNTIME_TYPE"
-    printf 'RUNTIME_PATH=%q\n' "$RUNTIME_PATH"
-    printf 'SNAPSHOTTER=%q\n' "$SNAPSHOTTER"
-    printf 'REMOTE_PACKAGE_DIR=%q\n' "$REMOTE_PACKAGE_DIR"
-    printf 'REMOTE_BUNDLE_DIR=%q\n' "$REMOTE_BUNDLE_DIR"
-    printf 'PACKAGE_BUNDLE_SUBDIR=%q\n' "$PACKAGE_BUNDLE_SUBDIR"
-    printf 'REMOTE_KATA_CONFIG=%q\n' "$REMOTE_KATA_CONFIG"
-    printf 'CONTAINERD_CONFIG=%q\n' "$CONTAINERD_CONFIG"
-    printf 'PACKAGE_KATA_CONFIG=%q\n' "$PACKAGE_KATA_CONFIG"
-    printf 'KATA_HYPERVISOR_SECTION=%q\n' "$KATA_HYPERVISOR_SECTION"
-    printf 'PACKAGE_IDENTITY_FILE=%q\n' "config/identity.txt"
-    printf 'KATA_CONFIG_TEMPLATE_SRC=%q\n' "$REMOTE_KATA_CONFIG_SRC"
-    printf 'KATA_CONFIG_TEMPLATE_SHA256=%q\n' "$template_sha"
-    printf 'BASE_INITRD_SRC=%q\n' "$REMOTE_BASE_INITRD_SRC"
-    printf 'BASE_INITRD_SHA256=%q\n' "$base_sha"
-    printf 'INITRD_OUT=%q\n' "$INITRD_OUT"
-    printf 'INITRD_SHA256=%q\n' "$initrd_sha"
-    printf 'KERNEL_SHA256=%q\n' "$kernel_sha"
-    printf 'OVMF_SHA256=%q\n' "$ovmf_sha"
-    printf 'KERNEL_PARAMS=%q\n' "$kernel_params"
-    printf 'MEASUREMENT_STATUS=%q\n' "computed"
-    printf 'MEASUREMENT_HEX=%q\n' "$measure_hex"
-    printf 'MEASUREMENT_BASE64=%q\n' "$measure_b64"
-    printf 'MEASUREMENT_CMDLINE=%q\n' "$measure_cmdline"
-    printf 'MEASUREMENT_SMP=%q\n' "$measure_smp"
-    printf 'PACKAGE_CMDLINE=%q\n' "$([[ -f "$out_dir/cmdline.txt" ]] && echo cmdline.txt || echo '')"
-    printf 'TEST_POD_NAME=%q\n' "$TEST_POD_NAME"
-    printf 'TEST_NODE_NAME=%q\n' "$TEST_NODE_NAME"
-    printf 'TEST_IMAGE=%q\n' "$TEST_IMAGE"
-    printf 'TEST_POD_ANNOTATIONS=%q\n' "$TEST_POD_ANNOTATIONS"
-    printf 'RESTART_KUBELET=%q\n' "$RESTART_KUBELET"
-    printf 'TAA_PLATFORM_IP=%q\n' "${TAA_PLATFORM_IP:-}"
-    printf 'TAA_DOCKER_ID=%q\n' "${TAA_DOCKER_ID:-}"
-  } > "$out_dir/manifest.env"
 
   local measure_section measure_status="computed"
   measure_section="$(cat <<MEASURE
@@ -1215,12 +1179,13 @@ MEASURE
   三个文件**。Kata 配置里的 \`kernel\`/\`initrd\`/\`firmware\` 直接指向包内这几份，
   宿主机自己的 \`/opt/kata/share/...\` 一律不读、不复制
 - \`$PACKAGE_KATA_CONFIG\` — 指向包内 bundle 的 Kata hypervisor 配置；runtime handler
-  的 ConfigPath 就指向它（路径以 \`manifest.env\` 为准）
-- \`config/containerd-runtime-handler.toml\` — containerd handler 片段（供审阅）
-- \`k8s/runtimeclass.yaml\` / \`k8s/test-pod.yaml\` — 运行时类与测试 Pod
+  的 ConfigPath 就指向它，安装脚本也从这里读安装所需的全部参数
+- \`config/containerd-runtime-handler.toml\` — containerd handler 片段（供审阅，安装脚本
+  从这里解析 handler 名、runtime、snapshotter 与 ConfigPath）
+- \`k8s/runtimeclass.yaml\` / \`k8s/test-pod.yaml\` — 运行时类与测试 Pod（安装脚本从后者
+  读 Pod 名与节点名）
 - \`install.sh\` / \`render.py\` / \`measure.py\` — 安装脚本、合并器与度量计算器
 - \`config/identity.txt\` — **可在宿主机上编辑的部署身份**（见下文）
-- \`manifest.env\` — 本次交付的全部参数与度量输入
 - \`SHA256SUMS\` — 不可变文件的校验和（\`config/identity.txt\` 与由它渲染的
   \`$PACKAGE_KATA_CONFIG\` 不在其中，这两个文件本来就允许在宿主机上改）
 $([[ -f "$out_dir/cmdline.txt" ]] && echo '- `cmdline.txt` — 计算预期度量所用的 QEMU `-append` 原文')
@@ -1432,19 +1397,11 @@ launch_remote() {
 
   upload_package_dir "$render_dir"
 
-  # Forward the explicit skip flags the pre-check already honours: install.sh
-  # repeats both checks on the host, and silently dropping an operator override
-  # would turn a deliberate bypass into a hard failure.
-  local install_flags=""
-  [[ "${SKIP_REMOTE_BASE_CHECK:-0}" == "1" ]] && install_flags+=" --skip-base-check"
-  [[ "${SKIP_REMOTE_KATA_TEMPLATE_CHECK:-0}" == "1" ]] && install_flags+=" --skip-template-check"
-
-  ssh "$REMOTE" "bash -s -- $(printf '%q ' "$REMOTE_PACKAGE_DIR")$install_flags" <<'REMOTE_INSTALL'
+  ssh "$REMOTE" "bash -s -- $(printf '%q ' "$REMOTE_PACKAGE_DIR")" <<'REMOTE_INSTALL'
 set -euo pipefail
 package_dir="$1"
-shift
 
-sudo bash "$package_dir/install.sh" "$@"
+sudo bash "$package_dir/install.sh"
 
 echo
 echo "交付包已保留: $package_dir"
