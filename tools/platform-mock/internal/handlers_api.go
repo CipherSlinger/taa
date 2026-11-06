@@ -3,7 +3,6 @@ package mock
 import (
 	"encoding/json"
 	"errors"
-	"io"
 	"log"
 	"net/http"
 )
@@ -459,39 +458,6 @@ func taaStatusHandler(mgr *instanceManager) http.HandlerFunc {
 		}
 
 		status, respBody, err := proxyJSONToTAA(r.Context(), id, target, "/v1/taa/status", []byte("{}"))
-		if err != nil {
-			if status == 0 {
-				status = http.StatusBadGateway
-			}
-			writeEnvelope(w, status, "TAA 请求失败: "+err.Error(), nil, status)
-			return
-		}
-
-		w.Header().Set("Content-Type", "application/json; charset=utf-8")
-		w.WriteHeader(status)
-		w.Write(respBody)
-	}
-}
-
-// taaGetResourceInfoHandler proxies resource info requests to TAA's /v1/taa/getResourceInfo endpoint.
-func taaGetResourceInfoHandler(mgr *instanceManager) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		setCORS(w)
-		id, target, err := mgr.targetFor(requestedDockerID(r))
-		if err != nil {
-			if !writeInstanceError(w, err) {
-				writeEnvelope(w, http.StatusServiceUnavailable, err.Error(), nil, http.StatusServiceUnavailable)
-			}
-			return
-		}
-
-		body, err := io.ReadAll(r.Body)
-		if err != nil {
-			writeEnvelope(w, http.StatusBadRequest, "读取请求体失败: "+err.Error(), nil, http.StatusBadRequest)
-			return
-		}
-
-		status, respBody, err := proxyJSONToTAA(r.Context(), id, target, "/v1/taa/getResourceInfo", body)
 		if err != nil {
 			if status == 0 {
 				status = http.StatusBadGateway

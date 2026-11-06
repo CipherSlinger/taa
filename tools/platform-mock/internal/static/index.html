@@ -229,11 +229,11 @@
 
   <!-- Training flow: three-column layout -->
   <div class="three-col-layout">
-    <!-- Column 1: File upload / Resource info -->
+    <!-- Column 1: File upload -->
     <section class="card" id="card-upload" style="display:flex; flex-direction:column;">
       <div class="card-head">
         <div>
-          <h2>① 文件上传 / 资源信息</h2>
+          <h2>① 文件上传</h2>
         </div>
         <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap; justify-content:flex-end;">
           <div id="uploadStatusBox" class="status" style="font-size:12px; display:none;">
@@ -241,7 +241,6 @@
             <span id="uploadStatusText"></span>
           </div>
           <button id="uploadBodyBtn" class="secondary" style="padding:6px 12px; font-size:13px;" onclick="openStoredResult('uploadResult')" disabled>查看返回</button>
-          <button id="resourceInfoModalBtn" class="secondary" style="padding:6px 12px; font-size:13px;" onclick="openResourceInfoModal()" disabled>查看目录树</button>
         </div>
       </div>
       <label for="uploadFile">选择文件</label>
@@ -277,17 +276,6 @@
           <button type="button" class="danger" onclick="clearUploadedFiles()" style="padding:3px 8px; font-size:11.5px;">清空所有上传文件</button>
         </div>
         <div id="uploadedFilesList" style="display:flex; flex-direction:column; gap:6px;"></div>
-      </div>
-      <!-- TEE only: the directory-tree probe belongs to the resource-analysis
-           flow, which the FHE chain does not run. -->
-      <div id="card-resourceInfo" data-console="tee" style="border-top: 1px dashed var(--line); margin-top: 14px; padding-top: 14px; display:flex; flex-direction:column;">
-        <label for="resourceInfoUrl">resourceUrl (目录树分析)</label>
-        <input id="resourceInfoUrl" value="http://example.com/data.tar.gz">
-        <div class="actions">
-          <button onclick="testGetResourceInfo()">发送测试</button>
-          <button type="button" class="secondary" onclick="loadSampleResourceTree()">加载示例树</button>
-        </div>
-        <div id="resourceInfoResult" class="test-result"></div>
       </div>
     </section>
 
@@ -459,7 +447,7 @@
     <div class="card-head">
       <div>
         <h2>① 选择评测密钥与数据包</h2>
-        <div class="muted" style="font-size:12.5px; margin-top:4px;">文件来自本 mock 的上传目录（① 文件上传 / 资源信息 一栏上传）</div>
+        <div class="muted" style="font-size:12.5px; margin-top:4px;">文件来自本 mock 的上传目录（① 文件上传一栏上传）</div>
       </div>
       <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap; justify-content:flex-end;">
         <button type="button" class="secondary" style="padding:6px 12px; font-size:13px;" onclick="refreshFheUploadOptions()">刷新文件列表</button>
@@ -683,33 +671,12 @@
   </div>
 </div>
 
-<div id="resourceInfoModal" class="modal-overlay" aria-hidden="true" onclick="if (event.target === this) closeResourceInfoModal();">
-  <div class="modal" style="width:min(1280px, 96%); max-height:min(90vh, 950px); display:flex; flex-direction:column;" role="dialog" aria-modal="true" aria-labelledby="resourceInfoModalTitle">
-    <div class="modal-head">
-      <div style="display:flex; align-items:center; gap:8px;">
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="color:var(--accent);">
-          <rect x="3" y="3" width="7" height="7"></rect>
-          <rect x="14" y="3" width="7" height="7"></rect>
-          <rect x="14" y="14" width="7" height="7"></rect>
-          <rect x="3" y="14" width="7" height="7"></rect>
-        </svg>
-        <h3 id="resourceInfoModalTitle">资源信息目录树 (filetree)</h3>
-      </div>
-      <div class="modal-actions">
-        <button class="secondary" onclick="closeResourceInfoModal()">关闭</button>
-      </div>
-    </div>
-    <div id="resourceInfoModalBody" style="padding:14px; overflow:auto; flex:1; min-height:0; display:flex; flex-direction:column;"></div>
-  </div>
-</div>
-
 <div id="toastContainer" class="toast-container" aria-live="polite"></div>
 
 <script src="/static/js/toast.js"></script>
 <script src="/static/js/drawer.js"></script>
 <script src="/static/js/api.js"></script>
 <script src="/static/js/crypto.js"></script>
-<script src="/static/js/tree.js"></script>
 <script src="/static/js/logs.js"></script>
 <script src="/static/js/llm.js"></script>
 <script src="/static/js/app.js"></script>

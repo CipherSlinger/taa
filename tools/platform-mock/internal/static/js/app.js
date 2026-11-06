@@ -314,7 +314,6 @@ function setupResourceUrlDropZones() {
   const dropTargets = [
     { cardId: 'card-importModel', inputId: 'importModelResourceUrl' },
     { cardId: 'card-import', inputId: 'importResourceUrl' },
-    { cardId: 'card-resourceInfo', inputId: 'resourceInfoUrl' },
   ];
 
   dropTargets.forEach(({ cardId, inputId }) => {
@@ -620,7 +619,6 @@ const RESULT_TITLES = {
   uploadResult: '文件上传返回',
   importResult: '/v1/taa/import 返回',
   importModelResult: '/v1/taa/importModel 返回',
-  resourceInfoResult: '/v1/taa/getResourceInfo 返回',
   switchResult: '/v1/taa/switch 返回',
   attestationResult: '/v1/taa/getAttestation 返回',
   fheSubmitResult: '/api/fhe/submit 返回',
@@ -630,7 +628,6 @@ const RESULT_INTERACTION_KEYS = {
   uploadResult: 'upload',
   importResult: 'import',
   importModelResult: 'importModel',
-  resourceInfoResult: 'resourceInfo',
   switchResult: 'switch',
   attestationResult: 'attestation',
   fheSubmitResult: 'fheSubmit',
@@ -785,15 +782,6 @@ function showResult(elId, ok, text) {
     btnGroup.style.gap = '6px';
     btnGroup.style.alignItems = 'center';
 
-    if (elId === 'resourceInfoResult' && ok && typeof resourceInfoReportData !== 'undefined' && resourceInfoReportData) {
-      const treeBtn = document.createElement('button');
-      treeBtn.type = 'button';
-      treeBtn.className = 'success result-body-btn';
-      treeBtn.textContent = '查看目录树';
-      treeBtn.onclick = () => openResourceInfoModal();
-      btnGroup.appendChild(treeBtn);
-    }
-
     const btn = document.createElement('button');
     btn.type = 'button';
     btn.className = 'secondary result-body-btn';
@@ -806,11 +794,7 @@ function showResult(elId, ok, text) {
 
     const note = document.createElement('div');
     note.className = 'result-note';
-    if (elId === 'resourceInfoResult' && ok && typeof resourceInfoReportData !== 'undefined' && resourceInfoReportData) {
-      note.textContent = '点击“查看目录树”弹窗浏览完整资源结构，点击“查看返回”查看原始数据。';
-    } else {
-      note.textContent = text ? '完整返回已收起到抽屉中。' : '暂无返回内容。';
-    }
+    note.textContent = text ? '完整返回已收起到抽屉中。' : '暂无返回内容。';
     el.appendChild(row);
     el.appendChild(note);
   }

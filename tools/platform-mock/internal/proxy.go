@@ -74,8 +74,6 @@ func requestComponentFromPath(path string) string {
 		return "taaLog"
 	case strings.HasPrefix(path, "/v1/taa/status") || strings.HasPrefix(path, "/api/taa/status"):
 		return "taa-status"
-	case strings.HasPrefix(path, "/v1/taa/getResourceInfo") || strings.HasPrefix(path, "/api/taa/getResourceInfo"):
-		return "taa-resourceInfo"
 	case strings.HasPrefix(path, "/v1/taa/stopTraining") || strings.HasPrefix(path, "/api/taa/stopTraining"):
 		return "taa-stopTraining"
 	case strings.HasPrefix(path, "/api/upload") || strings.HasPrefix(path, "/api/uploads"):

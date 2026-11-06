@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"io"
 	"mime/multipart"
-	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -177,42 +176,6 @@ func TestReportAuditStatusIncludesRequestID(t *testing.T) {
 	}
 	if !json.Valid([]byte(state.RawBody)) {
 		t.Fatalf("raw body is not JSON: %q", state.RawBody)
-	}
-}
-
-func TestTAAGetResourceInfoProxy(t *testing.T) {
-	registerTestTAAKey(t)
-	ln, err := net.Listen("tcp4", "127.0.0.1:0")
-	if err != nil {
-		t.Skipf("network listeners unavailable: %v", err)
-	}
-	taa := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/v1/taa/getResourceInfo" {
-			t.Fatalf("path = %s, want /v1/taa/getResourceInfo", r.URL.Path)
-		}
-		if r.Method != http.MethodPost {
-			t.Fatalf("method = %s, want POST", r.Method)
-		}
-		body, _ := io.ReadAll(r.Body)
-		if !strings.Contains(string(openAsTAA(t, body)), "sample.tar.gz") {
-			t.Fatalf("sealed body = %s, want to open to a body containing resourceUrl", body)
-		}
-		writeEnvelope(w, http.StatusOK, "success", map[string]any{"total_samples": 2000}, 0)
-	}))
-	taa.Listener = ln
-	taa.Start()
-	defer taa.Close()
-
-	handler := taaGetResourceInfoHandler(testManagerWith(t, "", func(b *instanceStores) { b.setTarget(taa.URL) }))
-	req := httptest.NewRequest(http.MethodPost, "/api/taa/getResourceInfo", strings.NewReader(`{"resourceUrl":"http://example.com/sample.tar.gz"}`))
-	req.Header.Set("Content-Type", "application/json")
-	w := httptest.NewRecorder()
-	handler(w, req)
-	if w.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200; body=%s", w.Code, w.Body.String())
-	}
-	if !strings.Contains(w.Body.String(), "total_samples") {
-		t.Fatalf("response body = %s, want to contain total_samples", w.Body.String())
 	}
 }
 
@@ -1041,7 +1004,6 @@ func TestStaticAssetsServing(t *testing.T) {
 		"/static/js/drawer.js",
 		"/static/js/api.js",
 		"/static/js/crypto.js",
-		"/static/js/tree.js",
 		"/static/js/logs.js",
 		"/static/js/app.js",
 	}
@@ -2059,7 +2021,6 @@ func TestIndexHTMLModalTabsAndLegacySectionRemoval(t *testing.T) {
 		"recordInteraction('health'",
 		"recordInteraction('attestation'",
 		"recordInteraction('switch'",
-		"recordInteraction('resourceInfo'",
 		"recordInteraction('upload'",
 		"recordInteraction('importModel'",
 		"recordInteraction('import'",
@@ -2077,7 +2038,7 @@ func TestIndexHTMLModalTabsAndLegacySectionRemoval(t *testing.T) {
 	}
 }
 
-func TestResourceInfoMergedUnderUploadColumn(t *testing.T) {
+func TestUploadColumnLayout(t *testing.T) {
 	if strings.Contains(indexHTML, `<div class="four-col-layout">`) {
 		t.Fatal("indexHTML should no longer use four-col-layout for the main cards grid")
 	}
@@ -2088,24 +2049,11 @@ func TestResourceInfoMergedUnderUploadColumn(t *testing.T) {
 		t.Fatal("indexHTML should no longer use five-col-layout for the main cards grid")
 	}
 
-	uploadIdx := strings.Index(indexHTML, `id="card-upload"`)
-	if uploadIdx == -1 {
-		t.Fatal("indexHTML missing id=\"card-upload\"")
+	if strings.Contains(indexHTML, `id="card-resourceInfo"`) {
+		t.Fatal("the resourceUrl directory-tree module should be removed from the upload card")
 	}
-	resourceInfoIdx := strings.Index(indexHTML, `id="card-resourceInfo"`)
-	if resourceInfoIdx == -1 {
-		t.Fatal("indexHTML missing id=\"card-resourceInfo\"")
-	}
-	if uploadIdx >= resourceInfoIdx {
-		t.Fatalf("card-upload (index %d) should appear before card-resourceInfo (index %d)", uploadIdx, resourceInfoIdx)
-	}
-
-	modelIdx := strings.Index(indexHTML, `id="card-importModel"`)
-	if modelIdx == -1 {
-		t.Fatal("indexHTML missing id=\"card-importModel\"")
-	}
-	if resourceInfoIdx >= modelIdx {
-		t.Fatalf("card-resourceInfo (index %d) should be in the first column before card-importModel (index %d)", resourceInfoIdx, modelIdx)
+	if strings.Contains(indexHTML, `id="resourceInfoModalBtn"`) {
+		t.Fatal("the 查看目录树 entry point should be removed from the upload card")
 	}
 }
 
@@ -2149,15 +2097,6 @@ func TestConsolidatedCardsAndRemovedHints(t *testing.T) {
 	}
 	if strings.Contains(indexHTML, `id="card-export"`) {
 		t.Fatal("indexHTML should have removed standalone card-export")
-	}
-
-	resourceInfoIdx := strings.Index(indexHTML, `id="card-resourceInfo"`)
-	if resourceInfoIdx == -1 {
-		t.Fatal("indexHTML missing id=\"card-resourceInfo\" sub-section")
-	}
-	if !(uploadIdx < resourceInfoIdx && resourceInfoIdx < modelIdx) {
-		t.Fatalf("card-resourceInfo (%d) should be inside card-upload before card-importModel (%d)",
-			resourceInfoIdx, modelIdx)
 	}
 
 	// Verify removed notes

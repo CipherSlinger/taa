@@ -162,7 +162,6 @@ func NewServer(cfg Config) *Server {
 	mux.HandleFunc("/api/request-logs/status", requestLogsStatusHandler)
 	mux.HandleFunc("/api/request-logs/reset", requestLogsResetHandler)
 	mux.HandleFunc("/api/taa/status", taaStatusHandler(mgr))
-	mux.HandleFunc("/api/taa/getResourceInfo", taaGetResourceInfoHandler(mgr))
 	mux.HandleFunc("/api/taa/stopTraining", taaStopTrainingHandler(mgr))
 
 	// Serve uploaded files
