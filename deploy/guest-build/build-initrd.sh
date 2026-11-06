@@ -1136,20 +1136,37 @@ render_package() {
   add_kernel_param required "$TAA_REQUIRED"
   add_kernel_param require_attestation "$TAA_REQUIRE_ATTESTATION"
 
-  local -a param_args=()
-  local param
-  for param in ${kernel_params[@]+"${kernel_params[@]}"}; do
-    param_args+=(--param "$param")
-  done
-
   rm -rf "$out_dir"
   mkdir -p "$out_dir/config" "$out_dir/k8s"
+
+  # The one file an operator is meant to edit on the target host. install.sh
+  # re-renders the Kata config from it, so changing a platform address, docker
+  # id or endpoint is one edit plus a re-run -- no rebuild, no re-upload, and the
+  # initrd's bytes (and therefore its measurement) stay as they are. The format
+  # is the command line itself rather than `NAME=value` env syntax: it is not
+  # sourceable, and what it holds is exactly what the kernel will be given.
+  {
+    cat <<'IDENTITY'
+# TAA 部署身份：每行一个 `taa.<key>=<value>`，原样写进内核命令行。
+# 改完本文件后重新执行 `sudo bash install.sh` 即生效：install.sh 会按它重新
+# 渲染 config/kata-config.toml 并重建测试 Pod，不需要回构建机重新 render。
+# 只允许下列 10 个键；值不能含空白字符；删掉一行就是去掉对应参数。
+#   taa.platform_ip  taa.docker_id  taa.platform_public_key  taa.platform_sm2_id
+#   taa.contract_id  taa.contract_type  taa.llm_endpoint  taa.addr
+#   taa.required  taa.require_attestation
+# 不要在这里放密钥：内核命令行在宿主机的 `ps` 与日志里可见。
+IDENTITY
+    local param
+    for param in ${kernel_params[@]+"${kernel_params[@]}"}; do
+      printf '%s\n' "$param"
+    done
+  } > "$out_dir/config/identity.txt"
 
   python3 "$RENDER_DIR/render.py" kata-config \
     --template "$template" \
     --section "$KATA_HYPERVISOR_SECTION" \
     --bundle-dir "$REMOTE_BUNDLE_DIR" \
-    ${param_args[@]+"${param_args[@]}"} \
+    --param-file "$out_dir/config/identity.txt" \
     --out "$out_dir/$PACKAGE_KATA_CONFIG"
 
   python3 "$RENDER_DIR/render.py" containerd-fragment \
@@ -1241,6 +1258,8 @@ render_package() {
     printf 'REMOTE_KATA_CONFIG=%q\n' "$REMOTE_KATA_CONFIG"
     printf 'CONTAINERD_CONFIG=%q\n' "$CONTAINERD_CONFIG"
     printf 'PACKAGE_KATA_CONFIG=%q\n' "$PACKAGE_KATA_CONFIG"
+    printf 'KATA_HYPERVISOR_SECTION=%q\n' "$KATA_HYPERVISOR_SECTION"
+    printf 'PACKAGE_IDENTITY_FILE=%q\n' "config/identity.txt"
     printf 'KATA_CONFIG_TEMPLATE_SRC=%q\n' "$REMOTE_KATA_CONFIG_SRC"
     printf 'KATA_CONFIG_TEMPLATE_SHA256=%q\n' "$template_sha"
     printf 'BASE_INITRD_SRC=%q\n' "$REMOTE_BASE_INITRD_SRC"
@@ -1324,8 +1343,10 @@ MEASURE
 - \`config/containerd-runtime-handler.toml\` — containerd handler 片段（供审阅）
 - \`k8s/runtimeclass.yaml\` / \`k8s/test-pod.yaml\` — 运行时类与测试 Pod
 - \`install.sh\` / \`render.py\` / \`measure.py\` — 安装脚本、合并器与度量计算器
+- \`config/identity.txt\` — **可在宿主机上编辑的部署身份**（见下文）
 - \`manifest.env\` — 本次交付的全部参数与度量输入
-- \`SHA256SUMS\` — 包内文件校验和
+- \`SHA256SUMS\` — 不可变文件的校验和（\`config/identity.txt\` 与由它渲染的
+  \`$PACKAGE_KATA_CONFIG\` 不在其中，这两个文件本来就允许在宿主机上改）
 $([[ -f "$out_dir/cmdline.txt" ]] && echo '- `cmdline.txt` — 计算预期度量所用的 QEMU `-append` 原文')
 
 ## 前置条件
@@ -1349,16 +1370,39 @@ sudo bash install.sh
 \`/root/taa-images/package\`），install.sh 不会再往 \`/etc\` 拷一份：包就是宿主机上
 唯一的副本，删除或替换它之前必须先把 runtime handler 摘掉。
 
-## 部署身份
+## 部署身份（在宿主机上改）
 
-平台地址、dockerId、平台公钥、LLM 端点等身份写在 \`$PACKAGE_KATA_CONFIG\` 的
-\`kernel_params\` 里（\`taa.<key>=<value>\` 令牌）。guest 内的 taa-init 从
-\`/proc/cmdline\` 读回它们，覆盖镜像里烘焙的 \`/etc/default/taa.env\`。
+平台地址、dockerId、平台公钥、LLM 端点等身份，每行一个 \`taa.<key>=<value>\`
+写在 \`config/identity.txt\` 里。install.sh 用它重新渲染 \`$PACKAGE_KATA_CONFIG\`
+的 \`kernel_params\`，guest 内的 taa-init 再从 \`/proc/cmdline\` 读回这些值，覆盖
+镜像里烘焙的 \`/etc/default/taa.env\`。
 
-所以换这些变量只需重新 render 再 install（\`./deploy-taa-vm.sh launch\`），
-不必重建 initrd，镜像侧的度量因此保持不变。内核命令行本身也在 CSV2 度量范围内，
-身份仍被 MEASUREMENT 覆盖；但它在宿主机的 QEMU \`-append\` 里可见，所以密钥类
-内容不应走这条通路。
+所以换一台平台、换一个 dockerId 或者换一个 LLM 端点，只需要在宿主机上：
+
+\`\`\`bash
+vi $(basename "$out_dir")/config/identity.txt
+sudo bash install.sh
+\`\`\`
+
+install.sh 会重渲染配置、删掉旧 Pod 再重建（新 Pod 才会带上新的命令行），
+不需要回构建机重新 render，也不需要重建 initrd。identity.txt 里删掉一行，
+对应的参数就会从命令行上消失。
+
+只允许这 10 个键，写错键名、重复键、空值或含空白字符的值都会让 install.sh
+直接报错退出，不会带上一个 guest 会静默忽略的参数：
+
+\`\`\`
+taa.platform_ip  taa.docker_id  taa.platform_public_key  taa.platform_sm2_id
+taa.contract_id  taa.contract_type  taa.llm_endpoint  taa.addr
+taa.required  taa.require_attestation
+\`\`\`
+
+内核命令行本身也在 CSV2 度量范围内，所以改身份改的是 MEASUREMENT：install.sh
+第 7 步会按当前配置重算预期值，再与 QEMU 实际的 \`-append\` 比对。同时它在宿主机的
+\`ps\` 与 QEMU 日志里可见，密钥类内容不要走这条通路。
+
+身份只在新建 Pod 时被 QEMU 读入：install.sh 会删掉旧 Pod 再重建，新身份在重建
+的 Pod 上生效；其他已经在运行的 Pod 不受影响。
 
 ## 使用
 
@@ -1374,7 +1418,11 @@ spec:
 $measure_section
 EOF
 
-  (cd "$out_dir" && find . -type f ! -name SHA256SUMS -print0 |
+  # The editable identity file and the config rendered from it are excluded:
+  # both are supposed to change on the target host, and install.sh refuses to
+  # run if any *immutable* file differs from its recorded digest.
+  (cd "$out_dir" && find . -type f ! -name SHA256SUMS \
+    ! -path "./config/identity.txt" ! -path "./$PACKAGE_KATA_CONFIG" -print0 |
     LC_ALL=C sort -z | xargs -0 sha256sum > SHA256SUMS)
 
   echo "交付包: $out_dir"

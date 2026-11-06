@@ -128,8 +128,8 @@ Commands:
   up            生成 initrd -> 上传部署 -> 配置并拉起测试 Pod -> 验证 TAA（推荐入口）
   build         只构建本地 initrd（等价于 build-initrd.sh build）
   deploy        只上传并安装远程 bundle（等价于 build-initrd.sh deploy）
-  render        只在本地生成交付包（Kata 配置 / containerd handler / K8s YAML /
-                安装脚本 / 校验和），不访问宿主机
+  render        只在本地生成交付包（Kata 配置 / 可编辑的部署身份 / containerd
+                handler / K8s YAML / 安装脚本 / 校验和），不访问宿主机
   launch        本地渲染 -> 上传 -> 在远端安装并拉起测试 Pod
   fetch-base    从远端拉取权威 base 资产（等价于 build-initrd.sh fetch-base）
   verify        只读校验：TCP 探活 + 启动日志里的证明自检结论
@@ -158,7 +158,7 @@ Environment:
   TAA_PLATFORM_KEY_FILE=<file>           （可选；默认 .local/platform-mock/platform-key.json，
                                           未给 PLATFORM_PUBLIC_KEY 时从这里读 publicKeyHex）
   TAA_PLATFORM_SM2_ID / TAA_CONTRACT_ID / TAA_CONTRACT_TYPE
-                                          （可选，一并烘焙进 guest 的 /etc/default/taa.env）
+                                          （可选，随身份写进交付包的 config/identity.txt）
   RUNTIME_HANDLER=$RUNTIME_HANDLER
   REMOTE_KATA_CONFIG=$REMOTE_KATA_CONFIG
                                           （runtime handler 的 ConfigPath；默认就是交付包里的
@@ -179,6 +179,10 @@ Layout on the host (defaults):
 
   launch 完成后交付包会保留，重建测试 Pod 只需在该宿主机上执行：
     sudo bash $REMOTE_PACKAGE_DIR/install.sh
+
+  换部署身份（平台地址 / dockerId / 公钥 / LLM 端点 …）不需要回到本机重新 render：
+  在宿主机上编辑 $REMOTE_PACKAGE_DIR/config/identity.txt，再跑一次 install.sh 即可。
+  它会按该文件重渲染 $PACKAGE_KATA_CONFIG、重算预期度量，并删旧 Pod 后重建。
 
 CoCo note: on this host a CoCo Pod also needs the cc_init_data annotation, or the
 in-guest CDH cannot pull the image and the Pod lands in StartError. 'up' and

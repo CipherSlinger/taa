@@ -2,9 +2,14 @@
 # Install the TAA-in-initrd delivery package on a Kata CSV2 host.
 #
 # The package is produced by `build-initrd.sh render` (or by `launch`, which
-# renders the same files first). This script never generates anything: it
-# verifies the package and the host, installs the rendered Kata config, merges
-# the containerd runtime handler, and creates the test Pod.
+# renders the same files first). This script verifies the package and the host,
+# re-renders the Kata config from the editable `config/identity.txt`, installs
+# it, merges the containerd runtime handler, and creates the test Pod.
+#
+# To change the deployment identity (platform address, docker id, public key,
+# LLM endpoint, ...) edit config/identity.txt and re-run this script. No
+# rebuild and no re-upload: the initrd's bytes, and with them its measurement
+# basis, stay as they are; only the measured kernel command line changes.
 #
 # Usage: sudo bash install.sh [--dry-run] [--skip-template-check] [--skip-base-check]
 set -euo pipefail
@@ -21,7 +26,7 @@ for arg in "$@"; do
     --skip-template-check) skip_template_check=1 ;;
     --skip-base-check) skip_base_check=1 ;;
     -h|--help)
-      sed -n '2,11p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+      sed -n '2,/^set -euo pipefail$/p' "${BASH_SOURCE[0]}" | sed '$d' | sed 's/^# \{0,1\}//'
       exit 0
       ;;
     *)
@@ -37,6 +42,22 @@ if [[ ! -f "$manifest" ]]; then
 fi
 # Every value is %q-quoted by the renderer, so source is safe.
 source "$manifest"
+
+kata_section="${KATA_HYPERVISOR_SECTION:-hypervisor.qemu}"
+identity_file="$pkg_dir/${PACKAGE_IDENTITY_FILE:-config/identity.txt}"
+
+tmp_kata_config=""
+tmp_containerd=""
+containerd_backup=""
+append_file=""
+cleanup() {
+  if [[ -n "$tmp_kata_config" ]]; then rm -f "$tmp_kata_config"; fi
+  if [[ -n "$tmp_containerd" ]]; then rm -f "$tmp_containerd"; fi
+  if [[ -n "$append_file" ]]; then rm -f "$append_file"; fi
+  if [[ -n "$containerd_backup" ]]; then sudo rm -f "$containerd_backup" || true; fi
+  return 0
+}
+trap cleanup EXIT
 
 run() {
   if [[ "$dry_run" == "1" ]]; then
@@ -149,8 +170,36 @@ if [[ -n "$TEST_NODE_NAME" ]]; then
 fi
 
 echo
-echo "== 2. Kata 配置 =="
+echo "== 2. Kata 配置（按 config/identity.txt 重新渲染）=="
 package_kata_config="$pkg_dir/$PACKAGE_KATA_CONFIG"
+if [[ ! -f "$package_kata_config" ]]; then
+  echo "error: 包内 Kata 配置缺失: $package_kata_config" >&2
+  exit 1
+fi
+
+if [[ -f "$identity_file" ]]; then
+  echo "部署身份 (config/identity.txt):"
+  grep -vE '^[[:space:]]*(#|$)' "$identity_file" | sed 's/^/  /'
+  tmp_kata_config="$(mktemp /tmp/kata-config.taa.XXXXXX.toml)"
+  if ! python3 "$pkg_dir/render.py" kata-config \
+    --template "$package_kata_config" \
+    --section "$kata_section" \
+    --bundle-dir "$REMOTE_BUNDLE_DIR" \
+    --param-file "$identity_file" \
+    --out "$tmp_kata_config"; then
+    echo "error: 按 config/identity.txt 渲染 Kata 配置失败，未改动宿主配置" >&2
+    exit 1
+  fi
+  if cmp -s "$tmp_kata_config" "$package_kata_config"; then
+    echo "与交付时一致，Kata 配置无需更新"
+  else
+    echo "身份已修改，更新 $PACKAGE_KATA_CONFIG"
+    run sudo install -o root -g root -m 0644 "$tmp_kata_config" "$package_kata_config"
+  fi
+else
+  echo "warning: 包内没有 config/identity.txt，沿用交付时的 Kata 配置" >&2
+fi
+
 if [[ "$package_kata_config" -ef "$REMOTE_KATA_CONFIG" ]]; then
   # The handler points at the packaged file itself: there is nothing to install,
   # and install(1) would refuse anyway ("are the same file"). This is the layout
@@ -161,22 +210,11 @@ else
   run sudo install -o root -g root -m 0644 "$package_kata_config" "$REMOTE_KATA_CONFIG"
 fi
 echo "Kata guest assets in $REMOTE_KATA_CONFIG:"
-grep -nE '^[[:space:]]*(kernel|initrd|firmware|kernel_params)[[:space:]]*=' "$pkg_dir/$PACKAGE_KATA_CONFIG"
+grep -nE '^[[:space:]]*(kernel|initrd|firmware|kernel_params)[[:space:]]*=' "$package_kata_config"
 
 echo
 echo "== 3. 合并 containerd runtime handler =="
 tmp_containerd="$(mktemp /tmp/containerd-config.taa.XXXXXX.toml)"
-containerd_backup=""
-cleanup() {
-  rm -f "$tmp_containerd"
-  if [[ -n "${append_file:-}" ]]; then
-    rm -f "$append_file"
-  fi
-  if [[ -n "$containerd_backup" ]]; then
-    sudo rm -f "$containerd_backup" || true
-  fi
-}
-trap cleanup EXIT
 
 cp "$CONTAINERD_CONFIG" "$tmp_containerd"
 python3 "$pkg_dir/render.py" containerd-merge \
@@ -265,8 +303,45 @@ fi
 
 echo
 echo "== 7. 度量核对 =="
-if [[ -z "${MEASUREMENT_HEX:-}" ]]; then
-  echo "包内未包含预期 MEASUREMENT，跳过核对"
+# The delivered expectation describes the delivered identity. If identity.txt was
+# edited on this host, that value is for a command line this host will never
+# boot, so the expected value is recomputed from the config that was just
+# installed. Otherwise the package value is kept: comparing against a number
+# fixed at build time is a stronger check than comparing two recomputations.
+expected_hex="${MEASUREMENT_HEX:-}"
+expected_note="包内预期值"
+expected_cmdline=""
+smp_args=()
+[[ -n "${MEASUREMENT_SMP:-}" ]] && smp_args=(--smp "$MEASUREMENT_SMP")
+if expected_cmdline="$(python3 "$pkg_dir/measure.py" cmdline \
+    --config "$package_kata_config" --section "$kata_section" \
+    ${smp_args[@]+"${smp_args[@]}"} 2>/dev/null)"; then
+  :
+else
+  expected_cmdline=""
+fi
+if [[ -n "$expected_cmdline" && "$expected_cmdline" != "${MEASUREMENT_CMDLINE:-}" ]]; then
+  expected_file="$(mktemp /tmp/taa-expected.XXXXXX.txt)"
+  printf '%s\n' "$expected_cmdline" > "$expected_file"
+  if expected_out="$(python3 "$pkg_dir/measure.py" digest \
+    --ovmf "$REMOTE_BUNDLE_DIR/OVMF.fd" \
+    --kernel "$REMOTE_BUNDLE_DIR/vmlinuz" \
+    --initrd "$REMOTE_BUNDLE_DIR/initramfs.img" \
+    --cmdline "$expected_file")"; then
+    expected_hex="$(sed -n 's/^hex=//p' <<<"$expected_out")"
+    if [[ -n "${MEASUREMENT_HEX:-}" ]]; then
+      expected_note="按当前 config/identity.txt 重算"
+      echo "部署身份与交付时不同，预期度量按当前配置重算: $expected_hex"
+    else
+      expected_note="本机按当前配置重算（包内未提供预期值）"
+      echo "包内未提供预期度量，按当前配置在本机重算: $expected_hex"
+    fi
+  fi
+  rm -f "$expected_file"
+fi
+
+if [[ -z "$expected_hex" ]]; then
+  echo "无可用预期 MEASUREMENT（包内没有，也无法从当前配置重算），跳过核对"
 else
   qpid="$(ps -eo pid=,args= | grep -F qemu | grep -F "$REMOTE_BUNDLE_DIR/initramfs.img" |
     grep -v grep | awk '{print $1}' | head -n 1 || true)"
@@ -292,15 +367,15 @@ else
       actual_b64="$(sed -n 's/^base64=//p' <<<"$actual_measure")"
       if [[ -z "$actual_hex" ]]; then
         :
-      elif [[ "$actual_hex" == "$MEASUREMENT_HEX" ]]; then
+      elif [[ "$actual_hex" == "$expected_hex" ]]; then
         echo "实际 MEASUREMENT (hex):    $actual_hex"
         echo "实际 MEASUREMENT (base64): $actual_b64"
-        echo "与包内预期一致"
+        echo "与实际启动的 VM 一致（$expected_note）"
       else
         echo "实际 MEASUREMENT (hex):    $actual_hex"
         echo "实际 MEASUREMENT (base64): $actual_b64"
-        echo "warning: 实际度量与本包预期不一致" >&2
-        echo "  预期 hex: $MEASUREMENT_HEX" >&2
+        echo "warning: 实际度量与预期不一致（$expected_note）" >&2
+        echo "  预期 hex: $expected_hex" >&2
         echo "  实际 cmdline: $(cat "$append_file")" >&2
         echo "hint: 以实际 cmdline 的重算结果为准；若宿主升级了 Kata，请重新 render" >&2
       fi

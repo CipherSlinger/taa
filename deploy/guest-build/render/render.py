@@ -15,6 +15,23 @@ from pathlib import Path
 
 RDINIT = "rdinit=/usr/local/bin/taa-init"
 
+# The identity keys taa-init reads back from /proc/cmdline. Kept here so the
+# package's editable identity file cannot grow a key the guest would silently
+# ignore, and so a re-render can drop the whole set before applying the file
+# (deleting a line has to delete the parameter, not leave a stale one behind).
+IDENTITY_KEYS = (
+    "platform_ip",
+    "docker_id",
+    "platform_public_key",
+    "platform_sm2_id",
+    "contract_id",
+    "contract_type",
+    "llm_endpoint",
+    "addr",
+    "required",
+    "require_attestation",
+)
+
 
 def toml_string(value):
     return json.dumps(value)
@@ -60,7 +77,45 @@ def active_key(line, key):
     return not stripped.startswith("#") and re.match(rf"^\s*{re.escape(key)}\s*=", line)
 
 
-def render_kata_config(template, section, bundle_dir, out, extra_params=()):
+def read_identity_file(path):
+    """Parse a `taa.<key>=<value>` file into kernel parameters.
+
+    One token per line; blank lines and `#` comments are ignored. The format is
+    the command line itself rather than `NAME=value` env syntax on purpose: the
+    file is not sourceable, so a stray edit cannot end up exported in a shell,
+    and what it holds is exactly what the kernel will be given.
+
+    Validation is strict -- unknown key, duplicate key, empty or whitespace-
+    bearing value are all fatal. A typo must fail the install, not become a
+    parameter the guest drops on the floor while everything else looks fine.
+    """
+    tokens = []
+    seen = set()
+    for lineno, raw in enumerate(Path(path).read_text().splitlines(), 1):
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        key, sep, value = line.partition("=")
+        if not sep:
+            raise SystemExit(f"{path}:{lineno}: missing '=': {raw!r}")
+        if not key.startswith("taa.") or key[len("taa."):] not in IDENTITY_KEYS:
+            raise SystemExit(
+                f"{path}:{lineno}: unknown identity key: {key} "
+                f"(allowed: {', '.join('taa.' + k for k in IDENTITY_KEYS)})"
+            )
+        if not value:
+            raise SystemExit(f"{path}:{lineno}: empty value for {key}")
+        if any(ch.isspace() for ch in value):
+            raise SystemExit(f"{path}:{lineno}: whitespace in the value for {key}")
+        if key in seen:
+            raise SystemExit(f"{path}:{lineno}: duplicate key: {key}")
+        seen.add(key)
+        tokens.append(line)
+    return tokens
+
+
+def render_kata_config(template, section, bundle_dir, out, extra_params=(),
+                       replace_identity=False):
     """Point one hypervisor section at the TAA bundle; leave everything else."""
     path = Path(template)
     lines = path.read_text().splitlines()
@@ -75,9 +130,15 @@ def render_kata_config(template, section, bundle_dir, out, extra_params=()):
         A re-render must be idempotent: appending blindly would stack one
         `taa.platform_ip=` per render, and the last one happens to win only by
         luck (the guest parser would take whichever came last).
+
+        With replace_identity the whole identity set is dropped first, so a key
+        deleted from the editable identity file disappears from the command line
+        instead of surviving with its previous value.
         """
-        extra_keys = {p.split("=", 1)[0] for p in extra_params}
-        kept = [p for p in params if p.split("=", 1)[0] not in extra_keys]
+        drop = {p.split("=", 1)[0] for p in extra_params}
+        if replace_identity:
+            drop |= {"taa." + key for key in IDENTITY_KEYS}
+        kept = [p for p in params if p.split("=", 1)[0] not in drop]
         return kept + list(extra_params)
 
     def emit_missing():
@@ -307,6 +368,12 @@ def main(argv=None):
         help="extra kernel parameter, repeatable; replaces an existing one with "
         "the same key so a re-render cannot duplicate tokens",
     )
+    kata.add_argument(
+        "--param-file",
+        metavar="PATH",
+        help="file of `taa.<key>=<value>` lines; replaces the whole identity set, "
+        "so a removed line also removes the parameter",
+    )
     kata.add_argument("--out", required=True)
 
     merge = sub.add_parser("containerd-merge", help="add or replace the runtime handler")
@@ -341,8 +408,16 @@ def main(argv=None):
     args = parser.parse_args(argv)
 
     if args.command == "kata-config":
+        params = list(args.param)
+        if args.param_file:
+            params += read_identity_file(args.param_file)
         render_kata_config(
-            args.template, args.section, args.bundle_dir, args.out, args.param
+            args.template,
+            args.section,
+            args.bundle_dir,
+            args.out,
+            params,
+            replace_identity=bool(args.param_file),
         )
     elif args.command == "containerd-merge":
         containerd_merge(

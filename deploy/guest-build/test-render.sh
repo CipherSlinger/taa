@@ -131,7 +131,7 @@ identity_params="taa.platform_ip=172.16.10.116:18080 taa.docker_id=fixture-docke
 pkg="$tmp_dir/a/pkg"
 env "${common_env[@]}" DIST_DIR="$pkg" REMOTE_HOST=invalid.invalid "$BUILD" render >/dev/null
 
-for f in config/kata-config.toml config/containerd-runtime-handler.toml \
+for f in config/kata-config.toml config/identity.txt config/containerd-runtime-handler.toml \
          k8s/runtimeclass.yaml k8s/test-pod.yaml manifest.env SHA256SUMS \
          install.sh render.py measure.py cmdline.txt README.md; do
   if [[ -f "$pkg/$f" ]]; then
@@ -175,6 +175,64 @@ check "kata: a re-render does not stack tokens" "1" \
   "$(grep -o 'taa\.platform_ip=' "$tmp_dir/kata-again.toml" | wc -l)"
 check_contains "kata: a re-render carries the new value" 'taa.platform_ip=10.0.0.1' "$again"
 check_absent "kata: a re-render drops the old value" 'taa.platform_ip=172.16.10.116:18080' "$again"
+
+# ── 2b. the editable identity file ─────────────────────────────────────────
+# The package ships one file an operator is meant to edit on the target host;
+# install.sh re-renders the Kata config from it. What matters here is that the
+# file round-trips into exactly the command line the build rendered, that edits
+# take effect, and that a bad line fails instead of becoming a token the guest
+# silently drops while the install reports success.
+identity_file="$pkg/config/identity.txt"
+check "identity: the package ships config/identity.txt" "present" \
+  "$([[ -f "$identity_file" ]] && echo present || echo absent)"
+check "identity: holds exactly the ten tokens" "$identity_params" \
+  "$(grep -vE '^[[:space:]]*(#|$)' "$identity_file" | tr '\n' ' ' | sed 's/ $//')"
+
+# Re-rendering from the delivered file must reproduce the delivered config:
+# that is what makes a no-op install a no-op.
+python3 "$RENDER" kata-config --template "$pkg/config/kata-config.toml" \
+  --section hypervisor.qemu --bundle-dir "$bundle" \
+  --param-file "$identity_file" --out "$tmp_dir/kata-from-identity.toml" >/dev/null
+check "identity: re-rendering from the file is byte-identical" "same" \
+  "$(cmp -s "$tmp_dir/kata-from-identity.toml" "$pkg/config/kata-config.toml" && echo same || echo different)"
+
+# Editing a value and deleting a line are the two edits an operator makes. The
+# deleted key must disappear from the command line rather than keep its old
+# value, which is why --param-file replaces the whole identity set.
+edited_identity="$tmp_dir/identity-edited.txt"
+grep -v '^taa\.contract_type=' "$identity_file" |
+  sed 's/^taa.docker_id=.*/taa.docker_id=edited-docker-id/' > "$edited_identity"
+python3 "$RENDER" kata-config --template "$pkg/config/kata-config.toml" \
+  --section hypervisor.qemu --bundle-dir "$bundle" \
+  --param-file "$edited_identity" --out "$tmp_dir/kata-edited.toml" >/dev/null
+edited_cfg="$(cat "$tmp_dir/kata-edited.toml")"
+check_contains "identity: an edited value replaces the old one" 'taa.docker_id=edited-docker-id' "$edited_cfg"
+check_absent "identity: the old value is gone" 'taa.docker_id=fixture-docker-id' "$edited_cfg"
+check_absent "identity: a deleted line removes the parameter" 'taa.contract_type=' "$edited_cfg"
+check "identity: the other keys survive" "9" \
+  "$(grep -o 'taa\.[a-z0-9_]*=' "$tmp_dir/kata-edited.toml" | sort -u | wc -l)"
+
+identity_reject() {
+  local name="$1" body="$2" needle="$3"
+  printf '%s\n' "$body" > "$tmp_dir/identity-bad.txt"
+  rm -f "$tmp_dir/kata-bad-out.toml"
+  local out
+  out="$(python3 "$RENDER" kata-config --template "$pkg/config/kata-config.toml" \
+    --section hypervisor.qemu --bundle-dir "$bundle" \
+    --param-file "$tmp_dir/identity-bad.txt" \
+    --out "$tmp_dir/kata-bad-out.toml" 2>&1 || true)"
+  check_contains "$name" "$needle" "$out"
+  check "  (nothing rendered)" "absent" \
+    "$([[ -e "$tmp_dir/kata-bad-out.toml" ]] && echo present || echo absent)"
+}
+
+identity_reject "identity: an unknown key is refused" 'taa.unknown_key=x' 'unknown identity key'
+identity_reject "identity: env-style names are refused" 'TAA_DOCKER_ID=fixture' 'unknown identity key'
+identity_reject "identity: an empty value is refused" 'taa.docker_id=' 'empty value'
+identity_reject "identity: a whitespace value is refused" 'taa.docker_id=two words' 'whitespace'
+identity_reject "identity: a duplicate key is refused" \
+  $'taa.docker_id=a\ntaa.docker_id=b' 'duplicate key'
+identity_reject "identity: a line without = is refused" 'taa.docker_id' "missing '='"
 
 # The renderer refuses to publish a config that would boot the wrong initrd:
 # an active `image` in the target section wins over the initrd in Kata.
@@ -401,6 +459,35 @@ else
   failures=$((failures + 1))
 fi
 
+# The two files an operator is meant to change are excluded from the checksums,
+# so a host-side identity edit must not look like a tampered package. Everything
+# else stays pinned: the edit is narrow on purpose.
+edited_pkg="$tmp_dir/edited-pkg"
+cp -a "$pkg" "$edited_pkg"
+sed -i 's/^taa\.docker_id=.*/taa.docker_id=host-edited/' "$edited_pkg/config/identity.txt"
+python3 "$edited_pkg/render.py" kata-config --template "$edited_pkg/config/kata-config.toml" \
+  --section hypervisor.qemu --bundle-dir "$bundle" \
+  --param-file "$edited_pkg/config/identity.txt" \
+  --out "$edited_pkg/config/kata-config.toml" >/dev/null
+if (cd "$edited_pkg" && sha256sum -c --quiet SHA256SUMS) >/dev/null 2>&1; then
+  echo "ok   checksums: a host-side identity edit still verifies"
+else
+  echo "FAIL checksums: a host-side identity edit breaks verification" >&2
+  failures=$((failures + 1))
+fi
+check_contains "checksums: the edit reached the rendered config" \
+  'taa.docker_id=host-edited' "$(cat "$edited_pkg/config/kata-config.toml")"
+
+tampered_pkg="$tmp_dir/tampered-pkg"
+cp -a "$pkg" "$tampered_pkg"
+printf '# tampered\n' >> "$tampered_pkg/install.sh"
+if (cd "$tampered_pkg" && sha256sum -c --quiet SHA256SUMS) >/dev/null 2>&1; then
+  echo "FAIL checksums: a modified immutable file should not verify" >&2
+  failures=$((failures + 1))
+else
+  echo "ok   checksums: a modified immutable file is caught"
+fi
+
 # ── 6. determinism ─────────────────────────────────────────────────────────
 pkg_a="$tmp_dir/det-a/pkg"
 pkg_b="$tmp_dir/det-b/pkg"
@@ -432,7 +519,13 @@ check_contains "install.sh: guards the base initrd sha" 'base initrd 与构建�
 check_contains "install.sh: guards every bundle digest" '与本包记录的摘要不一致' "$(cat "$pkg/install.sh")"
 check_contains "install.sh: recomputes MEASUREMENT from the running QEMU" \
   '/proc/$qpid/cmdline' "$(cat "$pkg/install.sh")"
-check_contains "install.sh: compares against the package value" '与包内预期一致' "$(cat "$pkg/install.sh")"
+check_contains "install.sh: compares against the expected value" '与实际启动的 VM 一致' "$(cat "$pkg/install.sh")"
+check_contains "install.sh: re-renders from the editable identity" \
+  '--param-file "$identity_file"' "$(cat "$pkg/install.sh")"
+check_contains "install.sh: recomputes the expectation after an identity edit" \
+  '部署身份与交付时不同' "$(cat "$pkg/install.sh")"
+check_contains "install.sh: recreates the Pod so the new command line takes effect" \
+  'kubectl delete pod' "$(cat "$pkg/install.sh")"
 check_contains "install.sh: verifies the package first" 'sha256sum -c --quiet SHA256SUMS' "$(cat "$pkg/install.sh")"
 check_contains "install.sh: supports dry-run" '--dry-run' "$(cat "$pkg/install.sh")"
 
