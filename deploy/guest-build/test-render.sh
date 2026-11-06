@@ -13,7 +13,6 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
 BUILD="$SCRIPT_DIR/build-initrd.sh"
-DRIVER="$ROOT_DIR/deploy-taa-vm.sh"
 RENDER="$SCRIPT_DIR/render/render.py"
 
 tmp_dir="$(mktemp -d /tmp/test-render.XXXXXX)"
@@ -300,8 +299,7 @@ else
   failures=$((failures + 1))
 fi
 
-# The renderer's strip and the driver's inline stripper are two
-# implementations; removing what merge added must restore the fixture exactly.
+# Removing what merge added must restore the fixture exactly.
 cp "$tmp_dir/merged.toml" "$tmp_dir/restored.toml"
 python3 "$RENDER" containerd-strip --config "$tmp_dir/restored.toml" --handler kata-qemu-csv2-taa
 if cmp -s "$tmp_dir/containerd.original.toml" "$tmp_dir/restored.toml"; then
@@ -309,24 +307,6 @@ if cmp -s "$tmp_dir/containerd.original.toml" "$tmp_dir/restored.toml"; then
 else
   echo "FAIL merge then render.py strip changed the fixture" >&2
   diff -u "$tmp_dir/containerd.original.toml" "$tmp_dir/restored.toml" >&2 || true
-  failures=$((failures + 1))
-fi
-
-block="$(sed -n '/# BEGIN containerd-handler-strip/,/# END containerd-handler-strip/p' "$DRIVER")"
-stripper="$tmp_dir/driver-strip.py"
-printf '%s\n' "$block" | sed -n "/<<'PY'/,/^PY\$/p" | sed '1d;$d' > "$stripper"
-if [[ -s "$stripper" ]]; then
-  cp "$tmp_dir/merged.toml" "$tmp_dir/driver-restored.toml"
-  python3 "$stripper" "$tmp_dir/driver-restored.toml" kata-qemu-csv2-taa
-  if cmp -s "$tmp_dir/containerd.original.toml" "$tmp_dir/driver-restored.toml"; then
-    echo "ok   merge then delete's inline stripper restores the fixture"
-  else
-    echo "FAIL merge then delete's inline stripper changed the fixture" >&2
-    diff -u "$tmp_dir/containerd.original.toml" "$tmp_dir/driver-restored.toml" >&2 || true
-    failures=$((failures + 1))
-  fi
-else
-  echo "FAIL could not extract delete's inline stripper from $DRIVER" >&2
   failures=$((failures + 1))
 fi
 
@@ -551,14 +531,14 @@ check_contains "install.sh: recreates the Pod so the new command line takes effe
 check_contains "install.sh: verifies the package first" 'sha256sum -c --quiet SHA256SUMS' "$(cat "$pkg/install.sh")"
 check_contains "install.sh: supports dry-run" '--dry-run' "$(cat "$pkg/install.sh")"
 
-# ── 8. the driver dispatches render without a preflight ────────────────────
+# ── 8. render reaches the renderer without a host preflight ────────────────
 drv_pkg="$tmp_dir/drv/pkg"
 env "${common_env[@]}" DIST_DIR="$drv_pkg" REMOTE_HOST=invalid.invalid \
-  "$DRIVER" render >/dev/null
+  "$BUILD" render >/dev/null
 if [[ -f "$drv_pkg/config/kata-config.toml" && -f "$drv_pkg/install.sh" ]]; then
-  echo "ok   driver: render reaches the renderer without a host preflight"
+  echo "ok   render reaches the renderer without a host preflight"
 else
-  echo "FAIL driver: render did not produce a package" >&2
+  echo "FAIL render did not produce a package" >&2
   failures=$((failures + 1))
 fi
 

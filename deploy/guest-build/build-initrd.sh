@@ -220,9 +220,7 @@ TEST_POD_NAME="${TEST_POD_NAME:-test-kata-csv2-taa}"
 # Hub -- measured on 2026-10-10: busybox:latest failed with "error sending
 # request for url (https://index.docker.io/...)" after the 180s wait. So the
 # default is an image from the registry on the host itself (the same one the
-# CoCo Pods already running here pull successfully). It also has to carry curl,
-# because `deploy-taa-vm.sh verify` probes TAA from inside the Pod and busybox
-# does not ship it.
+# CoCo Pods already running here pull successfully).
 TEST_IMAGE="${TEST_IMAGE:-172.16.10.178:31313/taa-env:slim-v2-20260916}"
 # A CoCo guest pulls the container image itself through CDH, and it trusts the
 # registry only if the Pod carries the init-data that configures it (on this

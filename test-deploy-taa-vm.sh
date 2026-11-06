@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 # Offline tests for deploy-taa-vm.sh.
 #
-# Scope, stated honestly: this covers the parts that can be exercised without the
-# host. The containerd handler stripper is the highest-value one -- it is the only
-# code in the flow that rewrites a config file the whole node depends on, and a
-# bug there would take other people's Pods down. The remote teardown itself is
-# NOT covered here; it is only ever run through `delete --dry-run` first.
+# The driver is one fixed sequence -- compile TAA, build the initrd, render the
+# package, upload it whole -- with no subcommands, so what can be exercised
+# without a host is the defaults it supplies, the order of the preflight, the
+# compile-before-inject rule and the argv surface. Everything that talks to the
+# host lives in build-initrd.sh; its rendering is covered by test-render.sh.
 #
 #   ./test-deploy-taa-vm.sh
 set -euo pipefail
@@ -41,7 +41,13 @@ check_contains() {
   fi
 }
 
-# ── 1. print-config is sourceable and round-trips ────────────────────────────
+# ── 1. the resolved defaults the driver consumes ─────────────────────────────
+#
+# build-initrd.sh remains the authority and still exposes print-config as its
+# internal interface; the driver evals it, so this is the same view the flow
+# sees. The driver's own defaults are read as source text, since a bare run
+# needs a host.
+driver_src="$(cat "$DRIVER")"
 config="$(REMOTE_USER=root TEST_POD_ANNOTATIONS='{"a.b":"c d"}' "$BUILD" print-config)"
 eval "$config"
 check "print-config: REMOTE_USER override survives" "root" "$REMOTE_USER"
@@ -53,9 +59,9 @@ check "print-config: default annotations are an empty object" "{}" "$TEST_POD_AN
 check "print-config: default handler" "kata-qemu-csv2-taa" "$RUNTIME_HANDLER"
 check_contains "print-config: exposes the Kata config template" "KATA_CONFIG_TEMPLATE=" "$default_config"
 check_contains "print-config: exposes the delivery package directory" "DIST_DIR=" "$default_config"
-# The flow writes host config through sudo all the way through, so the default
-# account has to be one that can. A non-root default needs NOPASSWD sudo set up
-# on the host first, which is exactly the failure this default avoids.
+# The upload writes through sudo on the far side, so the default account has to
+# be one that can. A non-root default needs NOPASSWD sudo set up first, which is
+# exactly the failure this default avoids.
 check "print-config: default remote user is root" "root" "$REMOTE_USER"
 
 # The guest pulls the image itself and has no route to Docker Hub (measured),
@@ -67,163 +73,61 @@ case "$TEST_IMAGE" in
      failures=$((failures + 1)) ;;
 esac
 
-# ── 1b. the test identity the driver supplies ────────────────────────────────
-#
-# `up` is meant to run with no environment set, so a platform address has to be
-# supplied rather than remembered. The platform runs on its own host (not the
-# Kata host), so the default is a literal address on PLATFORM_PORT; the port is
-# what tracks the environment, and an explicit TAA_PLATFORM_IP must win.
-DRIVER="$SCRIPT_DIR/deploy-taa-vm.sh"
-eval "$("$DRIVER" print-config)"
-check "print-config: default platform port" "18080" "${TAA_PLATFORM_IP##*:}"
-if [[ -n "${TAA_PLATFORM_IP%:*}" && "${TAA_PLATFORM_IP%:*}" != "172.16.10.178" ]]; then
-  echo "ok   print-config: the platform is not assumed to run on the Kata host ($TAA_PLATFORM_IP)"
-else
-  echo "FAIL print-config: platform address is empty or follows REMOTE_HOST: $TAA_PLATFORM_IP" >&2
-  failures=$((failures + 1))
-fi
-if [[ -n "$TAA_DOCKER_ID" ]]; then
-  echo "ok   print-config: ships a non-empty docker id ($TAA_DOCKER_ID)"
-else
-  echo "FAIL print-config: docker id default is empty" >&2
-  failures=$((failures + 1))
-fi
-
-eval "$(REMOTE_HOST=10.0.0.9 TAA_PLATFORM_IP=10.0.0.9:28080 TAA_DOCKER_ID=mine "$DRIVER" print-config)"
-check "print-config: overrides beat the defaults" "10.0.0.9:28080 mine" "$TAA_PLATFORM_IP $TAA_DOCKER_ID"
-# The Tier-2 gateway is part of the guest's environment, not the Pod's, so the
-# driver has to supply it; leaving it to the template would bake a stale Pod IP.
-check "print-config: default LLM endpoint is the gateway host" "https://172.16.10.116:8443" "$TAA_LLM_ENDPOINT"
-eval "$(TAA_LLM_ENDPOINT=https://10.0.0.9:9443 "$DRIVER" print-config)"
-check "print-config: TAA_LLM_ENDPOINT override survives" "https://10.0.0.9:9443" "$TAA_LLM_ENDPOINT"
-eval "$(PLATFORM_PORT=28080 "$DRIVER" print-config)"
-check "print-config: PLATFORM_PORT moves the default platform port" "28080" "${TAA_PLATFORM_IP##*:}"
-
-# The whole flow lands under one host directory, so `delete` has a single
-# subtree to own and the packaged install.sh stays available on the host for
-# recreating the Pod. The guest bundle is inside the package -- it is derived
-# from REMOTE_PACKAGE_DIR, not separately configurable -- because the Kata config
-# names those in-package files.
-check "print-config: default install root" "/root/taa-images" "$TAA_IMAGES_DIR"
-check "print-config: package lives under the install root" "$TAA_IMAGES_DIR/package" "$REMOTE_PACKAGE_DIR"
+# The whole flow lands under one host directory, and the guest bundle is inside
+# the package -- derived from REMOTE_PACKAGE_DIR, not separately configurable --
+# because the Kata config names those in-package files.
+check_contains "driver: default install root" 'TAA_IMAGES_DIR="${TAA_IMAGES_DIR:-/root/taa-images}"' "$driver_src"
+check "print-config: package lives under the install root" "/root/taa-images/package" "$REMOTE_PACKAGE_DIR"
 check "print-config: bundle lives inside the package" \
   "$REMOTE_PACKAGE_DIR/bundle" "$REMOTE_BUNDLE_DIR"
-# The same value must reach build-initrd.sh as a child process; an unexported
-# default looks right here and still installs to the old path.
-check_contains "print-config: the package dir is exported to the build" 'export REMOTE_PACKAGE_DIR=' "$(cat "$DRIVER")"
-
 # The handler's ConfigPath points at the packaged copy, so a normal run installs
 # no second Kata config under /etc. The package persists, which is exactly what
 # REMOTE_PACKAGE_DIR means here.
 check "print-config: Kata config is the packaged copy" \
   "$REMOTE_PACKAGE_DIR/config/kata-config.toml" "$REMOTE_KATA_CONFIG"
 
-# The pair has to reach build-initrd.sh, which runs as a child process; an
-# unexported default would look right in print-config and still build an initrd
-# with no identity in it. That path needs the host, so this one is a string
-# check like the guards below rather than a behavioural one.
-drv_src="$(cat "$DRIVER")"
-check_contains "print-config: the identity is exported to the build" 'export TAA_PLATFORM_IP TAA_DOCKER_ID' "$drv_src"
-
-# ── 2. the containerd handler stripper ───────────────────────────────────────
+# ── 1b. the identity defaults the driver supplies ────────────────────────────
 #
-# Extract the program between the marker comments the script carries for exactly
-# this purpose, then run it against a fixture shaped like the host config.
-block="$(sed -n '/# BEGIN containerd-handler-strip/,/# END containerd-handler-strip/p' "$DRIVER")"
-stripper="$tmp_dir/strip.py"
-printf '%s\n' "$block" | sed -n "/<<'PY'/,/^PY\$/p" | sed '1d;$d' > "$stripper"
-if [[ ! -s "$stripper" ]]; then
-  echo "FAIL could not extract the stripper from $DRIVER" >&2
-  exit 1
-fi
-if ! python3 -c 'import ast,sys; ast.parse(open(sys.argv[1]).read())' "$stripper"; then
-  echo "FAIL extracted stripper is not valid python" >&2
-  exit 1
-fi
-echo "ok   extracted the stripper ($(wc -l < "$stripper") lines)"
+# A bare run is meant to work, so the platform address, docker id and LLM
+# endpoint have defaults rather than a remembered environment. These are plain
+# assignments at the top of the driver; the flow itself needs a host, so they
+# are checked as source text.
+check_contains "driver: default platform port" 'PLATFORM_PORT="${PLATFORM_PORT:-18080}"' "$driver_src"
+check_contains "driver: platform address is not the Kata host" \
+  'TAA_PLATFORM_IP="${TAA_PLATFORM_IP:-172.16.10.116:${PLATFORM_PORT}}"' "$driver_src"
+check_contains "driver: ships a docker id" \
+  'TAA_DOCKER_ID="${TAA_DOCKER_ID:-kata-csv2-taa-test-0001}"' "$driver_src"
+# The Tier-2 gateway is part of the guest's environment, not the Pod's, so the
+# driver has to supply it; leaving it to the template would bake a stale Pod IP.
+check_contains "driver: supplies the LLM endpoint" \
+  'TAA_LLM_ENDPOINT="${TAA_LLM_ENDPOINT:-https://172.16.10.116:8443}"' "$driver_src"
+# The identity reaches build-initrd.sh as a child process; an unexported
+# default would look right here and still build an initrd with no identity.
+check_contains "driver: the identity is exported to the build" \
+  'export TAA_PLATFORM_IP TAA_DOCKER_ID TAA_LLM_ENDPOINT' "$driver_src"
+check_contains "driver: the package dir is exported to the build" 'export REMOTE_PACKAGE_DIR=' "$driver_src"
 
-cat > "$tmp_dir/config.toml" <<'TOML'
-version = 2
-
-[plugins."io.containerd.grpc.v1.cri"]
-  sandbox_image = "registry/pause:3.9"
-
-[plugins."io.containerd.grpc.v1.cri".containerd]
-  snapshotter = "overlayfs"
-
-[plugins."io.containerd.grpc.v1.cri".containerd.runtimes."kata-qemu-csv2"]
-  runtime_type = "io.containerd.kata-qemu-csv2.v2"
-  privileged_without_host_devices = true
-
-[plugins."io.containerd.grpc.v1.cri".containerd.runtimes."kata-qemu-csv2".options]
-  ConfigPath = "/opt/kata/share/defaults/kata-containers/configuration-qemu-csv2.toml"
-
-[plugins."io.containerd.grpc.v1.cri".containerd.runtimes."kata-qemu-csv2-taa"]
-  runtime_type = "io.containerd.kata-qemu-csv2.v2"
-  runtime_path = "/opt/kata/bin/containerd-shim-kata-v2"
-  privileged_without_host_devices = true
-  pod_annotations = ["io.katacontainers.*"]
-  snapshotter = "nydus"
-
-[plugins."io.containerd.grpc.v1.cri".containerd.runtimes."kata-qemu-csv2-taa".options]
-  ConfigPath = "/etc/kata-containers/configuration-qemu-csv2-taa.toml"
-
-[plugins."io.containerd.grpc.v1.cri".containerd.runtimes."kata-qemu-hygon-dcu-csv2"]
-  runtime_type = "io.containerd.kata-qemu-hygon-dcu-csv2.v2"
-
-[plugins."io.containerd.grpc.v1.cri".containerd.runtimes."kata-qemu-hygon-dcu-csv2".options]
-  ConfigPath = "/opt/kata/share/defaults/kata-containers/configuration-qemu-hygon-dcu-csv2.toml"
-TOML
-cp "$tmp_dir/config.toml" "$tmp_dir/original.toml"
-
-python3 "$stripper" "$tmp_dir/config.toml" "kata-qemu-csv2-taa"
-result="$(cat "$tmp_dir/config.toml")"
-
-check_contains "stripper: removes the handler's own table" "" "$result"
-if [[ "$result" == *"kata-qemu-csv2-taa"* ]]; then
-  echo "FAIL stripper: our handler still appears in the output" >&2
-  failures=$((failures + 1))
-else
-  echo "ok   stripper: our handler is gone, options table included"
-fi
-check_contains "stripper: keeps the shipped handler" 'runtimes."kata-qemu-csv2"]' "$result"
-check_contains "stripper: keeps the shipped handler's options" 'configuration-qemu-csv2.toml' "$result"
-check_contains "stripper: keeps an unrelated later handler" 'kata-qemu-hygon-dcu-csv2"]' "$result"
-check_contains "stripper: keeps unrelated plugin settings" 'sandbox_image' "$result"
-check_contains "stripper: keeps version = 2" 'version = 2' "$result"
-
-# Removing a handler that is not there must be a no-op: the script relies on
-# that to decide whether containerd needs a restart at all.
-cp "$tmp_dir/original.toml" "$tmp_dir/noop.toml"
-python3 "$stripper" "$tmp_dir/noop.toml" "kata-does-not-exist"
-if cmp -s "$tmp_dir/noop.toml" "$tmp_dir/original.toml"; then
-  echo "ok   stripper: absent handler is a byte-for-byte no-op"
-else
-  echo "FAIL stripper: absent handler changed the file" >&2
-  diff "$tmp_dir/original.toml" "$tmp_dir/noop.toml" >&2 || true
-  failures=$((failures + 1))
-fi
-
-# ...and removing the last block must not leave a trailing blank line, or every
-# later comparison against the backup file would differ for no reason.
-tail -c 1 "$tmp_dir/config.toml" | od -c | grep -q '\\n' &&
-  echo "ok   stripper: output ends with a single newline" ||
-  { echo "FAIL stripper: output does not end with a newline" >&2; failures=$((failures + 1)); }
-
-# ── 3. guards that must be present in the teardown ───────────────────────────
+# ── 2. one behaviour, no subcommands ────────────────────────────────────────
 #
-# These are string checks, not behavioural ones: they prove the guard was not
-# dropped while editing, which is the realistic failure mode.
-driver_src="$(cat "$DRIVER")"
-check_contains "guard: refuses the shipped kata config" 'REMOTE_KATA_CONFIG 指向出厂 Kata 配置' "$driver_src"
-check_contains "guard: refuses the shipped runtime handler" 'RUNTIME_HANDLER 是出厂 handler' "$driver_src"
-check_contains "guard: refuses a shared bundle directory" 'REMOTE_BUNDLE_DIR 指向共享目录' "$driver_src"
-check_contains "guard: refuses a shared package directory" 'REMOTE_PACKAGE_DIR 指向共享目录' "$driver_src"
-check_contains "guard: refuses a runtime still in use" '仍被以下 Pod 使用' "$driver_src"
-check_contains "guard: verifies the original kata config afterwards" '出厂 Kata 配置未变' "$driver_src"
-check_contains "guard: verifies the base initrd afterwards" 'base initrd 未变' "$driver_src"
-check_contains "guard: checks passwordless sudo before mutating" 'passwordless sudo' "$driver_src"
-check_contains "delete defaults to dry-run-able, mutation goes through one point" 'dry-run: %s' "$driver_src"
+# The driver used to dispatch up/push/build/launch/upload/fetch-base/render/
+# verify/delete/print-config. What remains is the push sequence and nothing
+# else; a re-added subcommand would show up as an argv case.
+check_contains "driver: rejects arguments" 'this script takes no arguments' "$driver_src"
+check_contains "driver: supports --help" '--help) usage; exit 0' "$driver_src"
+for removed in 'up)' 'push)' 'verify)' 'delete)' 'print-config)'; do
+  if [[ "$driver_src" == *"  $removed"* ]]; then
+    echo "FAIL driver: the '$removed' command is back" >&2
+    failures=$((failures + 1))
+  else
+    echo "ok   driver: no '$removed' command"
+  fi
+done
+
+# The sequence: preflight, then build, then upload, and nothing is installed.
+check_contains "driver: builds the initrd" '"$BUILD_INITRD" build' "$driver_src"
+check_contains "driver: goes through the upload step" '"$BUILD_INITRD" upload' "$driver_src"
+check_contains "driver: stops before installing" '=== 3/3 未安装 ===' "$driver_src"
+check_contains "driver: hands over the install command" 'sudo bash install.sh' "$driver_src"
 
 # The initrd carries whatever bin/taa holds, so the driver has to compile before
 # injecting; otherwise a forgotten rebuild ships the previous revision silently.
@@ -231,11 +135,18 @@ check_contains "build: recompiles TAA before injecting it" 'CGO_ENABLED=0 GOOS=l
 check_contains "build: a failed compile leaves the old binary untouched" 'TAA 编译失败，未改动' "$driver_src"
 check_contains "build: the recompile can be skipped explicitly" 'TAA_SKIP_GO_BUILD' "$driver_src"
 check_contains "build: an overridden TAA_SRC is not recompiled" '跳过重新编译' "$driver_src"
+check_contains "build: checks the binary is statically linked" 'statically linked' "$driver_src"
 
+# The upload performs the only host-side write, and it needs passwordless sudo;
+# the check lives here so the run fails before a build rather than after one.
+check_contains "preflight: checks passwordless sudo" 'NOPASSWD sudoers' "$driver_src"
+check_contains "preflight: checks the base initrd first" 'base initrd 缺失' "$driver_src"
+
+# ── 3. build-initrd.sh invariants the flow depends on ───────────────────────
+build_src="$(cat "$BUILD")"
 # The initrd and the production Pod run one template now; a second template was
 # a copy that could drift without either side noticing.
-build_src_now="$(cat "$BUILD")"
-check_contains "build-initrd.sh: the initrd runs the production template" 'configs/taa-production.json' "$build_src_now"
+check_contains "build-initrd.sh: the initrd runs the production template" 'configs/taa-production.json' "$build_src"
 if [[ -e "$SCRIPT_DIR/configs/taa-initrd.json" ]]; then
   echo "FAIL configs/taa-initrd.json still exists" >&2
   failures=$((failures + 1))
@@ -245,48 +156,39 @@ fi
 
 # TAA exits without the platform key, and the guest has no other injection path,
 # so the build must resolve it and write it into the measured env file.
-check_contains "build-initrd.sh: reads the platform key from the mock state file" 'publicKeyHex' "$build_src_now"
-check_contains "build-initrd.sh: validates the platform key wire format" '^04[[:xdigit:]]{128}$' "$build_src_now"
-check_contains "build-initrd.sh: bakes the platform key into taa.env" "export PLATFORM_PUBLIC_KEY=" "$build_src_now"
-check_contains "build-initrd.sh: bakes the LLM endpoint into taa.env" "export TAA_LLM_ENDPOINT=" "$build_src_now"
-check_contains "build-initrd.sh: deploy compares the baked platform key" '烘焙的平台公钥与本次调用不一致' "$build_src_now"
-check_contains "driver: supplies the LLM endpoint" 'TAA_LLM_ENDPOINT:-https://172.16.10.116:8443' "$driver_src"
+check_contains "build-initrd.sh: reads the platform key from the mock state file" 'publicKeyHex' "$build_src"
+check_contains "build-initrd.sh: validates the platform key wire format" '^04[[:xdigit:]]{128}$' "$build_src"
+check_contains "build-initrd.sh: bakes the platform key into taa.env" "export PLATFORM_PUBLIC_KEY=" "$build_src"
+check_contains "build-initrd.sh: bakes the LLM endpoint into taa.env" "export TAA_LLM_ENDPOINT=" "$build_src"
+check_contains "build-initrd.sh: compares the baked platform key" '烘焙的平台公钥与本次调用不一致' "$build_src"
 
-# The Kata config ships inside the package and the handler references it in
-# place, so install.sh never copies it: it derives the ConfigPath from the
-# package and refuses a package whose paths resolve elsewhere. delete has to
-# leave that copy to the package removal, and only after the handler is gone.
-check_contains "install.sh: derives the ConfigPath from the package" 'package-info --dir' "$(cat "$SCRIPT_DIR/deploy/guest-build/render/install.sh")"
-# grep -c exits 1 on a zero count, which `set -e` would turn into a failed test
-# run instead of the assertion it is here to make.
-kata_installs="$(grep -c 'install -o root -g root -m 0644 "$package_kata_config" "$REMOTE_KATA_CONFIG"' \
-  "$SCRIPT_DIR/deploy/guest-build/render/install.sh" || true)"
-check "install.sh: installs nothing under /etc for the Kata config" "0" "$kata_installs"
-check_contains "delete: leaves an in-package Kata config to the package removal" '位于交付包内，随交付包删除' "$driver_src"
-
-# build-initrd.sh has no mutating remote step left: launch uploads the package
-# and install.sh does every host-side write. The privilege precheck therefore
-# lives there, in the one place that still touches the host.
-build_src="$(cat "$BUILD")"
+# build-initrd.sh has no mutating remote step left: upload only places files and
+# install.sh does every host-side write. The privilege precheck therefore lives
+# in install.sh, in the one place that still touches the host.
 install_src="$(cat "$SCRIPT_DIR/deploy/guest-build/render/install.sh")"
 # grep -c exits 1 on a zero count, which `set -e` would turn into a failed test
 # run instead of the assertion it is here to make.
 sudo_checks="$(grep -c 'id -u' "$BUILD" || true)"
 check "build-initrd.sh: no remaining host-side mutation step" "0" "$sudo_checks"
-sudo_checks="$(grep -c 'id -u' "$SCRIPT_DIR/deploy/guest-build/render/install.sh" || true)"
-check "install.sh: sudo precheck for launch" "1" "$sudo_checks"
+sudo_checks="$(grep -c 'id -u' <<<"$install_src" || true)"
+check "install.sh: sudo precheck for install" "1" "$sudo_checks"
 check_contains "install.sh: the precheck explains the hint" 'NOPASSWD sudoers' "$install_src"
 
-# `push` stops before install: it compiles, builds, renders and uploads, and the
-# host-side write it performs is the package move alone. The point of the split
-# is that a package can be placed without touching containerd or kata.
-check_contains "driver: push compiles and uploads without installing" '=== 3/3 未安装 ===' "$driver_src"
-check_contains "driver: push goes through the upload step" '"$BUILD_INITRD" upload' "$driver_src"
-check_contains "build-initrd.sh: upload is its own command" 'upload_remote' "$(cat "$BUILD")"
-check_contains "build-initrd.sh: upload hands over the install command" '尚未安装' "$(cat "$BUILD")"
+# The Kata config ships inside the package and the handler references it in
+# place, so install.sh never copies it: it derives the ConfigPath from the
+# package and refuses a package whose paths resolve elsewhere.
+check_contains "install.sh: derives the ConfigPath from the package" 'package-info --dir' "$install_src"
+# grep -c exits 1 on a zero count, which `set -e` would turn into a failed test
+# run instead of the assertion it is here to make.
+kata_installs="$(grep -cF 'install -o root -g root -m 0644 "$package_kata_config" "$REMOTE_KATA_CONFIG"' \
+  <<<"$install_src" || true)"
+check "install.sh: installs nothing under /etc for the Kata config" "0" "$kata_installs"
+
 # upload renders and uploads; the install happens in launch, one function away.
 # The hint it prints names install.sh, so the assertion is on the invocation
 # (`sudo bash ...$package_dir/install.sh`), which lives in launch's heredoc.
+check_contains "build-initrd.sh: upload is its own command" 'upload_remote' "$build_src"
+check_contains "build-initrd.sh: upload hands over the install command" '尚未安装' "$build_src"
 upload_body="$(sed -n '/^upload_remote() {/,/^}/p' "$BUILD")"
 if [[ "$upload_body" == *"REMOTE_INSTALL"* || "$upload_body" == *'sudo bash "$package_dir/install.sh"'* ]]; then
   echo "FAIL build-initrd.sh: upload runs install.sh" >&2
@@ -296,24 +198,24 @@ else
 fi
 
 # ── 4. argv handling ────────────────────────────────────────────────────────
-"$DRIVER" help >/dev/null 2>&1 && echo "ok   help exits 0" ||
-  { echo "FAIL help did not exit 0" >&2; failures=$((failures + 1)); }
-"$DRIVER" bogus >/dev/null 2>&1 && { echo "FAIL unknown command exited 0" >&2; failures=$((failures + 1)); } ||
-  echo "ok   unknown command exits non-zero"
-"$DRIVER" delete --bogus >/dev/null 2>&1 && { echo "FAIL bad delete option exited 0" >&2; failures=$((failures + 1)); } ||
-  echo "ok   bad delete option exits non-zero"
+"$DRIVER" --help >/dev/null 2>&1 && echo "ok   --help exits 0" ||
+  { echo "FAIL --help did not exit 0" >&2; failures=$((failures + 1)); }
+"$DRIVER" bogus >/dev/null 2>&1 && { echo "FAIL an argument exited 0" >&2; failures=$((failures + 1)); } ||
+  echo "ok   an argument exits non-zero"
+"$DRIVER" delete >/dev/null 2>&1 && { echo "FAIL 'delete' was accepted" >&2; failures=$((failures + 1)); } ||
+  echo "ok   the old 'delete' command is rejected"
 
 # ── 5. preflight refuses before touching the host ───────────────────────────
 #
-# A missing base must be caught here, with the hint, and without an ssh attempt.
-out="$(BASE_INITRD="$tmp_dir/absent.img" "$DRIVER" build 2>&1 || true)"
+# A missing base must be caught here, with the hint, and without an ssh attempt:
+# the base check runs before the privilege check.
+out="$(BASE_INITRD="$tmp_dir/absent.img" "$DRIVER" 2>&1 || true)"
 check_contains "preflight: explains a missing base initrd" "fetch-base" "$out"
+check_contains "preflight: names the missing base before any ssh" "base initrd 缺失" "$out"
 
-dynamic_bin="$tmp_dir/taa-dynamic"
-printf '#!/bin/sh\n' > "$dynamic_bin"
 mkdir -p "$tmp_dir/fake-tree/bin"
 cp /bin/true "$tmp_dir/fake-tree/bin/taa"
-out="$(TAA_SRC="$tmp_dir/fake-tree/bin/taa" BASE_INITRD="$tmp_dir/absent.img" "$DRIVER" build 2>&1 || true)"
+out="$(TAA_SRC="$tmp_dir/fake-tree/bin/taa" BASE_INITRD="$tmp_dir/absent.img" "$DRIVER" 2>&1 || true)"
 check_contains "preflight: still fails on the missing base first" "base initrd 缺失" "$out"
 
 echo
