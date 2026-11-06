@@ -145,7 +145,7 @@ function toggleLLMLogPause() {
   const btn = document.getElementById('llmLogPauseBtn');
   if (btn) {
     btn.textContent = llmLogPaused ? '继续' : '暂停';
-    btn.className = llmLogPaused ? 'success' : 'secondary';
+    btn.className = llmLogPaused ? 'success btn-sm' : 'secondary btn-sm';
   }
 }
 

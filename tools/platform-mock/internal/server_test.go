@@ -2478,6 +2478,9 @@ func TestAdvancedUIPolishVisualDashboardAndStepperComponents(t *testing.T) {
 		".instance-action-bar",
 		".action-group-label",
 		"button.btn-sm",
+		".llm-meta-grid",
+		".llm-panel-body",
+		".llm-log-toolbar",
 		"mark.hl-match",
 	}
 	for _, pat := range requiredCSSPatterns {
@@ -2503,6 +2506,17 @@ func TestAdvancedUIPolishVisualDashboardAndStepperComponents(t *testing.T) {
 		if !strings.Contains(indexHTML, pat) {
 			t.Errorf("indexHTML missing required pattern: %q", pat)
 		}
+	}
+
+	// The TEE-LLM snapshot is a label/value grid, and sinceSeq belongs with the
+	// log panel it drives rather than with the card-level actions.
+	if !strings.Contains(indexHTML, `class="llm-meta-grid"`) {
+		t.Error("indexHTML should render the TEE-LLM snapshot as a meta grid")
+	}
+	llmLogIdx := strings.Index(indexHTML, `id="llmLogBox"`)
+	llmSeqIdx := strings.Index(indexHTML, `id="llmSinceSeq"`)
+	if llmLogIdx == -1 || llmSeqIdx == -1 || llmSeqIdx < llmLogIdx {
+		t.Errorf("llmSinceSeq should sit inside the log panel: panel=%d input=%d", llmLogIdx, llmSeqIdx)
 	}
 
 	// Verify stepper and embedded public key box are removed

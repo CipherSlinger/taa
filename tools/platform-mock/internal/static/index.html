@@ -108,47 +108,76 @@
     <div class="card-head" style="margin-bottom:12px; padding-bottom:10px; flex-wrap:wrap; gap:12px;">
       <div style="display:flex; align-items:center; gap:12px; flex-wrap:wrap;">
         <h2 style="margin:0;">TEE-LLM 实例</h2>
-        <div id="llmStatusPill" class="status-pill pending" style="font-size:13px;">
+        <div id="llmStatusPill" class="status-pill pending">
           <span id="llmStatusDot" class="dot pill-dot pending"></span>
           <span id="llmStatusText">未发现 TEE-LLM</span>
         </div>
         <span id="llmHeartbeatText" class="muted" style="font-size:12.5px;"></span>
       </div>
-      <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
-        <button type="button" id="llmAttestationBtn" class="secondary" onclick="fetchLLMAttestation()">获取证明报告</button>
-        <label for="llmSinceSeq" style="font-size:12.5px; color:var(--muted); white-space:nowrap;">sinceSeq</label>
-        <input id="llmSinceSeq" type="number" min="0" step="1" placeholder="自动"
-               title="拉取时使用的 sinceSeq；留空则沿用已记录的读取位置。填写后按该值拉取一次，用于测试日志接口。"
-               style="width:88px; padding:4px 8px; font-size:12.5px; border-radius:6px; border:1px solid var(--line); background:var(--bg);">
-        <button type="button" class="secondary" onclick="pollLLMNow()">立即拉取</button>
-        <button type="button" class="secondary" onclick="refreshLLMStatus()">刷新</button>
-        <button type="button" class="secondary" onclick="resetLLMStatus()">重置</button>
+      <div style="display:flex; align-items:center; gap:6px; flex-wrap:wrap;">
+        <button type="button" id="llmAttestationBtn" class="secondary btn-sm" onclick="fetchLLMAttestation()">获取证明报告</button>
+        <button type="button" class="secondary btn-icon" onclick="refreshLLMStatus()" title="刷新" aria-label="刷新">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <polyline points="23 4 23 10 17 10"></polyline>
+            <polyline points="1 20 1 14 7 14"></polyline>
+            <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path>
+          </svg>
+        </button>
+        <button type="button" class="secondary btn-sm" onclick="resetLLMStatus()">重置</button>
       </div>
     </div>
 
-    <div style="display:flex; align-items:center; gap:18px; flex-wrap:wrap; font-size:13px; margin-bottom:6px;">
-      <span>地址: <code id="llmAddress">—</code></span>
-      <span>实例 ID: <code id="llmDockerId">—</code></span>
-      <span>模型: <code id="llmModel">—</code></span>
-      <span>运行时长: <span id="llmUptime">—</span></span>
-      <span>最近轮询: <span id="llmLastPoll">—</span></span>
-      <span>日志游标: <span id="llmLogCursor">0</span></span>
+    <!-- The poller's snapshot reads as one grid instead of a run-on line, so a
+         changed field is easy to spot and long ids wrap instead of stretching the row. -->
+    <div class="llm-meta-grid">
+      <div class="llm-meta-item">
+        <span class="llm-meta-label">地址</span>
+        <code id="llmAddress" class="llm-meta-value">—</code>
+      </div>
+      <div class="llm-meta-item">
+        <span class="llm-meta-label">实例 ID</span>
+        <code id="llmDockerId" class="llm-meta-value">—</code>
+      </div>
+      <div class="llm-meta-item">
+        <span class="llm-meta-label">模型</span>
+        <code id="llmModel" class="llm-meta-value">—</code>
+      </div>
+      <div class="llm-meta-item">
+        <span class="llm-meta-label">运行时长</span>
+        <span id="llmUptime" class="llm-meta-value">—</span>
+      </div>
+      <div class="llm-meta-item">
+        <span class="llm-meta-label">最近轮询</span>
+        <span id="llmLastPoll" class="llm-meta-value">—</span>
+      </div>
+      <div class="llm-meta-item">
+        <span class="llm-meta-label">日志游标</span>
+        <span id="llmLogCursor" class="llm-meta-value">0</span>
+      </div>
     </div>
     <div id="llmLastError" style="display:none; color:#dc2626; font-size:12.5px; margin-bottom:10px;"></div>
 
-    <details id="llmAttestationDetails" style="margin-bottom:10px;">
-      <summary style="cursor:pointer; font-size:13px; font-weight:650;">远程证明</summary>
-      <div id="llmAttestationBox" style="margin-top:8px;"></div>
+    <details id="llmAttestationDetails" class="llm-panel">
+      <summary>远程证明</summary>
+      <div id="llmAttestationBox" class="llm-panel-body"></div>
     </details>
 
-    <details id="llmLogBox">
-      <summary style="cursor:pointer; font-size:13px; font-weight:650;">运行日志</summary>
-      <div style="display:flex; align-items:center; justify-content:space-between; gap:8px; margin:8px 0 6px;">
-        <span id="llmLogCount" class="muted" style="font-size:12.5px;">0 条日志</span>
-        <button type="button" id="llmLogPauseBtn" class="secondary" style="padding:2px 10px; font-size:12px;" onclick="toggleLLMLogPause()">暂停</button>
-        <button type="button" class="secondary" style="padding:2px 10px; font-size:12px;" onclick="clearLLMLogs()">清空日志</button>
+    <details id="llmLogBox" class="llm-panel">
+      <summary>运行日志</summary>
+      <div class="llm-panel-body">
+        <div class="llm-log-toolbar">
+          <label for="llmSinceSeq" class="llm-meta-label" style="white-space:nowrap;">sinceSeq</label>
+          <input id="llmSinceSeq" type="number" min="0" step="1" placeholder="自动"
+                 title="拉取时使用的 sinceSeq；留空则沿用已记录的读取位置。填写后按该值拉取一次，用于测试日志接口。"
+                 style="width:88px; padding:4px 8px; font-size:12.5px; border-radius:6px; border:1px solid var(--line); background:var(--bg);">
+          <button type="button" class="secondary btn-sm" onclick="pollLLMNow()">立即拉取</button>
+          <span class="llm-log-spacer"></span>
+          <span id="llmLogCount" class="muted" style="font-size:12.5px;">0 条日志</span>
+          <button type="button" id="llmLogPauseBtn" class="secondary btn-sm" onclick="toggleLLMLogPause()">暂停</button>
+          <button type="button" class="secondary btn-sm" onclick="clearLLMLogs()">清空日志</button>
+        </div>
+        <div id="llmLogOutput" class="llm-log-output"></div>
       </div>
-      <div id="llmLogOutput" style="max-height:240px; overflow:auto; background:var(--panel-sub); border:1px solid var(--line); border-radius:8px; padding:8px; font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:12px;"></div>
     </details>
   </section>
 
