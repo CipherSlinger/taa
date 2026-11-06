@@ -179,29 +179,31 @@ taa_env_file_needed() {
 REMOTE_USER="${REMOTE_USER:-root}"
 REMOTE_HOST="${REMOTE_HOST:-172.16.10.178}"
 REMOTE="${REMOTE_USER}@${REMOTE_HOST}"
-REMOTE_BUNDLE_DIR="${REMOTE_BUNDLE_DIR:-/opt/kata/share/kata-containers/taa-csv-20260901}"
 REMOTE_BASE_INITRD_SRC="${REMOTE_BASE_INITRD_SRC:-/opt/kata/share/kata-containers/kata-containers-initrd-confidential-csv.img}"
 REMOTE_KERNEL_SRC="${REMOTE_KERNEL_SRC:-/opt/kata/share/kata-containers/vmlinuz-confidential-csv.container}"
 REMOTE_OVMF_SRC="${REMOTE_OVMF_SRC:-/opt/kata/share/ovmf/OVMFCSV.fd}"
 REMOTE_KATA_CONFIG_SRC="${REMOTE_KATA_CONFIG_SRC:-/opt/kata/share/defaults/kata-containers/configuration-qemu-csv2.toml}"
-# Where `launch` leaves the rendered delivery package on the host. Empty keeps
-# the historical behaviour: a remote temporary directory removed as soon as
-# install.sh returns. A persistent directory makes that same install.sh
-# re-runnable on the host, which is how the test Pod is recreated without
-# another build, render or upload. deploy-taa-vm.sh sets this to
-# /root/taa-images/package by default.
-REMOTE_PACKAGE_DIR="${REMOTE_PACKAGE_DIR:-}"
+# Where the delivery package lives on the host. The package is a runtime
+# dependency, not just a shipping container: it carries the initrd, the kernel
+# and the OVMF firmware, the Kata config points at those in-package copies, and
+# install.sh reads nothing from the host's own Kata installation. That is what
+# makes the package deployable on a machine whose /opt/kata holds different
+# files, or none at all, and it is why nothing is copied on the host.
+#
+# It must stay persistent: the Kata config and the files QEMU boots are inside
+# it, so removing it breaks the runtime handler.
+REMOTE_PACKAGE_DIR="${REMOTE_PACKAGE_DIR:-/root/taa-images/package}"
+# Derived, never overridable: the rendered kernel/initrd/firmware paths and the
+# package's own layout have to name the same directory.
+PACKAGE_BUNDLE_SUBDIR="bundle"
+REMOTE_BUNDLE_DIR="$REMOTE_PACKAGE_DIR/$PACKAGE_BUNDLE_SUBDIR"
 # The Kata config the runtime handler points at (containerd's ConfigPath). It is
-# rendered into the delivery package, so a persistent package also serves as the
-# host's only copy: install.sh registers the packaged file and no longer installs
-# a second one under /etc. That makes the package a runtime dependency, which is
-# why the packaged location is only chosen when the package persists.
-# With no persistent package (REMOTE_PACKAGE_DIR empty) -- e.g. build-initrd.sh
-# used on its own -- the historical /etc path is kept and install.sh copies the
-# rendered file there. An explicit REMOTE_KATA_CONFIG always wins.
+# rendered into the delivery package and the handler points at the packaged file,
+# so the package is the host's only copy and install.sh installs nothing under
+# /etc. An explicit REMOTE_KATA_CONFIG still wins; install.sh then installs the
+# rendered file there instead.
 PACKAGE_KATA_CONFIG="config/kata-config.toml"
-REMOTE_KATA_CONFIG="${REMOTE_KATA_CONFIG:-${REMOTE_PACKAGE_DIR:+$REMOTE_PACKAGE_DIR/$PACKAGE_KATA_CONFIG}}"
-REMOTE_KATA_CONFIG="${REMOTE_KATA_CONFIG:-/etc/kata-containers/configuration-qemu-csv2-taa.toml}"
+REMOTE_KATA_CONFIG="${REMOTE_KATA_CONFIG:-$REMOTE_PACKAGE_DIR/$PACKAGE_KATA_CONFIG}"
 CONTAINERD_CONFIG="${CONTAINERD_CONFIG:-/etc/containerd/config.toml}"
 KATA_HYPERVISOR_SECTION="${KATA_HYPERVISOR_SECTION:-hypervisor.qemu}"
 RUNTIME_HANDLER="${RUNTIME_HANDLER:-kata-qemu-csv2-taa}"
@@ -231,12 +233,12 @@ TEST_IMAGE="${TEST_IMAGE:-172.16.10.178:31313/taa-env:slim-v2-20260916}"
 #   TEST_POD_ANNOTATIONS="$(kubectl get pod <working> -o jsonpath='{.metadata.annotations}')"
 TEST_POD_ANNOTATIONS="${TEST_POD_ANNOTATIONS:-{\}}"
 SKIP_REMOTE_BASE_CHECK="${SKIP_REMOTE_BASE_CHECK:-0}"
-# Inputs of the expected CSV2 MEASUREMENT. render() reads them locally; when one
-# is missing it still renders the package but records that the digest is
-# unavailable. MEASURE_APPEND replaces the auto-derived QEMU -append string.
+# The kernel and OVMF the package ships, and the inputs of the expected CSV2
+# MEASUREMENT. render() requires both to exist; the initrd is $INITRD_OUT, so
+# `build` has to run first. MEASURE_APPEND replaces the auto-derived QEMU
+# -append string.
 MEASURE_OVMF="${MEASURE_OVMF:-$SCRIPT_DIR/base/$(basename "$REMOTE_OVMF_SRC")}"
 MEASURE_KERNEL="${MEASURE_KERNEL:-$SCRIPT_DIR/base/$(basename "$REMOTE_KERNEL_SRC")}"
-MEASURE_INITRD="${MEASURE_INITRD:-$INITRD_OUT}"
 MEASURE_SMP="${MEASURE_SMP:-}"
 MEASURE_APPEND="${MEASURE_APPEND:-}"
 
@@ -250,12 +252,12 @@ Commands:
   build       Build $INITRD_OUT from $BASE_INITRD and inject TAA + init wrapper.
   fetch-base  Copy the real base initrd, kernel, OVMF and shipped Kata config
               from $REMOTE into $(basename "$SCRIPT_DIR")/base/.
-  deploy      Upload the built initrd to $REMOTE and install the remote Kata guest bundle.
-  render      Render the Kata config, containerd handler, K8s manifests and an
-              install script into $DIST_DIR. Local only; no host access.
-  launch      Render locally, upload, then install the package on $REMOTE and
-              create a test Pod.
-  all         Run build, deploy, then launch.
+  render      Render the Kata config, containerd handler, K8s manifests, the
+              install script and the guest bundle (initrd, kernel, OVMF) into
+              $DIST_DIR. Local only; no host access.
+  launch      Render locally, upload the whole package, then install it on
+              $REMOTE and create a test Pod. Nothing is copied on the host.
+  all         Run build, then launch.
   print-config  Print the resolved remote/test settings as sourceable KEY=value
                 lines. Internal interface for deploy-taa-vm.sh, so that the
                 defaults above have exactly one definition.
@@ -263,15 +265,14 @@ Commands:
 Environment overrides:
   REMOTE_USER=$REMOTE_USER
   REMOTE_HOST=$REMOTE_HOST
-  REMOTE_BUNDLE_DIR=$REMOTE_BUNDLE_DIR
   REMOTE_BASE_INITRD_SRC=$REMOTE_BASE_INITRD_SRC
   REMOTE_KERNEL_SRC=$REMOTE_KERNEL_SRC
   REMOTE_OVMF_SRC=$REMOTE_OVMF_SRC
   REMOTE_KATA_CONFIG_SRC=$REMOTE_KATA_CONFIG_SRC
   REMOTE_PACKAGE_DIR=$REMOTE_PACKAGE_DIR
   REMOTE_KATA_CONFIG=$REMOTE_KATA_CONFIG
-                                          (defaults to the packaged copy when the package
-                                          persists; otherwise /etc/kata-containers/...)
+                                          (defaults to the packaged copy)
+  REMOTE_BUNDLE_DIR                       derived as $REMOTE_PACKAGE_DIR/bundle
   KATA_HYPERVISOR_SECTION=$KATA_HYPERVISOR_SECTION
   RUNTIME_HANDLER=$RUNTIME_HANDLER
   RUNTIME_TYPE=$RUNTIME_TYPE
@@ -299,11 +300,10 @@ Environment overrides:
   DIST_DIR=$DIST_DIR
   LAUNCH_KEEP_DIST=${LAUNCH_KEEP_DIST:-0}
 
-  # render prints the digest it computes from these local files; when one is
-  # missing the package records that the expected value is unavailable.
+  # render ships these two in the package and computes the expected digest from
+  # the packaged copies; the initrd is INITRD_OUT, so `build` has to run first.
   MEASURE_OVMF=$MEASURE_OVMF
   MEASURE_KERNEL=$MEASURE_KERNEL
-  MEASURE_INITRD=$MEASURE_INITRD
   MEASURE_SMP=${MEASURE_SMP:-(from default_vcpus)}
   MEASURE_APPEND=${MEASURE_APPEND:-(derived from the rendered config)}
 
@@ -885,116 +885,6 @@ fetch_base() {
     "$(gzip -dc "$initrd_dst" | cpio -t --quiet | wc -l)"
 }
 
-# 远程部署。把构建好的 initrd 上传到远程海光 CSV 主机，并安装完整 Kata guest bundle。
-# 远程 bundle 包含注入后的 initrd，以及 launch 时 Kata 会引用的 kernel 和 OVMF 固件副本。
-deploy_remote() {
-  echo "校验输出 initrd"
-  if [[ ! -f "$INITRD_OUT" ]]; then
-    echo "error: missing built initrd: $INITRD_OUT" >&2
-    echo "hint: run '$0 build' first" >&2
-    exit 1
-  fi
-  check_deploy_inputs
-
-  require_cmd scp
-  require_cmd ssh
-  require_cmd sha256sum
-  require_cmd awk
-
-  echo "准备远程临时目录与校验和"
-
-  # 先上传到远程临时目录，再校验 SHA-256 后安装。
-  # 这样可以避免不完整上传或 scp 损坏的文件成为 Kata 实际使用的 initrd。
-  remote_tmp_dir="$(ssh "$REMOTE" 'mktemp -d /tmp/taa-initrd-deploy.XXXXXX')"
-  remote_tmp_dir="${remote_tmp_dir//$'\r'/}"
-  remote_tmp_dir="${remote_tmp_dir//$'\n'/}"
-  remote_tmp_initrd="$remote_tmp_dir/initramfs.img"
-  local_initrd_sha="$(sha256sum "$INITRD_OUT" | awk '{print $1}')"
-  local_base_initrd_sha="$(sha256sum "$BASE_INITRD" | awk '{print $1}')"
-
-  echo "上传 initrd to $REMOTE:$remote_tmp_initrd"
-  scp "$INITRD_OUT" "$REMOTE:$remote_tmp_initrd"
-
-  echo "安装远程 guest bundle under $REMOTE_BUNDLE_DIR"
-  # 为传给远程 shell 的每个参数做转义，避免本地变量在 heredoc 中提前展开。
-  remote_args="$(printf '%q ' "$remote_tmp_dir" "$local_initrd_sha" "$local_base_initrd_sha" "$REMOTE_BUNDLE_DIR" "$REMOTE_BASE_INITRD_SRC" "$REMOTE_KERNEL_SRC" "$REMOTE_OVMF_SRC" "$SKIP_REMOTE_BASE_CHECK")"
-  ssh "$REMOTE" "bash -s -- $remote_args" <<'REMOTE_DEPLOY'
-set -euo pipefail
-remote_tmp_dir="$1"
-local_initrd_sha="$2"
-local_base_initrd_sha="$3"
-bundle_dir="$4"
-remote_base_initrd_src="$5"
-kernel_src="$6"
-ovmf_src="$7"
-skip_remote_base_check="$8"
-remote_initrd="$remote_tmp_dir/initramfs.img"
-
-cleanup_remote() {
-  rm -rf "$remote_tmp_dir"
-}
-trap cleanup_remote EXIT
-
-# 上传后故意在远程侧再次校验。kernel/firmware 路径缺失时，
-# 应该在修改任何 containerd/Kata 配置前失败。
-echo "校验远程依赖和路径"
-
-for cmd in sudo sha256sum awk; do
-  if ! command -v "$cmd" >/dev/null 2>&1; then
-    echo "error: $cmd is not installed or not in PATH" >&2
-    exit 1
-  fi
-done
-
-# Every write below goes through sudo, and ssh gives no tty to answer a prompt
-# with. Check that privilege is already available rather than discovering it
-# halfway through installing the bundle.
-if [[ "$(id -u)" -ne 0 ]] && ! sudo -n true 2>/dev/null; then
-  echo "error: this SSH account needs passwordless sudo on the host (sudo -n true failed)" >&2
-  echo "hint: log in as root, or add a NOPASSWD sudoers entry for this account" >&2
-  exit 1
-fi
-
-echo "校验上传的 initrd、kernel 和 OVMF"
-
-if [[ ! -f "$remote_initrd" ]]; then
-  echo "error: uploaded initrd not found: $remote_initrd" >&2
-  exit 1
-fi
-if [[ ! -e "$kernel_src" ]]; then
-  echo "error: kernel source not found: $kernel_src" >&2
-  exit 1
-fi
-if [[ ! -e "$ovmf_src" ]]; then
-  echo "error: OVMF source not found: $ovmf_src" >&2
-  exit 1
-fi
-if [[ "$skip_remote_base_check" != "1" ]]; then
-  if [[ ! -f "$remote_base_initrd_src" ]]; then
-    echo "error: remote base initrd not found: $remote_base_initrd_src" >&2
-    exit 1
-  fi
-  remote_base_sha="$(sha256sum "$remote_base_initrd_src" | awk '{print $1}')"
-  if [[ "$remote_base_sha" != "$local_base_initrd_sha" ]]; then
-    echo "error: local BASE_INITRD does not match remote base initrd" >&2
-    echo "local:  $local_base_initrd_sha  $remote_base_initrd_src expected source" >&2
-    echo "remote: $remote_base_sha  $remote_base_initrd_src" >&2
-    echo "hint: refresh guest-build/base/ from the remote base initrd, or set SKIP_REMOTE_BASE_CHECK=1 if this mismatch is intentional" >&2
-    exit 1
-  fi
-fi
-
-printf '%s  %s\n' "$local_initrd_sha" "$remote_initrd" | sha256sum -c -
-
-sudo mkdir -p "$bundle_dir"
-sudo install -o root -g root -m 0644 "$remote_initrd" "$bundle_dir/initramfs.img"
-sudo cp -aL "$kernel_src" "$bundle_dir/vmlinuz"
-sudo cp -aL "$ovmf_src" "$bundle_dir/OVMF.fd"
-
-ls -lh "$bundle_dir"
-REMOTE_DEPLOY
-}
-
 # 修改配置、启动测试、等待结果，并在最后做主机级校验。
 # 这里创建独立 RuntimeClass，而不是覆盖已有 kata-qemu-csv2 handler；
 # 回滚时只需继续使用旧 RuntimeClass，或从 containerd 配置中移除新增 handler。
@@ -1117,8 +1007,27 @@ render_package() {
   add_kernel_param llm_endpoint "$TAA_LLM_ENDPOINT"
   add_kernel_param addr "$TAA_ADDR"
 
+  # The package carries the three files QEMU boots. Shipping them is what lets
+  # the same package be deployed on a host whose Kata installation lives
+  # elsewhere, or does not exist: install.sh takes the kernel, initrd and OVMF
+  # from the package and never copies anything out of the host's own tree.
+  # Checked before the output directory is touched, so a missing input fails the
+  # render instead of leaving a package that would not boot.
+  check_deploy_inputs
+  local asset_src
+  for asset_src in "$INITRD_OUT" "$MEASURE_KERNEL" "$MEASURE_OVMF"; do
+    if [[ ! -f "$asset_src" ]]; then
+      echo "error: 交付包缺少 guest 资产: $asset_src" >&2
+      echo "hint: initrd 由 '$0 build' 生成；kernel/OVMF 由 '$0 fetch-base' 取到 $(dirname "$MEASURE_KERNEL")" >&2
+      exit 1
+    fi
+  done
+
   rm -rf "$out_dir"
-  mkdir -p "$out_dir/config" "$out_dir/k8s"
+  mkdir -p "$out_dir/config" "$out_dir/k8s" "$out_dir/$PACKAGE_BUNDLE_SUBDIR"
+  cp -L "$INITRD_OUT" "$out_dir/$PACKAGE_BUNDLE_SUBDIR/initramfs.img"
+  cp -L "$MEASURE_KERNEL" "$out_dir/$PACKAGE_BUNDLE_SUBDIR/vmlinuz"
+  cp -L "$MEASURE_OVMF" "$out_dir/$PACKAGE_BUNDLE_SUBDIR/OVMF.fd"
 
   # The one file an operator is meant to edit on the target host. install.sh
   # re-renders the Kata config from it, so changing a platform address, docker
@@ -1172,69 +1081,60 @@ IDENTITY
   cp "$RENDER_DIR/install.sh" "$out_dir/install.sh"
 
   # MEASUREMENT is SM3(OVMF || hashes-table), and the table hashes the exact
-  # QEMU -append string plus the initrd and kernel. All three files come from
-  # the same local copies that deploy uploads, so the value describes what the
-  # target will actually boot.
-  local measure_status="unavailable" measure_reason="" measure_hex="" measure_b64=""
-  local measure_cmdline="" measure_smp=""
-  if [[ ! -f "$MEASURE_OVMF" || ! -f "$MEASURE_KERNEL" || ! -f "$MEASURE_INITRD" ]]; then
-    measure_reason="缺少本地度量输入（OVMF/kernel/initrd）"
+  # QEMU -append string plus the initrd and kernel. All three inputs are the
+  # package's own copies, so the recorded value describes the bytes the package
+  # will boot rather than whatever happens to sit in base/ at render time.
+  local measure_hex="" measure_b64="" measure_cmdline="" measure_smp=""
+  if [[ -n "$MEASURE_APPEND" ]]; then
+    if [[ "$MEASURE_APPEND" == *$'\n'* || "$MEASURE_APPEND" == *$'\r'* ]]; then
+      echo "error: MEASURE_APPEND must be a single line without CR/LF" >&2
+      exit 1
+    fi
+    measure_cmdline="$MEASURE_APPEND"
   else
-    if [[ -n "$MEASURE_APPEND" ]]; then
-      if [[ "$MEASURE_APPEND" == *$'\n'* || "$MEASURE_APPEND" == *$'\r'* ]]; then
-        echo "error: MEASURE_APPEND must be a single line without CR/LF" >&2
-        exit 1
-      fi
-      measure_cmdline="$MEASURE_APPEND"
-    else
-      local -a smp_args=()
-      [[ -n "$MEASURE_SMP" ]] && smp_args=(--smp "$MEASURE_SMP")
-      measure_cmdline="$(python3 "$RENDER_DIR/measure.py" cmdline \
-        --config "$out_dir/config/kata-config.toml" \
-        --section "$KATA_HYPERVISOR_SECTION" \
-        "${smp_args[@]}")"
-    fi
-    printf '%s\n' "$measure_cmdline" > "$out_dir/cmdline.txt"
+    local -a smp_args=()
+    [[ -n "$MEASURE_SMP" ]] && smp_args=(--smp "$MEASURE_SMP")
+    measure_cmdline="$(python3 "$RENDER_DIR/measure.py" cmdline \
+      --config "$out_dir/config/kata-config.toml" \
+      --section "$KATA_HYPERVISOR_SECTION" \
+      "${smp_args[@]}")"
+  fi
+  printf '%s\n' "$measure_cmdline" > "$out_dir/cmdline.txt"
 
-    local measure_out
-    if ! measure_out="$(python3 "$RENDER_DIR/measure.py" digest \
-      --ovmf "$MEASURE_OVMF" \
-      --kernel "$MEASURE_KERNEL" \
-      --initrd "$MEASURE_INITRD" \
-      --cmdline "$out_dir/cmdline.txt")"; then
-      echo "error: 计算预期 MEASUREMENT 失败" >&2
-      exit 1
-    fi
-    measure_hex="$(sed -n 's/^hex=//p' <<<"$measure_out")"
-    measure_b64="$(sed -n 's/^base64=//p' <<<"$measure_out")"
-    measure_smp="$(sed -n 's/.*nr_cpus=\([0-9][0-9]*\).*/\1/p' <<<"$measure_cmdline")"
-    if [[ -z "$measure_hex" || -z "$measure_b64" ]]; then
-      echo "error: measure.py 未输出度量值: $measure_out" >&2
-      exit 1
-    fi
-    measure_status="computed"
+  local measure_out
+  if ! measure_out="$(python3 "$RENDER_DIR/measure.py" digest \
+    --ovmf "$out_dir/$PACKAGE_BUNDLE_SUBDIR/OVMF.fd" \
+    --kernel "$out_dir/$PACKAGE_BUNDLE_SUBDIR/vmlinuz" \
+    --initrd "$out_dir/$PACKAGE_BUNDLE_SUBDIR/initramfs.img" \
+    --cmdline "$out_dir/cmdline.txt")"; then
+    echo "error: 计算预期 MEASUREMENT 失败" >&2
+    exit 1
+  fi
+  measure_hex="$(sed -n 's/^hex=//p' <<<"$measure_out")"
+  measure_b64="$(sed -n 's/^base64=//p' <<<"$measure_out")"
+  measure_smp="$(sed -n 's/.*nr_cpus=\([0-9][0-9]*\).*/\1/p' <<<"$measure_cmdline")"
+  if [[ -z "$measure_hex" || -z "$measure_b64" ]]; then
+    echo "error: measure.py 未输出度量值: $measure_out" >&2
+    exit 1
   fi
 
   local kernel_params template_sha base_sha initrd_sha kernel_sha ovmf_sha
-  local kernel_src="$SCRIPT_DIR/base/$(basename "$REMOTE_KERNEL_SRC")"
-  local ovmf_src="$SCRIPT_DIR/base/$(basename "$REMOTE_OVMF_SRC")"
   kernel_params="$(sed -n 's/^kernel_params = "\(.*\)"$/\1/p' "$out_dir/config/kata-config.toml" | head -n 1)"
   template_sha="$(sha256sum "$template" | awk '{print $1}')"
   base_sha=""
   [[ -f "$BASE_INITRD" ]] && base_sha="$(sha256sum "$BASE_INITRD" | awk '{print $1}')"
-  initrd_sha=""
-  [[ -f "$INITRD_OUT" ]] && initrd_sha="$(sha256sum "$INITRD_OUT" | awk '{print $1}')"
-  kernel_sha=""
-  [[ -f "$kernel_src" ]] && kernel_sha="$(sha256sum "$kernel_src" | awk '{print $1}')"
-  ovmf_sha=""
-  [[ -f "$ovmf_src" ]] && ovmf_sha="$(sha256sum "$ovmf_src" | awk '{print $1}')"
+  initrd_sha="$(sha256sum "$out_dir/$PACKAGE_BUNDLE_SUBDIR/initramfs.img" | awk '{print $1}')"
+  kernel_sha="$(sha256sum "$out_dir/$PACKAGE_BUNDLE_SUBDIR/vmlinuz" | awk '{print $1}')"
+  ovmf_sha="$(sha256sum "$out_dir/$PACKAGE_BUNDLE_SUBDIR/OVMF.fd" | awk '{print $1}')"
 
   {
     printf 'RUNTIME_HANDLER=%q\n' "$RUNTIME_HANDLER"
     printf 'RUNTIME_TYPE=%q\n' "$RUNTIME_TYPE"
     printf 'RUNTIME_PATH=%q\n' "$RUNTIME_PATH"
     printf 'SNAPSHOTTER=%q\n' "$SNAPSHOTTER"
+    printf 'REMOTE_PACKAGE_DIR=%q\n' "$REMOTE_PACKAGE_DIR"
     printf 'REMOTE_BUNDLE_DIR=%q\n' "$REMOTE_BUNDLE_DIR"
+    printf 'PACKAGE_BUNDLE_SUBDIR=%q\n' "$PACKAGE_BUNDLE_SUBDIR"
     printf 'REMOTE_KATA_CONFIG=%q\n' "$REMOTE_KATA_CONFIG"
     printf 'CONTAINERD_CONFIG=%q\n' "$CONTAINERD_CONFIG"
     printf 'PACKAGE_KATA_CONFIG=%q\n' "$PACKAGE_KATA_CONFIG"
@@ -1249,7 +1149,7 @@ IDENTITY
     printf 'KERNEL_SHA256=%q\n' "$kernel_sha"
     printf 'OVMF_SHA256=%q\n' "$ovmf_sha"
     printf 'KERNEL_PARAMS=%q\n' "$kernel_params"
-    printf 'MEASUREMENT_STATUS=%q\n' "$measure_status"
+    printf 'MEASUREMENT_STATUS=%q\n' "computed"
     printf 'MEASUREMENT_HEX=%q\n' "$measure_hex"
     printf 'MEASUREMENT_BASE64=%q\n' "$measure_b64"
     printf 'MEASUREMENT_CMDLINE=%q\n' "$measure_cmdline"
@@ -1264,9 +1164,8 @@ IDENTITY
     printf 'TAA_DOCKER_ID=%q\n' "${TAA_DOCKER_ID:-}"
   } > "$out_dir/manifest.env"
 
-  local measure_section
-  if [[ "$measure_status" == "computed" ]]; then
-    measure_section="$(cat <<MEASURE
+  local measure_section measure_status="computed"
+  measure_section="$(cat <<MEASURE
 ## 预期 MEASUREMENT
 
 CSV2 的启动度量是 \`SM3(OVMF || 哈希表)\`：哈希表里按 cmdline、initrd、kernel
@@ -1300,15 +1199,6 @@ cmdline 里的 \`nr_cpus\` 与调试参数由 Kata 版本决定；若与本包�
 以 \`/proc\` 里取到的实际 cmdline 重算结果为准。
 MEASURE
 )"
-  else
-    measure_section="$(cat <<MEASURE
-## 预期 MEASUREMENT
-
-本包未计算预期值：$measure_reason。
-在构建机上先 \`fetch-base\` 并 \`build\`，再 \`render\`，即可写入预期值。
-MEASURE
-)"
-  fi
 
   cat > "$out_dir/README.md" <<EOF
 # TAA-in-initrd 交付包
@@ -1318,7 +1208,10 @@ MEASURE
 
 ## 内容
 
-- \`$PACKAGE_KATA_CONFIG\` — 指向 bundle 的 Kata hypervisor 配置；runtime handler
+- \`$PACKAGE_BUNDLE_SUBDIR/{initramfs.img,vmlinuz,OVMF.fd}\` — **QEMU 实际启动用的
+  三个文件**。Kata 配置里的 \`kernel\`/\`initrd\`/\`firmware\` 直接指向包内这几份，
+  宿主机自己的 \`/opt/kata/share/...\` 一律不读、不复制
+- \`$PACKAGE_KATA_CONFIG\` — 指向包内 bundle 的 Kata hypervisor 配置；runtime handler
   的 ConfigPath 就指向它（路径以 \`manifest.env\` 为准）
 - \`config/containerd-runtime-handler.toml\` — containerd handler 片段（供审阅）
 - \`k8s/runtimeclass.yaml\` / \`k8s/test-pod.yaml\` — 运行时类与测试 Pod
@@ -1331,24 +1224,25 @@ $([[ -f "$out_dir/cmdline.txt" ]] && echo '- `cmdline.txt` — 计算预期度�
 
 ## 前置条件
 
-- 目标宿主已安装海光 CSV2 可用的 Kata（含 \`$REMOTE_KATA_CONFIG_SRC\`）
+- 目标宿主已安装海光 CSV2 可用的 Kata（shim 与 containerd 配置模板；包内已带
+  kernel/initrd/OVMF，宿主缺这几份文件不影响安装）
 - containerd 配置为 TOML \`version = 2\`，并装有 \`$SNAPSHOTTER\` snapshotter
-- bundle 已就位：\`$REMOTE_BUNDLE_DIR/{initramfs.img,vmlinuz,OVMF.fd}\`
-  （由 \`build-initrd.sh deploy\` 或手工放置）
 - kubectl 可用；需要 root 或免密 sudo
 
 ## 安装
 
+交付包必须整体放在 \`$REMOTE_PACKAGE_DIR\`（Kata 配置里的路径按这个位置渲染），
+直接解压/拷贝整棵目录即可，不要在宿主上再复制里面的文件：
+
 \`\`\`bash
-cd $(basename "$out_dir")
-sha256sum -c SHA256SUMS
-sudo bash install.sh --dry-run   # 先看会改什么
-sudo bash install.sh
+scp -r <local-package>/. root@<host>:$REMOTE_PACKAGE_DIR/
+ssh root@<host> 'cd $REMOTE_PACKAGE_DIR && sha256sum -c SHA256SUMS'
+ssh root@<host> 'cd $REMOTE_PACKAGE_DIR && bash install.sh --dry-run'
+ssh root@<host> 'cd $REMOTE_PACKAGE_DIR && bash install.sh'
 \`\`\`
 
-当 ConfigPath 指向包内这份配置时（交付包被保存在持久目录，如
-\`/root/taa-images/package\`），install.sh 不会再往 \`/etc\` 拷一份：包就是宿主机上
-唯一的副本，删除或替换它之前必须先把 runtime handler 摘掉。
+ConfigPath 指向包内这份配置，install.sh 不会再往 \`/etc\` 拷一份：包（配置 + 启动
+文件）就是宿主机上唯一的副本，删除或替换它之前必须先把 runtime handler 摘掉。
 
 ## 部署身份（在宿主机上改）
 
@@ -1474,34 +1368,29 @@ REMOTE_NODE
   [[ "${SKIP_REMOTE_BASE_CHECK:-0}" == "1" ]] && install_flags+=" --skip-base-check"
   [[ "${SKIP_REMOTE_KATA_TEMPLATE_CHECK:-0}" == "1" ]] && install_flags+=" --skip-template-check"
 
-  # The package is uploaded to a temporary directory because scp cannot sudo;
-  # when REMOTE_PACKAGE_DIR is set it is then moved into place as root. Empty
-  # keeps the old behaviour: run from the temp directory and delete it on exit.
+  # The package is uploaded to a temporary directory because scp cannot sudo,
+  # then moved into place as root. It has to be kept: the Kata config and the
+  # files QEMU boots live inside it, so install.sh references the persisted copy
+  # and nothing is installed under /etc or copied anywhere else on the host.
   ssh "$REMOTE" "bash -s -- $(printf '%q ' "$remote_tmp" "$REMOTE_PACKAGE_DIR")$install_flags" <<'REMOTE_INSTALL'
 set -euo pipefail
-pkg="$1"
-persist_dir="$2"
+staging="$1"
+package_dir="$2"
 shift 2
 
-cleanup() { sudo rm -rf "$pkg"; }
+cleanup() { sudo rm -rf "$staging"; }
 trap cleanup EXIT
 
-if [[ -n "$persist_dir" ]]; then
-  sudo mkdir -p "$(dirname "$persist_dir")"
-  sudo rm -rf "$persist_dir"
-  sudo mv "$pkg" "$persist_dir"
-  pkg="$persist_dir"
-  # Keep this copy: re-running it is how the Pod is recreated later.
-  trap - EXIT
-fi
+sudo mkdir -p "$(dirname "$package_dir")"
+sudo rm -rf "$package_dir"
+sudo mv "$staging" "$package_dir"
+trap - EXIT
 
-sudo bash "$pkg/install.sh" "$@"
+sudo bash "$package_dir/install.sh" "$@"
 
-if [[ -n "$persist_dir" ]]; then
-  echo
-  echo "交付包已保留: $persist_dir"
-  echo "在该宿主机上重建测试 Pod: sudo bash $persist_dir/install.sh"
-fi
+echo
+echo "交付包已保留: $package_dir"
+echo "在该宿主机上重建测试 Pod: sudo bash $package_dir/install.sh"
 REMOTE_INSTALL
 }
 
@@ -1514,9 +1403,6 @@ case "$cmd" in
   fetch-base)
     fetch_base
     ;;
-  deploy)
-    deploy_remote
-    ;;
   render)
     render_package "$DIST_DIR"
     ;;
@@ -1525,7 +1411,6 @@ case "$cmd" in
     ;;
   all)
     build_initrd
-    deploy_remote
     launch_remote
     ;;
   print-config)

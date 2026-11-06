@@ -12,8 +12,8 @@
 # (`print-config`), so the defaults have exactly one definition and cannot drift.
 #
 # Commands:
-#   up      build -> deploy -> launch -> verify   (the whole flow)
-#   build | deploy | launch | fetch-base          (single steps, passed through)
+#   up      build -> launch -> verify             (the whole flow)
+#   build | launch | fetch-base                   (single steps, passed through)
 #   render  Render the delivery package locally (Kata config, containerd
 #           fragment + merger, K8s manifests, install.sh, checksums). No host
 #           access; also what `launch` renders before uploading.
@@ -52,23 +52,23 @@ fi
 #
 # Everything this flow puts on the target host lives under one directory:
 #
-#   $TAA_IMAGES_DIR/bundle/    initramfs.img, vmlinuz, OVMF.fd   (deploy)
-#   $TAA_IMAGES_DIR/package/   the rendered delivery package     (launch)
+#   $TAA_IMAGES_DIR/package/   the rendered delivery package, including its
+#                              bundle/ (initramfs.img, vmlinuz, OVMF.fd)
 #
-# Keeping them together gives `delete` a single subtree to own, and keeping the
-# package there matters beyond tidiness: it ships install.sh, so the test Pod
-# can be recreated on the host by running
+# The package is the runtime dependency, not just a shipping container: the Kata
+# config points at its bundle/, so the host never needs its own copies of those
+# files and nothing is copied on the host. It also ships install.sh, so the test
+# Pod can be recreated there by running
 #
 #   sudo bash /root/taa-images/package/install.sh
 #
 # without another build, render or upload.
 #
-# These are exported *before* print-config is consulted below. build-initrd.sh
-# resolves its defaults from the environment, and it runs as a child process
-# for build/deploy/launch, so exporting here is what makes these the values the
-# whole flow actually uses.
+# REMOTE_PACKAGE_DIR is exported *before* print-config is consulted below.
+# build-initrd.sh resolves its defaults from the environment and runs as a child
+# process, so exporting here is what makes the value the flow actually uses; the
+# bundle directory is derived from it there and is not separately configurable.
 TAA_IMAGES_DIR="${TAA_IMAGES_DIR:-/root/taa-images}"
-export REMOTE_BUNDLE_DIR="${REMOTE_BUNDLE_DIR:-$TAA_IMAGES_DIR/bundle}"
 export REMOTE_PACKAGE_DIR="${REMOTE_PACKAGE_DIR:-$TAA_IMAGES_DIR/package}"
 
 # The binary build-initrd.sh injects. Defaulted and exported here so the
@@ -125,12 +125,12 @@ usage() {
 Usage: $0 <command> [options]
 
 Commands:
-  up            生成 initrd -> 上传部署 -> 配置并拉起测试 Pod -> 验证 TAA（推荐入口）
+  up            生成 initrd -> 打包上传 -> 配置并拉起测试 Pod -> 验证 TAA（推荐入口）
   build         只构建本地 initrd（等价于 build-initrd.sh build）
-  deploy        只上传并安装远程 bundle（等价于 build-initrd.sh deploy）
   render        只在本地生成交付包（Kata 配置 / 可编辑的部署身份 / containerd
-                handler / K8s YAML / 安装脚本 / 校验和），不访问宿主机
-  launch        本地渲染 -> 上传 -> 在远端安装并拉起测试 Pod
+                handler / K8s YAML / 安装脚本 / 校验和 / initrd+内核+OVMF），
+                不访问宿主机
+  launch        本地渲染 -> 整包上传 -> 在远端安装并拉起测试 Pod（宿主上不复制任何文件）
   fetch-base    从远端拉取权威 base 资产（等价于 build-initrd.sh fetch-base）
   verify        只读校验：TCP 探活 + 启动日志里的证明自检结论
   delete        删除本流程在远端安装的全部产物与测试 Pod
@@ -145,8 +145,9 @@ Environment:
   REMOTE_USER=$REMOTE_USER          SSH 账号（需免密 sudo）
   REMOTE_HOST=$REMOTE_HOST
   TAA_IMAGES_DIR=$TAA_IMAGES_DIR    （宿主侧统一安装根目录）
-  REMOTE_BUNDLE_DIR=$REMOTE_BUNDLE_DIR
   REMOTE_PACKAGE_DIR=$REMOTE_PACKAGE_DIR
+                                          （交付包位置；bundle 就在包内 bundle/，
+                                          不可单独指定）
   TEST_POD_NAME=$TEST_POD_NAME
   TEST_IMAGE=$TEST_IMAGE
   TEST_NODE_NAME=$TEST_NODE_NAME
@@ -170,12 +171,13 @@ Environment:
   再把新的 bin/taa 注入 initrd，避免注入上一次的旧二进制。
 
 Layout on the host (defaults):
-  $REMOTE_BUNDLE_DIR/initramfs.img|vmlinuz|OVMF.fd   deploy 安装的 guest bundle
-  $REMOTE_PACKAGE_DIR/                              launch 渲染的交付包（含 install.sh）
+  $REMOTE_PACKAGE_DIR/            launch 上传的整份交付包（含 install.sh）
+    bundle/initramfs.img|vmlinuz|OVMF.fd   QEMU 直接启动的三份文件
 
   Kata 配置本身就在交付包里（$PACKAGE_KATA_CONFIG），containerd 的 ConfigPath
-  直接指向它，宿主机 /etc 下不再有第二份。因此交付包是运行期依赖：删包之前要先用
-  '$0 delete' 摘掉 handler。
+  直接指向它，内核/initrd/OVMF 也指向包内 bundle/，宿主机 /opt/kata 与 /etc 下
+  都不再需要这几位文件。因此交付包是运行期依赖：删包之前要先用 '$0 delete'
+  摘掉 handler。整包 scp 过去即可部署，宿主上不复制任何文件。
 
   launch 完成后交付包会保留，重建测试 Pod 只需在该宿主机上执行：
     sudo bash $REMOTE_PACKAGE_DIR/install.sh
@@ -360,30 +362,23 @@ preflight() {
   esac
 
   case "$step" in
-    deploy|up)
+    launch|up)
       require_cmd ssh
       check_remote_sudo
-      # The initrd must carry a registration identity or deploy refuses to
-      # publish it. Surface that here with both ways out, rather than letting it
+      # The initrd must carry a registration identity or render refuses to
+      # package it. Surface that here with both ways out, rather than letting it
       # fail after a full build. Whether the identity it carries matches this
       # invocation is reported (not enforced) in build-initrd.sh, where the image
-      # is handed over: `up` builds first, so judging the image here would look at
+      # is packaged: `up` builds first, so judging the image here would look at
       # the previous build. The identity the guest actually uses is the one
       # `render` puts on the kernel command line.
       if [[ "${ALLOW_MISSING_TAA_ENV:-0}" != "1" ]]; then
         if [[ -z "${TAA_PLATFORM_IP:-}" || -z "${TAA_DOCKER_ID:-}" ]]; then
-          echo "error: TAA_PLATFORM_IP 与 TAA_DOCKER_ID 需要成对给出（deploy 要求 initrd 内含 etc/default/taa.env）" >&2
+          echo "error: TAA_PLATFORM_IP 与 TAA_DOCKER_ID 需要成对给出（交付包要求 initrd 内含 etc/default/taa.env）" >&2
           echo "hint: 二者都给，或显式设置 ALLOW_MISSING_TAA_ENV=1 放弃平台注册" >&2
           exit 1
         fi
       fi
-      ;;
-  esac
-
-  case "$step" in
-    launch|up)
-      require_cmd ssh
-      check_remote_sudo
       ensure_pod_annotations
       if [[ "$TEST_IMAGE" == "busybox:latest" ]]; then
         echo "note: 这台宿主的 guest 拉不到 Docker Hub（实测 CDH 报 error sending request for index.docker.io）" >&2
@@ -406,9 +401,9 @@ preflight() {
 # The comparison between the identity baked into an image and the one this
 # invocation asks for still lives in build-initrd.sh (check_initrd_identity), next
 # to the code that writes that file. It is a warning now, not a refusal: the
-# rendered command line wins. It runs when build hands the image to deploy, not in
-# the preflight above, because in the `up` path the preflight runs before the
-# build and would always be looking at the previous image.
+# rendered command line wins. It runs when render packages the image, not in the
+# preflight above, because in the `up` path the preflight runs before the build
+# and would always be looking at the previous image.
 
 # ── verify ───────────────────────────────────────────────────────────────────
 #
@@ -578,24 +573,25 @@ if [[ "$runtime_handler" == "$protected_handler" ]]; then
   exit 1
 fi
 # Guard 2: never remove a directory that also holds the base initrd, and never
-# aim at a top-level directory by accident. The delivery package gets the same
-# guard plus one more: neither tree may contain the other, or a single `rm -rf`
-# would take both of them (and anything else that happened to sit beside them).
-case "$bundle_dir" in
+# aim at a top-level directory by accident. The bundle normally lives *inside*
+# the delivery package now, so that containment is expected and handled in step
+# 5; a bundle directory outside the package is a leftover from the old layout and
+# gets its own guards.
+case "$package_dir" in
   /|/root|/root/taa-images|/opt|/opt/kata|/opt/kata/share|/opt/kata/share/kata-containers|"$(dirname "$base_initrd_src")")
-    echo "error: REMOTE_BUNDLE_DIR 指向共享目录，拒绝删除: $bundle_dir" >&2
+    echo "error: REMOTE_PACKAGE_DIR 指向共享目录，拒绝删除: $package_dir" >&2
     exit 1
     ;;
 esac
-if [[ -n "$package_dir" ]]; then
-  case "$package_dir" in
-    /|/root|/root/taa-images|/opt|/opt/kata|/opt/kata/share|/opt/kata/share/kata-containers|"$(dirname "$base_initrd_src")")
-      echo "error: REMOTE_PACKAGE_DIR 指向共享目录，拒绝删除: $package_dir" >&2
+if [[ "$bundle_dir" != "$package_dir" && "$bundle_dir" != "$package_dir"/* ]]; then
+  case "$bundle_dir" in
+    ""|/|/root|/root/taa-images|/opt|/opt/kata|/opt/kata/share|/opt/kata/share/kata-containers|"$(dirname "$base_initrd_src")")
+      echo "error: REMOTE_BUNDLE_DIR 指向共享目录，拒绝删除: $bundle_dir" >&2
       exit 1
       ;;
   esac
-  if [[ "$bundle_dir" == "$package_dir" || "$bundle_dir" == "$package_dir"/* || "$package_dir" == "$bundle_dir"/* ]]; then
-    echo "error: bundle 与交付包目录互相包含，拒绝删除: $bundle_dir / $package_dir" >&2
+  if [[ "$package_dir" == "$bundle_dir"/* ]]; then
+    echo "error: 交付包位于 bundle 目录内，拒绝删除: $bundle_dir / $package_dir" >&2
     exit 1
   fi
 fi
@@ -767,8 +763,10 @@ fi
 
 echo
 echo "== 5. remote bundle =="
-if [[ -d "$bundle_dir" ]]; then
-  echo "将删除 $bundle_dir:"
+if [[ "$bundle_dir" == "$package_dir" || "$bundle_dir" == "$package_dir"/* ]]; then
+  echo "$bundle_dir 位于交付包内，随交付包删除"
+elif [[ -d "$bundle_dir" ]]; then
+  echo "将删除旧布局的独立 bundle $bundle_dir:"
   sudo ls -1 "$bundle_dir" 2>/dev/null | sed 's/^/  /' || true
   run sudo rm -rf "$bundle_dir"
 else
@@ -777,15 +775,15 @@ fi
 
 echo
 echo "== 6. 交付包 =="
-if [[ -n "$package_dir" && -d "$package_dir" ]]; then
+if [[ -d "$package_dir" ]]; then
   echo "将删除 $package_dir:"
   sudo ls -1 "$package_dir" 2>/dev/null | sed 's/^/  /' || true
   run sudo rm -rf "$package_dir"
   # Drop the install root only if it is empty. rmdir itself is the guard:
-  # anything somebody else put beside these two subtrees keeps it in place.
+  # anything somebody else put beside the package keeps it in place.
   run sudo rmdir "$(dirname "$package_dir")" 2>/dev/null || true
 else
-  echo "${package_dir:-（未设置 REMOTE_PACKAGE_DIR）} 不存在或未设置，跳过"
+  echo "$package_dir 不存在，跳过"
 fi
 
 echo
@@ -843,26 +841,21 @@ fi
 case "$cmd" in
   up)
     preflight build
-    preflight deploy
     preflight launch
-    echo "=== 1/4 构建 initrd ==="
+    echo "=== 1/3 构建 initrd 并打包上传 ==="
     "$BUILD_INITRD" build
     echo
-    echo "=== 2/4 部署到 $REMOTE ==="
-    "$BUILD_INITRD" deploy
-    echo
-    echo "=== 3/4 配置运行时并拉起测试 Pod ==="
+    echo "=== 2/3 配置运行时并拉起测试 Pod（整包安装到 $REMOTE）==="
     "$BUILD_INITRD" launch
     echo
-    echo "=== 4/4 校验 TAA ==="
+    echo "=== 3/3 校验 TAA ==="
     verify_remote
     echo
     echo "全流程完成。清理用：$0 delete（先看 $0 delete --dry-run）"
     ;;
-  build|deploy|launch|fetch-base|render)
+  build|launch|fetch-base|render)
     case "$cmd" in
       build) preflight build ;;
-      deploy) preflight deploy ;;
       launch) preflight launch ;;
     esac
     exec "$BUILD_INITRD" "$cmd"

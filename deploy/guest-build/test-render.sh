@@ -88,25 +88,29 @@ kernel_params = "must not be touched"
 debug_console_enabled = true
 TOML
 
-# Small measurement inputs; the real digest vectors are checked separately
-# against the base assets when they are present.
+# Small guest assets; the real digest vectors are checked separately against the
+# base assets when they are present. The package ships these three, so they are
+# supplied through the same variables the build uses.
 printf 'fixture-ovmf\n' > "$tmp_dir/fixture-ovmf.fd"
 printf 'fixture-kernel\n' > "$tmp_dir/fixture-vmlinuz"
 printf 'fixture-initrd\n' > "$tmp_dir/fixture-initrd.img"
 
-bundle="/opt/kata/share/kata-containers/taa-csv2"
+# Where the package will live on the host. The rendered Kata config names this
+# location, so it is pinned here and checked against the package's own bundle/.
+package_host_dir="/root/taa-images/package"
+bundle="$package_host_dir/bundle"
 common_env=(
   KATA_CONFIG_TEMPLATE="$template"
-  REMOTE_BUNDLE_DIR="$bundle"
+  REMOTE_PACKAGE_DIR="$package_host_dir"
   REMOTE_KATA_CONFIG_SRC=/opt/kata/share/defaults/kata-containers/configuration-qemu-csv2.toml
-  REMOTE_KATA_CONFIG=/etc/kata-containers/configuration-qemu-csv2-taa.toml
   RUNTIME_HANDLER=kata-qemu-csv2-taa
   TEST_POD_NAME=test-kata-csv2-taa
   TEST_NODE_NAME=fixture-node
   TEST_POD_ANNOTATIONS='{"io.katacontainers.config.hypervisor.cc_init_data":"abc+/="}'
+  INITRD_OUT="$tmp_dir/fixture-initrd.img"
+  ALLOW_MISSING_TAA_ENV=1
   MEASURE_OVMF="$tmp_dir/fixture-ovmf.fd"
   MEASURE_KERNEL="$tmp_dir/fixture-vmlinuz"
-  MEASURE_INITRD="$tmp_dir/fixture-initrd.img"
   # Pin the whole deployment identity: it is rendered into kernel_params, and
   # an inherited value from the caller's shell would change every expectation
   # below. The key file points at nothing so only this variable can supply it.
@@ -131,7 +135,8 @@ env "${common_env[@]}" DIST_DIR="$pkg" REMOTE_HOST=invalid.invalid "$BUILD" rend
 
 for f in config/kata-config.toml config/identity.txt config/containerd-runtime-handler.toml \
          k8s/runtimeclass.yaml k8s/test-pod.yaml manifest.env SHA256SUMS \
-         install.sh render.py measure.py cmdline.txt README.md; do
+         install.sh render.py measure.py cmdline.txt README.md \
+         bundle/initramfs.img bundle/vmlinuz bundle/OVMF.fd; do
   if [[ -f "$pkg/$f" ]]; then
     echo "ok   render: produced $f"
   else
@@ -141,7 +146,11 @@ for f in config/kata-config.toml config/identity.txt config/containerd-runtime-h
 done
 check "render: never contacted a host" "absent" \
   "$([[ -e "$tmp_dir/fakebin/ssh.called" || -e "$tmp_dir/fakebin/scp.called" ]] && echo called || echo absent)"
-check "render: no guest assets are copied" "" "$(find "$pkg" -type f \( -name '*.img' -o -name '*.fd' -o -name '*.container' \) -print)"
+# The package is the runtime dependency: it carries the exact files QEMU boots,
+# so deploying on another host needs nothing from that host's Kata tree.
+check "bundle: ships the built initrd" "fixture-initrd" "$(cat "$pkg/bundle/initramfs.img")"
+check "bundle: ships the kernel" "fixture-kernel" "$(cat "$pkg/bundle/vmlinuz")"
+check "bundle: ships OVMF" "fixture-ovmf" "$(cat "$pkg/bundle/OVMF.fd")"
 
 # ── 2. Kata config rewrite ─────────────────────────────────────────────────
 kata="$(cat "$pkg/config/kata-config.toml")"
@@ -432,23 +441,24 @@ else
   echo "skip measure: recorded base vector (base assets absent or replaced)"
 fi
 
-# Without the three local input files the package must say so instead of
-# publishing a made-up value.
-pkg_missing="$tmp_dir/missing/pkg"
-env "${common_env[@]}" MEASURE_INITRD="$tmp_dir/absent.initrd" \
-  DIST_DIR="$pkg_missing" REMOTE_HOST=invalid.invalid "$BUILD" render >/dev/null
-check_contains "manifest: missing inputs mark the measurement unavailable" \
-  'MEASUREMENT_STATUS=unavailable' "$(cat "$pkg_missing/manifest.env")"
-check "package: no cmdline.txt without measurement inputs" "absent" \
-  "$([[ -e "$pkg_missing/cmdline.txt" ]] && echo present || echo absent)"
-check_contains "README: explains why the measurement is missing" \
-  '本包未计算预期值' "$(cat "$pkg_missing/README.md")"
-if (cd "$pkg_missing" && sha256sum -c --quiet SHA256SUMS) >/dev/null 2>&1; then
-  echo "ok   missing-input package still verifies"
-else
-  echo "FAIL missing-input package does not verify" >&2
-  failures=$((failures + 1))
-fi
+# A package without the guest assets would install a handler pointing at files
+# that are not there. The render must refuse before it touches the output
+# directory, rather than publish a package that cannot boot.
+for missing_input in MEASURE_KERNEL MEASURE_OVMF; do
+  pkg_missing="$tmp_dir/missing-${missing_input,,}/pkg"
+  out="$(env "${common_env[@]}" "$missing_input=$tmp_dir/absent.asset" \
+    DIST_DIR="$pkg_missing" REMOTE_HOST=invalid.invalid "$BUILD" render 2>&1 || true)"
+  check_contains "render: missing $missing_input is refused" "交付包缺少 guest 资产" "$out"
+  check "render: missing $missing_input never creates the package" "absent" \
+    "$([[ -e "$pkg_missing" ]] && echo present || echo absent)"
+done
+
+pkg_no_initrd="$tmp_dir/missing-initrd/pkg"
+out="$(env "${common_env[@]}" INITRD_OUT="$tmp_dir/absent.initrd" \
+  DIST_DIR="$pkg_no_initrd" REMOTE_HOST=invalid.invalid "$BUILD" render 2>&1 || true)"
+check_contains "render: a missing built initrd points at 'build'" "initrd 由" "$out"
+check "render: a missing initrd never creates the package" "absent" \
+  "$([[ -e "$pkg_no_initrd" ]] && echo present || echo absent)"
 
 if (cd "$pkg" && sha256sum -c --quiet SHA256SUMS) >/dev/null 2>&1; then
   echo "ok   SHA256SUMS verifies from inside the package"

@@ -95,8 +95,14 @@ if ! grep -qE '^[[:space:]]*version[[:space:]]*=[[:space:]]*2([[:space:]]|$)' "$
 fi
 
 # The rendered Kata config is derived from this host's shipped CSV2 config.
-# A mismatch means the package was built against a different Kata version and
-# its kernel/initrd paths may not be the ones this host expects.
+# A mismatch means the package was built against a different Kata version, so
+# the inherited keys may not match this host's shim. That is worth refusing when
+# the file is there to compare.
+#
+# A missing file is only a warning: the package carries everything the VM boots
+# (kernel, initrd, OVMF and the whole rendered config), so a host whose Kata
+# lives somewhere else is still a valid target. This is the check that used to
+# make the package host-specific.
 if [[ -f "$KATA_CONFIG_TEMPLATE_SRC" ]]; then
   template_sha="$(sha256sum "$KATA_CONFIG_TEMPLATE_SRC" | awk '{print $1}')"
   if [[ "$template_sha" != "$KATA_CONFIG_TEMPLATE_SHA256" ]]; then
@@ -112,9 +118,8 @@ if [[ -f "$KATA_CONFIG_TEMPLATE_SRC" ]]; then
     echo "Kata 配置模板一致: $template_sha"
   fi
 else
-  echo "error: 宿主缺少 Kata CSV2 模板: $KATA_CONFIG_TEMPLATE_SRC" >&2
-  echo "hint: 该宿主不是本包的部署目标，或 Kata 安装路径不同" >&2
-  exit 1
+  echo "warning: 宿主没有 $KATA_CONFIG_TEMPLATE_SRC，跳过 Kata 版本一致性校验" >&2
+  echo "         （包内已带 kernel/initrd/OVMF 与完整渲染后的配置，安装不受影响）"
 fi
 
 # The base initrd is not used at runtime, only by `deploy`; a missing copy is
@@ -138,10 +143,22 @@ else
   echo "warning: 宿主没有 $BASE_INITRD_SRC（运行期不需要，deploy 时需要）" >&2
 fi
 
+# The three files QEMU boots travel inside this package. They must be the ones
+# the package was rendered with -- the Kata config names "$REMOTE_BUNDLE_DIR",
+# which is the package's own bundle/ when the package sits where it was rendered
+# for. A moved package would otherwise install a handler pointing at paths that
+# do not exist, so that mismatch is refused rather than guessed around.
+if [[ ! "$pkg_dir/${PACKAGE_BUNDLE_SUBDIR:-bundle}" -ef "$REMOTE_BUNDLE_DIR" ]]; then
+  echo "error: 交付包不在 render 时记录的位置" >&2
+  echo "       记录: $REMOTE_BUNDLE_DIR" >&2
+  echo "       实际: $pkg_dir/${PACKAGE_BUNDLE_SUBDIR:-bundle}" >&2
+  echo "hint: 把包放回 $REMOTE_PACKAGE_DIR，或在构建机按新位置重新 render" >&2
+  exit 1
+fi
 for asset in initramfs.img vmlinuz OVMF.fd; do
   if [[ ! -f "$REMOTE_BUNDLE_DIR/$asset" ]]; then
-    echo "error: bundle 缺少 $asset: $REMOTE_BUNDLE_DIR/$asset" >&2
-    echo "hint: 先在该宿主上运行 build-initrd.sh deploy（或手工放置 bundle）" >&2
+    echo "error: 交付包缺少 guest 资产 $asset: $REMOTE_BUNDLE_DIR/$asset" >&2
+    echo "hint: 包不完整；在构建机上重新 render（它会带上 initrd、kernel 与 OVMF）" >&2
     exit 1
   fi
 done

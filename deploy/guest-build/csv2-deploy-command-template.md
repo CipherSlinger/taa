@@ -3,7 +3,7 @@
 > 说明：这份模板把 `guest-build/build-initrd.sh` 和 `../deploy.sh` 的关键信息整理成可复制执行的命令。
 > 默认只用于查阅和手工执行，不会自动部署。
 >
-> **先看仓库根的 `deploy-taa-vm.sh`**：它是这套流程的合一入口（`up` = 构建 → 部署 → launch → 验证），
+> **先看仓库根的 `deploy-taa-vm.sh`**：它是这套流程的合一入口（`up` = 构建 → 打包上传 → launch → 验证），
 > 并且补上了本模板没有的一步——`delete` 清理。下面的手工命令仍适用于需要分步排查的场合。
 > 它自己不带任何默认值，全部设置都向这里的 `build-initrd.sh print-config` 要，所以两边不会漂移。
 
@@ -19,13 +19,14 @@ export REMOTE_USER=root
 export REMOTE_HOST=172.16.10.178
 export REMOTE="${REMOTE_USER}@${REMOTE_HOST}"
 
-# guest-build/build-initrd.sh 使用的远程 bundle
-export REMOTE_BUNDLE_DIR=/opt/kata/share/kata-containers/taa-csv-20260901
+# guest-build/build-initrd.sh 使用的交付包位置
+# 整包（含 bundle/）scp 到这里；bundle 子目录由脚本派生，不单独配置。
+export REMOTE_PACKAGE_DIR=/root/taa-images/package
+# 以下四个是构建机 fetch-base 的拉取源，只在构建机上用到
 export REMOTE_BASE_INITRD_SRC=/opt/kata/share/kata-containers/kata-containers-initrd-confidential-csv.img
 export REMOTE_KERNEL_SRC=/opt/kata/share/kata-containers/vmlinuz-confidential-csv.container
 export REMOTE_OVMF_SRC=/opt/kata/share/ovmf/OVMFCSV.fd
 export REMOTE_KATA_CONFIG_SRC=/opt/kata/share/defaults/kata-containers/configuration-qemu-csv2.toml
-export REMOTE_KATA_CONFIG=/etc/kata-containers/configuration-qemu-csv2-taa.toml
 export RUNTIME_HANDLER=kata-qemu-csv2-taa
 export RUNTIME_TYPE=io.containerd.kata-qemu-csv2.v2
 export RUNTIME_PATH=/opt/kata/bin/containerd-shim-kata-v2
@@ -154,7 +155,7 @@ TAA_DOCKER_ID="${TAA_DOCKER_ID}" \
 摘要里会打印 base 的 sha256 与条目数、以及全部追加条目。**条目数必须等于
 `base 条目数 + 追加条数`**，不等就说明有重复或丢失，脚本会拒绝发布。
 
-如果你暂时只想构建，不想生成 `/etc/default/taa.env`，可以不设置 `TAA_PLATFORM_IP` / `TAA_DOCKER_ID`，但后续 `deploy` 可能会拒绝。
+如果你暂时只想构建，不想生成 `/etc/default/taa.env`，可以不设置 `TAA_PLATFORM_IP` / `TAA_DOCKER_ID`，但后续 `launch` 会拒绝（身份必须成对）。
 注意：只要 `TAA_ADDR` 偏离默认值，env 文件仍会生成（否则构建期覆盖会静默失效）。
 
 开机路径不再有证明闸门：TAA 起不来、或证明自校验降级为空报告时，`taa-init` 只把结论
@@ -162,26 +163,24 @@ TAA_DOCKER_ID="${TAA_DOCKER_ID}" \
 
 ---
 
-## 3. 上传 initrd 并安装远程 guest bundle
+## 3. 打包（本地，不访问宿主）
 
 ```bash
 cd /home/hjy/taa/deploy/guest-build
-REMOTE_USER="${REMOTE_USER}" \
-REMOTE_HOST="${REMOTE_HOST}" \
-./build-initrd.sh deploy
+./build-initrd.sh build     # 先产出 initrd
+./build-initrd.sh render    # 再把它连同 kernel/OVMF 打进交付包
 ```
 
-这一步会在远程服务器上安装：
+交付包自带 QEMU 实际启动的三个文件，放在包内 `bundle/`：
 
-- `initramfs.img`
-- `vmlinuz`
-- `OVMF.fd`
+- `bundle/initramfs.img`
+- `bundle/vmlinuz`
+- `bundle/OVMF.fd`
 
-目标目录是：
-
-```bash
-${REMOTE_BUNDLE_DIR}
-```
+Kata 配置里的 `kernel`/`initrd`/`firmware` 直接指向这几个包内路径，因此**宿主上不复制
+任何文件**，宿主自己的 `/opt/kata/share/...` 也不需要存在。整包 `scp` 过去放在
+`${REMOTE_PACKAGE_DIR}`（默认 `/root/taa-images/package`）即可，`install.sh` 会从包内
+取全部启动文件。
 
 ---
 
@@ -201,35 +200,36 @@ cd /home/hjy/taa/deploy/guest-build
 
 产物在 `dist/kata-qemu-csv2-taa/`：
 
-- `config/kata-config.toml` — 改写后的 Kata hypervisor 配置
+- `bundle/initramfs.img`、`bundle/vmlinuz`、`bundle/OVMF.fd` — QEMU 实际启动的三份文件
+- `config/kata-config.toml` — 改写后的 Kata hypervisor 配置（指向包内 bundle）
 - `config/containerd-runtime-handler.toml` — containerd handler 片段（供审阅）
 - `k8s/runtimeclass.yaml`、`k8s/test-pod.yaml`
 - `install.sh`、`render.py`、`measure.py` — 包内自带的安装器、合并器与度量计算器
 - `manifest.env` — 本次交付的全部参数，以及度量输入/结果（`KERNEL_PARAMS`、
   `OVMF_SHA256`、`KERNEL_SHA256`、`INITRD_SHA256`、`MEASUREMENT_HEX`、
   `MEASUREMENT_BASE64`、`MEASUREMENT_CMDLINE`、`MEASUREMENT_SMP`）
-- `cmdline.txt` — 计算预期度量所用的 QEMU `-append` 原文（输入齐全时才生成）
-- `SHA256SUMS` — 包内文件校验和
+- `cmdline.txt` — 计算预期度量所用的 QEMU `-append` 原文
+- `SHA256SUMS` — 包内文件校验和（含 `bundle/` 三份）
 - `README.md` — 包内使用说明，含预期 MEASUREMENT
 
 渲染是离线的：`REMOTE_HOST` 不参与，也不执行 ssh/scp。Kata 配置模板来自
 `fetch-base` 拉下来的宿主权威副本 `base/configuration-qemu-csv2.toml`；
-宿主的模板变了就要重新 `fetch-base` 再 `render`，否则安装时会因模板 sha 不一致而拒绝。
+宿主的模板变了就要重新 `fetch-base` 再 `render`，否则安装时会因模板 sha 不一致而拒绝
+（宿主没有这个文件时只告警——包内已带全部启动文件）。
 
-`render` 会顺带算出预期 MEASUREMENT：
+`render` 会从**包内**这三份文件算出预期 MEASUREMENT：
 
 - 公式：`SM3(OVMF || 哈希表)`，哈希表里按 cmdline、initrd、kernel 各放一个 SHA256，
   cmdline 是 QEMU 实际 `-append` 的字节（末尾换行替换为 NUL）
-- 输入：`base/` 下的 OVMF/kernel、`out/` 下的 initrd；任一缺失时包照样生成，
-  但 README/manifest 会标成 `MEASUREMENT_STATUS=unavailable`
+- 输入：`out/` 下的 initrd 与 `base/` 下的 OVMF/kernel；任一缺失时 `render` 直接失败，
+  不会产出一个装不起来的包（先跑 `build` / `fetch-base`）
 - cmdline 由渲染后的 Kata 配置推导（`kernel_params`、`enable_debug`、
   `debug_console_enabled`、`default_vcpus`）；`nr_cpus` 和调试参数最终由 Kata 版本决定，
   所以安装后以 `/proc/<qemu>/cmdline` 里的实际值为准重算（见 §5）
 - 需要手工指定时可用 `MEASURE_SMP`、`MEASURE_APPEND` 覆盖
 
-交付包只含配置，不含 initrd/kernel/OVMF（约 153 MB）。对方宿主仍需先有 bundle
-（由 `deploy` 或 `build-initrd.sh deploy` 放置），包里的 `install.sh` 会在缺失时明确报错，
-并在安装前核对 bundle 三个文件的 sha256 与包内记录一致（度量就是基于它们算的）。
+包约 165 MB（initrd 占几乎全部）。它既是交付物也是运行期依赖：`install.sh` 从包里
+校验并直接使用这三份文件，宿主机上不做任何复制。
 
 ### 4.2 在目标宿主上安装
 
@@ -243,21 +243,25 @@ TEST_POD_ANNOTATIONS="${TEST_POD_ANNOTATIONS}" \
 ./build-initrd.sh launch
 ```
 
-`launch` 等价于：`render` → `scp` 到远端临时目录 → `sudo bash install.sh`。
+`launch` 等价于：`render` → `scp -r` 整个交付包到 `${REMOTE_PACKAGE_DIR}` → `sudo bash install.sh`。
+包不会被丢进临时目录后就删掉：Kata 配置里的 `kernel`/`initrd`/`firmware` 指向包内
+`bundle/`，包本身是运行期依赖，必须常驻。
+
 `install.sh` 会自动完成：
 
-1. 校验包内 `SHA256SUMS`、宿主 Kata 模板 sha、base initrd sha，以及 bundle 三个文件的 sha256
-2. 安装新的 Kata 配置：
-   - `/etc/kata-containers/configuration-qemu-csv2-taa.toml`
+1. 校验包内 `SHA256SUMS`、宿主 Kata 模板 sha（宿主没有该模板时只告警），
+   以及包内 bundle 三个文件的存在与 sha256
+2. 使用包内的 Kata 配置 `$REMOTE_PACKAGE_DIR/config/kata-config.toml`
+   （它已经在 `render` 时指向同一包内的 `bundle/`），不再往 `/etc` 装第二份
 3. 在 `containerd` 中新增 runtime handler：
-   - `kata-qemu-csv2-taa`
+   - `kata-qemu-csv2-taa`，其 `ConfigPath` 指向上面那份包内配置
 4. 重启 `containerd`——**只有在配置真的变了才重启**（先 `cmp` 一次，未变化就打印
    `containerd 配置未变化，跳过重启`）。这决定了 `launch` 对已在跑的 Pod 有没有动效
 5. 视配置可选重启 `kubelet`
 6. 创建 Kubernetes `RuntimeClass`
 7. 创建测试 Pod（带 `TEST_POD_ANNOTATIONS`）
 8. 等待 Pod Ready；超时会打印 Pod 状态与 `Events:` 再退出
-9. 校验 QEMU 是否使用了新的 initrd
+9. 校验 QEMU 是否使用了包内的 initrd
 10. 从 QEMU 的 `/proc/<pid>/cmdline` 取实际 `-append`，用包内 `measure.py` 重算
     MEASUREMENT，并与包内预期值对照（不一致只告警，并打印实际 cmdline）
 
@@ -271,8 +275,9 @@ sudo bash install.sh
 ```
 
 `install.sh` 支持 `--dry-run`、`--skip-template-check`、`--skip-base-check`；
-包里的 `manifest.env` 记录绝对路径与节点名，所以包是**目标宿主特定**的，换宿主或换
-`REMOTE_BUNDLE_DIR` 要重新 `render`。
+包里的 `manifest.env` 记录绝对路径与节点名，所以包是**目标宿主特定**的：换宿主，
+或换了 `REMOTE_PACKAGE_DIR`（包内路径会跟着变），都要重新 `render`。`install.sh`
+发现包被挪过位置会直接拒绝并提示放回原处。
 
 `TEST_IMAGE` 默认就是宿主上**已有**的镜像 `172.16.10.178:31313/taa-env:slim-v2-20260916`
 （本地 registry，guest 拉得通，且带 curl 供 verify 使用）。改成 Docker Hub 上的 tag 会等满
@@ -297,9 +302,10 @@ TEST_NODE_NAME="${TEST_NODE_NAME}" \
 如果你是想确认流程有没有走通，重点看这几个地方：
 
 ```bash
-# 远程 Kata 配置里必须出现新 initrd
+# 包内 Kata 配置里必须出现新 initrd，且路径落在同一交付包内
+pkg=/root/taa-images/package
 sudo grep -nE '^(kernel|initrd|firmware|kernel_params)\s*=' \
-  /etc/kata-containers/configuration-qemu-csv2-taa.toml
+  "$pkg/config/kata-config.toml"
 
 # containerd 里必须有 runtime handler
 sudo grep -nF '[plugins."io.containerd.grpc.v1.cri".containerd.runtimes."kata-qemu-csv2-taa"]' \
@@ -326,14 +332,14 @@ kubectl exec test-kata-csv2-taa -- bash -c 'exec 3<>/dev/tcp/127.0.0.1/6001'
 
 # 用实际 QEMU append 重算预期度量（在宿主上执行；与包内 README 的 hex 对照，
 # 也应与平台经 getAttestation 拿到的 digest 一致）
-pkg=/path/to/kata-qemu-csv2-taa
-pid=$(ps -eo pid=,args= | grep -F qemu | grep -F /opt/kata/share/kata-containers/taa-csv-20260901/initramfs.img | awk '{print $1}' | head -1)
+pkg=/root/taa-images/package
+pid=$(ps -eo pid=,args= | grep -F qemu | grep -F "$pkg/bundle/initramfs.img" | awk '{print $1}' | head -1)
 tr '\0' '\n' < /proc/$pid/cmdline | grep -A1 '^-append$' | tail -n1 > /tmp/append
 echo >> /tmp/append
 python3 "$pkg/measure.py" digest \
-  --ovmf /opt/kata/share/kata-containers/taa-csv-20260901/OVMF.fd \
-  --kernel /opt/kata/share/kata-containers/taa-csv-20260901/vmlinuz \
-  --initrd /opt/kata/share/kata-containers/taa-csv-20260901/initramfs.img \
+  --ovmf "$pkg/bundle/OVMF.fd" \
+  --kernel "$pkg/bundle/vmlinuz" \
+  --initrd "$pkg/bundle/initramfs.img" \
   --cmdline /tmp/append
 ```
 
@@ -345,14 +351,15 @@ python3 "$pkg/measure.py" digest \
 
 - `REMOTE_USER=root`（需免密 sudo 或直接是 root；脚本会在写入前先检查）
 - `REMOTE_HOST=172.16.10.178`
-- `REMOTE_BUNDLE_DIR=/opt/kata/share/kata-containers/taa-csv-20260901`
-- `REMOTE_KATA_CONFIG=/etc/kata-containers/configuration-qemu-csv2-taa.toml`
+- `REMOTE_PACKAGE_DIR=/root/taa-images/package`（整包安装位置）
+- `REMOTE_BUNDLE_DIR`：**派生值**，恒为 `$REMOTE_PACKAGE_DIR/bundle`，不要单独设置
+- `REMOTE_KATA_CONFIG`：**派生值**，恒为 `$REMOTE_PACKAGE_DIR/config/kata-config.toml`
 - `RUNTIME_HANDLER=kata-qemu-csv2-taa`
 - `DIST_DIR=dist/kata-qemu-csv2-taa`（`render` 的固定输出目录）
 - `KATA_CONFIG_TEMPLATE=base/configuration-qemu-csv2.toml`（宿主权威模板，`fetch-base` 拉取）
 - `LAUNCH_KEEP_DIST=1`（`launch` 用的临时渲染结果额外复制一份到 `DIST_DIR`）
-- `MEASURE_OVMF` / `MEASURE_KERNEL` / `MEASURE_INITRD`：预期度量的本地输入
-  （默认 `base/` 下的 OVMF/kernel 与 `out/` 下的 initrd）
+- `MEASURE_OVMF` / `MEASURE_KERNEL`：预期度量的本地输入（默认 `base/` 下的 OVMF 与 kernel）；
+  initrd 固定取 `INITRD_OUT`（默认 `out/` 下构建产物）
 - `MEASURE_SMP`：覆盖推导出的 `nr_cpus=`（默认取渲染配置的 `default_vcpus`）
 - `MEASURE_APPEND`：整条覆盖推导出的 QEMU `-append`（单行）
 - `TEST_POD_NAME=test-kata-csv2-taa`
@@ -382,7 +389,9 @@ python3 "$pkg/measure.py" digest \
   `delete [--dry-run] [--force]` / `print-config`（打印解析后的实际取值，确认这次会用什么）；
   离线自测是根目录的 `./test-deploy-taa-vm.sh` 和 `deploy/guest-build/test-render.sh`。
 - 真实密码、证书、环境变量值请按现场环境填入，不要直接写死到仓库。
-- 如果远程 base initrd 与本地 `guest-build/base/` 不一致，`build-initrd.sh deploy` 可能会拒绝，需要先同步 base 文件。
+- `build-initrd.sh` 已没有 `deploy` 子命令：宿主上不再复制任何文件。`build` 只构建、
+  `render` 只打包、`launch` 上传整包后交给包内 `install.sh`。本地 `base/` 与宿主不一致时，
+  `install.sh` 会在模板 sha 校验处拒绝（宿主没有模板文件时只告警）。
 - base 资产**不入库**（`base/*.img`、`base/*.container`、`base/*.fd`、`base/*.toml`、`out/`、
   `dist/` 已在 `.gitignore` 里）：
   宿主机是权威，入库的副本只会静默过期——历史上那份 `out/kata-containers-initrd-taa-csv.initrd`

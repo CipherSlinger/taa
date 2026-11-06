@@ -99,30 +99,24 @@ check "print-config: TAA_LLM_ENDPOINT override survives" "https://10.0.0.9:9443"
 eval "$(PLATFORM_PORT=28080 "$DRIVER" print-config)"
 check "print-config: PLATFORM_PORT moves the default platform port" "28080" "${TAA_PLATFORM_IP##*:}"
 
-# Both halves of the flow land under one host directory, so `delete` has a
-# single subtree to own and the packaged install.sh stays available on the
-# host for recreating the Pod.
+# The whole flow lands under one host directory, so `delete` has a single
+# subtree to own and the packaged install.sh stays available on the host for
+# recreating the Pod. The guest bundle is inside the package -- it is derived
+# from REMOTE_PACKAGE_DIR, not separately configurable -- because the Kata config
+# names those in-package files.
 check "print-config: default install root" "/root/taa-images" "$TAA_IMAGES_DIR"
-check "print-config: bundle lives under the install root" "$TAA_IMAGES_DIR/bundle" "$REMOTE_BUNDLE_DIR"
 check "print-config: package lives under the install root" "$TAA_IMAGES_DIR/package" "$REMOTE_PACKAGE_DIR"
-# The same values must reach build-initrd.sh as a child process; an unexported
+check "print-config: bundle lives inside the package" \
+  "$REMOTE_PACKAGE_DIR/bundle" "$REMOTE_BUNDLE_DIR"
+# The same value must reach build-initrd.sh as a child process; an unexported
 # default looks right here and still installs to the old path.
-check_contains "print-config: the install root is exported to the build" 'export REMOTE_BUNDLE_DIR=' "$(cat "$DRIVER")"
 check_contains "print-config: the package dir is exported to the build" 'export REMOTE_PACKAGE_DIR=' "$(cat "$DRIVER")"
 
 # The handler's ConfigPath points at the packaged copy, so a normal run installs
-# no second Kata config under /etc. That is only safe while the package persists,
-# which is exactly what REMOTE_PACKAGE_DIR means here.
+# no second Kata config under /etc. The package persists, which is exactly what
+# REMOTE_PACKAGE_DIR means here.
 check "print-config: Kata config is the packaged copy" \
   "$REMOTE_PACKAGE_DIR/config/kata-config.toml" "$REMOTE_KATA_CONFIG"
-# build-initrd.sh used on its own has no persistent package; there the old /etc
-# path is kept and install.sh copies the rendered file to it.
-no_pkg_kata_config="$(
-  eval "$("$BUILD" print-config)"
-  printf '%s' "$REMOTE_KATA_CONFIG"
-)"
-check "print-config: no persistent package falls back to /etc" \
-  "/etc/kata-containers/configuration-qemu-csv2-taa.toml" "$no_pkg_kata_config"
 
 # The pair has to reach build-initrd.sh, which runs as a child process; an
 # unexported default would look right in print-config and still build an initrd
@@ -265,16 +259,17 @@ check_contains "driver: supplies the LLM endpoint" 'TAA_LLM_ENDPOINT:-https://17
 check_contains "install.sh: skips the copy when the config is the packaged file" '-ef "$REMOTE_KATA_CONFIG"' "$(cat "$SCRIPT_DIR/deploy/guest-build/render/install.sh")"
 check_contains "delete: leaves an in-package Kata config to the package removal" '位于交付包内，随交付包删除' "$driver_src"
 
-# The same check must exist in build-initrd.sh's own remote steps, since those
-# are reachable without the driver. launch delegates its check to the packaged
-# install.sh, so the count stays at one here and one there.
+# build-initrd.sh has no mutating remote step left: launch uploads the package
+# and install.sh does every host-side write. The privilege precheck therefore
+# lives there, in the one place that still touches the host.
 build_src="$(cat "$BUILD")"
 install_src="$(cat "$SCRIPT_DIR/deploy/guest-build/render/install.sh")"
-sudo_checks="$(grep -c 'id -u' "$BUILD")"
-check "build-initrd.sh: sudo precheck for deploy" "1" "$sudo_checks"
-sudo_checks="$(grep -c 'id -u' "$SCRIPT_DIR/deploy/guest-build/render/install.sh")"
+# grep -c exits 1 on a zero count, which `set -e` would turn into a failed test
+# run instead of the assertion it is here to make.
+sudo_checks="$(grep -c 'id -u' "$BUILD" || true)"
+check "build-initrd.sh: no remaining host-side mutation step" "0" "$sudo_checks"
+sudo_checks="$(grep -c 'id -u' "$SCRIPT_DIR/deploy/guest-build/render/install.sh" || true)"
 check "install.sh: sudo precheck for launch" "1" "$sudo_checks"
-check_contains "build-initrd.sh: the precheck explains the hint" 'NOPASSWD sudoers' "$build_src"
 check_contains "install.sh: the precheck explains the hint" 'NOPASSWD sudoers' "$install_src"
 
 # ── 4. argv handling ────────────────────────────────────────────────────────
