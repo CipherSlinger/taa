@@ -92,4 +92,18 @@ grep -q -- '--target pod|container' <<<"$help" \
 grep -q 'Usage: deploy-fhe.sh \[create|update|start|stop|probe|delete|save\]' <<<"$help" \
   || fail "deploy-fhe.sh --help does not lead with the action list"
 
+# ── a Pod existence check must actually run the command it quotes ────────────
+# A redirect written inside "$(shell_quote ...)" is applied to the local
+# shell_quote call, not to the command handed to ssh: the remote command becomes
+# empty, ssh exits 0, and every existence check answers "yes". That made create
+# report an absent Pod as existing and then fail with "cannot read Pod".
+if grep -qE 'host_sh "\$\(shell_quote [^)]*>/dev/null' "$DEPLOY"; then
+  fail "a redirect sits inside the shell_quote substitution, so the remote Pod check would always succeed"
+fi
+
+# The manifest is piped into kubectl, so that one remote call has to keep stdin:
+# REMOTE_SSH carries -n, and with it the manifest never leaves this host.
+grep -q 'host_sh_stdin "$(shell_quote "${POD_KCTL\[@\]}" create -f -)"' "$DEPLOY" \
+  || fail "the Pod manifest is no longer piped through host_sh_stdin"
+
 echo "PASS: deploy-fhe.sh defaults to create, keeps start and stop a switch, refuses --pod on create/delete and offers the container path only through --target"

@@ -324,6 +324,11 @@ setup_remote_ssh() {
   require_command scp
   require_command rsync
   REMOTE_SSH=("${prefix[@]}" ssh "${SSH_OPTS[@]}")
+  # SSH_OPTS carries -n so that no remote command can consume the caller's stdin.
+  # The one command that pipes a manifest into kubectl needs the opposite: this
+  # variant keeps stdin, because without it the manifest never leaves this host
+  # and kubectl answers "no objects passed to create".
+  REMOTE_SSH_STDIN=("${prefix[@]}" ssh "${SSH_COMMON_OPTS[@]}")
   REMOTE_SCP=("${prefix[@]}" scp -q "${SSH_COMMON_OPTS[@]}")
   RSYNC_SSH=""
   [ -n "$REMOTE_PASSWORD" ] && RSYNC_SSH="sshpass -p $(shell_quote "$REMOTE_PASSWORD") "
@@ -365,6 +370,25 @@ host_capture() {
     bash -c "$script"
   else
     "${REMOTE_SSH[@]}" "$REMOTE_TARGET" "$script"
+  fi
+}
+
+# host_sh variant for a command that reads stdin (the Pod manifest). It is the
+# same call without -n; everything else about it is host_sh.
+host_sh_stdin() {
+  local script="$1"
+  if is_dry_run; then
+    if [ -n "$REMOTE_TARGET" ]; then
+      printf '[deploy-fhe] would run on %s: %s\n' "$REMOTE_TARGET" "$script"
+    else
+      printf '[deploy-fhe] would run: %s\n' "$script"
+    fi
+    return 0
+  fi
+  if [ -z "$REMOTE_TARGET" ]; then
+    bash -c "$script"
+  else
+    "${REMOTE_SSH_STDIN[@]}" "$REMOTE_TARGET" "$script"
   fi
 }
 
@@ -1864,7 +1888,7 @@ pod_create() {
   if is_dry_run; then
     log "dry-run: the manifest is at $POD_MANIFEST_TMP"
   else
-    if host_sh "$(shell_quote "${POD_KCTL[@]}" get pod "$TARGET_POD" >/dev/null 2>&1)"; then
+    if host_sh "$(shell_quote "${POD_KCTL[@]}" get pod "$TARGET_POD")" >/dev/null 2>&1; then
       log "Pod $POD_NAMESPACE/$TARGET_POD already exists; verifying it instead of creating a second one"
       require_pod_fhe_role
       rm -f "$POD_MANIFEST_TMP"
@@ -1872,7 +1896,7 @@ pod_create() {
       # create, not apply: the name was verified absent a moment ago, and create
       # turns a race with another operator into an error instead of silently
       # rewriting a Pod whose spec is immutable.
-      host_sh "$(shell_quote "${POD_KCTL[@]}" create -f -)" < "$POD_MANIFEST_TMP" \
+      host_sh_stdin "$(shell_quote "${POD_KCTL[@]}" create -f -)" < "$POD_MANIFEST_TMP" \
         || die "failed to create Pod $POD_NAMESPACE/$TARGET_POD"
       rm -f "$POD_MANIFEST_TMP"
     fi
@@ -1985,11 +2009,11 @@ delete_managed_pod() {
   host_sh "$(shell_quote "${POD_KCTL[@]}" delete pod "$TARGET_POD" --ignore-not-found --wait=true --timeout=90s)" || true
   # A VM-backed Pod whose guest is wedged will not answer a graceful delete; its
   # memory is host-resident, so leaving it behind costs GiB.
-  if host_sh "$(shell_quote "${POD_KCTL[@]}" get pod "$TARGET_POD" >/dev/null 2>&1)"; then
+  if host_sh "$(shell_quote "${POD_KCTL[@]}" get pod "$TARGET_POD")" >/dev/null 2>&1; then
     warn "Pod $TARGET_POD did not exit within 90s; forcing deletion"
     host_sh "$(shell_quote "${POD_KCTL[@]}" delete pod "$TARGET_POD" --force --grace-period=0)" || true
   fi
-  if host_sh "$(shell_quote "${POD_KCTL[@]}" get pod "$TARGET_POD" >/dev/null 2>&1)"; then
+  if host_sh "$(shell_quote "${POD_KCTL[@]}" get pod "$TARGET_POD")" >/dev/null 2>&1; then
     die "Pod $TARGET_POD is still present after a forced delete"
   fi
   log "Pod $POD_NAMESPACE/$TARGET_POD deleted (its writable layer goes with it)"
@@ -2005,7 +2029,7 @@ if [ "$SAVE_ACTION" != 1 ] && [ "$ACTION" != "create" ] && [ "$ACTION" != "updat
     if [ "$ACTION" = "delete" ] && [ "$POD_MANAGED" != 1 ]; then
       die "delete only removes the Pod this deployment created; $TARGET_POD was named with --pod"
     fi
-    if ! is_dry_run && ! host_sh "$(shell_quote "${POD_KCTL[@]}" get pod "$TARGET_POD" >/dev/null 2>&1)"; then
+    if ! is_dry_run && ! host_sh "$(shell_quote "${POD_KCTL[@]}" get pod "$TARGET_POD")" >/dev/null 2>&1; then
       if [ "$ACTION" = "delete" ]; then
         log "Pod $POD_NAMESPACE/$TARGET_POD does not exist; nothing to delete"
         exit 0
@@ -2115,7 +2139,7 @@ if [ "$POD_MODE" = 1 ] && [ "$ACTION" = "update" ] && ! is_dry_run; then
   # when it cannot host this run, instead of failing halfway through the copy.
   # create is not checked here -- its Pod does not exist yet; pod_create makes
   # the same checks once the Pod is up.
-  host_sh "$(shell_quote "${POD_KCTL[@]}" get pod "$TARGET_POD" >/dev/null 2>&1)" \
+  host_sh "$(shell_quote "${POD_KCTL[@]}" get pod "$TARGET_POD")" >/dev/null 2>&1 \
     || die "pod $POD_NAMESPACE/$TARGET_POD was not found on ${REMOTE_TARGET:-this host}"
   pod_ready || die "pod $POD_NAMESPACE/$TARGET_POD is not Running and Ready"
   containers="$(pod_field '{range .spec.containers[*]}{.name}{"\n"}{end}')"
