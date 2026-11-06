@@ -63,10 +63,10 @@ spec:
     - name: fhe
       image: __IMAGE__
       imagePullPolicy: __PULL_POLICY__
-      # The image's ENTRYPOINT is /opt/taa-fhe-supervisor.sh, which starts the
-      # FHE entrypoint and the TAA supervisor beside it. The supervisor's
-      # `manual` file in /root/taa is what stop/start drive, the same protocol
-      # deploy.sh uses.
+      # The image's ENTRYPOINT is bash /root/taa/taa-supervisor.sh, the same path
+      # every role uses. For this role that file starts the FHE entrypoint and the
+      # TAA restart loop beside it. The loop's `manual` file in /root/taa is what
+      # stop/start drive, the same protocol deploy.sh uses.
       env:
         # server.type=fhe lets the environment win over the file, which is what
         # lets one image go to whichever GPU host is free.

@@ -3,10 +3,21 @@
 # TEE-LLM is a separate deployment (teellm/deploy/start.sh owns it) and is reached
 # through taa's llm.endpoint, so this wrapper starts nothing but taa.
 # Manual mode: touch /root/taa/manual to pause taa autostart; rm it to resume.
+#
+# Every role installs exactly one file at /root/taa/taa-supervisor.sh and the image's
+# ENTRYPOINT is `bash /root/taa/taa-supervisor.sh`. This is the tee role's copy; the
+# fhe and data-anaylsis copies add a sidecar of their own around the same loop.
+# The TAA_LOOP block below must stay byte-identical in all three files.
 set -u
-cd /root/taa || exit 1
-LOG=/root/taa/taa.log
-LOCK=/root/taa/.taa-supervisor.lock
+TAA_WORKDIR="${TAA_WORKDIR:-/root/taa}"
+
+# >>> TAA_LOOP -- keep byte-identical in deploy/taa-supervisor.sh,
+# deploy/fhe/taa-supervisor.sh and deploy/dataanaylsis/taa-supervisor.sh: each role
+# installs one self-contained file, so the loop cannot live in a shared file.
+# tests/taa_supervisor_uniform_test.sh diffs this block across the three.
+cd "$TAA_WORKDIR" || exit 1
+LOG="$TAA_WORKDIR/taa.log"
+LOCK="$TAA_WORKDIR/.taa-supervisor.lock"
 TAAPID=""
 
 cleanup() {
@@ -61,3 +72,4 @@ while true; do
   echo "$(date -u +%Y-%m-%dT%H:%M:%SZ): taa exited with code ${EXIT_CODE}, restart in 10s" >> "$LOG"
   sleep 10
 done
+# <<< TAA_LOOP

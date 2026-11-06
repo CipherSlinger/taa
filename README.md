@@ -39,7 +39,7 @@ flowchart TB
 
         subgraph EnclaveMgmt["Enclave Lifecycle & Supervisor"]
             direction LR
-            Supervisor["<b>Container Supervisor</b><br/><code>deploy/taa-supervisor.sh</code> • Auto-Restart Daemon"]
+            Supervisor["<b>Container Supervisor</b><br/><code>/root/taa/taa-supervisor.sh</code> • Auto-Restart Daemon"]
             TAA["<b>TAA Enclave Daemon (:6001)</b><br/><code>State Machine Coordinator • HTTP API Gateway</code>"]
             Supervisor -.->|"Keep-Alive & Guard"| TAA
         end
@@ -185,8 +185,9 @@ flowchart TB
 │   ├── taa-fhe.json                  # FHE instance template for the GPU host (server.type=fhe)
 │   └── taa-production.json           # Production Kubernetes Pod template (identity injected via env)
 ├── deploy/                           # Container deployment manifests & supervisor scripts
-│   ├── taa-supervisor.sh             # TAA autostart supervisor daemon with keep-alive & manual mode
-│   ├── taa-fhe-supervisor.sh         # FHE + TAA combined container entrypoint (FHE priority)
+│   ├── taa-supervisor.sh             # tee role: TAA autostart supervisor (keep-alive & manual mode)
+│   ├── dataanaylsis/taa-supervisor.sh # data-analysis role: jupyter + TAA (jupyter priority)
+│   ├── fhe/taa-supervisor.sh         # FHE role: FHE entrypoint + TAA (FHE priority)
 │   ├── teellm-supervisor.sh          # TEE-LLM Pod supervisor (teellm-service + ollama)
 │   ├── base/                         # Base image archives (inputs: taa-env, jupyter-nologin-full)
 │   ├── certs/                        # Hygon CSV certificate chain fixtures (hrk.cert, hsk_cek.cert) for pkg/csvattest tests and the csv2-vm chain smoke run
@@ -544,12 +545,25 @@ The six Pod actions are mutually exclusive and share one vocabulary across `depl
 TAA is the only component `deploy.sh` deploys; `taa` may be given explicitly for compatibility. The platform (or platform-mock) is deployed separately with `./deploy-platform-mock.sh`; `PLATFORM_PORT` and `REMOTE_PLATFORM_IP` only tell TAA where to register.
 - **Note on TEE-LLM / Qwen / Ollama**: The LLM inference service sources live in the `teellm` submodule, but its deployment script sits at the repository root. TEE-LLM needs a real `/dev/csv-guest` to produce a genuine attestation, so it is deployed as a Kata CSV2 Pod on the remote host: run `./deploy-llm.sh` (the default action is `create`, which builds and creates that Pod).
 
-### 4. Container Autostart Supervisor (`deploy/taa-supervisor.sh`)
+### 4. Container Autostart Supervisor (`/root/taa/taa-supervisor.sh`)
 
-Inside the TAA container, TAA runs under the supervision of `deploy/taa-supervisor.sh` (deployed to `/root/taa/taa-supervisor.sh`):
+Every role installs exactly one autostart file, always named
+`/root/taa/taa-supervisor.sh`, and the image ENTRYPOINT is `bash` on that path. The
+repository keeps one copy per role: `deploy/taa-supervisor.sh` (tee),
+`deploy/dataanaylsis/taa-supervisor.sh` (starts jupyter beside TAA) and
+`deploy/fhe/taa-supervisor.sh` (starts `/opt/entrypoint.sh` beside TAA).
+
+All three run the same TAA loop (the `TAA_LOOP` block, kept byte-identical and
+checked by `tests/taa_supervisor_uniform_test.sh`):
 - Automatically restarts `taa` upon unexpected exits (10s retry interval).
 - Provides a manual debug override: `touch /root/taa/manual` pauses autostart; removing the file resumes supervisor management.
 - Logs runtime supervisor events to `/root/taa/taa.log`.
+
+The combined roles run the loop as a child (`taa-supervisor.sh --taa-loop`) so a
+deploy update can replace the file and restart the loop without restarting PID 1,
+which would lose the guest's writable layer. For those roles the sidecar decides
+liveness: if jupyter (data analysis) or the FHE entrypoint exits, TAA is stopped and
+the container exits with that status.
 
 ### 5. Common CLI Examples
 
@@ -742,11 +756,13 @@ the deployment host is selected explicitly with `--target container`.
 ./deploy-fhe.sh save                            # -> deploy/out/taa-fhe-<date>.tar.gz
 ```
 
-- **One container, one network namespace.** The container runs the image's own
-  `/opt/entrypoint.sh` (redis on `127.0.0.1:6379`, api_server on 58996, the worker) beside
-  `deploy/taa-fhe-supervisor.sh`, which starts that entrypoint and the TAA supervisor, and
-  restarts the supervisor when it exits on its own. If the FHE entrypoint exits, the wrapper
-  stops TAA and exits with that status, so the restart policy acts on real FHE failures. The
+- **One container, one network namespace.** The image's ENTRYPOINT is
+  `bash /root/taa/taa-supervisor.sh` — the same path every role uses — and for this role that
+  file (`deploy/fhe/taa-supervisor.sh`) starts the image's own `/opt/entrypoint.sh` (redis on
+  `127.0.0.1:6379`, api_server on 58996, the worker) beside the TAA restart loop, and restarts
+  the loop when it exits on its own. If the FHE entrypoint exits, it stops TAA and exits with
+  that status, so the restart policy acts on real FHE failures. Deploy updates kill only the
+  loop child (`--taa-loop`), never PID 1. The
   container runs on the default `bridge` network; `TAA_DOCKER_NETWORK=host` is refused, because
   host networking would put 58996 on the host.
 - **Ports.** Only TAA's port is published:
@@ -768,8 +784,8 @@ the deployment host is selected explicitly with `--target container`.
 - **The platform is external.** `taa` assumes the platform (or platform-mock, started with
   `./deploy-platform-mock.sh`) is already running. Set `PLATFORM_IP` explicitly when the
   platform is not on this host.
-- **`taa save`** builds the TAA binary, bakes it, `deploy/taa-supervisor.sh`, the combined entrypoint
-  and the rendered config into an image built **from the FHE image**, tags the result
+- **`taa save`** builds the TAA binary, bakes it, the combined FHE entrypoint
+  (`/root/taa/taa-supervisor.sh`) and the rendered config into an image built **from the FHE image**, tags the result
   `TAA_FHE_SAVE_IMAGE` (`taa-fhe:<date>`) and exports it as `TAA_FHE_SAVE_ARCHIVE` (default
   `deploy/out/taa-fhe-<date>.tar.gz`). Nothing is started. If the FHE base image is not present
   locally, the bundle archive is verified against `SHA256SUMS` and loaded first. The image is
@@ -786,7 +802,7 @@ the deployment host is selected explicitly with `--target container`.
 - **Remote by default.** The run targets `REMOTE_HOST` (default `172.16.10.178`) over ssh, the
   same host `deploy.sh` uses, and takes the same credentials (`TARGET_PASSWORD`). It
   stages the bundle's models into `HOST_DATA_DIR/models` (`rsync -a`, no `--delete`, so models
-  an operator added survive), uploads `deploy/taa-supervisor.sh`, `bin/taa` and the combined entrypoint
+  an operator added survive), uploads `deploy/fhe/taa-supervisor.sh` and `bin/taa`
   to `REMOTE_DIR`, builds both binaries here and runs every command of the local path on that
   host. Everything else — the paths in the report, the render, the readiness wait — reads as a
   path on the deployment host. The callback address needs no default: it is always

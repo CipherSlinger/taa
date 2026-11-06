@@ -36,6 +36,11 @@ export TAA_POD_CONTRACT_TYPE=3
 # operator set.
 export TAA_POD_IMAGE_REPO="${TAA_POD_IMAGE_REPO:-taa-dataanaylsis}"
 export TAA_POD_NAME="${TAA_POD_NAME:-taa-dataanaylsis}"
+# This role's container runs jupyter as well as TAA, so its entrypoint is the combined
+# supervisor rather than deploy.sh's plain one. It is installed under the same name and
+# path as every other role's (/root/taa/taa-supervisor.sh); the file itself decides
+# whether a sidecar starts.
+export TAA_SUPERVISOR_SOURCE="$PROJECT_DIR/deploy/dataanaylsis/taa-supervisor.sh"
 # The shared template still selects semgrep, so deploy.sh would otherwise install the payload into
 # the image (save) or the pod (remote). The role disables the engine at startup, and this base
 # image ships neither the payload nor a use for it.
@@ -48,4 +53,5 @@ unset LLM_IP TAA_LLM_ENDPOINT
 log "role: CONTRACT_TYPE=3 (data-anaylsis), data under /home/jovyan/systemAuthData"
 log "base image: $BASE_IMAGE"
 log "image/Pod name: $TAA_POD_IMAGE_REPO"
+log "entrypoint: $(basename "$TAA_SUPERVISOR_SOURCE") (jupyter + taa)"
 exec "$PROJECT_DIR/deploy.sh" "$@"

@@ -168,6 +168,11 @@ TAA_BINARY_PATH="${TAA_BINARY_PATH:-$PROJECT_DIR/bin/$BINARY_NAME}"
 
 # 远程容器目录：TAA 容器内的工作目录，以及 attestation report 文件路径。
 TAA_WORKDIR="${TAA_WORKDIR:-/root/taa}"
+# The role's own autostart file. Every role installs exactly one file and the image's
+# ENTRYPOINT is `bash <container path>`, so the file alone decides what starts. The tee
+# role uses the plain supervisor; the data-analysis wrapper exports its combined one.
+TAA_SUPERVISOR_SOURCE="${TAA_SUPERVISOR_SOURCE:-$PROJECT_DIR/deploy/taa-supervisor.sh}"
+TAA_SUPERVISOR_CONTAINER="$TAA_WORKDIR/taa-supervisor.sh"
 TAA_PORT=6001
 ATT_REPORT_FILE="${TAA_WORKDIR}/attestation.report"
 K_NS="${TARGET_NAMESPACE:+-n $TARGET_NAMESPACE}"
@@ -924,13 +929,13 @@ save_local_docker_image() {
   ' _ "$builder_container" "$base_image"
 
   # Order matters: the engine is provisioned before the binary and config are copied so the image is
-  # assembled once, and the supervisor is installed from the repository rather than inherited --
-  # save never copied taa-supervisor.sh, so whatever the base image happened to carry became the ENTRYPOINT.
+  # assembled once, and the role's supervisor is installed from the repository rather than inherited --
+  # save never copied it, so whatever the base image happened to carry became the ENTRYPOINT.
   strip_teellm_from_image "$builder_container"
 
   step "installing the TAA supervisor"
-  spin_task "copying deploy/taa-supervisor.sh into the image" \
-    docker cp "$PROJECT_DIR/deploy/taa-supervisor.sh" "$builder_container:/root/taa/taa-supervisor.sh"
+  spin_task "copying $(basename "$TAA_SUPERVISOR_SOURCE") into the image" \
+    docker cp "$TAA_SUPERVISOR_SOURCE" "$builder_container:$TAA_SUPERVISOR_CONTAINER"
 
   provision_local_scan_engine "$builder_container" "$prod_config_template"
 
@@ -945,10 +950,10 @@ save_local_docker_image() {
   local commit_msg="Production image packaged from base $(basename "$base_archive") with $(basename "$prod_config_template") at $(date -u +%Y-%m-%dT%H:%M:%SZ)"
   spin_task "committing image state ($target_image)" \
     docker commit \
-      -c 'ENTRYPOINT ["bash", "/root/taa/taa-supervisor.sh"]' \
+      -c "ENTRYPOINT [\"bash\", \"$TAA_SUPERVISOR_CONTAINER\"]" \
       -c 'CMD []' \
       -c 'USER root' \
-      -c 'WORKDIR /root/taa' \
+      -c "WORKDIR $TAA_WORKDIR" \
       -c 'EXPOSE 6001' \
       -m "$commit_msg" \
       "$builder_container" "$target_image"
@@ -2035,7 +2040,7 @@ verify_pod_contents() {
     # --image names a build made elsewhere; this tree has nothing to hold it against.
     info "--image was given, so only the presence of the payload is checked"
     local spec label path
-    for spec in "taa binary:$TAA_WORKDIR/taa" "taa supervisor:$TAA_WORKDIR/taa-supervisor.sh" \
+    for spec in "taa binary:$TAA_WORKDIR/taa" "taa supervisor:$TAA_SUPERVISOR_CONTAINER" \
                 "taa config:$CONTAINER_TAA_CONFIG_PATH"; do
       label="${spec%%:*}"; path="${spec#*:}"
       remote_ssh "$(container_exec) test -s '$path'" >/dev/null 2>&1 ||
@@ -2047,7 +2052,7 @@ verify_pod_contents() {
     # installs, which may carry an LLM endpoint taken from this deployment's environment.
     render_deploy_config "$LOCAL_RUN_DIR/deploy-taa-config.json"
     verify_pod_file "taa binary" "$TAA_WORKDIR/taa" "$TAA_BINARY_PATH"
-    verify_pod_file "taa supervisor" "$TAA_WORKDIR/taa-supervisor.sh" "$PROJECT_DIR/deploy/taa-supervisor.sh"
+    verify_pod_file "taa supervisor" "$TAA_SUPERVISOR_CONTAINER" "$TAA_SUPERVISOR_SOURCE"
     verify_pod_file "taa config" "$CONTAINER_TAA_CONFIG_PATH" \
       "$LOCAL_RUN_DIR/export-production-taa-config.json" "$LOCAL_RUN_DIR/deploy-taa-config.json"
   fi
@@ -2137,7 +2142,7 @@ if [[ "$ACTION" == "create" ]]; then
   validate_pod_contract_type
   banner "Creating the TAA Pod" "Host: ${REMOTE_USER}@${REMOTE_HOST} | Pod: ${TARGET_POD}"
   check_remote_connectivity
-  require_file "taa supervisor script missing" "$PROJECT_DIR/deploy/taa-supervisor.sh"
+  require_file "taa supervisor script missing" "$TAA_SUPERVISOR_SOURCE"
   step "checking remote target pod: ${TARGET_POD} (${TARGET_NAMESPACE:-default})"
   if remote_pod_exists; then
     # The guest's writable layer holds the SM2 key pair, the sealed state and the imported data, so
@@ -2185,7 +2190,7 @@ fi
 
 if [[ "$DEPLOY_TAA" == true ]]; then
   require_file "build verification failed (taa binary missing)" "$TAA_BINARY_PATH"
-  require_file "taa supervisor script missing" "$PROJECT_DIR/deploy/taa-supervisor.sh"
+  require_file "taa supervisor script missing" "$TAA_SUPERVISOR_SOURCE"
 fi
 
 ensure_remote_ssh

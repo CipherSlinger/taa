@@ -34,10 +34,12 @@
 #  and leaves the documentation readable.
 #
 #  The container has no `command`: the image's ENTRYPOINT is
-#  `bash /root/taa/start.sh`, the same supervisor as deploy/taa-supervisor.sh
-#  (manual-file gate, flock singleton, restart loop, log at /root/taa/taa.log).
-#  That is what makes the deployment's `touch manual` / `rm manual` protocol
-#  work on a freshly created Pod.
+#  `bash /root/taa/taa-supervisor.sh`, the role's own autostart file (manual-file
+#  gate, flock singleton, restart loop, log at /root/taa/taa.log). Every role
+#  installs exactly one file under that name: the tee role's starts taa only, the
+#  data-analysis role's also starts jupyter, and the FHE role's also starts
+#  /opt/entrypoint.sh. That is what makes the deployment's `touch manual` /
+#  `rm manual` protocol work on a freshly created Pod.
 # ============================================================================
 apiVersion: v1
 kind: Pod

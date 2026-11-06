@@ -655,7 +655,13 @@ USERDATA = taaPublicKey.X || taaPublicKey.Y
 本地构建 → scp 到远程宿主机 → kubectl cp 到容器 → 容器内由 supervisor 启动
 ```
 
-`deploy/taa-supervisor.sh` 是容器内的常驻包装：`cd /root/taa`、`flock` 单例锁、`manual` 文件暂停开关、退出后自动重启。
+`/root/taa/taa-supervisor.sh` 是容器内唯一的常驻入口（镜像 ENTRYPOINT 为
+`bash /root/taa/taa-supervisor.sh`），三个角色在同一路径装同名文件：`cd /root/taa`、`flock`
+单例锁、`manual` 文件暂停开关、退出后自动重启。仓库里每个角色保留一份源码：
+`deploy/taa-supervisor.sh`（tee）、`deploy/dataanaylsis/taa-supervisor.sh`（同时起 jupyter）与
+`deploy/fhe/taa-supervisor.sh`（同时起 `/opt/entrypoint.sh`）。有 sidecar 的两个角色把 TAA
+循环放在 `--taa-loop` 子进程里，sidecar 退出即以它的状态结束容器；更新 TAA 只杀这个子进程，
+入口与 sidecar 都不重启。
 
 ### 9.3 容器内目录结构
 

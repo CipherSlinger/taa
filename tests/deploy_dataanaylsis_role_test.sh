@@ -26,6 +26,7 @@ printf 'SCAN_PROVISION=%s\n' "${TAA_SCAN_ENGINE_PROVISION:-<unset>}"
 printf 'CONFIG_TEMPLATE=%s\n' "${TAA_PRODUCTION_CONFIG_TEMPLATE:-<unset>}"
 printf 'IMAGE_REPO=%s\n' "${TAA_POD_IMAGE_REPO:-<unset>}"
 printf 'POD_NAME=%s\n' "${TAA_POD_NAME:-<unset>}"
+printf 'SUPERVISOR=%s\n' "${TAA_SUPERVISOR_SOURCE:-<unset>}"
 printf 'LLM_IP=%s\n' "${LLM_IP:-<unset>}"
 printf 'LLM_ENDPOINT=%s\n' "${TAA_LLM_ENDPOINT:-<unset>}"
 STUB
@@ -55,6 +56,11 @@ grep -qx 'IMAGE_REPO=taa-dataanaylsis' <<<"$out" \
   || fail "the role does not own its image repository"
 grep -qx 'POD_NAME=taa-dataanaylsis' <<<"$out" \
   || fail "the role does not own its Pod name"
+
+# jupyter and TAA share the container, so this role's entrypoint is the combined
+# supervisor, installed under the same name and path every role uses.
+grep -q '^SUPERVISOR=.*/deploy/dataanaylsis/taa-supervisor\.sh$' <<<"$out" \
+  || fail "the role does not select the combined jupyter + TAA supervisor"
 
 # An operator's own names win over both defaults.
 out="$(env TAA_POD_IMAGE_REPO=custom-repo TAA_POD_NAME=custom-pod \

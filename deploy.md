@@ -201,6 +201,10 @@ Pod 规格与来源用 `FHE_POD_NAME`、`FHE_POD_CPU`、`FHE_POD_MEMORY`、`FHE_
 `save` 的镜像名与归档名也由仓库名推出，与 `create` 落到同一处：
 `taa-dataanaylsis:<YYYYMMDD>`、`deploy/out/taa-dataanaylsis-<YYYYMMDD>.tar.gz`。
 
+本角色与其它角色一样只有一个自启文件 `/root/taa/taa-supervisor.sh`，但内容来自
+`deploy/dataanaylsis/taa-supervisor.sh`：它同时启动 jupyter 和 TAA，jupyter 退出即容器退出。
+细节见下文“3. 数据分析”。
+
 ## TEE-LLM 推理网关：`deploy-llm.sh`
 
 ```bash
@@ -464,12 +468,13 @@ bundle 只带 `pylib`（66 个 wheel）。supervisor 的单例锁用 `flock`，�
 
 **打包新增**
 
-`/root/taa/taa`、`/root/taa/taa-supervisor.sh`、`/opt/taa-fhe-supervisor.sh`、
-`/root/taa/taa-config.json`（只改 5 个键）。`save` 与 docker 容器路径的镜像**不含**模型、
-密钥、redis 数据，运行时挂 `/data`、`/data/redis`、`$HOST_TAA_STATE_DIR`；`create` 建 Pod 时
-另外把 FHE 模型树烤进 `/data/models`，因为 Kata guest 里没有宿主 bind。GPU 由宿主 NVIDIA
-驱动 + nvidia-container-toolkit 提供（Pod 里是 `nvidia.com/gpu` 设备），镜像自带的只有上面
-那两个 CUDA 用户态库。
+`/root/taa/taa`、`/root/taa/taa-supervisor.sh`、`/root/taa/taa-config.json`（只改 5 个键）。
+`taa-supervisor.sh` 是本角色唯一的入口：它拉起 `/opt/entrypoint.sh`（redis + api_server +
+worker）并把 TAA 交给自己的 `--taa-loop` 子进程，更新时只杀子进程，入口与 FHE 服务不动。
+`save` 与 docker 容器路径的镜像**不含**模型、密钥、redis 数据，运行时挂 `/data`、
+`/data/redis`、`$HOST_TAA_STATE_DIR`；`create` 建 Pod 时另外把 FHE 模型树烤进 `/data/models`，
+因为 Kata guest 里没有宿主 bind。GPU 由宿主 NVIDIA 驱动 + nvidia-container-toolkit 提供
+（Pod 里是 `nvidia.com/gpu` 设备），镜像自带的只有上面那两个 CUDA 用户态库。
 
 ## 3. 数据分析 — `deploy-dataanaylsis.sh`
 
@@ -486,6 +491,15 @@ HOME/WORKDIR = `/home/jovyan`，EXPOSE 8888。
 密封密钥来源不需要渲染：TAA 启动时按 `/dev/csv-guest` 是否存在自动选择硬件密钥或 SM2 派生，
 打包与远端两种路径行为一致。
 
+打包时 ENTRYPOINT 被覆盖为统一的 `bash /root/taa/taa-supervisor.sh`（基座的 `tini -g --`
+不再使用），这个角色装的是组合版（`deploy/dataanaylsis/taa-supervisor.sh`）：PID 1 先以 `HOME=/home/jovyan` 起
+`start-notebook.py`（jupyter 只读 `$HOME/.jupyter`，`allow_root` 配置在那里），再拉起自己的
+`--taa-loop` 子进程跑 TAA。jupyter 的 `ip=0.0.0.0`、`port=8888`、`root_dir=/home/jovyan`、
+空 token 都来自基座镜像的 `/home/jovyan/.jupyter/jupyter_server_config.py`，脚本不重复配置。
+**jupyter 是决定容器存活的服务**：它退出时脚本停掉 TAA 并以 jupyter 的退出码结束容器，由
+kubelet 的 restartPolicy 处理重启；TAA 自己退出只在 10s 后重启循环，不影响 jupyter。
+更新 TAA 时杀的是 `--taa-loop` 子进程，jupyter 和入口文件都不重启。
+
 **基础镜像自带**
 
 - Python（两套并存，默认 conda 那套）：
@@ -497,7 +511,7 @@ HOME/WORKDIR = `/home/jovyan`，EXPOSE 8888。
 - 其他运行时：`julia 1.9.3`（`/usr/local/bin`）、`node v20.19.6` + `npm`（conda 内）
 - 库：`libc`(2.35)、`libssl3`/`libcrypto3`、`libstdc++.so.6`、`libgcc_s.so.1`、`libgomp.so.1`
 - Jupyter 基础：`/home/jovyan`（`.jupyter`、`.cache`、`.conda`、`.config`、`work`）、
-  `start-notebook.sh` 等启动脚本
+  `/usr/local/bin/start-notebook.py`（镜像 CMD）与它 exec 的 `start.sh`
 
 **基础镜像没有**
 
@@ -506,9 +520,10 @@ HOME/WORKDIR = `/home/jovyan`，EXPOSE 8888。
 
 **打包新增**
 
-与审计镜像相同的 TAA 载荷（`taa` 静态二进制、两份证书、`taa-supervisor.sh`、
-渲染后的 `taa-config.json`、空目录 `/root/taa/{models,data,results,keys}` 与
-`/opt/taa/{input,output}`）。**不装 semgrep、不装 teellm**：配置里的 `codeAudit` 与生产模板
+与审计镜像相同的 TAA 载荷（`taa` 静态二进制、两份证书、渲染后的 `taa-config.json`、空目录
+`/root/taa/{models,data,results,keys}` 与 `/opt/taa/{input,output}`），但
+`taa-supervisor.sh` 换成本角色的组合版（jupyter + TAA，同一容器路径）。
+**不装 semgrep、不装 teellm**：配置里的 `codeAudit` 与生产模板
 一致（含 `codeScan.engine=semgrep`），但运行时按角色关掉审计，打包时由
 `TAA_SCAN_ENGINE_PROVISION=skip` 跳过 payload 注入。
 
