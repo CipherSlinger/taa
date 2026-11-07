@@ -77,7 +77,7 @@ esac
 # the package -- derived from REMOTE_PACKAGE_DIR, not separately configurable --
 # because the Kata config names those in-package files.
 check_contains "driver: default install root" 'TAA_IMAGES_DIR="${TAA_IMAGES_DIR:-/root/taa-images}"' "$driver_src"
-check "print-config: package lives under the install root" "/root/taa-images/package" "$REMOTE_PACKAGE_DIR"
+check "print-config: package lives under the install root" "/root/taa-images/package-train" "$REMOTE_PACKAGE_DIR"
 check "print-config: bundle lives inside the package" \
   "$REMOTE_PACKAGE_DIR/bundle" "$REMOTE_BUNDLE_DIR"
 # The handler's ConfigPath points at the packaged copy, so a normal run installs
@@ -105,7 +105,7 @@ check_contains "driver: supplies the LLM endpoint" \
 # default would look right here and still build an initrd with no identity.
 check_contains "driver: the identity is exported to the build" \
   'export TAA_PLATFORM_IP TAA_DOCKER_ID TAA_LLM_ENDPOINT' "$driver_src"
-# The per-role leaf (`package`, `package-infer`, ...) belongs to build-initrd.sh,
+# The per-role leaf (`package-train`, `package-infer`, ...) belongs to build-initrd.sh,
 # which owns the role mapping; the driver only passes the root and any explicit
 # override through, so one role can never install over another's package.
 check_contains "driver: the install root is exported to the build" 'export TAA_IMAGES_DIR' "$driver_src"

@@ -51,7 +51,7 @@ fi
 # Everything this flow puts on the target host lives under one directory, with
 # one subdirectory per role:
 #
-#   $TAA_IMAGES_DIR/package/           taa-train (the historical name)
+#   $TAA_IMAGES_DIR/package-train/     taa-train
 #   $TAA_IMAGES_DIR/package-infer/     taa-infer
 #   $TAA_IMAGES_DIR/package-analysis/  taa-analysis
 #
@@ -67,7 +67,7 @@ fi
 #
 # without another build, render or upload.
 #
-# The per-role subdirectory (`package`, `package-infer`, ...) is decided in
+# The per-role subdirectory (`package-train`, `package-infer`, ...) is decided in
 # build-initrd.sh, so this default only supplies the root. Naming the leaf here
 # would give the driver a second copy of the role mapping, and a run of one role
 # would install over another's package.

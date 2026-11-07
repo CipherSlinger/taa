@@ -15,7 +15,7 @@
 >
 > | 角色 | CONTRACT_TYPE | handler | 交付包目录 | 默认镜像 |
 > |---|---|---|---|---|
-> | `taa-train` | 1 | `kata-qemu-csv2-taa-train` | `/root/taa-images/package` | `taa-env:v1-train-infer` |
+> | `taa-train` | 1 | `kata-qemu-csv2-taa-train` | `/root/taa-images/package-train` | `taa-env:v1-train-infer` |
 > | `taa-infer` | 2 | `kata-qemu-csv2-taa-infer` | `/root/taa-images/package-infer` | `taa-env:v1-train-infer` |
 > | `taa-analysis` | 3 | `kata-qemu-csv2-taa-analysis` | `/root/taa-images/package-analysis` | `jupyter-nologin-full:v2.2` |
 
@@ -38,7 +38,7 @@ export TAA_ROLE=taa-train
 # guest-build/build-initrd.sh 使用的交付包位置（taa-train 的默认值）
 # 整包（含 bundle/）scp 到这里；bundle 子目录由脚本派生，不单独配置。
 # 换角色时不写这一行，让它按角色派生，避免两个角色写进同一个目录。
-export REMOTE_PACKAGE_DIR=/root/taa-images/package
+export REMOTE_PACKAGE_DIR=/root/taa-images/package-train
 # 以下四个是构建机 fetch-base 的拉取源，只在构建机上用到
 export REMOTE_BASE_INITRD_SRC=/opt/kata/share/kata-containers/kata-containers-initrd-confidential-csv.img
 export REMOTE_KERNEL_SRC=/opt/kata/share/kata-containers/vmlinuz-confidential-csv.container
@@ -196,7 +196,7 @@ cd /home/hjy/taa/deploy/guest-build
 
 Kata 配置里的 `kernel`/`initrd`/`firmware` 直接指向这几个包内路径，因此**宿主上不复制
 任何文件**，宿主自己的 `/opt/kata/share/...` 也不需要存在。整包 `scp` 过去放在
-`${REMOTE_PACKAGE_DIR}`（默认 `/root/taa-images/package`）即可，`install.sh` 会从包内
+`${REMOTE_PACKAGE_DIR}`（默认 `/root/taa-images/package-train`）即可，`install.sh` 会从包内
 取全部启动文件。
 
 渲染加整包上传可以合并成一步（不安装）：
@@ -337,7 +337,7 @@ TEST_NODE_NAME="${TEST_NODE_NAME}" \
 
 ```bash
 # 包内 Kata 配置里必须出现新 initrd，且路径落在同一交付包内
-pkg=/root/taa-images/package
+pkg=/root/taa-images/package-train
 sudo grep -nE '^(kernel|initrd|firmware|kernel_params)\s*=' \
   "$pkg/config/kata-config.toml"
 
@@ -366,7 +366,7 @@ kubectl exec test-kata-csv2-taa -- bash -c 'exec 3<>/dev/tcp/127.0.0.1/6001'
 
 # 用实际 QEMU append 重算预期度量（在宿主上执行；与包内 README 的 hex 对照，
 # 也应与平台经 getAttestation 拿到的 digest 一致）
-pkg=/root/taa-images/package
+pkg=/root/taa-images/package-train
 pid=$(ps -eo pid=,args= | grep -F qemu | grep -F "$pkg/bundle/initramfs.img" | awk '{print $1}' | head -1)
 tr '\0' '\n' < /proc/$pid/cmdline | grep -A1 '^-append$' | tail -n1 > /tmp/append
 echo >> /tmp/append
@@ -385,7 +385,7 @@ python3 "$pkg/measure.py" digest \
 
 - `REMOTE_USER=root`（需免密 sudo 或直接是 root；脚本会在写入前先检查）
 - `REMOTE_HOST=172.16.10.178`
-- `REMOTE_PACKAGE_DIR=/root/taa-images/package`（整包安装位置）
+- `REMOTE_PACKAGE_DIR=/root/taa-images/package-train`（整包安装位置）
 - `REMOTE_BUNDLE_DIR`：**派生值**，恒为 `$REMOTE_PACKAGE_DIR/bundle`，不要单独设置
 - `REMOTE_KATA_CONFIG`：**派生值**，恒为 `$REMOTE_PACKAGE_DIR/config/kata-config.toml`
 - `RUNTIME_HANDLER=kata-qemu-csv2-taa-train`
@@ -421,7 +421,7 @@ python3 "$pkg/measure.py" digest \
 - 这份模板**不执行部署**，只整理可复制命令。
 - 仓库根的 `deploy-taa-vm.sh` 只有一个行为、没有子命令：编译 TAA → 构建 initrd →
   本地渲染 → 整包上传，不安装；结束时打印宿主上的安装命令
-  `ssh <host> 'cd /root/taa-images/package && sudo bash install.sh'`。
+  `ssh <host> 'cd /root/taa-images/package-train && sudo bash install.sh'`。
   细分动作（`build` / `fetch-base` / `render` / `upload` / `launch`）仍由
   `deploy/guest-build/build-initrd.sh` 提供，`--help` 可看。
   离线自测是根目录的 `./test-deploy-taa-vm.sh` 和 `deploy/guest-build/test-render.sh`。

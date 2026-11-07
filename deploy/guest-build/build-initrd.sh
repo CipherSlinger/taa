@@ -93,8 +93,9 @@ role_wants_semgrep() {
 }
 
 # Handler and delivery directory are per role, so a host can hold all three side
-# by side. The handler always carries the role suffix; the directory keeps the
-# bare `package` for train because installed hosts already point at it.
+# by side. Both carry the role suffix, including training: a bare `package` or
+# `kata-qemu-csv2-taa` would read as "the default one" and invite a second role
+# to be installed over it.
 role_runtime_handler() {
   case "$TAA_ROLE" in
     taa-train) echo kata-qemu-csv2-taa-train ;;
@@ -105,7 +106,7 @@ role_runtime_handler() {
 
 role_package_subdir() {
   case "$TAA_ROLE" in
-    taa-train) echo package ;;
+    taa-train) echo package-train ;;
     taa-infer) echo package-infer ;;
     taa-analysis) echo package-analysis ;;
   esac
@@ -315,11 +316,10 @@ REMOTE_KATA_CONFIG_SRC="${REMOTE_KATA_CONFIG_SRC:-/opt/kata/share/defaults/kata-
 # It must stay persistent: the Kata config and the files QEMU boots are inside
 # it, so removing it breaks the runtime handler.
 #
-# One directory per role. The Kata config names absolute paths into this exact
-# directory and containerd resolves that config whenever a Pod of the role's
-# handler starts, so two roles sharing it would silently boot each other's
-# kernel and initrd. train keeps `package` (an installed host already points at
-# it); the others get a role-suffixed sibling.
+# One directory per role, all of them role-suffixed. The Kata config names
+# absolute paths into this exact directory and containerd resolves that config
+# whenever a Pod of the role's handler starts, so two roles sharing it would
+# silently boot each other's kernel and initrd.
 TAA_IMAGES_DIR="${TAA_IMAGES_DIR:-/root/taa-images}"
 REMOTE_PACKAGE_DIR="${REMOTE_PACKAGE_DIR:-$TAA_IMAGES_DIR/$(role_package_subdir)}"
 # Derived, never overridable: the rendered kernel/initrd/firmware paths and the
@@ -409,9 +409,9 @@ usage() {
 Usage: $0 [taa-train|taa-infer|taa-analysis] [build|fetch-base|render|upload|launch|all|print-config]
 
 Role (first word, or TAA_ROLE; default taa-train):
-  taa-train     Training instance. CONTRACT_TYPE=1, handler $RUNTIME_HANDLER for
-                this role, delivery package under /root/taa-images/package, and
-                the only role whose initrd carries the semgrep payload.
+  taa-train     Training instance. CONTRACT_TYPE=1, its own handler and package
+                directory, and the only role whose initrd carries the semgrep
+                payload.
   taa-infer     Inference instance. CONTRACT_TYPE=2, its own handler and package
                 directory, no semgrep payload.
   taa-analysis  Data-analysis instance. CONTRACT_TYPE=3, its own handler and

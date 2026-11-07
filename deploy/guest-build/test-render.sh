@@ -96,7 +96,7 @@ printf 'fixture-initrd\n' > "$tmp_dir/fixture-initrd.img"
 
 # Where the package will live on the host. The rendered Kata config names this
 # location, so it is pinned here and checked against the package's own bundle/.
-package_host_dir="/root/taa-images/package"
+package_host_dir="/root/taa-images/package-train"
 bundle="$package_host_dir/bundle"
 common_env=(
   KATA_CONFIG_TEMPLATE="$template"
@@ -487,10 +487,10 @@ for role in taa-train taa-infer taa-analysis; do
   # The suffix has to be the role's own, not merely present: a train package
   # installed under the infer handler would attach the wrong kernel.
   check "role/$role: handler is $role's own" "kata-qemu-csv2-$role" "$dh"
-  case "$dp" in
-    /root/taa-images/package*) echo "ok   role/$role: package dir is under the install root ($dp)" ;;
-    *) echo "FAIL role/$role: package dir is not under the install root: $dp" >&2; failures=$((failures + 1)) ;;
-  esac
+  # Same rule as the handler: the directory owns the role's suffix, so an
+  # explicit override can never quietly land one role on another's package.
+  check "role/$role: package dir is package-${role#taa-}" \
+    "/root/taa-images/package-${role#taa-}" "$dp"
   case "$dn" in
     test-kata-csv2-taa*) echo "ok   role/$role: Pod name is role-scoped ($dn)" ;;
     *) echo "FAIL role/$role: Pod name is not role-scoped: $dn" >&2; failures=$((failures + 1)) ;;
