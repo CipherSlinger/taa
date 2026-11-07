@@ -92,11 +92,12 @@ role_wants_semgrep() {
   [[ "$TAA_ROLE" == "taa-train" ]]
 }
 
-# Handler and delivery directory are per role. train keeps the historical names;
-# the other two get a suffix so a host can hold all three side by side.
+# Handler and delivery directory are per role, so a host can hold all three side
+# by side. The handler always carries the role suffix; the directory keeps the
+# bare `package` for train because installed hosts already point at it.
 role_runtime_handler() {
   case "$TAA_ROLE" in
-    taa-train) echo kata-qemu-csv2-taa ;;
+    taa-train) echo kata-qemu-csv2-taa-train ;;
     taa-infer) echo kata-qemu-csv2-taa-infer ;;
     taa-analysis) echo kata-qemu-csv2-taa-analysis ;;
   esac

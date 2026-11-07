@@ -56,7 +56,7 @@ check "print-config: JSON with a space survives eval" '{"a.b":"c d"}' "$TEST_POD
 default_config="$("$BUILD" print-config)"
 eval "$default_config"
 check "print-config: default annotations are an empty object" "{}" "$TEST_POD_ANNOTATIONS"
-check "print-config: default handler" "kata-qemu-csv2-taa" "$RUNTIME_HANDLER"
+check "print-config: default handler" "kata-qemu-csv2-taa-train" "$RUNTIME_HANDLER"
 check_contains "print-config: exposes the Kata config template" "KATA_CONFIG_TEMPLATE=" "$default_config"
 check_contains "print-config: exposes the delivery package directory" "DIST_DIR=" "$default_config"
 # The upload writes through sudo on the far side, so the default account has to

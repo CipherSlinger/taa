@@ -15,7 +15,7 @@
 >
 > | 角色 | CONTRACT_TYPE | handler | 交付包目录 | 默认镜像 |
 > |---|---|---|---|---|
-> | `taa-train` | 1 | `kata-qemu-csv2-taa` | `/root/taa-images/package` | `taa-env:v1-train-infer` |
+> | `taa-train` | 1 | `kata-qemu-csv2-taa-train` | `/root/taa-images/package` | `taa-env:v1-train-infer` |
 > | `taa-infer` | 2 | `kata-qemu-csv2-taa-infer` | `/root/taa-images/package-infer` | `taa-env:v1-train-infer` |
 > | `taa-analysis` | 3 | `kata-qemu-csv2-taa-analysis` | `/root/taa-images/package-analysis` | `jupyter-nologin-full:v2.2` |
 
@@ -44,7 +44,7 @@ export REMOTE_BASE_INITRD_SRC=/opt/kata/share/kata-containers/kata-containers-in
 export REMOTE_KERNEL_SRC=/opt/kata/share/kata-containers/vmlinuz-confidential-csv.container
 export REMOTE_OVMF_SRC=/opt/kata/share/ovmf/OVMFCSV.fd
 export REMOTE_KATA_CONFIG_SRC=/opt/kata/share/defaults/kata-containers/configuration-qemu-csv2.toml
-export RUNTIME_HANDLER=kata-qemu-csv2-taa
+export RUNTIME_HANDLER=kata-qemu-csv2-taa-train
 export RUNTIME_TYPE=io.containerd.kata-qemu-csv2.v2
 export RUNTIME_PATH=/opt/kata/bin/containerd-shim-kata-v2
 export SNAPSHOTTER=nydus
@@ -225,7 +225,7 @@ cd /home/hjy/taa/deploy/guest-build
 ./build-initrd.sh render
 ```
 
-产物在 `dist/kata-qemu-csv2-taa/`：
+产物在 `dist/kata-qemu-csv2-taa-train/`：
 
 - `bundle/initramfs.img`、`bundle/vmlinuz`、`bundle/OVMF.fd` — QEMU 实际启动的三份文件
 - `config/kata-config.toml` — 改写后的 Kata hypervisor 配置（指向包内 bundle）
@@ -287,7 +287,7 @@ TEST_POD_ANNOTATIONS="${TEST_POD_ANNOTATIONS}" \
 2. 使用包内的 Kata 配置 `$REMOTE_PACKAGE_DIR/config/kata-config.toml`
    （它已经在 `render` 时指向同一包内的 `bundle/`），不再往 `/etc` 装第二份
 3. 在 `containerd` 中新增 runtime handler：
-   - `kata-qemu-csv2-taa`，其 `ConfigPath` 指向上面那份包内配置
+   - `kata-qemu-csv2-taa-train`，其 `ConfigPath` 指向上面那份包内配置
 4. 重启 `containerd`——**只有在配置真的变了才重启**（先 `cmp` 一次，未变化就打印
    `containerd 配置未变化，跳过重启`）。这决定了 `launch` 对已在跑的 Pod 有没有动效
 5. 视配置可选重启 `kubelet`
@@ -302,7 +302,7 @@ TEST_POD_ANNOTATIONS="${TEST_POD_ANNOTATIONS}" \
 手工在目标宿主上安装同一个包时：
 
 ```bash
-cd dist/kata-qemu-csv2-taa
+cd dist/kata-qemu-csv2-taa-train
 sha256sum -c SHA256SUMS
 sudo bash install.sh --dry-run   # 先看会改什么
 sudo bash install.sh
@@ -342,11 +342,11 @@ sudo grep -nE '^(kernel|initrd|firmware|kernel_params)\s*=' \
   "$pkg/config/kata-config.toml"
 
 # containerd 里必须有 runtime handler
-sudo grep -nF '[plugins."io.containerd.grpc.v1.cri".containerd.runtimes."kata-qemu-csv2-taa"]' \
+sudo grep -nF '[plugins."io.containerd.grpc.v1.cri".containerd.runtimes."kata-qemu-csv2-taa-train"]' \
   /etc/containerd/config.toml
 
 # RuntimeClass 必须存在
-kubectl get runtimeclass kata-qemu-csv2-taa
+kubectl get runtimeclass kata-qemu-csv2-taa-train
 
 # 测试 Pod
 kubectl get pod test-kata-csv2-taa -o wide
@@ -388,8 +388,8 @@ python3 "$pkg/measure.py" digest \
 - `REMOTE_PACKAGE_DIR=/root/taa-images/package`（整包安装位置）
 - `REMOTE_BUNDLE_DIR`：**派生值**，恒为 `$REMOTE_PACKAGE_DIR/bundle`，不要单独设置
 - `REMOTE_KATA_CONFIG`：**派生值**，恒为 `$REMOTE_PACKAGE_DIR/config/kata-config.toml`
-- `RUNTIME_HANDLER=kata-qemu-csv2-taa`
-- `DIST_DIR=dist/kata-qemu-csv2-taa`（`render` 的固定输出目录）
+- `RUNTIME_HANDLER=kata-qemu-csv2-taa-train`
+- `DIST_DIR=dist/kata-qemu-csv2-taa-train`（`render` 的固定输出目录）
 - `KATA_CONFIG_TEMPLATE=base/configuration-qemu-csv2.toml`（宿主权威模板，`fetch-base` 拉取）
 - `LAUNCH_KEEP_DIST=1`（`launch` 用的临时渲染结果额外复制一份到 `DIST_DIR`）
 - `MEASURE_OVMF` / `MEASURE_KERNEL`：预期度量的本地输入（默认 `base/` 下的 OVMF 与 kernel）；

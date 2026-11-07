@@ -102,7 +102,7 @@ common_env=(
   KATA_CONFIG_TEMPLATE="$template"
   REMOTE_PACKAGE_DIR="$package_host_dir"
   REMOTE_KATA_CONFIG_SRC=/opt/kata/share/defaults/kata-containers/configuration-qemu-csv2.toml
-  RUNTIME_HANDLER=kata-qemu-csv2-taa
+  RUNTIME_HANDLER=kata-qemu-csv2-taa-train
   TEST_POD_NAME=test-kata-csv2-taa
   TEST_NODE_NAME=fixture-node
   TEST_POD_ANNOTATIONS='{"io.katacontainers.config.hypervisor.cc_init_data":"abc+/="}'
@@ -395,10 +395,10 @@ import json, sys
 rc = json.load(open(sys.argv[1]))
 pod = json.load(open(sys.argv[2]))
 problems = []
-if rc.get("kind") != "RuntimeClass" or rc.get("handler") != "kata-qemu-csv2-taa":
+if rc.get("kind") != "RuntimeClass" or rc.get("handler") != "kata-qemu-csv2-taa-train":
     problems.append(f"runtimeclass: {rc}")
 spec = pod.get("spec", {})
-if spec.get("runtimeClassName") != "kata-qemu-csv2-taa":
+if spec.get("runtimeClassName") != "kata-qemu-csv2-taa-train":
     problems.append(f"runtimeClassName: {spec.get('runtimeClassName')}")
 if spec.get("nodeName") != "fixture-node":
     problems.append(f"nodeName: {spec.get('nodeName')}")
@@ -434,7 +434,7 @@ self_pkg="$tmp_dir/self/pkg"
 env "${common_env[@]}" REMOTE_PACKAGE_DIR="$self_pkg" DIST_DIR="$self_pkg" \
   REMOTE_HOST=invalid.invalid "$BUILD" render >/dev/null
 info="$(python3 "$self_pkg/render.py" package-info --dir "$self_pkg")"
-check_contains "package-info: reports the runtime handler" "RUNTIME_HANDLER=kata-qemu-csv2-taa" "$info"
+check_contains "package-info: reports the runtime handler" "RUNTIME_HANDLER=kata-qemu-csv2-taa-train" "$info"
 check_contains "package-info: reports the runtime type" \
   "RUNTIME_TYPE=io.containerd.kata-qemu-csv2.v2" "$info"
 check_contains "package-info: reports the snapshotter" "SNAPSHOTTER=nydus" "$info"
@@ -484,10 +484,9 @@ for role in taa-train taa-infer taa-analysis; do
   dh="$(sed -n 's/^RUNTIME_HANDLER=//p' <<<"$derived" | tr -d "'")"
   dp="$(sed -n 's/^REMOTE_PACKAGE_DIR=//p' <<<"$derived" | tr -d "'")"
   dn="$(sed -n 's/^TEST_POD_NAME=//p' <<<"$derived" | tr -d "'")"
-  case "$dh" in
-    kata-qemu-csv2-taa*) echo "ok   role/$role: handler is role-scoped ($dh)" ;;
-    *) echo "FAIL role/$role: handler is not role-scoped: $dh" >&2; failures=$((failures + 1)) ;;
-  esac
+  # The suffix has to be the role's own, not merely present: a train package
+  # installed under the infer handler would attach the wrong kernel.
+  check "role/$role: handler is $role's own" "kata-qemu-csv2-$role" "$dh"
   case "$dp" in
     /root/taa-images/package*) echo "ok   role/$role: package dir is under the install root ($dp)" ;;
     *) echo "FAIL role/$role: package dir is not under the install root: $dp" >&2; failures=$((failures + 1)) ;;
@@ -521,8 +520,8 @@ check "role: train leaves the uid to the image" "" \
 # to match the role's own.
 analysis_pkg="$tmp_dir/role/pkg-analysis"
 env "${common_env[@]}" REMOTE_HOST=invalid.invalid DIST_DIR="$analysis_pkg" \
-  TAA_CONTRACT_TYPE=3 TEST_POD_NAME=test-kata-csv2-taa-analysis \
-  TEST_POD_RUN_AS_USER=0 "$BUILD" render >/dev/null
+  RUNTIME_HANDLER= TAA_CONTRACT_TYPE=3 TEST_POD_NAME=test-kata-csv2-taa-analysis \
+  TEST_POD_RUN_AS_USER=0 "$BUILD" taa-analysis render >/dev/null
 python3 - "$analysis_pkg/k8s/test-pod.yaml" <<'PY'
 import json, sys
 pod = json.load(open(sys.argv[1]))
