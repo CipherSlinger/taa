@@ -7,7 +7,7 @@
 # Build:
 #   docker build -f Dockerfile \
 #     --build-arg BASE=172.16.10.178:31313/taa-env:slim-v2-20261022 \
-#     -t 172.16.10.178:31313/taa-env:slim-v2-clean .
+#     -t 172.16.10.178:31313/taa-env:v1-train-infer .
 ARG BASE
 FROM ${BASE}
 

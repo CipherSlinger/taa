@@ -400,7 +400,7 @@ if spec.get("runtimeClassName") != "kata-qemu-csv2-taa":
 if spec.get("nodeName") != "fixture-node":
     problems.append(f"nodeName: {spec.get('nodeName')}")
 container = spec.get("containers", [{}])[0]
-if container.get("image") != "172.16.10.178:31313/taa-env:slim-v2-clean-20261107":
+if container.get("image") != "172.16.10.178:31313/taa-env:v1-train-infer":
     problems.append(f"image: {container.get('image')}")
 annotations = pod.get("metadata", {}).get("annotations", {})
 if annotations.get("io.katacontainers.config.hypervisor.cc_init_data") != "abc+/=":

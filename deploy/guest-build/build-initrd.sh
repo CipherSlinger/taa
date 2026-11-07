@@ -235,7 +235,7 @@ TEST_POD_NAME="${TEST_POD_NAME:-test-kata-csv2-taa}"
 # (see clean-image/Dockerfile for how it is built). The earlier default,
 # slim-v2-20260916, is also gone from the registry -- only local docker and
 # containerd copies remained, so a fresh host could never pull it.
-TEST_IMAGE="${TEST_IMAGE:-172.16.10.178:31313/taa-env:slim-v2-clean-20261107}"
+TEST_IMAGE="${TEST_IMAGE:-172.16.10.178:31313/taa-env:v1-train-infer}"
 # Optional `docker save` archive of TEST_IMAGE. When set, the package carries it
 # under image/ and install.sh loads and pushes it if the registry lacks the tag.
 # A CoCo guest pulls the image itself through CDH, so the archive has to reach
