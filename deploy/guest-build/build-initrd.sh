@@ -229,7 +229,13 @@ TEST_POD_NAME="${TEST_POD_NAME:-test-kata-csv2-taa}"
 # request for url (https://index.docker.io/...)" after the 180s wait. So the
 # default is an image from the registry on the host itself (the same one the
 # CoCo Pods already running here pull successfully).
-TEST_IMAGE="${TEST_IMAGE:-172.16.10.178:31313/taa-env:slim-v2-20260916}"
+#
+# The TAA-free variant, not a stock taa-env: TAA already runs from this
+# package's initrd, and an image carrying its own copy gives the guest two
+# (see clean-image/Dockerfile for how it is built). The earlier default,
+# slim-v2-20260916, is also gone from the registry -- only local docker and
+# containerd copies remained, so a fresh host could never pull it.
+TEST_IMAGE="${TEST_IMAGE:-172.16.10.178:31313/taa-env:slim-v2-clean-20261107}"
 # Optional `docker save` archive of TEST_IMAGE. When set, the package carries it
 # under image/ and install.sh loads and pushes it if the registry lacks the tag.
 # A CoCo guest pulls the image itself through CDH, so the archive has to reach

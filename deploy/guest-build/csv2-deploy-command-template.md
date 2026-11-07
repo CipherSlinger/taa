@@ -38,7 +38,7 @@ export TEST_POD_NAME=test-kata-csv2-taa
 # 默认已是宿主本地 registry 的镜像。**别改成 Docker Hub 上的 tag**：guest 内的 CDH
 # 没有到外网的路由，实测 busybox:latest 报 error sending request for index.docker.io，
 # Pod 停在 StartError。另外 verify 步骤要在 Pod 内执行 curl，busybox 不带 curl。
-export TEST_IMAGE=172.16.10.178:31313/taa-env:slim-v2-20260916
+export TEST_IMAGE=172.16.10.178:31313/taa-env:slim-v2-clean-20261107
 
 # 测试 Pod 的注解，必须是 JSON 对象。在这台宿主上 **不能省**：CoCo 的 CDH 在 guest 内拉镜像，
 # 注册表 CA 只能经 cc_init_data 注解投递，缺了就会 TLS 失败、Pod 停在 StartError。
@@ -296,7 +296,7 @@ sudo bash install.sh
 所以包绑定 `REMOTE_PACKAGE_DIR` 这个位置：换宿主照搬整包即可，换了目录就要重新
 `render`。`install.sh` 发现包被挪过位置会直接拒绝并提示重新渲染。
 
-`TEST_IMAGE` 默认就是宿主上**已有**的镜像 `172.16.10.178:31313/taa-env:slim-v2-20260916`
+`TEST_IMAGE` 默认就是宿主上**已有**的镜像 `172.16.10.178:31313/taa-env:slim-v2-clean-20261107`
 （本地 registry，guest 拉得通，且带 curl 供 verify 使用）。改成 Docker Hub 上的 tag 会等满
 180s 后 `StartError`：guest 内没有到外网的路由。
 
@@ -380,7 +380,7 @@ python3 "$pkg/measure.py" digest \
 - `MEASURE_SMP`：覆盖推导出的 `nr_cpus=`（默认取渲染配置的 `default_vcpus`）
 - `MEASURE_APPEND`：整条覆盖推导出的 QEMU `-append`（单行）
 - `TEST_POD_NAME=test-kata-csv2-taa`
-- `TEST_IMAGE=172.16.10.178:31313/taa-env:slim-v2-20260916`（宿主本地 registry；guest 无外网）
+- `TEST_IMAGE=172.16.10.178:31313/taa-env:slim-v2-clean-20261107`（宿主本地 registry；guest 无外网）
 - `TEST_POD_ANNOTATIONS='{}'`（该宿主上需填 `cc_init_data`，见 §0）
 - `TAA_PLATFORM_IP`、`TAA_DOCKER_ID`：平台注册身份，必须成对。由**驱动**给默认值
   （`172.16.10.116:${PLATFORM_PORT}` / `kata-csv2-taa-test-0001`；平台跑在自己的宿主上，
