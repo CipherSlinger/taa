@@ -34,6 +34,111 @@ if [[ ! -f "$ROOT_DIR/go.mod" ]]; then
   exit 1
 fi
 
+# ── Instance role ────────────────────────────────────────────────────────────
+#
+# One package per role, selected by a bare `taa-<role>` argument (or TAA_ROLE),
+# defaulting to taa-train so every existing invocation keeps its meaning. The
+# role is not a build flavour: it decides what the guest *is*, so it has to be
+# settled before any default is derived from it.
+#
+# The three roles map onto the CONTRACT_TYPE values TAA itself understands
+# (internal/config: 1 tee/train, 2 tee/infer, 3 data analysis). Training and
+# inference are the same daemon role -- TAA's own mapping says so -- and differ
+# only in what the platform asks the instance to do; the data-analysis role is a
+# different role and the loader switches its audit off.
+#
+# Why each role needs its own package directory and runtime handler: the Kata
+# config lives *inside* the package and containerd's ConfigPath points at it, so
+# two roles sharing one directory would overwrite each other's boot assets and
+# leave a running handler pointing at the other role's kernel. Two roles under
+# one handler is the same defect one level up.
+#
+# The role argument is accepted anywhere in argv and removed before dispatch, so
+# both `build-initrd.sh taa-infer all` and `build-initrd.sh all taa-infer` work.
+TAA_ROLE="${TAA_ROLE:-}"
+role_args=()
+for role_arg in "$@"; do
+  case "$role_arg" in
+    taa-train|taa-infer|taa-analysis) TAA_ROLE="$role_arg" ;;
+    *) role_args+=("$role_arg") ;;
+  esac
+done
+if [[ ${#role_args[@]} -gt 0 ]]; then
+  set -- "${role_args[@]}"
+else
+  set --
+fi
+
+# taa-train is the default because that is what this script built before roles
+# existed. Its names below are deliberately left exactly as they were: a host
+# already running this package has containerd pointing at that directory, and
+# renaming it would break the installation on upgrade.
+TAA_ROLE="${TAA_ROLE:-taa-train}"
+
+# What the role means to the guest, in one place each.
+role_contract_type() {  # CONTRACT_TYPE: 1 train, 2 infer, 3 data analysis
+  case "$TAA_ROLE" in
+    taa-train) echo 1 ;;
+    taa-infer) echo 2 ;;
+    taa-analysis) echo 3 ;;
+  esac
+}
+
+# Only the training role carries the semgrep payload. Both other roles land or
+# run models that were already audited where they were trained, so shipping a
+# 350 MiB Python runtime and scanner into their measured initrd buys nothing --
+# and the data-analysis role never audits at all.
+role_wants_semgrep() {
+  [[ "$TAA_ROLE" == "taa-train" ]]
+}
+
+# Handler and delivery directory are per role. train keeps the historical names;
+# the other two get a suffix so a host can hold all three side by side.
+role_runtime_handler() {
+  case "$TAA_ROLE" in
+    taa-train) echo kata-qemu-csv2-taa ;;
+    taa-infer) echo kata-qemu-csv2-taa-infer ;;
+    taa-analysis) echo kata-qemu-csv2-taa-analysis ;;
+  esac
+}
+
+role_package_subdir() {
+  case "$TAA_ROLE" in
+    taa-train) echo package ;;
+    taa-infer) echo package-infer ;;
+    taa-analysis) echo package-analysis ;;
+  esac
+}
+
+role_test_pod_name() {
+  case "$TAA_ROLE" in
+    taa-train) echo test-kata-csv2-taa ;;
+    taa-infer) echo test-kata-csv2-taa-infer ;;
+    taa-analysis) echo test-kata-csv2-taa-analysis ;;
+  esac
+}
+
+# The Pod image follows the role. train and infer share the TAA-free taa-env
+# variant (it is built exactly for those two), while the data-analysis role runs
+# on the jupyter base whose runtime owns /home/jovyan -- the same base
+# deploy-dataanaylsis.sh uses, so the data lands where that role's tasks look
+# for it. That image names its user instead of using a numeric id, which under
+# the nydus guest-pull snapshotter fails the /etc/passwd lookup before the Pod
+# reaches the guest, so the rendered Pod pins a numeric uid for this role only.
+role_test_image() {
+  case "$TAA_ROLE" in
+    taa-train|taa-infer) echo 172.16.10.178:31313/taa-env:v1-train-infer ;;
+    taa-analysis) echo 172.16.10.178:31313/jupyter-nologin-full:v2.2 ;;
+  esac
+}
+
+role_test_pod_run_as_user() {
+  case "$TAA_ROLE" in
+    taa-analysis) echo 0 ;;
+    *) echo "" ;;
+  esac
+}
+
 # Local build inputs and outputs. TAA implements remote attestation natively in
 # Go, so no external helper is injected.
 # BASE_INITRD must be the original remote Kata CSV initrd, never an
@@ -56,7 +161,15 @@ TAA_INIT_SRC="${TAA_INIT_SRC:-$SCRIPT_DIR/taa-init.sh}"
 TAA_CONFIG_SRC="${TAA_CONFIG_SRC:-$ROOT_DIR/configs/taa-production.json}"
 BASE_INITRD="${BASE_INITRD:-$SCRIPT_DIR/base/kata-containers-initrd-confidential-csv.img}"
 OUT_DIR="${OUT_DIR:-$SCRIPT_DIR/out}"
-INITRD_OUT="${INITRD_OUT:-$OUT_DIR/kata-containers-initrd-taa-csv.initrd}"
+# Per role: the built image differs between roles (the semgrep payload, the
+# baked CONTRACT_TYPE), and one shared output file would leave whichever role
+# built last as the one every role packages. train keeps the historical name so
+# an existing out/ directory is still the train image.
+case "$TAA_ROLE" in
+  taa-train) INITRD_OUT_DEFAULT="$OUT_DIR/kata-containers-initrd-taa-csv.initrd" ;;
+  *) INITRD_OUT_DEFAULT="$OUT_DIR/kata-containers-initrd-${TAA_ROLE}.initrd" ;;
+esac
+INITRD_OUT="${INITRD_OUT:-$INITRD_OUT_DEFAULT}"
 
 # Renderer support files and the shipped Kata config the rendered config is
 # derived from. The template is host-authoritative like the base initrd:
@@ -107,13 +220,21 @@ ALLOW_MISSING_TAA_ENV="${ALLOW_MISSING_TAA_ENV:-0}"
 # uses for the platform-mock on the build host.
 TAA_PLATFORM_KEY_FILE="${TAA_PLATFORM_KEY_FILE:-$ROOT_DIR/.local/platform-mock/platform-key.json}"
 TAA_PLATFORM_PUBLIC_KEY="${TAA_PLATFORM_PUBLIC_KEY:-${PLATFORM_PUBLIC_KEY:-}}"
-# Optional envelope identity and role overrides. Empty means the protocol
-# default (PLATFORM_SM2_ID), the config file (CONTRACT_ID, CONTRACT_TYPE) or the
+# Optional envelope identity overrides and the LLM endpoint. Empty means the
+# protocol default (PLATFORM_SM2_ID), the config file (CONTRACT_ID) or the
 # endpoint in the config file (TAA_LLM_ENDPOINT). TAASECRETKEY is deliberately
 # not carried: it is secret material, not deployment identity.
 TAA_PLATFORM_SM2_ID="${TAA_PLATFORM_SM2_ID:-}"
 TAA_CONTRACT_ID="${TAA_CONTRACT_ID:-}"
-TAA_CONTRACT_TYPE="${TAA_CONTRACT_TYPE:-}"
+# The role sets this, not the operator: it is the one value that makes the guest
+# behave as the package's role. Letting an inherited TAA_CONTRACT_TYPE win would
+# produce a package whose directory and handler say "infer" while the guest
+# audits like a training instance, and nothing downstream would notice. A value
+# that disagrees is reported and discarded rather than silently obeyed.
+if [[ -n "${TAA_CONTRACT_TYPE:-}" && "$TAA_CONTRACT_TYPE" != "$(role_contract_type)" ]]; then
+  echo "warning: 忽略 TAA_CONTRACT_TYPE=$TAA_CONTRACT_TYPE：角色 $TAA_ROLE 固定为 CONTRACT_TYPE=$(role_contract_type)" >&2
+fi
+TAA_CONTRACT_TYPE="$(role_contract_type)"
 TAA_LLM_ENDPOINT="${TAA_LLM_ENDPOINT:-}"
 
 # Read the platform public key from a key file. The platform-mock persists
@@ -192,7 +313,14 @@ REMOTE_KATA_CONFIG_SRC="${REMOTE_KATA_CONFIG_SRC:-/opt/kata/share/defaults/kata-
 #
 # It must stay persistent: the Kata config and the files QEMU boots are inside
 # it, so removing it breaks the runtime handler.
-REMOTE_PACKAGE_DIR="${REMOTE_PACKAGE_DIR:-/root/taa-images/package}"
+#
+# One directory per role. The Kata config names absolute paths into this exact
+# directory and containerd resolves that config whenever a Pod of the role's
+# handler starts, so two roles sharing it would silently boot each other's
+# kernel and initrd. train keeps `package` (an installed host already points at
+# it); the others get a role-suffixed sibling.
+TAA_IMAGES_DIR="${TAA_IMAGES_DIR:-/root/taa-images}"
+REMOTE_PACKAGE_DIR="${REMOTE_PACKAGE_DIR:-$TAA_IMAGES_DIR/$(role_package_subdir)}"
 # Derived, never overridable: the rendered kernel/initrd/firmware paths and the
 # package's own layout have to name the same directory.
 PACKAGE_BUNDLE_SUBDIR="bundle"
@@ -214,7 +342,7 @@ KATA_HYPERVISOR_SECTION="${KATA_HYPERVISOR_SECTION:-hypervisor.qemu}"
 # layer" and the Pod lands in StartError -- which reads like an initrd failure
 # but is not one. Empty means "keep the template's value".
 KATA_DEFAULT_MEMORY="${KATA_DEFAULT_MEMORY:-}"
-RUNTIME_HANDLER="${RUNTIME_HANDLER:-kata-qemu-csv2-taa}"
+RUNTIME_HANDLER="${RUNTIME_HANDLER:-$(role_runtime_handler)}"
 RUNTIME_TYPE="${RUNTIME_TYPE:-io.containerd.kata-qemu-csv2.v2}"
 RUNTIME_PATH="${RUNTIME_PATH:-/opt/kata/bin/containerd-shim-kata-v2}"
 SNAPSHOTTER="${SNAPSHOTTER:-nydus}"
@@ -223,19 +351,28 @@ RESTART_KUBELET="${RESTART_KUBELET:-0}"
 # into a temporary directory unless LAUNCH_KEEP_DIST=1.
 DIST_DIR="${DIST_DIR:-$SCRIPT_DIR/dist/$RUNTIME_HANDLER}"
 TEST_NODE_NAME="${TEST_NODE_NAME:-}"
-TEST_POD_NAME="${TEST_POD_NAME:-test-kata-csv2-taa}"
+TEST_POD_NAME="${TEST_POD_NAME:-$(role_test_pod_name)}"
+# The numeric uid the rendered test Pod runs as. Empty means "whatever the image
+# declares". The data-analysis base names its user (jovyan), and under the nydus
+# guest-pull snapshotter containerd resolves that name against an /etc/passwd the
+# host-side snapshot does not carry, so the Pod never reaches the guest; a
+# numeric uid needs no lookup. See clean-image/Dockerfile for the other half of
+# this: images built here set USER 0 for the same reason.
+TEST_POD_RUN_AS_USER="${TEST_POD_RUN_AS_USER:-$(role_test_pod_run_as_user)}"
 # The image is pulled by CDH *inside* the guest, which has no route to Docker
 # Hub -- measured on 2026-10-10: busybox:latest failed with "error sending
 # request for url (https://index.docker.io/...)" after the 180s wait. So the
 # default is an image from the registry on the host itself (the same one the
 # CoCo Pods already running here pull successfully).
 #
-# The TAA-free variant, not a stock taa-env: TAA already runs from this
-# package's initrd, and an image carrying its own copy gives the guest two
-# (see clean-image/Dockerfile for how it is built). The earlier default,
-# slim-v2-20260916, is also gone from the registry -- only local docker and
-# containerd copies remained, so a fresh host could never pull it.
-TEST_IMAGE="${TEST_IMAGE:-172.16.10.178:31313/taa-env:v1-train-infer}"
+# The default follows the role. train and infer share the TAA-free taa-env
+# variant: TAA already runs from this package's initrd, and an image carrying
+# its own copy gives the guest two (see clean-image/Dockerfile for how it is
+# built). The earlier default, slim-v2-20260916, is also gone from the registry
+# -- only local docker and containerd copies remained, so a fresh host could
+# never pull it. The data-analysis role uses the jupyter base instead, whose
+# runtime owns /home/jovyan.
+TEST_IMAGE="${TEST_IMAGE:-$(role_test_image)}"
 # Optional `docker save` archive of TEST_IMAGE. When set, the package carries it
 # under image/ and install.sh loads and pushes it if the registry lacks the tag.
 # A CoCo guest pulls the image itself through CDH, so the archive has to reach
@@ -268,7 +405,20 @@ MEASURE_APPEND="${MEASURE_APPEND:-}"
 # 因此本地反复调试是安全的；只有显式指定 upload、launch 或 all 时才会触碰远程服务器。
 usage() {
   cat <<EOF
-Usage: $0 [build|fetch-base|render|upload|launch|all|print-config]
+Usage: $0 [taa-train|taa-infer|taa-analysis] [build|fetch-base|render|upload|launch|all|print-config]
+
+Role (first word, or TAA_ROLE; default taa-train):
+  taa-train     Training instance. CONTRACT_TYPE=1, handler $RUNTIME_HANDLER for
+                this role, delivery package under /root/taa-images/package, and
+                the only role whose initrd carries the semgrep payload.
+  taa-infer     Inference instance. CONTRACT_TYPE=2, its own handler and package
+                directory, no semgrep payload.
+  taa-analysis  Data-analysis instance. CONTRACT_TYPE=3, its own handler and
+                package directory, the jupyter base image, no semgrep payload.
+                Its injected config selects the built-in regex engine instead.
+  The role decides the default INITRD_OUT, DIST_DIR, RUNTIME_HANDLER,
+  REMOTE_PACKAGE_DIR, TEST_POD_NAME and TEST_IMAGE; each of those still accepts
+  an explicit override.
 
 Commands:
   build       Build $INITRD_OUT from $BASE_INITRD and inject TAA + init wrapper.
@@ -288,19 +438,23 @@ Commands:
                 defaults above have exactly one definition.
 
 Environment overrides:
+  TAA_ROLE=$TAA_ROLE
+  RUNTIME_HANDLER=$RUNTIME_HANDLER                    (default: from TAA_ROLE)
+  REMOTE_PACKAGE_DIR=$REMOTE_PACKAGE_DIR              (default: from TAA_ROLE)
+  TEST_POD_NAME=$TEST_POD_NAME                        (default: from TAA_ROLE)
+  TEST_IMAGE=$TEST_IMAGE                              (default: from TAA_ROLE)
+  TEST_POD_RUN_AS_USER=${TEST_POD_RUN_AS_USER:-(image default)}
   REMOTE_USER=$REMOTE_USER
   REMOTE_HOST=$REMOTE_HOST
   REMOTE_BASE_INITRD_SRC=$REMOTE_BASE_INITRD_SRC
   REMOTE_KERNEL_SRC=$REMOTE_KERNEL_SRC
   REMOTE_OVMF_SRC=$REMOTE_OVMF_SRC
   REMOTE_KATA_CONFIG_SRC=$REMOTE_KATA_CONFIG_SRC
-  REMOTE_PACKAGE_DIR=$REMOTE_PACKAGE_DIR
   REMOTE_KATA_CONFIG=$REMOTE_KATA_CONFIG
                                           (derived; always the packaged copy)
   REMOTE_BUNDLE_DIR                       derived as $REMOTE_PACKAGE_DIR/bundle
   KATA_HYPERVISOR_SECTION=$KATA_HYPERVISOR_SECTION
   KATA_DEFAULT_MEMORY=${KATA_DEFAULT_MEMORY:-(keep the template's default_memory)}
-  RUNTIME_HANDLER=$RUNTIME_HANDLER
   RUNTIME_TYPE=$RUNTIME_TYPE
   RUNTIME_PATH=$RUNTIME_PATH
   SNAPSHOTTER=$SNAPSHOTTER
@@ -413,6 +567,17 @@ taa_config_wants_semgrep() {
   grep -qE '"engine"[[:space:]]*:[[:space:]]*"semgrep"' "$TAA_CONFIG_SRC"
 }
 
+# Both conditions, because either one alone is wrong. The role decides whether a
+# payload belongs in this image at all -- inference and data analysis do not
+# audit code where it lands, so a 350 MiB interpreter and scanner would only
+# raise the measured image -- and the config decides whether the guest will ask
+# for one. build_initrd rewrites the injected config for a non-training role, so
+# the two agree by construction; this function states the requirement once for
+# the build-time check.
+initrd_wants_semgrep() {
+  role_wants_semgrep && taa_config_wants_semgrep
+}
+
 # Validate every local build input before any temporary state is created.
 # TAA needs PLATFORM_IP and DOCKER_ID to appear as a pair: supplying only one
 # leaves the registration USERDATA inconsistent with the platform notify
@@ -482,7 +647,7 @@ check_build_inputs() {
   # OCaml CLI, which falls back to pysemgrep by name), the native scanner, and
   # the rules the engine stats at construction (NewEngine fails the whole audit
   # if the rules path is not a directory).
-  if taa_config_wants_semgrep; then
+  if initrd_wants_semgrep; then
     local payload_entry
     for payload_entry in \
       "rootfs/usr/bin/python3.10" \
@@ -520,6 +685,41 @@ stage_semgrep_payload() {
       awk '{n++; s += $1} END {printf "%d %.1f\n", n, s / 1048576}'
   )
   echo "semgrep 载荷（未压缩，按文件大小计）: ${payload_mib} MiB / ${payload_files} 个文件"
+}
+
+# Install the injected TAA config into the staging tree.
+#
+# The training role takes the production template verbatim. The other two carry
+# a copy whose `codeAudit.codeScan.engine` is "regex": they ship no semgrep
+# payload, so leaving the template's "semgrep" in place would make every boot
+# resolve an engine that cannot be constructed, log the fallback warning, and
+# run regex anyway. A role that never audits is not worth a per-boot warning; a
+# role whose config claims an engine it cannot run is a defect, not a warning.
+#
+# Only the engine is rewritten. Everything else stays as the production
+# template says, so the operator reads one file shape whatever the role.
+stage_taa_config() {
+  local dst="$BUILD_WORK_DIR/extra/etc/taa/taa-config.json"
+  if role_wants_semgrep; then
+    install -m 0644 "$TAA_CONFIG_SRC" "$dst"
+    return 0
+  fi
+
+  # A substitution rather than a JSON re-encode: the template may carry keys and
+  # formatting (comments never, but ordering and spacing do) that a parse and
+  # re-dump would silently normalise, and this file is inside the measured image.
+  # The pattern is anchored on the key so only the engine's value changes.
+  sed -E 's/("engine"[[:space:]]*:[[:space:]]*)"semgrep"/\1"regex"/' \
+    "$TAA_CONFIG_SRC" > "$dst.tmp"
+  install -m 0644 "$dst.tmp" "$dst"
+  rm -f "$dst.tmp"
+
+  if grep -qE '"engine"[[:space:]]*:[[:space:]]*"semgrep"' "$dst"; then
+    echo "error: $TAA_ROLE does not carry the semgrep payload but the injected config still selects it" >&2
+    echo "       file: $TAA_CONFIG_SRC" >&2
+    exit 1
+  fi
+  echo "注入配置: $TAA_ROLE 角色，扫描引擎改写为 regex（本角色不带 semgrep 载荷）"
 }
 
 # 远程部署前检查输出镜像是否包含 TAA 所需的注册环境，并核对其中烘焙的注册身份。
@@ -661,11 +861,13 @@ build_initrd() {
   install -m 0755 "$TAA_INIT_SRC" "$BUILD_WORK_DIR/extra/usr/local/bin/taa-init"
 
   # TAA reads its config from a fixed absolute path, so the file has to be part
-  # of the measured image. The initrd runs configs/taa-production.json; when
-  # that config selects the semgrep engine, the payload is staged afterwards
-  # under /opt/taa/semgrep plus the interpreter and CLI that run it.
+  # of the measured image. Training injects configs/taa-production.json as-is;
+  # a non-training role injects a copy whose scan engine is the built-in regex
+  # one, because no semgrep payload is staged for it (see role_wants_semgrep).
+  # Left selecting semgrep, the guest would log a fallback warning at every boot
+  # and run the weaker engine anyway -- the config should say what runs.
   mkdir -p "$BUILD_WORK_DIR/extra/etc/taa"
-  install -m 0644 "$TAA_CONFIG_SRC" "$BUILD_WORK_DIR/extra/etc/taa/taa-config.json"
+  stage_taa_config
 
   echo "生成可选 env 文件"
 
@@ -688,7 +890,7 @@ build_initrd() {
     } > "$BUILD_WORK_DIR/extra/etc/default/taa.env"
   fi
 
-  if taa_config_wants_semgrep; then
+  if initrd_wants_semgrep; then
     stage_semgrep_payload
   fi
 
@@ -1118,12 +1320,15 @@ IDENTITY
     --kata-config "$REMOTE_KATA_CONFIG" \
     --out "$out_dir/config/containerd-runtime-handler.toml"
 
+  local -a run_as_args=()
+  [[ -n "$TEST_POD_RUN_AS_USER" ]] && run_as_args=(--run-as-user "$TEST_POD_RUN_AS_USER")
   python3 "$RENDER_DIR/render.py" k8s \
     --handler "$RUNTIME_HANDLER" \
     --pod "$TEST_POD_NAME" \
     --node "$TEST_NODE_NAME" \
     --image "$TEST_IMAGE" \
     --annotations "$TEST_POD_ANNOTATIONS" \
+    "${run_as_args[@]+"${run_as_args[@]}"}" \
     --out-dir "$out_dir/k8s"
 
   # The package is self-contained: the installer, the merger and the
@@ -1218,6 +1423,11 @@ MEASURE
 
 由 \`build-initrd.sh render\` 生成。TAA 运行在 Kata CSV2 机密 VM 的 initrd 里，
 自证通过后才放行 kata-agent。
+
+本包的实例角色：**\`$TAA_ROLE\`**（CONTRACT_TYPE=\`$TAA_CONTRACT_TYPE\`，runtime handler
+\`$RUNTIME_HANDLER\`，安装位置 \`$REMOTE_PACKAGE_DIR\`）。三个角色各有自己的 handler 与
+安装目录，可以并存于同一台宿主；同一个 handler 下不能混装两个角色。只有
+\`taa-train\` 的 initrd 带 semgrep 载荷，其余角色的扫描引擎为 \`regex\`。
 
 ## 内容
 
@@ -1482,12 +1692,14 @@ case "$cmd" in
     # Machine-readable dump of the resolved settings, so a driver script does not
     # have to duplicate (and drift from) the defaults defined above. %q quoting
     # makes the output safe to `eval` even when a value contains spaces.
-    for key in REMOTE_USER REMOTE_HOST REMOTE_BUNDLE_DIR REMOTE_PACKAGE_DIR REMOTE_BASE_INITRD_SRC \
+    for key in TAA_ROLE TAA_CONTRACT_TYPE REMOTE_USER REMOTE_HOST REMOTE_BUNDLE_DIR REMOTE_PACKAGE_DIR \
+               REMOTE_BASE_INITRD_SRC \
                REMOTE_KATA_CONFIG_SRC REMOTE_KATA_CONFIG PACKAGE_KATA_CONFIG \
                KATA_HYPERVISOR_SECTION KATA_DEFAULT_MEMORY \
                RUNTIME_HANDLER RUNTIME_TYPE RUNTIME_PATH SNAPSHOTTER \
                CONTAINERD_CONFIG KATA_CONFIG_TEMPLATE DIST_DIR \
                TEST_NODE_NAME TEST_POD_NAME TEST_IMAGE TEST_IMAGE_ARCHIVE TEST_POD_ANNOTATIONS \
+               TEST_POD_RUN_AS_USER \
                OUT_DIR INITRD_OUT BASE_INITRD; do
       printf '%s=%q\n' "$key" "${!key}"
     done

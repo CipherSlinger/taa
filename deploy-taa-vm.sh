@@ -6,8 +6,14 @@
 # anything -- the host is left untouched apart from having the files in place --
 # and the last line it prints is the command that installs there.
 #
-# Usage: ./deploy-taa-vm.sh          (no arguments)
+# Usage: ./deploy-taa-vm.sh [taa-train|taa-infer|taa-analysis]
 #        ./deploy-taa-vm.sh --help   (this text)
+#
+# The role argument selects which package this run prepares and defaults to
+# taa-train. Each role gets its own initrd (CONTRACT_TYPE, plus the semgrep
+# payload for taa-train only), its own delivery directory on the host and its
+# own runtime handler, so the three can be installed side by side; see the role
+# section of build-initrd.sh. Nothing else about the flow changes.
 #
 # The mechanics stay under deploy/guest-build/: build-initrd.sh assembles the
 # initrd, fetches base assets, renders the package and performs the upload, and
@@ -42,26 +48,34 @@ fi
 
 # ── Host-side install root ───────────────────────────────────────────────────
 #
-# Everything this flow puts on the target host lives under one directory:
+# Everything this flow puts on the target host lives under one directory, with
+# one subdirectory per role:
 #
-#   $TAA_IMAGES_DIR/package/   the rendered delivery package, including its
-#                              bundle/ (initramfs.img, vmlinuz, OVMF.fd)
+#   $TAA_IMAGES_DIR/package/           taa-train (the historical name)
+#   $TAA_IMAGES_DIR/package-infer/     taa-infer
+#   $TAA_IMAGES_DIR/package-analysis/  taa-analysis
+#
+# each holding the rendered delivery package including its bundle/
+# (initramfs.img, vmlinuz, OVMF.fd).
 #
 # The package is the runtime dependency, not just a shipping container: the Kata
 # config points at its bundle/, so the host never needs its own copies of those
 # files and nothing is copied on the host. It also ships install.sh, so the test
 # Pod can be recreated there by running
 #
-#   sudo bash /root/taa-images/package/install.sh
+#   sudo bash /root/taa-images/<role-dir>/install.sh
 #
 # without another build, render or upload.
 #
-# REMOTE_PACKAGE_DIR is exported *before* print-config is consulted below.
-# build-initrd.sh resolves its defaults from the environment and runs as a child
-# process, so exporting here is what makes the value the flow actually uses; the
-# bundle directory is derived from it there and is not separately configurable.
+# The per-role subdirectory (`package`, `package-infer`, ...) is decided in
+# build-initrd.sh, so this default only supplies the root. Naming the leaf here
+# would give the driver a second copy of the role mapping, and a run of one role
+# would install over another's package.
 TAA_IMAGES_DIR="${TAA_IMAGES_DIR:-/root/taa-images}"
-export REMOTE_PACKAGE_DIR="${REMOTE_PACKAGE_DIR:-$TAA_IMAGES_DIR/package}"
+export TAA_IMAGES_DIR
+if [[ -n "${REMOTE_PACKAGE_DIR:-}" ]]; then
+  export REMOTE_PACKAGE_DIR
+fi
 
 # The binary build-initrd.sh injects. Defaulted and exported here so the
 # preflight's static-link check and the build itself read the same file, even
@@ -113,12 +127,16 @@ usage() {
   sed -n '2,/^set -euo pipefail$/p' "${BASH_SOURCE[0]}" | sed '$d' | sed 's/^# \{0,1\}//'
 }
 
+# The role is passed straight through to build-initrd.sh, which owns the
+# mapping and the defaults, so there is nothing to restate here -- only to
+# reject early, before any build work, if the argument is not one.
 case "${1:-}" in
   "") ;;
   -h|--help) usage; exit 0 ;;
+  taa-train|taa-infer|taa-analysis) export TAA_ROLE="$1" ;;
   *)
-    echo "error: this script takes no arguments (got: $1)" >&2
-    echo "hint: run it with no arguments; '$0 --help' explains what it does" >&2
+    echo "error: unknown role or argument: $1" >&2
+    echo "hint: ./deploy-taa-vm.sh [taa-train|taa-infer|taa-analysis]; '$0 --help' explains the flow" >&2
     exit 1
     ;;
 esac

@@ -105,14 +105,29 @@ check_contains "driver: supplies the LLM endpoint" \
 # default would look right here and still build an initrd with no identity.
 check_contains "driver: the identity is exported to the build" \
   'export TAA_PLATFORM_IP TAA_DOCKER_ID TAA_LLM_ENDPOINT' "$driver_src"
-check_contains "driver: the package dir is exported to the build" 'export REMOTE_PACKAGE_DIR=' "$driver_src"
+# The per-role leaf (`package`, `package-infer`, ...) belongs to build-initrd.sh,
+# which owns the role mapping; the driver only passes the root and any explicit
+# override through, so one role can never install over another's package.
+check_contains "driver: the install root is exported to the build" 'export TAA_IMAGES_DIR' "$driver_src"
+check_contains "driver: an explicit package dir is exported" 'export REMOTE_PACKAGE_DIR' "$driver_src"
+if [[ "$driver_src" == *'$TAA_IMAGES_DIR/package"'* ]]; then
+  echo "FAIL driver: the package leaf is duplicated in the driver" >&2
+  failures=$((failures + 1))
+else
+  echo "ok   driver: the package leaf lives only in build-initrd.sh"
+fi
 
 # ── 2. one behaviour, no subcommands ────────────────────────────────────────
 #
 # The driver used to dispatch up/push/build/launch/upload/fetch-base/render/
 # verify/delete/print-config. What remains is the push sequence and nothing
 # else; a re-added subcommand would show up as an argv case.
-check_contains "driver: rejects arguments" 'this script takes no arguments' "$driver_src"
+#
+# The one argument it takes is the role, and it is a selection rather than a
+# subcommand: it changes what is packaged, not which sequence runs.
+check_contains "driver: accepts the three roles" 'taa-train|taa-infer|taa-analysis)' "$driver_src"
+check_contains "driver: hands the role to build-initrd.sh" 'export TAA_ROLE="$1"' "$driver_src"
+check_contains "driver: refuses an unknown role" 'unknown role or argument' "$driver_src"
 check_contains "driver: supports --help" '--help) usage; exit 0' "$driver_src"
 for removed in 'up)' 'push)' 'verify)' 'delete)' 'print-config)'; do
   if [[ "$driver_src" == *"  $removed"* ]]; then

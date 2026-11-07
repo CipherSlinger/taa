@@ -7,6 +7,18 @@
 > 并且补上了本模板没有的一步——`delete` 清理。下面的手工命令仍适用于需要分步排查的场合。
 > 它自己不带任何默认值，全部设置都向这里的 `build-initrd.sh print-config` 要，所以两边不会漂移。
 
+> **三种角色**：`build-initrd.sh` 和 `deploy-taa-vm.sh` 都接受 `taa-train`（默认）、`taa-infer`、
+> `taa-analysis`。角色同时决定 `CONTRACT_TYPE`（1/2/3）、runtime handler、宿主机交付包目录、
+> 测试 Pod 名和默认镜像，所以三份可以并存于同一台宿主。**只有 `taa-train` 的 initrd 带 semgrep
+> 载荷**（约 350 MiB 未压缩）；另外两个角色的注入配置把扫描引擎改写成 `regex`。
+> 下文的默认值全部是 `taa-train` 的：
+>
+> | 角色 | CONTRACT_TYPE | handler | 交付包目录 | 默认镜像 |
+> |---|---|---|---|---|
+> | `taa-train` | 1 | `kata-qemu-csv2-taa` | `/root/taa-images/package` | `taa-env:v1-train-infer` |
+> | `taa-infer` | 2 | `kata-qemu-csv2-taa-infer` | `/root/taa-images/package-infer` | `taa-env:v1-train-infer` |
+> | `taa-analysis` | 3 | `kata-qemu-csv2-taa-analysis` | `/root/taa-images/package-analysis` | `jupyter-nologin-full:v2.2` |
+
 ## 0. 先确认基础变量
 
 下面这些值来自当前仓库脚本中的默认值；按你的实际环境替换即可。
@@ -19,8 +31,13 @@ export REMOTE_USER=root
 export REMOTE_HOST=172.16.10.178
 export REMOTE="${REMOTE_USER}@${REMOTE_HOST}"
 
-# guest-build/build-initrd.sh 使用的交付包位置
+# 角色。三档的默认值见开头表格；设了它，下面的 handler / 交付包目录 / Pod 名 /
+# 镜像都可以不写，脚本会按角色派生。
+export TAA_ROLE=taa-train
+
+# guest-build/build-initrd.sh 使用的交付包位置（taa-train 的默认值）
 # 整包（含 bundle/）scp 到这里；bundle 子目录由脚本派生，不单独配置。
+# 换角色时不写这一行，让它按角色派生，避免两个角色写进同一个目录。
 export REMOTE_PACKAGE_DIR=/root/taa-images/package
 # 以下四个是构建机 fetch-base 的拉取源，只在构建机上用到
 export REMOTE_BASE_INITRD_SRC=/opt/kata/share/kata-containers/kata-containers-initrd-confidential-csv.img

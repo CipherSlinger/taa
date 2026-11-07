@@ -119,14 +119,17 @@ common_env=(
   PLATFORM_PUBLIC_KEY="04$(printf 'a%.0s' {1..128})"
   TAA_PLATFORM_SM2_ID=fixture-sm2-id
   TAA_CONTRACT_ID=fixture-contract-id
-  TAA_CONTRACT_TYPE=fixture-contract-type
+  # The role owns CONTRACT_TYPE, so the fixture pins the role instead: a value
+  # here would be reported and discarded, and the rendered token would not be
+  # what this line says.
+  TAA_ROLE=taa-train
   TAA_LLM_ENDPOINT=https://172.16.10.116:8443
   TAA_ADDR=0.0.0.0:6001
 )
 
 # The identity tokens render_package appends to kernel_params, in emission
 # order. Kept in one place so the config and cmdline expectations cannot drift.
-identity_params="taa.platform_ip=172.16.10.116:18080 taa.docker_id=fixture-docker-id taa.platform_public_key=04$(printf 'a%.0s' {1..128}) taa.platform_sm2_id=fixture-sm2-id taa.contract_id=fixture-contract-id taa.contract_type=fixture-contract-type taa.llm_endpoint=https://172.16.10.116:8443 taa.addr=0.0.0.0:6001"
+identity_params="taa.platform_ip=172.16.10.116:18080 taa.docker_id=fixture-docker-id taa.platform_public_key=04$(printf 'a%.0s' {1..128}) taa.platform_sm2_id=fixture-sm2-id taa.contract_id=fixture-contract-id taa.contract_type=1 taa.llm_endpoint=https://172.16.10.116:8443 taa.addr=0.0.0.0:6001"
 
 # ── 1. render produces a self-contained package, offline ────────────────────
 pkg="$tmp_dir/a/pkg"
@@ -450,6 +453,88 @@ mkdir -p "$tmp_dir/moved"
 mv "$self_pkg" "$moved_pkg"
 out="$(python3 "$moved_pkg/render.py" package-info --dir "$moved_pkg" 2>&1 || true)"
 check_contains "package-info: refuses a moved package" "does not point at" "$out"
+
+# ── 5a. instance role ──────────────────────────────────────────────────────
+# The role decides what the host ends up holding, so what matters here is that
+# the three roles cannot collide -- a shared handler, package directory or Pod
+# name would let one role install over another -- and that only the training
+# role asks for the semgrep payload.
+role_config() {
+  env "${common_env[@]}" REMOTE_HOST=invalid.invalid "$BUILD" "$1" print-config
+}
+
+check "role: the default is taa-train" "taa-train" \
+  "$(env "${common_env[@]}" "$BUILD" print-config | sed -n 's/^TAA_ROLE=//p' | tr -d "'")"
+check "role: train keeps CONTRACT_TYPE=1" "1" \
+  "$(role_config taa-train | sed -n 's/^TAA_CONTRACT_TYPE=//p' | tr -d "'")"
+check "role: infer selects CONTRACT_TYPE=2" "2" \
+  "$(role_config taa-infer | sed -n 's/^TAA_CONTRACT_TYPE=//p' | tr -d "'")"
+check "role: analysis selects CONTRACT_TYPE=3" "3" \
+  "$(role_config taa-analysis | sed -n 's/^TAA_CONTRACT_TYPE=//p' | tr -d "'")"
+
+# The handler, the package directory and the Pod name are the three things that
+# must not be shared: the first two because containerd resolves boot assets
+# through them, the last because a Pod's role cannot be changed in place.
+for role in taa-train taa-infer taa-analysis; do
+  # The common fixture pins the handler, the package directory and the Pod name
+  # (other sections assert against those literals), so they are blanked here:
+  # an empty value is exactly what makes the role default apply.
+  derived="$(env "${common_env[@]}" RUNTIME_HANDLER= REMOTE_PACKAGE_DIR= TEST_POD_NAME= \
+    REMOTE_HOST=invalid.invalid "$BUILD" "$role" print-config)"
+  dh="$(sed -n 's/^RUNTIME_HANDLER=//p' <<<"$derived" | tr -d "'")"
+  dp="$(sed -n 's/^REMOTE_PACKAGE_DIR=//p' <<<"$derived" | tr -d "'")"
+  dn="$(sed -n 's/^TEST_POD_NAME=//p' <<<"$derived" | tr -d "'")"
+  case "$dh" in
+    kata-qemu-csv2-taa*) echo "ok   role/$role: handler is role-scoped ($dh)" ;;
+    *) echo "FAIL role/$role: handler is not role-scoped: $dh" >&2; failures=$((failures + 1)) ;;
+  esac
+  case "$dp" in
+    /root/taa-images/package*) echo "ok   role/$role: package dir is under the install root ($dp)" ;;
+    *) echo "FAIL role/$role: package dir is not under the install root: $dp" >&2; failures=$((failures + 1)) ;;
+  esac
+  case "$dn" in
+    test-kata-csv2-taa*) echo "ok   role/$role: Pod name is role-scoped ($dn)" ;;
+    *) echo "FAIL role/$role: Pod name is not role-scoped: $dn" >&2; failures=$((failures + 1)) ;;
+  esac
+  printf '%s\n%s\n' "$dh" "$dp" >> "$tmp_dir/role-names.txt"
+done
+check "role: the three roles share no handler or package directory" "0" \
+  "$(sort "$tmp_dir/role-names.txt" | uniq -d | wc -l)"
+
+# Only the training role ships the payload. The analysis role's config is
+# injected with the regex engine so the guest does not log a fallback on every
+# boot; infer and analysis both skip staging it.
+check_contains "role: only train declares the semgrep payload" \
+  'role_wants_semgrep() {' "$(cat "$BUILD")"
+check_contains "role: the payload gate needs both the role and the config" \
+  'role_wants_semgrep && taa_config_wants_semgrep' "$(cat "$BUILD")"
+
+# The analysis Pod needs a numeric uid: its jupyter base names its user, and the
+# guest-pull snapshotter cannot resolve a name. The other roles leave it to the
+# image (which sets USER 0 for exactly this reason).
+check "role: analysis pins a numeric uid for its Pod" "0" \
+  "$(role_config taa-analysis | sed -n 's/^TEST_POD_RUN_AS_USER=//p' | tr -d "'")"
+check "role: train leaves the uid to the image" "" \
+  "$(role_config taa-train | sed -n 's/^TEST_POD_RUN_AS_USER=//p' | tr -d "'")"
+
+# Render each role's pod: the uid has to reach the manifest, and the handler has
+# to match the role's own.
+analysis_pkg="$tmp_dir/role/pkg-analysis"
+env "${common_env[@]}" REMOTE_HOST=invalid.invalid DIST_DIR="$analysis_pkg" \
+  TAA_CONTRACT_TYPE=3 TEST_POD_NAME=test-kata-csv2-taa-analysis \
+  TEST_POD_RUN_AS_USER=0 "$BUILD" render >/dev/null
+python3 - "$analysis_pkg/k8s/test-pod.yaml" <<'PY'
+import json, sys
+pod = json.load(open(sys.argv[1]))
+c = pod["spec"]["containers"][0]
+problems = []
+if c.get("securityContext", {}).get("runAsUser") != 0:
+    problems.append(f"runAsUser: {c.get('securityContext')}")
+if problems:
+    print("\n".join(problems), file=sys.stderr)
+    sys.exit(1)
+PY
+echo "ok   role: the analysis Pod carries runAsUser=0"
 
 # ── 5b. expected MEASUREMENT ───────────────────────────────────────────────
 MEASURE="$SCRIPT_DIR/render/measure.py"

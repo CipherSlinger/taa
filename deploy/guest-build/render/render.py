@@ -510,7 +510,7 @@ def package_info(pkg_dir):
     return info
 
 
-def render_k8s(handler, pod_name, node_name, image, annotations_json, out_dir):
+def render_k8s(handler, pod_name, node_name, image, annotations_json, out_dir, run_as_user=""):
     try:
         annotations = json.loads(annotations_json)
     except json.JSONDecodeError as exc:
@@ -528,16 +528,22 @@ def render_k8s(handler, pod_name, node_name, image, annotations_json, out_dir):
         "metadata": {"name": handler},
         "handler": handler,
     }
+    container = {
+        "name": "test",
+        "image": image,
+        "command": ["sh", "-c", "echo hello from kata csv2 taa guest; sleep 3600"],
+    }
+    # A numeric uid is not a preference here, it is what lets the Pod start at
+    # all under the nydus guest-pull snapshotter: containerd resolves a *named*
+    # user against /etc/passwd on the host-side snapshot, which in that mode
+    # carries metadata only, so a name fails with "mount callback failed ...
+    # /etc/passwd: no such file or directory" before the guest is reached.
+    if str(run_as_user).strip():
+        container["securityContext"] = {"runAsUser": int(run_as_user)}
     pod_spec = {
         "runtimeClassName": handler,
         "restartPolicy": "Never",
-        "containers": [
-            {
-                "name": "test",
-                "image": image,
-                "command": ["sh", "-c", "echo hello from kata csv2 taa guest; sleep 3600"],
-            }
-        ],
+        "containers": [container],
     }
     # nodeName pins the test Pod to the node being deployed. Leaving it out
     # keeps a delivered package schedulable on another node.
@@ -632,6 +638,11 @@ def main(argv=None):
     k8s.add_argument("--node", default="")
     k8s.add_argument("--image", required=True)
     k8s.add_argument("--annotations", default="{}")
+    k8s.add_argument(
+        "--run-as-user",
+        default="",
+        help="numeric uid for the test container (a name cannot be resolved under guest-pull)",
+    )
     k8s.add_argument("--out-dir", required=True)
 
     args = parser.parse_args(argv)
@@ -672,7 +683,15 @@ def main(argv=None):
     elif args.command == "image-archive-name":
         print(image_tar_name(args.image, archive_suffix(args.like) if args.like else ".tar"))
     elif args.command == "k8s":
-        render_k8s(args.handler, args.pod, args.node, args.image, args.annotations, args.out_dir)
+        render_k8s(
+            args.handler,
+            args.pod,
+            args.node,
+            args.image,
+            args.annotations,
+            args.out_dir,
+            args.run_as_user,
+        )
     return 0
 
 
