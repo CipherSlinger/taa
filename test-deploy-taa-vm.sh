@@ -198,6 +198,15 @@ check_contains "build-initrd.sh: bakes the platform key into taa.env" "export PL
 check_contains "build-initrd.sh: bakes the LLM endpoint into taa.env" "export TAA_LLM_ENDPOINT=" "$build_src"
 check_contains "build-initrd.sh: compares the baked platform key" '烘焙的平台公钥与本次调用不一致' "$build_src"
 
+# The payload's interpreter is only named python3.10, while model runtimeConfig
+# commands say python/python3; without these links those commands exit 127 even
+# though Python is present. Guarded by the seed so the plain image (no Python)
+# does not get dangling links.
+check_contains "build-initrd.sh: adds the python3 name" 'ln -sfn python3.10 "$stage/usr/bin/python3"' "$build_src"
+check_contains "build-initrd.sh: adds the python name" 'ln -sfn python3.10 "$stage/usr/bin/python"' "$build_src"
+check_contains "build-initrd.sh: only when the seed carries the interpreter" \
+  'if manifest_has_entry "$SEED_MANIFEST" usr/bin/python3.10; then' "$build_src"
+
 # build-initrd.sh has no mutating remote step left: upload only places files and
 # install.sh does every host-side write. The privilege precheck therefore lives
 # in install.sh, in the one place that still touches the host.

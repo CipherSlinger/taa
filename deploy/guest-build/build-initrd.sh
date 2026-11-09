@@ -1118,6 +1118,25 @@ build_initrd() {
   # and run the weaker engine anyway -- the config should say what runs.
   stage_taa_config "$stage"
 
+  # The only Python in this image is usr/bin/python3.10, shipped by the semgrep
+  # payload under its own name. Model runtimeConfig commands are written against
+  # the names a distribution provides, so `python train.py` and `python3
+  # train.py` both exit 127 here even though the interpreter is present -- seen
+  # on 2026-11-09 as "/bin/sh: 1: python: not found" from a training task.
+  #
+  # Both names are added as relative symlinks next to the interpreter: cpio
+  # stores the target verbatim, and a relative one stays valid wherever the tree
+  # is unpacked. Only when the seed actually carries the interpreter (taa-train's
+  # semgrep seed does, the plain seed has no Python at all): a symlink to a
+  # missing file is worse than none, it turns "python is not installed" into
+  # "python exists but cannot run".
+  if manifest_has_entry "$SEED_MANIFEST" usr/bin/python3.10; then
+    echo "补齐 python 命令名"
+    mkdir -p "$stage/usr/bin"
+    ln -sfn python3.10 "$stage/usr/bin/python3"
+    ln -sfn python3.10 "$stage/usr/bin/python"
+  fi
+
   echo "生成可选 env 文件"
 
   # The guest-side fallback environment, written at build time. %q shell-escapes
