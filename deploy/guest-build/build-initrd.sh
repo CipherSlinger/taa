@@ -1426,8 +1426,7 @@ MEASURE
   cat > "$out_dir/README.md" <<EOF
 # TAA-in-initrd 交付包
 
-由 \`build-initrd.sh render\` 生成。TAA 运行在 Kata CSV2 机密 VM 的 initrd 里，
-自证通过后才放行 kata-agent。
+TAA 运行在 Kata CSV2 机密 VM 的 initrd 里，自证通过后才放行 kata-agent。
 
 本包的实例角色：**\`$TAA_ROLE\`**（CONTRACT_TYPE=\`$TAA_CONTRACT_TYPE\`，runtime handler
 \`$RUNTIME_HANDLER\`，安装位置 \`$REMOTE_PACKAGE_DIR\`）。三个角色各有自己的 handler 与
@@ -1444,12 +1443,11 @@ MEASURE
 - \`config/containerd-runtime-handler.toml\` — containerd handler 片段（供审阅，安装脚本
   从这里解析 handler 名、runtime、snapshotter 与 ConfigPath）
 - \`k8s/runtimeclass.yaml\` — 运行时类：Pod 用 \`runtimeClassName\` 选中本 handler。使用该
-  runtime 的每个 Pod 都要它，所以由 install.sh 安装，不属于测试
-- \`test/\` — 测试 Pod：\`test-pod.yaml\`（安装脚本从这里读 Pod 名与节点名）、
-  \`create-test-pod.sh\`（创建并等待 Ready，核对 QEMU 用的 initrd 与 MEASUREMENT）、
-  \`delete-test-pod.sh\`（删除测试 Pod）
-- \`install.sh\` / \`render.py\` / \`measure.py\` — 安装脚本（校验包、重渲染 Kata 配置、
-  合并 handler、推送镜像、建 RuntimeClass）、渲染器与度量计算器
+  runtime 的每个 Pod 都需要它，由 install.sh 安装
+- \`test/\` — 测试 Pod：\`test-pod.yaml\`、\`create-test-pod.sh\`（创建并等待 Ready，
+  核对 QEMU 用的 initrd 与 MEASUREMENT）、\`delete-test-pod.sh\`（删除测试 Pod）
+- \`install.sh\` — 安装脚本（见下文）；\`render.py\` — install.sh 用的 Kata 配置渲染器；
+  \`measure.py\` — test/create-test-pod.sh 用的 MEASUREMENT 计算器
 $(if [[ -n "$TEST_IMAGE_ARCHIVE" ]]; then printf -- '- `%s/` — 测试 Pod 镜像的 `docker save` 归档。CoCo guest 由 CDH 自己从 registry 拉镜像，宿主机 docker 不在那条路径上，所以 install.sh 会先查 registry，缺这个 tag 时导入归档并推送过去\n' "$PACKAGE_IMAGE_SUBDIR"; fi)
 - \`config/env.txt\` — **可在宿主机上编辑的部署身份**（见下文）
 - \`SHA256SUMS\` — 不可变文件的校验和（\`config/env.txt\` 与由它渲染的
@@ -1465,9 +1463,6 @@ $([[ -f "$out_dir/cmdline.txt" ]] && echo '- `cmdline.txt` — 计算预期度�
 
 ## 安装
 
-交付包必须整体放在 \`$REMOTE_PACKAGE_DIR\`（Kata 配置里的路径按这个位置渲染），
-直接解压/拷贝整棵目录即可，不要在宿主上再复制里面的文件：
-
 \`\`\`bash
 scp -r <local-package>/. root@<host>:$REMOTE_PACKAGE_DIR/
 ssh root@<host> 'cd $REMOTE_PACKAGE_DIR && sha256sum -c SHA256SUMS'
@@ -1476,12 +1471,12 @@ ssh root@<host> 'cd $REMOTE_PACKAGE_DIR && bash install.sh'
 ssh root@<host> 'cd $REMOTE_PACKAGE_DIR && bash test/create-test-pod.sh'
 \`\`\`
 
-install.sh 只装宿主侧的东西（Kata 配置、handler、镜像、RuntimeClass），不再创建
-测试 Pod：新建/删除测试 Pod 用 \`test/\` 下的两个脚本，验证完可以执行
-\`bash test/delete-test-pod.sh\` 清掉。
+install.sh 依次完成：校验 \`SHA256SUMS\`、按 \`config/env.txt\` 重渲染 Kata 配置、
+把 runtime handler 合并进 containerd 配置（校验生效配置后重启 containerd）、
+必要时把测试镜像导入 registry、创建 RuntimeClass。\`--dry-run\` 只打印，不落盘。
 
-ConfigPath 指向包内这份配置，install.sh 不会再往 \`/etc\` 拷一份：包（配置 + 启动
-文件）就是宿主机上唯一的副本，删除或替换它之前必须先把 runtime handler 摘掉。
+ConfigPath 指向包内这份配置：这台宿主上该 runtime 的 Kata 配置就是包里的这一份，
+删除或替换目录前先把 runtime handler 摘掉。
 
 ## 部署身份（在宿主机上改）
 
@@ -1497,9 +1492,8 @@ vi $(basename "$out_dir")/config/env.txt
 sudo bash install.sh
 \`\`\`
 
-install.sh 会重渲染配置、删掉旧 Pod 再重建（新 Pod 才会带上新的命令行），
-不需要回构建机重新 render，也不需要重建 initrd。env.txt 里删掉一行，
-对应的参数就会从命令行上消失。
+install.sh 会重渲染配置；再执行 \`test/create-test-pod.sh\` 重建测试 Pod，
+新 Pod 才会带上新的命令行。env.txt 里删掉一行，对应的参数就会从命令行上消失。
 
 只允许这 8 个键，写错键名、重复键、空值或含空白字符的值都会让 install.sh
 直接报错退出，不会带上一个 guest 会静默忽略的参数：
