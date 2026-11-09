@@ -1177,7 +1177,8 @@ render_package() {
     echo "hint: 先运行 $0 fetch-base（或指定 KATA_CONFIG_TEMPLATE）" >&2
     exit 1
   fi
-  if [[ ! -f "$RENDER_DIR/render.py" || ! -f "$RENDER_DIR/install.sh" ]]; then
+  if [[ ! -f "$RENDER_DIR/render.py" || ! -f "$RENDER_DIR/install.sh" ||
+        ! -f "$RENDER_DIR/create-test-pod.sh" || ! -f "$RENDER_DIR/delete-test-pod.sh" ]]; then
     echo "error: 渲染器缺失: $RENDER_DIR" >&2
     exit 1
   fi
@@ -1271,7 +1272,7 @@ render_package() {
   fi
 
   rm -rf "$out_dir"
-  mkdir -p "$out_dir/config" "$out_dir/k8s" "$out_dir/$PACKAGE_BUNDLE_SUBDIR"
+  mkdir -p "$out_dir/config" "$out_dir/k8s" "$out_dir/test" "$out_dir/$PACKAGE_BUNDLE_SUBDIR"
   if [[ -n "$archive_name" ]]; then
     mkdir -p "$out_dir/$PACKAGE_IMAGE_SUBDIR"
     cp "$TEST_IMAGE_ARCHIVE" "$out_dir/$PACKAGE_IMAGE_SUBDIR/$archive_name"
@@ -1330,13 +1331,16 @@ IDENTITY
     --image "$TEST_IMAGE" \
     --annotations "$TEST_POD_ANNOTATIONS" \
     "${run_as_args[@]+"${run_as_args[@]}"}" \
-    --out-dir "$out_dir/k8s"
+    --out-dir "$out_dir/k8s" \
+    --pod-dir "$out_dir/test"
 
   # The package is self-contained: the installer, the merger and the
   # measurement helper travel with it.
   cp "$RENDER_DIR/render.py" "$out_dir/render.py"
   cp "$RENDER_DIR/measure.py" "$out_dir/measure.py"
   cp "$RENDER_DIR/install.sh" "$out_dir/install.sh"
+  cp "$RENDER_DIR/create-test-pod.sh" "$out_dir/test/create-test-pod.sh"
+  cp "$RENDER_DIR/delete-test-pod.sh" "$out_dir/test/delete-test-pod.sh"
 
   # MEASUREMENT is SM3(OVMF || hashes-table), and the table hashes the exact
   # QEMU -append string plus the initrd and kernel. All three inputs are the
@@ -1439,9 +1443,13 @@ MEASURE
   的 ConfigPath 就指向它，安装脚本也从这里读安装所需的全部参数
 - \`config/containerd-runtime-handler.toml\` — containerd handler 片段（供审阅，安装脚本
   从这里解析 handler 名、runtime、snapshotter 与 ConfigPath）
-- \`k8s/runtimeclass.yaml\` / \`k8s/test-pod.yaml\` — 运行时类与测试 Pod（安装脚本从后者
-  读 Pod 名与节点名）
-- \`install.sh\` / \`render.py\` / \`measure.py\` — 安装脚本、合并器与度量计算器
+- \`k8s/runtimeclass.yaml\` — 运行时类：Pod 用 \`runtimeClassName\` 选中本 handler。使用该
+  runtime 的每个 Pod 都要它，所以由 install.sh 安装，不属于测试
+- \`test/\` — 测试 Pod：\`test-pod.yaml\`（安装脚本从这里读 Pod 名与节点名）、
+  \`create-test-pod.sh\`（创建并等待 Ready，核对 QEMU 用的 initrd 与 MEASUREMENT）、
+  \`delete-test-pod.sh\`（删除测试 Pod）
+- \`install.sh\` / \`render.py\` / \`measure.py\` — 安装脚本（校验包、重渲染 Kata 配置、
+  合并 handler、推送镜像、建 RuntimeClass）、渲染器与度量计算器
 $(if [[ -n "$TEST_IMAGE_ARCHIVE" ]]; then printf -- '- `%s/` — 测试 Pod 镜像的 `docker save` 归档。CoCo guest 由 CDH 自己从 registry 拉镜像，宿主机 docker 不在那条路径上，所以 install.sh 会先查 registry，缺这个 tag 时导入归档并推送过去\n' "$PACKAGE_IMAGE_SUBDIR"; fi)
 - \`config/env.txt\` — **可在宿主机上编辑的部署身份**（见下文）
 - \`SHA256SUMS\` — 不可变文件的校验和（\`config/env.txt\` 与由它渲染的
@@ -1465,7 +1473,12 @@ scp -r <local-package>/. root@<host>:$REMOTE_PACKAGE_DIR/
 ssh root@<host> 'cd $REMOTE_PACKAGE_DIR && sha256sum -c SHA256SUMS'
 ssh root@<host> 'cd $REMOTE_PACKAGE_DIR && bash install.sh --dry-run'
 ssh root@<host> 'cd $REMOTE_PACKAGE_DIR && bash install.sh'
+ssh root@<host> 'cd $REMOTE_PACKAGE_DIR && bash test/create-test-pod.sh'
 \`\`\`
+
+install.sh 只装宿主侧的东西（Kata 配置、handler、镜像、RuntimeClass），不再创建
+测试 Pod：新建/删除测试 Pod 用 \`test/\` 下的两个脚本，验证完可以执行
+\`bash test/delete-test-pod.sh\` 清掉。
 
 ConfigPath 指向包内这份配置，install.sh 不会再往 \`/etc\` 拷一份：包（配置 + 启动
 文件）就是宿主机上唯一的副本，删除或替换它之前必须先把 runtime handler 摘掉。
@@ -1496,12 +1509,13 @@ taa.platform_ip  taa.docker_id  taa.platform_public_key  taa.platform_sm2_id
 taa.contract_id  taa.contract_type  taa.llm_endpoint  taa.addr
 \`\`\`
 
-内核命令行本身也在 CSV2 度量范围内，所以改身份改的是 MEASUREMENT：install.sh
-第 7 步会按当前配置重算预期值，再与 QEMU 实际的 \`-append\` 比对。同时它在宿主机的
+内核命令行本身也在 CSV2 度量范围内，所以改身份改的是 MEASUREMENT：
+\`test/create-test-pod.sh\` 会按当前配置重算预期值，再与 QEMU 实际的 \`-append\` 比对。
+同时它在宿主机的
 \`ps\` 与 QEMU 日志里可见，密钥类内容不要走这条通路。
 
-身份只在新建 Pod 时被 QEMU 读入：install.sh 会删掉旧 Pod 再重建，新身份在重建
-的 Pod 上生效；其他已经在运行的 Pod 不受影响。
+身份只在新建 Pod 时被 QEMU 读入：\`test/create-test-pod.sh\` 会删掉旧测试 Pod 再重建，
+新身份在重建的 Pod 上生效；其他已经在运行的 Pod 不受影响。
 
 ## 使用
 

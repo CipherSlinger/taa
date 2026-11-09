@@ -211,7 +211,7 @@ Kata 配置里的 `kernel`/`initrd`/`firmware` 直接指向这几个包内路径
 
 ---
 
-## 4. 配置 Kata / containerd / RuntimeClass 并拉起测试 Pod
+## 4. 配置 Kata / containerd / RuntimeClass，再拉起测试 Pod
 
 这一步现在是**本地渲染 → 上传 → 远端安装**：`.toml` 和 YAML 全部在本地生成，
 因此同样的文件既是 `launch` 的输入，也是可以直接交给别人的交付物。
@@ -230,7 +230,9 @@ cd /home/hjy/taa/deploy/guest-build
 - `bundle/initramfs.img`、`bundle/vmlinuz`、`bundle/OVMF.fd` — QEMU 实际启动的三份文件
 - `config/kata-config.toml` — 改写后的 Kata hypervisor 配置（指向包内 bundle）
 - `config/containerd-runtime-handler.toml` — containerd handler 片段（供审阅）
-- `k8s/runtimeclass.yaml`、`k8s/test-pod.yaml`
+- `k8s/runtimeclass.yaml` — 运行时类（使用该 runtime 的 Pod 都要它）
+- `test/test-pod.yaml`、`test/create-test-pod.sh`、`test/delete-test-pod.sh` — 测试 Pod
+  及其创建/删除脚本
 - `install.sh`、`render.py`、`measure.py` — 包内自带的安装器、合并器与度量计算器
 - `cmdline.txt` — 计算预期度量所用的 QEMU `-append` 原文
 - `SHA256SUMS` — 包内文件校验和（含 `bundle/` 三份）
@@ -292,12 +294,20 @@ TEST_POD_ANNOTATIONS="${TEST_POD_ANNOTATIONS}" \
    `containerd 配置未变化，跳过重启`）。这决定了 `launch` 对已在跑的 Pod 有没有动效
 5. 视配置可选重启 `kubelet`
 6. 创建 Kubernetes `RuntimeClass`
-7. 创建测试 Pod（带 `TEST_POD_ANNOTATIONS`）
-8. 等待 Pod Ready；超时会打印 Pod 状态与 `Events:` 再退出
-9. 校验 QEMU 是否使用了包内的 initrd
-10. 先按当前 `config/kata-config.toml` 在本机重算预期 MEASUREMENT，再从 QEMU 的
-    `/proc/<pid>/cmdline` 取实际 `-append` 重算，两者对照（不一致只告警，并打印
-    实际 cmdline）。包里不存构建期的记录值：唯一可变输入就是这份配置
+
+install.sh 到此结束，**不再创建测试 Pod**（装包不等于起一台 guest）。需要验证时
+单独执行包内的 `test/create-test-pod.sh`：
+
+1. 删除已有的测试 Pod 再创建（Pod spec 不可变，旧 Pod 带的是旧命令行；
+   `TEST_POD_ANNOTATIONS` 也在这里生效）
+2. 等待 Pod Ready；超时会打印 Pod 状态与 `Events:` 再退出
+3. 校验 QEMU 是否使用了包内的 initrd
+4. 先按当前 `config/kata-config.toml` 在本机重算预期 MEASUREMENT，再从 QEMU 的
+   `/proc/<pid>/cmdline` 取实际 `-append` 重算，两者对照（不一致只告警，并打印
+   实际 cmdline）。包里不存构建期的记录值：唯一可变输入就是这份配置
+
+删除测试 Pod 用 `test/delete-test-pod.sh`；它只删 Pod，RuntimeClass 和 handler 保留
+（那是 runtime 的一部分，所有使用该 handler 的 Pod 都要）。
 
 手工在目标宿主上安装同一个包时：
 
@@ -306,10 +316,12 @@ cd dist/kata-qemu-csv2-taa-train
 sha256sum -c SHA256SUMS
 sudo bash install.sh --dry-run   # 先看会改什么
 sudo bash install.sh
+sudo bash test/create-test-pod.sh   # 需要验证时
 ```
 
-`install.sh` 只支持 `--dry-run`；其余可用环境变量是 `CONTAINERD_CONFIG`、
-`RESTART_KUBELET` 与 `MEASURE_SMP`。包内的绝对路径在 `render` 时就写进了两份配置，
+`install.sh` 只支持 `--dry-run`；其余可用环境变量是 `CONTAINERD_CONFIG` 和
+`RESTART_KUBELET`，`test/create-test-pod.sh` 另有 `MEASURE_SMP`。包内的绝对路径在
+`render` 时就写进了两份配置，
 所以包绑定 `REMOTE_PACKAGE_DIR` 这个位置：换宿主照搬整包即可，换了目录就要重新
 `render`。`install.sh` 发现包被挪过位置会直接拒绝并提示重新渲染。
 

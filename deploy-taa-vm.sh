@@ -60,12 +60,12 @@ fi
 #
 # The package is the runtime dependency, not just a shipping container: the Kata
 # config points at its bundle/, so the host never needs its own copies of those
-# files and nothing is copied on the host. It also ships install.sh, so the test
-# Pod can be recreated there by running
+# files and nothing is copied on the host. It also ships install.sh and the
+# test/ scripts, so the host can be re-installed and its test Pod recreated
+# without another build, render or upload:
 #
 #   sudo bash /root/taa-images/<role-dir>/install.sh
-#
-# without another build, render or upload.
+#   sudo bash /root/taa-images/<role-dir>/test/create-test-pod.sh
 #
 # The per-role subdirectory (`package-train`, `package-infer`, ...) is decided in
 # build-initrd.sh, so this default only supplies the root. Naming the leaf here
@@ -274,3 +274,4 @@ echo "=== 2/3 本地渲染并上传交付包到 $REMOTE ==="
 echo
 echo "=== 3/3 未安装 ==="
 echo "在宿主机上安装：ssh $REMOTE 'cd $REMOTE_PACKAGE_DIR && sudo bash install.sh'"
+echo "       测试 Pod：ssh $REMOTE 'cd $REMOTE_PACKAGE_DIR && sudo bash test/create-test-pod.sh'"

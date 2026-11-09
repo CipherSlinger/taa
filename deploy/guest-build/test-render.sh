@@ -136,7 +136,8 @@ pkg="$tmp_dir/a/pkg"
 env "${common_env[@]}" DIST_DIR="$pkg" REMOTE_HOST=invalid.invalid "$BUILD" render >/dev/null
 
 for f in config/kata-config.toml config/env.txt config/containerd-runtime-handler.toml \
-         k8s/runtimeclass.yaml k8s/test-pod.yaml SHA256SUMS \
+         k8s/runtimeclass.yaml test/test-pod.yaml \
+         test/create-test-pod.sh test/delete-test-pod.sh SHA256SUMS \
          install.sh render.py measure.py cmdline.txt README.md \
          bundle/initramfs.img bundle/vmlinuz bundle/OVMF.fd; do
   if [[ -f "$pkg/$f" ]]; then
@@ -390,7 +391,7 @@ else
 fi
 
 # ── 4. Kubernetes manifests ────────────────────────────────────────────────
-python3 - "$pkg/k8s/runtimeclass.yaml" "$pkg/k8s/test-pod.yaml" <<'PY'
+python3 - "$pkg/k8s/runtimeclass.yaml" "$pkg/test/test-pod.yaml" <<'PY'
 import json, sys
 rc = json.load(open(sys.argv[1]))
 pod = json.load(open(sys.argv[2]))
@@ -417,7 +418,7 @@ echo "ok   k8s: manifests carry the handler, node, image and annotations"
 pkg2="$tmp_dir/a/pkg2"
 env "${common_env[@]}" TEST_NODE_NAME="" TEST_POD_ANNOTATIONS="{}" \
   DIST_DIR="$pkg2" REMOTE_HOST=invalid.invalid "$BUILD" render >/dev/null
-python3 - "$pkg2/k8s/test-pod.yaml" <<'PY'
+python3 - "$pkg2/test/test-pod.yaml" <<'PY'
 import json, sys
 pod = json.load(open(sys.argv[1]))
 spec = pod["spec"]
@@ -445,6 +446,10 @@ check_contains "package-info: derives the hypervisor section" \
   "KATA_HYPERVISOR_SECTION=hypervisor.qemu" "$info"
 check_contains "package-info: derives the Pod name" "TEST_POD_NAME=test-kata-csv2-taa" "$info"
 check_contains "package-info: derives the node name" "TEST_NODE_NAME=fixture-node" "$info"
+check_contains "package-info: locates the test Pod under test/" \
+  "PACKAGE_TEST_POD=test/test-pod.yaml" "$info"
+check_contains "package-info: locates the RuntimeClass under k8s/" \
+  "PACKAGE_RUNTIMECLASS=k8s/runtimeclass.yaml" "$info"
 
 # A package moved after rendering names files that are no longer beside it. That
 # is the check the manifest used to carry, now made from the package's own text.
@@ -522,7 +527,7 @@ analysis_pkg="$tmp_dir/role/pkg-analysis"
 env "${common_env[@]}" REMOTE_HOST=invalid.invalid DIST_DIR="$analysis_pkg" \
   RUNTIME_HANDLER= TAA_CONTRACT_TYPE=3 TEST_POD_NAME=test-kata-csv2-taa-analysis \
   TEST_POD_RUN_AS_USER=0 "$BUILD" taa-analysis render >/dev/null
-python3 - "$analysis_pkg/k8s/test-pod.yaml" <<'PY'
+python3 - "$analysis_pkg/test/test-pod.yaml" <<'PY'
 import json, sys
 pod = json.load(open(sys.argv[1]))
 c = pod["spec"]["containers"][0]
@@ -679,15 +684,24 @@ check_contains "install.sh: derives its settings from the package" \
   'package-info --dir' "$(cat "$pkg/install.sh")"
 check_contains "install.sh: refuses a package that does not describe itself" \
   '交付包自校验失败' "$(cat "$pkg/install.sh")"
-check_contains "install.sh: recomputes MEASUREMENT from the running QEMU" \
-  '/proc/$qpid/cmdline' "$(cat "$pkg/install.sh")"
-check_contains "install.sh: compares against the expected value" '与实际启动的 VM 一致' "$(cat "$pkg/install.sh")"
+check_contains "create script: recomputes MEASUREMENT from the running QEMU" \
+  '/proc/$qpid/cmdline' "$(cat "$pkg/test/create-test-pod.sh")"
+check_contains "create script: compares against the expected value" '与实际启动的 VM 一致' \
+  "$(cat "$pkg/test/create-test-pod.sh")"
 check_contains "install.sh: re-renders from the editable identity" \
   '--param-file "$identity_file"' "$(cat "$pkg/install.sh")"
-check_contains "install.sh: rebuilds the expectation from the current config" \
-  '预期 MEASUREMENT (hex)' "$(cat "$pkg/install.sh")"
-check_contains "install.sh: recreates the Pod so the new command line takes effect" \
-  'kubectl delete pod' "$(cat "$pkg/install.sh")"
+check_contains "create script: rebuilds the expectation from the current config" \
+  '预期 MEASUREMENT (hex)' "$(cat "$pkg/test/create-test-pod.sh")"
+check_absent "install.sh: no longer creates the test Pod" \
+  'test-pod.yaml' "$(cat "$pkg/install.sh")"
+check_contains "install.sh: still applies the RuntimeClass" \
+  'PACKAGE_RUNTIMECLASS' "$(cat "$pkg/install.sh")"
+check_contains "create script: recreates the Pod so a new command line takes effect" \
+  'kubectl delete pod' "$(cat "$pkg/test/create-test-pod.sh")"
+check_contains "create script: verifies the measurement of the running VM" \
+  'measure.py" digest' "$(cat "$pkg/test/create-test-pod.sh")"
+check_contains "delete script: deletes the test Pod" \
+  'kubectl delete pod' "$(cat "$pkg/test/delete-test-pod.sh")"
 check_contains "install.sh: verifies the package first" 'sha256sum -c --quiet SHA256SUMS' "$(cat "$pkg/install.sh")"
 check_contains "install.sh: checks the effective config, imports included" \
   '生效的 containerd 配置里' "$(cat "$pkg/install.sh")"

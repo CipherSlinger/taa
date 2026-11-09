@@ -401,10 +401,11 @@ def package_info(pkg_dir):
     pkg = Path(pkg_dir).resolve()
     fragment = pkg / "config" / "containerd-runtime-handler.toml"
     kata_config = pkg / "config" / "kata-config.toml"
-    pod_file = pkg / "k8s" / "test-pod.yaml"
+    pod_file = pkg / "test" / "test-pod.yaml"
+    runtimeclass_file = pkg / "k8s" / "runtimeclass.yaml"
     bundle = pkg / "bundle"
 
-    for path in (fragment, kata_config, pod_file):
+    for path in (fragment, kata_config, pod_file, runtimeclass_file):
         if not path.is_file():
             raise SystemExit(f"package is incomplete, missing {path}")
 
@@ -503,6 +504,8 @@ def package_info(pkg_dir):
         "REMOTE_BUNDLE_DIR": str(bundle),
         "PACKAGE_KATA_CONFIG": str(kata_config.relative_to(pkg)),
         "PACKAGE_IDENTITY_FILE": "config/env.txt",
+        "PACKAGE_RUNTIMECLASS": str(runtimeclass_file.relative_to(pkg)),
+        "PACKAGE_TEST_POD": str(pod_file.relative_to(pkg)),
         "KATA_HYPERVISOR_SECTION": section,
         "TEST_POD_NAME": pod_name,
         "TEST_NODE_NAME": node_name,
@@ -512,7 +515,8 @@ def package_info(pkg_dir):
     return info
 
 
-def render_k8s(handler, pod_name, node_name, image, annotations_json, out_dir, run_as_user=""):
+def render_k8s(handler, pod_name, node_name, image, annotations_json, out_dir,
+               run_as_user="", pod_dir=""):
     try:
         annotations = json.loads(annotations_json)
     except json.JSONDecodeError as exc:
@@ -561,7 +565,12 @@ def render_k8s(handler, pod_name, node_name, image, annotations_json, out_dir, r
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
     (out / "runtimeclass.yaml").write_text(json.dumps(runtimeclass, indent=2) + "\n")
-    (out / "test-pod.yaml").write_text(json.dumps(pod, indent=2) + "\n")
+    # The test Pod is not part of the runtime the package installs -- it only
+    # exercises it -- so it can be placed beside the test scripts instead of
+    # with the RuntimeClass every consumer Pod depends on.
+    pod_out = Path(pod_dir) if pod_dir else out
+    pod_out.mkdir(parents=True, exist_ok=True)
+    (pod_out / "test-pod.yaml").write_text(json.dumps(pod, indent=2) + "\n")
 
 
 def main(argv=None):
@@ -646,6 +655,11 @@ def main(argv=None):
         help="numeric uid for the test container (a name cannot be resolved under guest-pull)",
     )
     k8s.add_argument("--out-dir", required=True)
+    k8s.add_argument(
+        "--pod-dir",
+        default="",
+        help="write test-pod.yaml here instead of into --out-dir",
+    )
 
     args = parser.parse_args(argv)
 
@@ -693,6 +707,7 @@ def main(argv=None):
             args.annotations,
             args.out_dir,
             args.run_as_user,
+            args.pod_dir,
         )
     return 0
 
