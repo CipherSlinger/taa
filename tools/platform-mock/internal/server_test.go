@@ -703,29 +703,87 @@ func TestUploadHandlerEncryption(t *testing.T) {
 	}
 }
 
-func TestCryptoGenerateKeyHandler(t *testing.T) {
+// The console reads the platform pair rather than minting one: GET must return
+// the pair already persisted, so reloading the page cannot rotate the key an
+// installed TAA is sealing to.
+func TestCryptoGenerateKeyHandlerReadsThePersistedPair(t *testing.T) {
+	stateDir := t.TempDir()
+	ks, err := newKeystore(stateDir, "", nil)
+	if err != nil {
+		t.Fatalf("create the keystore: %v", err)
+	}
+	prev := currentPlatformKeys()
+	setPlatformKeys(ks)
+	defer setPlatformKeys(prev)
+
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/crypto/generate-key", cryptoGenerateKeyHandler)
 	server := httptest.NewServer(mux)
 	defer server.Close()
 
-	// 1. POST 请求生成 SM2 密钥对
+	wantPriv, wantPub, wantHex, err := ks.keyPEMs()
+	if err != nil {
+		t.Fatalf("read the keystore pair: %v", err)
+	}
+
+	got := getGeneratedKeyPair(t, server.URL)
+	if got.PrivateKey != wantPriv || got.PublicKey != wantPub {
+		t.Fatal("GET returned a pair other than the persisted one")
+	}
+	if got.PublicKeyHex != wantHex {
+		t.Fatalf("publicKeyHex = %s, want %s", got.PublicKeyHex, wantHex)
+	}
+
+	// Reading twice must not rotate: the second GET returns the same pair.
+	again := getGeneratedKeyPair(t, server.URL)
+	if again.PrivateKey != wantPriv {
+		t.Fatal("a second GET rotated the platform pair")
+	}
+
+	// A restart loads the same pair the console was shown.
+	reopened, err := newKeystore(stateDir, "", nil)
+	if err != nil {
+		t.Fatalf("reopen the keystore: %v", err)
+	}
+	if reopened.platformPublicHex() != wantHex {
+		t.Fatal("the pair shown by the console did not survive a restart")
+	}
+}
+
+// POST is the explicit rotation the console's regenerate button performs: a new
+// pair replaces the persisted one, and the response carries the new pair.
+func TestCryptoGenerateKeyHandlerRotatesAndPersists(t *testing.T) {
+	stateDir := t.TempDir()
+	ks, err := newKeystore(stateDir, "", nil)
+	if err != nil {
+		t.Fatalf("create the keystore: %v", err)
+	}
+	prev := currentPlatformKeys()
+	setPlatformKeys(ks)
+	defer setPlatformKeys(prev)
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/crypto/generate-key", cryptoGenerateKeyHandler)
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	before := getGeneratedKeyPair(t, server.URL)
+
 	resp, err := http.Post(server.URL+"/api/crypto/generate-key", "application/json", nil)
 	if err != nil {
 		t.Fatalf("POST /api/crypto/generate-key: %v", err)
 	}
 	defer resp.Body.Close()
-
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("status = %d, want 200", resp.StatusCode)
 	}
-
 	var api struct {
 		Msg    string `json:"msg"`
 		Error  int    `json:"error"`
 		Result struct {
-			PublicKey  string `json:"publicKey"`
-			PrivateKey string `json:"privateKey"`
+			PublicKey    string `json:"publicKey"`
+			PrivateKey   string `json:"privateKey"`
+			PublicKeyHex string `json:"publicKeyHex"`
 		} `json:"result"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&api); err != nil {
@@ -734,6 +792,9 @@ func TestCryptoGenerateKeyHandler(t *testing.T) {
 	if api.Error != 0 {
 		t.Fatalf("api error = %d, msg = %s", api.Error, api.Msg)
 	}
+	if api.Result.PrivateKey == before.PrivateKey {
+		t.Fatal("POST returned the old private key, want a rotated pair")
+	}
 	if !strings.Contains(api.Result.PublicKey, "BEGIN PUBLIC KEY") {
 		t.Fatalf("invalid publicKey PEM: %s", api.Result.PublicKey)
 	}
@@ -741,17 +802,28 @@ func TestCryptoGenerateKeyHandler(t *testing.T) {
 		t.Fatalf("invalid privateKey PEM: %s", api.Result.PrivateKey)
 	}
 
-	// 验证公私钥可被成功解析并完成加解密往返
+	// The rotated pair is what the keystore now serves and what a restart loads.
+	if got := ks.platformPublicHex(); got != api.Result.PublicKeyHex {
+		t.Fatalf("keystore public key = %s, want the rotated %s", got, api.Result.PublicKeyHex)
+	}
+	reopened, err := newKeystore(stateDir, "", nil)
+	if err != nil {
+		t.Fatalf("reopen the keystore: %v", err)
+	}
+	if got := reopened.platformPublicHex(); got != api.Result.PublicKeyHex {
+		t.Fatalf("persisted public key = %s, want the rotated %s", got, api.Result.PublicKeyHex)
+	}
+
+	// The returned pair still round-trips through the SM2 envelope.
 	pubKey, err := crypto.ParseSM2PublicKeyPEM([]byte(api.Result.PublicKey))
 	if err != nil {
-		t.Fatalf("parse generated public key: %v", err)
+		t.Fatalf("parse rotated public key: %v", err)
 	}
 	privKey, err := crypto.ParseSM2PrivateKeyPEM([]byte(api.Result.PrivateKey))
 	if err != nil {
-		t.Fatalf("parse generated private key: %v", err)
+		t.Fatalf("parse rotated private key: %v", err)
 	}
-
-	testData := []byte("platform-mock key generation test")
+	testData := []byte("platform-mock key rotation test")
 	sealed, err := crypto.SealSM2SM4GCM(pubKey, testData)
 	if err != nil {
 		t.Fatalf("seal test data: %v", err)
@@ -763,16 +835,36 @@ func TestCryptoGenerateKeyHandler(t *testing.T) {
 	if !bytes.Equal(opened, testData) {
 		t.Fatalf("opened = %q, want %q", opened, testData)
 	}
+}
 
-	// 2. GET 请求同样支持
-	getResp, err := http.Get(server.URL + "/api/crypto/generate-key")
+type generatedKeyPair struct {
+	PublicKey    string `json:"publicKey"`
+	PrivateKey   string `json:"privateKey"`
+	PublicKeyHex string `json:"publicKeyHex"`
+}
+
+func getGeneratedKeyPair(t *testing.T, baseURL string) generatedKeyPair {
+	t.Helper()
+	resp, err := http.Get(baseURL + "/api/crypto/generate-key")
 	if err != nil {
 		t.Fatalf("GET /api/crypto/generate-key: %v", err)
 	}
-	getResp.Body.Close()
-	if getResp.StatusCode != http.StatusOK {
-		t.Fatalf("GET status = %d, want 200", getResp.StatusCode)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET status = %d, want 200", resp.StatusCode)
 	}
+	var api struct {
+		Msg    string           `json:"msg"`
+		Error  int              `json:"error"`
+		Result generatedKeyPair `json:"result"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&api); err != nil {
+		t.Fatalf("decode GET generate-key response: %v", err)
+	}
+	if api.Error != 0 {
+		t.Fatalf("GET api error = %d, msg = %s", api.Error, api.Msg)
+	}
+	return api.Result
 }
 
 func TestCryptoDecryptHandler(t *testing.T) {

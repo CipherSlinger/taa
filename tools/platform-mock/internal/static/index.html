@@ -195,7 +195,7 @@
         <button type="button" class="phase-switch-btn" data-phase="3" onclick="quickSwitchPhase(3)">3 训练</button>
         <button type="button" class="phase-switch-btn" data-phase="4" onclick="quickSwitchPhase(4)">4 推理</button>
         <div id="globalKeyManagementBox" style="display:inline-flex; align-items:center; gap:6px; margin-left:10px; border-left:1px solid var(--line); padding-left:10px;">
-          <button type="button" id="createGlobalKeyPairBtn" class="secondary" style="padding:2px 10px; font-size:12px;" onclick="generateGlobalKeyPair(this)">创建公私钥</button>
+          <button type="button" id="createGlobalKeyPairBtn" class="secondary" style="padding:2px 10px; font-size:12px;" onclick="regenerateGlobalKeyPair(this)">重新生成公私钥</button>
           <div id="globalKeyPairActiveGroup" style="display:none; align-items:center; gap:6px;">
             <button type="button" class="secondary" id="globalPubKeyModalBtn" style="padding:2px 8px; font-size:12px;" onclick="openGlobalPublicKeyModal()" title="查看公钥">
               <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="margin-right:2px; vertical-align:-1px;">
@@ -208,7 +208,7 @@
                 <path d="M7 11V7a5 5 0 0 1 10 0v4"></path>
               </svg>私钥
             </button>
-            <button type="button" class="icon-btn-compact" id="regenerateGlobalKeyPairBtn" style="padding:2px 6px; font-size:12px;" onclick="generateGlobalKeyPair(this)" title="重新生成公私钥">
+            <button type="button" class="icon-btn-compact" id="regenerateGlobalKeyPairBtn" style="padding:2px 6px; font-size:12px;" onclick="regenerateGlobalKeyPair(this)" title="重新生成并覆盖平台公私钥">
               <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
                 <polyline points="23 4 23 10 17 10"></polyline>
                 <polyline points="1 20 1 14 7 14"></polyline>

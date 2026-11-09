@@ -11,6 +11,15 @@ import (
 	"taa/pkg/crypto"
 )
 
+// cryptoGenerateKeyHandler exposes the platform SM2 key pair the mock uses for
+// its envelopes.
+//
+// GET returns the pair currently in effect, which the console reads on page load
+// so the key it shows is the one the mock actually signs and decrypts with.
+// POST rotates it: a new pair is generated and written over the persisted key
+// file, and the response carries the new pair. Rotation invalidates every
+// running TAA (they seal to the cached public key), so the console treats it as
+// a deliberate action rather than a page-load side effect.
 func cryptoGenerateKeyHandler(w http.ResponseWriter, r *http.Request) {
 	setCORS(w)
 	if r.Method == http.MethodOptions {
@@ -23,25 +32,27 @@ func cryptoGenerateKeyHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	priv, err := crypto.GenerateSM2KeyPair()
-	if err != nil {
-		writeEnvelope(w, http.StatusInternalServerError, "生成 SM2 密钥对失败: "+err.Error(), nil, http.StatusInternalServerError)
+	ks := currentPlatformKeys()
+	if ks == nil {
+		writeEnvelope(w, http.StatusInternalServerError, "平台密钥对不可用", nil, http.StatusInternalServerError)
 		return
 	}
-	pubPEM, err := crypto.MarshalSM2PublicKeyPEM(&priv.PublicKey)
-	if err != nil {
-		writeEnvelope(w, http.StatusInternalServerError, "编码 SM2 公钥失败: "+err.Error(), nil, http.StatusInternalServerError)
-		return
-	}
-	privPEM, err := crypto.MarshalSM2PrivateKeyPEM(priv)
-	if err != nil {
-		writeEnvelope(w, http.StatusInternalServerError, "编码 SM2 私钥失败: "+err.Error(), nil, http.StatusInternalServerError)
-		return
+	if r.Method == http.MethodPost {
+		if err := ks.rotate(); err != nil {
+			writeEnvelope(w, http.StatusInternalServerError, "重新生成 SM2 密钥对失败: "+err.Error(), nil, http.StatusInternalServerError)
+			return
+		}
 	}
 
+	privPEM, pubPEM, pubHex, err := ks.keyPEMs()
+	if err != nil {
+		writeEnvelope(w, http.StatusInternalServerError, "读取平台 SM2 密钥对失败: "+err.Error(), nil, http.StatusInternalServerError)
+		return
+	}
 	writeEnvelope(w, http.StatusOK, "success", map[string]string{
-		"publicKey":  string(pubPEM),
-		"privateKey": string(privPEM),
+		"publicKey":    pubPEM,
+		"privateKey":   privPEM,
+		"publicKeyHex": pubHex,
 	}, 0)
 }
 

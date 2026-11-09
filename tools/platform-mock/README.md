@@ -86,7 +86,11 @@ TAA seals every platform message, so the mock does the same and nothing is sent 
   [envelope] PLATFORM_PUBLIC_KEY for TAA: 04...
   ```
 
-  Set that value as TAA's `PLATFORM_PUBLIC_KEY` before starting TAA. Deleting `platform-key.json` is equivalent to rotating the platform key: every TAA must be reconfigured and restarted.
+  Set that value as TAA's `PLATFORM_PUBLIC_KEY` before starting TAA. The console's
+  regenerate button rotates the same pair: it generates a new one and writes it over
+  `platform-key.json`, so every TAA must then be reconfigured with the new key and
+  restarted. Deleting `platform-key.json` has the same effect (a fresh pair is generated
+  on the next start).
 
 ## Web Console
 
@@ -94,7 +98,7 @@ The platform mock provides an embedded single-page Web console accessible by ope
 
 - **Static Asset Embedding**: The UI assets are statically bundled into the binary using Go `embed.FS` from `internal/static/`.
 - **Node Status & Attestation**: Displays registered node metadata, ephemeral SM2 public key, and CSV hardware attestation report validation status.
-- **Model Ingress & Audit**: Upload model packages, inspect static AST rule violations, and observe Ollama LLM semantic verification outcomes. The console generates its test SM2 key pair on load, so encryption and the import card's public key work without a manual setup step; the key control only rotates it.
+- **Model Ingress & Audit**: Upload model packages, inspect static AST rule violations, and observe Ollama LLM semantic verification outcomes. The console shows the platform SM2 key pair the mock generated and persisted at startup (the same pair its envelopes use), and the regenerate button rotates that pair and overwrites the key file; loading the page never rotates it.
 - **Real-Time Progress & Logs**: Displays real-time progress bars, streamed terminal logs (`modelLog`), and TAA daemon operational logs (`taaLog`).
 - **Execution Control**: Send graceful stop commands (`/v1/taa/stopTraining`) to interrupt running workloads.
 - **Instance-Kind Panels**: the console shows the TEE or FHE panel set for the instance

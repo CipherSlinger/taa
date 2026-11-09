@@ -6,33 +6,65 @@ let globalKeyPair = {
   createdAt: null,
 };
 
-// generateGlobalKeyPair creates the console's test SM2 key pair. The automatic
-// run on page load passes silent: a modal on every load would cover the panel it
-// just enabled, and a failed generation should not greet the operator with an
-// alert before they have asked for a key.
-async function generateGlobalKeyPair(btn, opts = {}) {
-  const silent = Boolean(opts.silent);
+// loadGlobalKeyPair reads the platform SM2 key pair the mock already holds. The
+// mock generates and persists that pair at startup, so the console only displays
+// it - loading the page never mints a key, because a fresh pair on every reload
+// would silently break every running TAA's envelopes.
+async function loadGlobalKeyPair() {
+  try {
+    const resp = await fetch('/api/crypto/generate-key', { method: 'GET' });
+    const data = await resp.json();
+    if (!resp.ok || data.error !== 0) {
+      throw new Error(data.msg || '读取密钥对失败');
+    }
+    globalKeyPair = {
+      publicKey: data.result.publicKey,
+      privateKey: data.result.privateKey,
+      publicKeyHex: data.result.publicKeyHex || '',
+      createdAt: null,
+    };
+    showGlobalKeyPairActive();
+    return true;
+  } catch (err) {
+    console.warn('读取平台密钥对失败:', err);
+    return false;
+  }
+}
+
+// showGlobalKeyPairActive swaps the "create" button for the view/regenerate
+// group once a pair is on screen.
+function showGlobalKeyPairActive() {
+  const activeGroup = document.getElementById('globalKeyPairActiveGroup');
+  const createBtn = document.getElementById('createGlobalKeyPairBtn');
+  if (activeGroup) activeGroup.style.display = 'inline-flex';
+  if (createBtn) createBtn.style.display = 'none';
+}
+
+// regenerateGlobalKeyPair rotates the platform pair: a new one is generated and
+// written over the persisted key file. Every running TAA has cached the old
+// public key, so the operator has to confirm and then reconfigure and restart
+// each instance with the new PLATFORM_PUBLIC_KEY.
+async function regenerateGlobalKeyPair(btn) {
+  if (!confirm('重新生成会覆盖已落盘的平台 SM2 密钥对。\n\n所有正在运行的 TAA 都缓存了旧公钥，轮换后必须用新的 PLATFORM_PUBLIC_KEY 重新配置并重启，否则其信封将无法解密。\n\n确认重新生成？')) {
+    return;
+  }
   const origText = btn ? btn.textContent : '';
   if (btn) {
     btn.disabled = true;
-    btn.textContent = '生成中...';
   }
   try {
     const resp = await fetch('/api/crypto/generate-key', { method: 'POST' });
     const data = await resp.json();
     if (!resp.ok || data.error !== 0) {
-      throw new Error(data.msg || '生成密钥对失败');
+      throw new Error(data.msg || '重新生成密钥对失败');
     }
     globalKeyPair = {
       publicKey: data.result.publicKey,
       privateKey: data.result.privateKey,
+      publicKeyHex: data.result.publicKeyHex || '',
       createdAt: new Date().toISOString(),
     };
-
-    const activeGroup = document.getElementById('globalKeyPairActiveGroup');
-    const createBtn = document.getElementById('createGlobalKeyPairBtn');
-    if (activeGroup) activeGroup.style.display = 'inline-flex';
-    if (createBtn) createBtn.style.display = 'none';
+    showGlobalKeyPairActive();
 
     // Automatically fill into importModel if switch is enabled
     const switchEl = document.getElementById('importModelUsePublicKeySwitch');
@@ -40,18 +72,14 @@ async function generateGlobalKeyPair(btn, opts = {}) {
       onImportModelUsePublicKeyToggle(switchEl);
     }
 
-    if (!silent && typeof openBodyModal === 'function') {
+    if (typeof openBodyModal === 'function') {
       openBodyModal(
-        '已生成新 SM2 密钥对',
-        `公钥 (Public Key):\n${globalKeyPair.publicKey}\n\n私钥 (Private Key):\n${globalKeyPair.privateKey}\n\n生成时间: ${globalKeyPair.createdAt}`
+        '已重新生成并覆盖平台 SM2 密钥对',
+        `公钥 (Public Key):\n${globalKeyPair.publicKey}\n\nPLATFORM_PUBLIC_KEY (hex):\n${globalKeyPair.publicKeyHex}\n\n所有 TAA 实例需重新配置此公钥并重启。\n\n生成时间: ${globalKeyPair.createdAt}`
       );
     }
   } catch (err) {
-    if (silent) {
-      console.warn('自动生成密钥对失败:', err);
-    } else {
-      alert('生成密钥对失败: ' + err.message);
-    }
+    alert('重新生成密钥对失败: ' + err.message);
   } finally {
     if (btn) {
       btn.textContent = origText;
@@ -60,26 +88,26 @@ async function generateGlobalKeyPair(btn, opts = {}) {
   }
 }
 
-// initGlobalKeyPair runs once per console load so the import and upload cards
-// have a key pair from the start; the manual button only has to rotate it.
+// initGlobalKeyPair runs once per console load. The pair is already persisted by
+// the mock at startup, so this only reads it back into the page.
 function initGlobalKeyPair() {
-  return generateGlobalKeyPair(null, { silent: true });
+  return loadGlobalKeyPair();
 }
 
 function openGlobalPublicKeyModal() {
   if (!globalKeyPair.publicKey) {
-    alert('尚未生成公钥，请先点击“创建公私钥”');
+    alert('尚未读取到平台公钥，请刷新页面');
     return;
   }
-  openBodyModal('全局 SM2 公钥 (Public Key)', globalKeyPair.publicKey);
+  openBodyModal('平台 SM2 公钥 (Public Key)', globalKeyPair.publicKey);
 }
 
 function openGlobalPrivateKeyModal() {
   if (!globalKeyPair.privateKey) {
-    alert('尚未生成私钥，请先点击“创建公私钥”');
+    alert('尚未读取到平台私钥，请刷新页面');
     return;
   }
-  openBodyModal('全局 SM2 私钥 (Private Key)', globalKeyPair.privateKey);
+  openBodyModal('平台 SM2 私钥 (Private Key)', globalKeyPair.privateKey);
 }
 
 async function copyRegisterPublicKey(btnEl) {

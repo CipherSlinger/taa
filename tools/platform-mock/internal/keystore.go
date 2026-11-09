@@ -131,6 +131,61 @@ func (s *keystore) generate() error {
 	return nil
 }
 
+// rotate replaces the platform pair, in memory and on disk. It is what the
+// console's "regenerate" button calls, so it is a deliberate rotation: every
+// running TAA has cached the old public key and must be reconfigured with the
+// new one and restarted, or its envelopes stay undecryptable.
+//
+// The write happens before the in-memory swap is kept: if persisting fails, the
+// previous key is restored so memory and disk never disagree about which pair
+// the platform holds. The TAA public keys are preserved - they belong to the
+// instances, not to the platform pair.
+func (s *keystore) rotate() error {
+	priv, err := teecrypto.GenerateSM2KeyPair()
+	if err != nil {
+		return fmt.Errorf("generate the platform SM2 key pair: %w", err)
+	}
+	s.mu.Lock()
+	previous := s.priv
+	s.priv = priv
+	persistErr := s.persistLocked()
+	if persistErr != nil {
+		s.priv = previous
+	}
+	s.mu.Unlock()
+	if persistErr != nil {
+		return persistErr
+	}
+	log.Printf("[envelope] rotated the platform SM2 key pair in %s", s.path)
+	log.Printf("[envelope] PLATFORM_PUBLIC_KEY for TAA (every instance must be reconfigured and restarted): %s", s.platformPublicHex())
+	return nil
+}
+
+// keyPEMs returns the current platform pair as PEM, plus the public key in the
+// 04||X||Y hex form TAA is configured with. The console reads it on page load so
+// it displays the pair the mock actually holds instead of minting a throwaway one.
+func (s *keystore) keyPEMs() (privatePEM, publicPEM, publicHex string, err error) {
+	s.mu.RLock()
+	priv := s.priv
+	s.mu.RUnlock()
+	if priv == nil {
+		return "", "", "", fmt.Errorf("platform SM2 private key is not available")
+	}
+	privBytes, err := teecrypto.MarshalSM2PrivateKeyPEM(priv)
+	if err != nil {
+		return "", "", "", fmt.Errorf("encode the platform SM2 private key: %w", err)
+	}
+	pubBytes, err := teecrypto.MarshalSM2PublicKeyPEM(&priv.PublicKey)
+	if err != nil {
+		return "", "", "", fmt.Errorf("encode the platform SM2 public key: %w", err)
+	}
+	hexValue, err := teecrypto.MarshalSM2PublicKeyHex(&priv.PublicKey)
+	if err != nil {
+		return "", "", "", fmt.Errorf("encode the platform SM2 public key: %w", err)
+	}
+	return string(privBytes), string(pubBytes), hexValue, nil
+}
+
 // persistLocked writes the current state. Callers must hold mu.
 func (s *keystore) persistLocked() error {
 	if s.priv == nil || s.path == "" {
