@@ -53,8 +53,8 @@ import (
 // shows once its @plt thunks are excluded), so the callers of socket are
 // themselves exported entry points and not one of the nine flagged libraries was
 // cleared by a call-graph reading. Nor is a disassembler available
-// to do it differently: the guest rootfs's usr/bin holds a single python3.10, and
-// golang.org/x/arch is not available offline.
+// to do it differently: the guest rootfs's usr/local/bin holds a single
+// python3.12, and golang.org/x/arch is not available offline.
 //
 // What this gate does not accept as corroboration, since accepting either would
 // keep every file it exists to clear. BIN_002 is not a corroborator: it is
