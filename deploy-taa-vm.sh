@@ -100,22 +100,35 @@ REMOTE="${REMOTE_USER}@${REMOTE_HOST}"
 # where an empty value is meaningful ("the operator did not ask for a
 # registration") and drives its own check.
 #
-# The platform (platform-mock) runs on its own host, not on the Kata host, so the
-# default points at that address instead of following REMOTE_HOST; override
-# TAA_PLATFORM_IP to register against a platform somewhere else. DOCKER_ID must
+# The default is the platform-mock on the Kata host itself. The address is
+# written out rather than derived from REMOTE_HOST, so pointing this run at a
+# platform somewhere else is only an override of TAA_PLATFORM_IP. DOCKER_ID must
 # stay unique per instance or the platform sees two instances sharing one
 # identity -- the id in production looks like the 32-hex value the platform
 # allocates, but any stable string works, and a failed registration is only a
 # warning (it does not stop TAA from starting).
-PLATFORM_PORT="${PLATFORM_PORT:-18080}"
-TAA_PLATFORM_IP="${TAA_PLATFORM_IP:-172.16.10.116:${PLATFORM_PORT}}"
+PLATFORM_PORT="${PLATFORM_PORT:-18081}"
+TAA_PLATFORM_IP="${TAA_PLATFORM_IP:-172.16.10.178:${PLATFORM_PORT}}"
 TAA_DOCKER_ID="${TAA_DOCKER_ID:-kata-csv2-taa-test-0001}"
 # The Tier-2 gateway address. The config template carries one too, but it is a
 # Pod IP that belongs to the deployment the template was last edited for; the
 # guest cannot be told apart from it at boot, so this flow pins the endpoint
 # explicitly. Override TAA_LLM_ENDPOINT to point at another gateway.
-TAA_LLM_ENDPOINT="${TAA_LLM_ENDPOINT:-https://172.16.10.116:8443}"
+TAA_LLM_ENDPOINT="${TAA_LLM_ENDPOINT:-https://172.16.10.178:18443}"
 export TAA_PLATFORM_IP TAA_DOCKER_ID TAA_LLM_ENDPOINT
+
+# TAA seals every request it sends to the platform with the platform's SM2 public
+# key, and the platform decrypts it with the matching private key, so the key
+# baked into the package must belong to the platform at TAA_PLATFORM_IP. A
+# mismatch is silent from both ends: the platform answers 401 without logging
+# the rejection, and the guest retries forever, so the only symptom is a
+# registration that never appears. The key is therefore read from the platform
+# itself (see resolve_platform_public_key below) rather than from a copy on the
+# build host, which is how the two drifted apart before.
+#
+# GET on this path is a read. POST on it rotates the platform key pair, which
+# would invalidate every image built against the old one -- never use it here.
+PLATFORM_KEY_ENDPOINT="${PLATFORM_KEY_ENDPOINT:-http://${TAA_PLATFORM_IP}/api/crypto/generate-key}"
 
 # ── Arguments ────────────────────────────────────────────────────────────────
 #
@@ -149,6 +162,48 @@ require_cmd() {
       exit 1
     fi
   done
+}
+
+# ── Platform public key ──────────────────────────────────────────────────────
+#
+# Pins the platform's SM2 public key for this build. An explicitly given key or
+# key file wins, so an offline run or a platform that is not running can still
+# be packaged; otherwise the key is read from the platform the guest will
+# actually talk to, which is the only copy guaranteed to decrypt what the guest
+# sends. Exporting PLATFORM_PUBLIC_KEY is what carries it into build-initrd.sh
+# (as a child process) and from there onto the rendered kernel command line.
+resolve_platform_public_key() {
+  if [[ -n "${PLATFORM_PUBLIC_KEY:-}" || -n "${TAA_PLATFORM_PUBLIC_KEY:-}" ]]; then
+    echo "平台公钥：使用显式给出的值"
+    return 0
+  fi
+  if [[ -n "${TAA_PLATFORM_KEY_FILE:-}" ]]; then
+    echo "平台公钥：取自 $TAA_PLATFORM_KEY_FILE"
+    return 0
+  fi
+  # ALLOW_MISSING_TAA_ENV is an explicit "this package does not register", so a
+  # platform that is not there is not a reason to fail the build.
+  if [[ "${ALLOW_MISSING_TAA_ENV:-0}" == "1" ]]; then
+    echo "平台公钥：ALLOW_MISSING_TAA_ENV=1，跳过（不注册）"
+    return 0
+  fi
+
+  require_cmd curl
+  local body hex
+  if ! body="$(curl -fsS --max-time 10 "$PLATFORM_KEY_ENDPOINT")"; then
+    echo "error: 读取平台公钥失败: $PLATFORM_KEY_ENDPOINT" >&2
+    echo "hint: 平台（platform-mock）需要在该地址运行；也可以显式给出" >&2
+    echo "      PLATFORM_PUBLIC_KEY=<04+128 位十六进制> 或 TAA_PLATFORM_KEY_FILE=<含 publicKeyHex 的文件>" >&2
+    exit 1
+  fi
+  hex="$(sed -n 's/.*"publicKeyHex"[[:space:]]*:[[:space:]]*"\([0-9a-fA-F]*\)".*/\1/p' <<<"$body" | head -n 1)"
+  if [[ ! "$hex" =~ ^04[[:xdigit:]]{128}$ ]]; then
+    echo "error: $PLATFORM_KEY_ENDPOINT 未返回合法的 SM2 公钥（04 + 128 位十六进制）: ${hex:-<空>}" >&2
+    exit 1
+  fi
+  PLATFORM_PUBLIC_KEY="$hex"
+  export PLATFORM_PUBLIC_KEY
+  echo "平台公钥：$PLATFORM_KEY_ENDPOINT → ${hex:0:16}…"
 }
 
 # ── Remote privilege ─────────────────────────────────────────────────────────
@@ -226,6 +281,9 @@ preflight() {
     echo "hint: 先跑 $BUILD_INITRD fetch-base" >&2
     exit 1
   fi
+  # Before the build: the key is baked into the image and rendered onto the
+  # kernel command line, so it has to be resolved before either happens.
+  resolve_platform_public_key
   check_remote_sudo
 
   # The package must carry a registration identity; render refuses to package

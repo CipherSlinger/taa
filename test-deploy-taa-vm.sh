@@ -104,15 +104,24 @@ check "print-config: Kata config is the packaged copy" \
 # endpoint have defaults rather than a remembered environment. These are plain
 # assignments at the top of the driver; the flow itself needs a host, so they
 # are checked as source text.
-check_contains "driver: default platform port" 'PLATFORM_PORT="${PLATFORM_PORT:-18080}"' "$driver_src"
-check_contains "driver: platform address is not the Kata host" \
-  'TAA_PLATFORM_IP="${TAA_PLATFORM_IP:-172.16.10.116:${PLATFORM_PORT}}"' "$driver_src"
+check_contains "driver: default platform port" 'PLATFORM_PORT="${PLATFORM_PORT:-18081}"' "$driver_src"
+check_contains "driver: platform address is the test platform" \
+  'TAA_PLATFORM_IP="${TAA_PLATFORM_IP:-172.16.10.178:${PLATFORM_PORT}}"' "$driver_src"
 check_contains "driver: ships a docker id" \
   'TAA_DOCKER_ID="${TAA_DOCKER_ID:-kata-csv2-taa-test-0001}"' "$driver_src"
 # The Tier-2 gateway is part of the guest's environment, not the Pod's, so the
 # driver has to supply it; leaving it to the template would bake a stale Pod IP.
 check_contains "driver: supplies the LLM endpoint" \
-  'TAA_LLM_ENDPOINT="${TAA_LLM_ENDPOINT:-https://172.16.10.116:8443}"' "$driver_src"
+  'TAA_LLM_ENDPOINT="${TAA_LLM_ENDPOINT:-https://172.16.10.178:18443}"' "$driver_src"
+# The platform public key is read from the platform itself, over the address the
+# guest will register against, so the package can never carry a key that
+# platform cannot decrypt. The override path keeps offline builds possible.
+check_contains "driver: platform key is read from the platform" \
+  'PLATFORM_KEY_ENDPOINT="${PLATFORM_KEY_ENDPOINT:-http://${TAA_PLATFORM_IP}/api/crypto/generate-key}"' "$driver_src"
+check_contains "driver: an explicit key wins over the fetch" \
+  'if [[ -n "${PLATFORM_PUBLIC_KEY:-}" || -n "${TAA_PLATFORM_PUBLIC_KEY:-}" ]]; then' "$driver_src"
+check_contains "driver: the fetched key is exported to the build" \
+  'export PLATFORM_PUBLIC_KEY' "$driver_src"
 # The identity reaches build-initrd.sh as a child process; an unexported
 # default would look right here and still build an initrd with no identity.
 check_contains "driver: the identity is exported to the build" \
