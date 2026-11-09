@@ -432,7 +432,7 @@ Commands:
               $REMOTE_PACKAGE_DIR on $REMOTE. No install: the host is only
               given the files, untouched by install.sh.
   launch      Render locally, upload the whole package, then install it on
-              $REMOTE and create a test Pod. Nothing is copied on the host.
+              $REMOTE. Nothing is copied on the host.
   all         Run build, then launch.
   print-config  Print the resolved remote/test settings as sourceable KEY=value
                 lines. Internal interface for deploy-taa-vm.sh, so that the
@@ -1291,8 +1291,9 @@ render_package() {
   {
     cat <<'IDENTITY'
 # TAA 部署身份：每行一个 `taa.<key>=<value>`，原样写进内核命令行。
-# 改完本文件后重新执行 `sudo bash install.sh` 即生效：install.sh 会按它重新
-# 渲染 config/kata-config.toml 并重建测试 Pod，不需要回构建机重新 render。
+# 改完本文件后执行 `sudo bash install.sh`：install.sh 会按它重新渲染
+# config/kata-config.toml。内核命令行只在新建 Pod 时被读入，再执行
+# `sudo bash test/create-test-pod.sh` 重建测试 Pod 才能让新身份生效。
 # 只允许下列 8 个键；值不能含空白字符；删掉一行就是去掉对应参数。
 #   taa.platform_ip  taa.docker_id  taa.platform_public_key  taa.platform_sm2_id
 #   taa.contract_id  taa.contract_type  taa.llm_endpoint  taa.addr
@@ -1405,8 +1406,8 @@ CSV2 的启动度量是 \`SM3(OVMF || 哈希表)\`：哈希表里按 cmdline、i
 - hex：\`$measure_hex\`
 - base64：\`$measure_b64\`
 
-安装后 \`install.sh\` 会从 QEMU 进程的 \`/proc/<pid>/cmdline\` 取实际 \`-append\`，
-用包内 \`measure.py\` 重算并打印。也可以手工重算：
+运行 \`test/create-test-pod.sh\` 时，它会从 QEMU 进程的 \`/proc/<pid>/cmdline\` 取
+实际 \`-append\`，用包内 \`measure.py\` 重算并对比。也可以手工重算：
 
 \`\`\`bash
 pid=\$(ps -eo pid=,args= | grep -F qemu | grep -F "$REMOTE_BUNDLE_DIR/initramfs.img" | awk '{print \$1}' | head -1)
@@ -1642,7 +1643,7 @@ upload_remote() {
   echo
   echo "尚未安装。在该宿主机上安装："
   echo "  ssh $REMOTE 'cd $REMOTE_PACKAGE_DIR && sudo bash install.sh'"
-  echo "或直接跑 '$0 launch'（渲染 + 上传 + 安装并拉起测试 Pod）"
+  echo "或直接跑 '$0 launch'（渲染 + 上传 + 安装）"
 }
 
 launch_remote() {
@@ -1671,7 +1672,7 @@ sudo bash "$package_dir/install.sh"
 
 echo
 echo "交付包已保留: $package_dir"
-echo "在该宿主机上重建测试 Pod: sudo bash $package_dir/install.sh"
+echo "创建测试 Pod: sudo bash $package_dir/test/create-test-pod.sh"
 REMOTE_INSTALL
 }
 
