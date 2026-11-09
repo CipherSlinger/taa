@@ -555,6 +555,11 @@ kubelet 的 restartPolicy 处理重启；TAA 自己退出只在 10s 后重启循
 基座 `kata-containers-initrd-confidential-csv.img`：57.3 MB，4682 条目，只追加不重写。
 这一层的"依赖"是 guest 开机到 kata-agent 起来之前的全部家当。
 
+产物是两个 gzip member 的拼接：种子镜像（基座；`taa-train` 另含 semgrep 载荷）+
+只装 TAA 的成员。种子按基座 sha256 与载荷内容指纹缓存在 `deploy/guest-build/out/seeds/`，
+输入不变就直接复用，因此重跑只重压几 MiB 的 TAA（秒级），而不是整份镜像（分钟级）。
+内核逐个读取 gzip member，行为与单 member 等价。
+
 **基座自带**
 
 - kata-agent：`usr/sbin/init`（19 MB Rust 二进制，`/init -> /sbin/init` 即 `rdinit`/`init` 入口）；

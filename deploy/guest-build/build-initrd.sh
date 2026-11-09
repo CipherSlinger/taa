@@ -5,6 +5,10 @@
 # 因为其中包含设备节点；普通用户解包设备节点可能失败，并导致 /dev/console
 # 等原始条目被静默丢失。
 #
+# 追加不再每次都重压整份镜像：base（训练角色再加 semgrep 载荷）先做成缓存的
+# “种子镜像”，之后每次构建只把 TAA 压成第二个 gzip member 拼在种子之后。
+# 内核按顺序读取每个 gzip member，因此两者等价；成本从分钟级降到秒级。
+#
 # Two traps, both promoted to hard build-time checks:
 #   1. The base initrd must be the real one from the host. The copy that lived in
 #      this repo was silently truncated (incomplete gzip stream, `cpio -t` stopped
@@ -194,6 +198,10 @@ case "$TAA_ROLE" in
   *) INITRD_OUT_DEFAULT="$OUT_DIR/kata-containers-initrd-${TAA_ROLE}.initrd" ;;
 esac
 INITRD_OUT="${INITRD_OUT:-$INITRD_OUT_DEFAULT}"
+# Cached seed images, one per payload class (see build_initrd). They hold the
+# base initrd with the semgrep payload folded in, or without it, and never TAA.
+# Overridable so a caller can keep a warm cache outside the checkout.
+SEED_DIR="${SEED_DIR:-$OUT_DIR/seeds}"
 
 # Renderer support files and the shipped Kata config the rendered config is
 # derived from. The template is host-authoritative like the base initrd:
@@ -444,6 +452,9 @@ Role (first word, or TAA_ROLE; default taa-train):
 
 Commands:
   build       Build $INITRD_OUT from $BASE_INITRD and inject TAA + init wrapper.
+              The base (plus the semgrep payload for taa-train) comes from a
+              cached seed image under $SEED_DIR, so only TAA is repacked on a
+              rerun; a changed base or payload rebuilds the seed once.
   fetch-base  Copy the real base initrd, kernel, OVMF and shipped Kata config
               from $REMOTE into $(basename "$SCRIPT_DIR")/base/.
   render      Render the Kata config, containerd handler, K8s manifests, the
@@ -559,20 +570,21 @@ require_cmd() {
 archive_has_entry() {
   local img="$1"
   local entry="$2"
-  # -q lets grep exit at the first match, cpio then takes SIGPIPE on its next
-  # write, and `pipefail` would turn that 141 into this function's status -- a
-  # false "entry is missing" that only appears once the archive is big enough for
-  # the match to land well before the end of the listing. Measured on the semgrep
-  # initrd: 141 with -q under pipefail, 0 in this form, same image. Turning
-  # pipefail off for this pipeline alone keeps the early exit and the correct
-  # status at once.
-  ( set +o pipefail; gzip -dc "$img" | cpio -t --quiet | grep -Fxq -- "$entry" )
+  # Multi-member aware: see archive_manifest. A plain `cpio -t | grep` would only
+  # ever see the seed's entries and call the TAA member's files missing.
+  python3 "$SCRIPT_DIR/initramfs.py" has "$img" "$entry"
 }
 
+# A built image is a concatenation of gzip members: the seed (base initrd, plus
+# the semgrep payload for the training role) and then the TAA member. Plain
+# `cpio -t` stops at the first TRAILER and would report every entry of the TAA
+# member as missing, so listing goes through initramfs.py, which slices the file
+# at member boundaries. The kernel reads all members, so this is the same view
+# the guest gets.
 archive_manifest() {
   local img="$1"
   local manifest="$2"
-  gzip -dc "$img" | cpio -t --quiet > "$manifest"
+  python3 "$SCRIPT_DIR/initramfs.py" list "$img" > "$manifest"
 }
 
 manifest_has_entry() {
@@ -692,10 +704,11 @@ check_build_inputs() {
 # keeps the modes and symlinks the wheel unpacking produced, none of which the
 # builder's umask may touch (everything staged here lands in the measured image).
 stage_semgrep_payload() {
+  local stage_dir="$1"
   echo "注入 semgrep 载荷"
 
   local payload_root="$TAA_SEMGREP_PAYLOAD_DIR/rootfs"
-  cp -a "$payload_root/." "$BUILD_WORK_DIR/extra/"
+  cp -a "$payload_root/." "$stage_dir/"
 
   # The payload is the single largest thing in the image (it is why the initrd
   # roughly doubles), so the build reports it rather than leaving the growth to
@@ -721,7 +734,7 @@ stage_semgrep_payload() {
 # Only the engine is rewritten. Everything else stays as the production
 # template says, so the operator reads one file shape whatever the role.
 stage_taa_config() {
-  local dst="$BUILD_WORK_DIR/extra/etc/taa/taa-config.json"
+  local dst="$1/etc/taa/taa-config.json"
   if role_wants_semgrep; then
     install -m 0644 "$TAA_CONFIG_SRC" "$dst"
     return 0
@@ -781,11 +794,11 @@ check_initrd_identity() {
   # file (or only the environment variable) still compares like with like.
   ensure_platform_public_key
 
-  # --to-stdout prints the entry instead of extracting it, so there is no temp
-  # directory to own and nothing left behind if this exits midway. The whole
-  # archive is streamed either way; there is no way to stop cpio early.
-  baked_env="$(gzip -dc "$INITRD_OUT" 2>/dev/null |
-    cpio -i --to-stdout --quiet etc/default/taa.env 2>/dev/null || true)"
+  # The image is a concatenation of gzip members and the env file lives in the
+  # last one, so `gzip -dc | cpio -i` would stop at the seed's TRAILER and read
+  # nothing. initramfs.py walks every member; there is no temp directory to own
+  # and nothing left behind if this exits midway.
+  baked_env="$(python3 "$SCRIPT_DIR/initramfs.py" cat "$INITRD_OUT" etc/default/taa.env 2>/dev/null || true)"
 
   if [[ -z "$baked_env" ]]; then
     echo "error: 无法从 $INITRD_OUT 中读出 etc/default/taa.env" >&2
@@ -819,8 +832,213 @@ check_initrd_identity() {
   fi
 }
 
-# 检查输入并构建 initrd。该函数不会修改 BASE_INITRD；它会把 base gzip 流复制为
-# 临时 cpio 文件，追加 TAA payload 文件，校验候选归档，然后才移动到 INITRD_OUT。
+# ── Seed images ─────────────────────────────────────────────────────────────
+#
+# Building an initrd used to mean decompressing the base, appending every
+# payload file and gzip -9 over the whole thing again. The semgrep payload alone
+# is ~350 MiB and gzip -9 over it costs ~110 s -- paid on every run even though
+# neither the base nor the payload had changed.
+#
+# So the image is split in two. A *seed* is the base initrd with the semgrep
+# payload folded in (training role) or without it (the other roles), and no TAA.
+# It is built once and cached under $SEED_DIR, keyed by a fingerprint of its
+# inputs. Every build then appends TAA -- a few MiB -- as a second gzip member.
+#
+# The kernel accepts that: concatenated gzip members are independent streams and
+# Linux's initramfs unpacker consumes each one in turn. Verified on the Kata
+# confidential kernel with two- and three-member images. `cpio` does not read
+# past the first member, which is why every inspection goes through
+# initramfs.py (see archive_manifest).
+
+seed_kind() {
+  if initrd_wants_semgrep; then
+    echo semgrep
+  else
+    echo plain
+  fi
+}
+
+# Content fingerprint of the payload tree: every path with its type, mode and
+# symlink target, plus the hash of every regular file. A rebuild of the payload
+# from the same wheels is a no-op; a different build (or a single edited file)
+# invalidates the cached seed.
+semgrep_payload_fingerprint() {
+  local rootfs="$TAA_SEMGREP_PAYLOAD_DIR/rootfs"
+  {
+    ( cd "$rootfs" && find . -mindepth 1 -printf '%P\t%y\t%m\t%l\n' | LC_ALL=C sort )
+    ( cd "$rootfs" && find . -type f -print0 | LC_ALL=C sort -z | xargs -0 -r sha256sum )
+  } | sha256sum | awk '{print $1}'
+}
+
+# Everything a cached seed depends on. Bump the format line when the seed layout
+# itself changes, so an old cache cannot be mistaken for one built this way.
+seed_fingerprint() {
+  local kind="$1"
+  printf 'format=2\n'
+  printf 'base=%s\n' "$(sha256sum "$BASE_INITRD" | awk '{print $1}')"
+  if [[ "$kind" == semgrep ]]; then
+    printf 'semgrep_payload=%s\n' "$(semgrep_payload_fingerprint)"
+  fi
+}
+
+# Fill APPEND_ENTRIES with the paths under $1 that the image $2 does not already
+# provide, parents before children and each path once.
+#
+# A directory the image already has is left alone: the kernel unpacks later
+# members over earlier ones, so re-declaring an existing directory would replace
+# its mode, owner and timestamp with the staging copy's. A *file* that already
+# exists is still appended -- that is how a payload overlays a file.
+#
+# Sets rather than grep against the manifest: with the semgrep payload this runs
+# over thousands of paths, and a fork per lookup would dominate the build.
+plan_append_entries() {
+  local stage_dir="$1"
+  local known_manifest="$2"
+  APPEND_ENTRIES=()
+  local -A known=() queued=()
+
+  while IFS= read -r entry; do
+    known["$entry"]=1
+  done < "$known_manifest"
+
+  local path dir parents i parent
+  # A C-locale sort puts every parent ahead of its children, which the parent
+  # walk below relies on.
+  while IFS= read -r path; do
+    dir="$(dirname "$path")"
+    parents=()
+    while [[ "$dir" != "." && "$dir" != "/" ]]; do
+      parents+=("$dir")
+      dir="$(dirname "$dir")"
+    done
+
+    for ((i=${#parents[@]} - 1; i >= 0; i--)); do
+      parent="${parents[$i]}"
+      if [[ -n "${known[$parent]:-}" || -n "${queued[$parent]:-}" ]]; then
+        continue
+      fi
+      queued["$parent"]=1
+      APPEND_ENTRIES+=("$parent")
+    done
+
+    # The queue set guards this too: a directory reached here as a path is also
+    # reached again as the parent of everything under it, and appending it
+    # twice would overwrite the entry written by the first copy.
+    if [[ -n "${queued[$path]:-}" ]]; then
+      continue
+    fi
+    if [[ -n "${known[$path]:-}" && -d "$stage_dir/$path" ]]; then
+      continue
+    fi
+    queued["$path"]=1
+    APPEND_ENTRIES+=("$path")
+  done < <( cd "$stage_dir" && find . -mindepth 1 -printf '%P\n' | LC_ALL=C sort )
+}
+
+# Write APPEND_ENTRIES from $1 into a newc archive at $2, owned by root. With $3
+# set to "append" the archive is appended to instead of created.
+write_entries_cpio() {
+  local stage_dir="$1"
+  local cpio_file="$2"
+  local mode="${3:-create}"
+  local -a append_flag=()
+  if [[ "$mode" == append ]]; then
+    append_flag=(-A)
+  else
+    rm -f "$cpio_file"
+  fi
+  if [[ "${#APPEND_ENTRIES[@]}" -eq 0 ]]; then
+    return 0
+  fi
+  (
+    cd "$stage_dir"
+    printf '%s\n' "${APPEND_ENTRIES[@]}" |
+      cpio -o -H newc -R 0:0 "${append_flag[@]}" -F "$cpio_file" --quiet
+  )
+}
+
+# Produce (or reuse) the seed image for $1. Sets SEED_IMAGE and SEED_MANIFEST.
+#
+# The image is written under a temporary name and moved into place only once it
+# is complete, so an interrupted build cannot leave a truncated seed that later
+# runs would trust. Reuse requires image, manifest and stamp to agree; anything
+# else rebuilds.
+ensure_seed() {
+  local kind="$1"
+  local image="$SEED_DIR/seed-$kind.img"
+  local manifest="$SEED_DIR/seed-$kind.manifest"
+  local stamp="$image.stamp"
+  local want
+  want="$(seed_fingerprint "$kind")"
+
+  if [[ -s "$image" && -s "$manifest" && -s "$stamp" && "$(cat "$stamp")" == "$want" ]]; then
+    echo "复用 $kind 种子镜像: $image"
+    SEED_IMAGE="$image"
+    SEED_MANIFEST="$manifest"
+    return 0
+  fi
+
+  echo "构建 $kind 种子镜像（首次或输入已变化）: $image"
+
+  local seed_work="$BUILD_WORK_DIR/seed-$kind"
+  mkdir -p "$seed_work"
+  # Written under a temporary name and moved into place only once complete. The
+  # paths are registered with the EXIT trap so a failed build leaves no partial
+  # image behind for a later run to trust.
+  SEED_TMP_IMAGE="$image.tmp.$$"
+  SEED_TMP_MANIFEST="$manifest.tmp.$$"
+  local image_tmp="$SEED_TMP_IMAGE"
+  local manifest_tmp="$SEED_TMP_MANIFEST"
+
+  case "$kind" in
+    plain)
+      # The base initrd already is the image the other roles need. Copying it
+      # keeps the two seeds uniform for the rest of the build, at the cost of
+      # one file copy.
+      cp "$BASE_INITRD" "$image_tmp"
+      cp "$BASE_MANIFEST" "$manifest_tmp"
+      ;;
+    semgrep)
+      mkdir -p "$seed_work/stage"
+      stage_semgrep_payload "$seed_work/stage"
+
+      # The staged tree lands in the measured image, so its modes are pinned
+      # rather than inherited from the builder's umask. `cp -a` already carries
+      # the payload's own modes; only the freshly created directories need it.
+      find "$seed_work/stage" -type d -exec chmod 0755 {} +
+
+      plan_append_entries "$seed_work/stage" "$BASE_MANIFEST"
+
+      gzip -dc "$BASE_INITRD" > "$seed_work/base.cpio"
+      write_entries_cpio "$seed_work/stage" "$seed_work/base.cpio" append
+      gzip -n -9 < "$seed_work/base.cpio" > "$image_tmp"
+      archive_manifest "$image_tmp" "$manifest_tmp"
+      ;;
+    *)
+      echo "error: unknown seed kind: $kind" >&2
+      exit 1
+      ;;
+  esac
+
+  gzip -t "$image_tmp"
+  mv "$image_tmp" "$image"
+  mv "$manifest_tmp" "$manifest"
+  printf '%s\n' "$want" > "$stamp.tmp.$$"
+  mv "$stamp.tmp.$$" "$stamp"
+  SEED_TMP_IMAGE=
+  SEED_TMP_MANIFEST=
+
+  SEED_IMAGE="$image"
+  SEED_MANIFEST="$manifest"
+}
+
+# Build INITRD_OUT from the base initrd plus TAA.
+#
+# BASE_INITRD is never modified. The cached seed supplies the base (and the
+# semgrep payload for the training role); this function stages only TAA, packs
+# it as its own gzip member and concatenates that member onto the seed. The
+# candidate is validated in full before it is moved over INITRD_OUT, so a failed
+# build never replaces a good output.
 build_initrd() {
   echo "校验输入"
   require_cmd gzip
@@ -829,6 +1047,9 @@ build_initrd() {
   require_cmd grep
   require_cmd file
   require_cmd sha256sum
+  require_cmd stat
+  require_cmd cmp
+  require_cmd python3
   check_build_inputs
 
   echo "准备临时目录"
@@ -836,13 +1057,21 @@ build_initrd() {
   # 所有中间文件都放在唯一临时目录中。这里故意使用 EXIT 清理：
   # 即使构建中途校验失败，也会删除临时文件。
   BUILD_WORK_DIR="$(mktemp -d /tmp/taa-initrd-build.XXXXXX)"
+  SEED_TMP_IMAGE=
+  SEED_TMP_MANIFEST=
   cleanup_build() {
     rm -rf "${BUILD_WORK_DIR:-}"
+    if [[ -n "${SEED_TMP_IMAGE:-}" ]]; then rm -f "$SEED_TMP_IMAGE"; fi
+    if [[ -n "${SEED_TMP_MANIFEST:-}" ]]; then rm -f "$SEED_TMP_MANIFEST"; fi
   }
   trap cleanup_build EXIT
 
-  base_manifest="$BUILD_WORK_DIR/base.manifest"
-  archive_manifest "$BASE_INITRD" "$base_manifest"
+  mkdir -p "$OUT_DIR" "$SEED_DIR"
+
+  # The base manifest drives both the duplicate guard and the plain seed, so it
+  # is taken once even when a cached seed means the rest of the base is not read.
+  BASE_MANIFEST="$BUILD_WORK_DIR/base.manifest"
+  archive_manifest "$BASE_INITRD" "$BASE_MANIFEST"
 
   echo "拒绝重复注入的 base"
 
@@ -850,23 +1079,22 @@ build_initrd() {
   # 因为每次都从 BASE_INITRD 开始并覆盖 INITRD_OUT；这个保护用于防止误把
   # 已注入输出文件当作新的 base。
   for injected in usr/local/bin/taa usr/local/bin/taa-init etc/taa/taa-config.json opt/taa/semgrep/MANIFEST; do
-    if manifest_has_entry "$base_manifest" "$injected"; then
+    if manifest_has_entry "$BASE_MANIFEST" "$injected"; then
       echo "error: base initrd already contains TAA payload path $injected; refusing to append a duplicate" >&2
       echo "hint: use the original remote Kata CSV initrd as $BASE_INITRD" >&2
       exit 1
     fi
   done
 
-  mkdir -p "$OUT_DIR" "$BUILD_WORK_DIR/extra/usr/local/bin"
+  local kind
+  kind="$(seed_kind)"
+  ensure_seed "$kind"
 
-  echo "解包 base initrd"
-
-  # 将压缩的 base initrd 转成原始 cpio 文件，并向该归档追加额外条目。
-  # 不解包已有条目，因此原始 Kata 内容、文件元数据、符号链接和设备节点都会保留。
-  gzip -dc "$BASE_INITRD" > "$BUILD_WORK_DIR/base.cpio"
+  local stage="$BUILD_WORK_DIR/taa"
+  mkdir -p "$stage/usr/local/bin" "$stage/etc/taa"
 
   echo "注入 TAA"
-  install -m 0755 "$TAA_SRC" "$BUILD_WORK_DIR/extra/usr/local/bin/taa"
+  install -m 0755 "$TAA_SRC" "$stage/usr/local/bin/taa"
 
   echo "写入 init wrapper 与 TAA 配置"
 
@@ -880,16 +1108,15 @@ build_initrd() {
   # The wrapper is a standalone repository file rather than an inline heredoc:
   # it keeps ~60 escaped variables out of the build script and makes the logic
   # testable on its own (see test-taa-init.sh).
-  install -m 0755 "$TAA_INIT_SRC" "$BUILD_WORK_DIR/extra/usr/local/bin/taa-init"
+  install -m 0755 "$TAA_INIT_SRC" "$stage/usr/local/bin/taa-init"
 
   # TAA reads its config from a fixed absolute path, so the file has to be part
   # of the measured image. Training injects configs/taa-production.json as-is;
   # a non-training role injects a copy whose scan engine is the built-in regex
-  # one, because no semgrep payload is staged for it (see role_wants_semgrep).
+  # one, because no semgrep payload is seeded for it (see role_wants_semgrep).
   # Left selecting semgrep, the guest would log a fallback warning at every boot
   # and run the weaker engine anyway -- the config should say what runs.
-  mkdir -p "$BUILD_WORK_DIR/extra/etc/taa"
-  stage_taa_config
+  stage_taa_config "$stage"
 
   echo "生成可选 env 文件"
 
@@ -899,7 +1126,7 @@ build_initrd() {
   # precedence over every name below; this file only has to be usable if they are
   # ever missing, which is why check_initrd_identity still reports a mismatch.
   if taa_env_file_needed; then
-    mkdir -p "$BUILD_WORK_DIR/extra/etc/default"
+    mkdir -p "$stage/etc/default"
     {
       printf 'export TAA_ADDR=%q\n' "$TAA_ADDR"
       printf 'export PLATFORM_IP=%q\n' "$TAA_PLATFORM_IP"
@@ -909,166 +1136,92 @@ build_initrd() {
       printf 'export CONTRACT_ID=%q\n' "$TAA_CONTRACT_ID"
       printf 'export CONTRACT_TYPE=%q\n' "$TAA_CONTRACT_TYPE"
       printf 'export TAA_LLM_ENDPOINT=%q\n' "$TAA_LLM_ENDPOINT"
-    } > "$BUILD_WORK_DIR/extra/etc/default/taa.env"
+    } > "$stage/etc/default/taa.env"
   fi
 
-  if initrd_wants_semgrep; then
-    stage_semgrep_payload
-  fi
-
-  echo "追加到 cpio"
-
-  # The appended entries end up inside the measured image, so their metadata has
-  # to be a function of the inputs rather than of the builder's umask. `install
-  # -m` pins the file modes, but directories created with mkdir and the env file
-  # written through a shell redirect would otherwise inherit the umask -- the
-  # same script on two hosts would then produce two different measurements for
-  # the same inputs.
-  # (The archive is not bit-reproducible: newc records each entry's inode number
+  # Staged entries end up inside the measured image, so their metadata has to be
+  # a function of the inputs rather than of the builder's umask. `install -m`
+  # pins the file modes; directories created with mkdir and the env file written
+  # through a shell redirect would otherwise inherit the umask.
+  # (The image is not bit-reproducible: newc records each entry's inode number
   # and mtime. That is why the summary prints the output sha256, and why deploy
   # verifies that hash on the remote side instead of rebuilding there.)
-  find "$BUILD_WORK_DIR/extra" -type d -exec chmod 0755 {} +
+  find "$stage" -type d -exec chmod 0755 {} +
   if taa_env_file_needed; then
-    chmod 0644 "$BUILD_WORK_DIR/extra/etc/default/taa.env"
+    chmod 0644 "$stage/etc/default/taa.env"
   fi
 
-  # Only new files are appended to the copied base cpio. Parent directories that
-  # already exist in the base (usr, usr/local, etc) must not be written again:
-  # the kernel unpacks appended segments over the base, so a later directory
-  # entry would overwrite the base directory's mode, owner and timestamps.
-  append_entries=()
+  echo "打包 TAA 成员"
 
-  # Both sets are held in memory rather than asked of the manifest with grep: the
-  # payload makes this run thousands of times, and a fork per parent against an
-  # 8900-line list is tens of thousands of processes for a lookup bash can do
-  # itself. Reading the manifest once is a single pass and no forks at all.
-  declare -A base_entries=() appended_entries=()
-  while IFS= read -r entry; do
-    base_entries["$entry"]=1
-  done < "$base_manifest"
+  plan_append_entries "$stage" "$SEED_MANIFEST"
+  write_entries_cpio "$stage" "$BUILD_WORK_DIR/taa.cpio" create
+  gzip -n -9 < "$BUILD_WORK_DIR/taa.cpio" > "$BUILD_WORK_DIR/taa.cpio.gz"
 
-  # Queue a file together with every parent directory that is missing from both
-  # the base and the queue, parents first. Deduplicating against the queue and
-  # not only against the base matters: several new files share the same parent
-  # directory, and queueing them once per file would append that directory
-  # entry two or three times over.
-  queue_entry() {
-    local path="$1"
-    local dir
-    local parents=()
+  echo "拼接种子镜像并校验"
 
-    dir="$(dirname "$path")"
-    while [[ "$dir" != "." && "$dir" != "/" ]]; do
-      parents+=("$dir")
-      dir="$(dirname "$dir")"
-    done
+  local candidate="$BUILD_WORK_DIR/initrd.candidate"
 
-    local i parent
-    for ((i=${#parents[@]} - 1; i >= 0; i--)); do
-      parent="${parents[$i]}"
-      if [[ -n "${base_entries[$parent]:-}" || -n "${appended_entries[$parent]:-}" ]]; then
-        continue
-      fi
-      appended_entries["$parent"]=1
-      append_entries+=("$parent")
-    done
-
-    # The path itself is recorded too, not only the parents. A directory reached
-    # here as a path is also reached again as the parent of everything under it,
-    # and without this line the second visit finds nothing in the set and appends
-    # the same directory entry twice -- which the kernel then unpacks over the
-    # base's, overwriting the mode and timestamps this whole block exists to
-    # preserve. The entry-count check below cannot catch that: both copies are
-    # appended and both are counted.
-    appended_entries["$path"]=1
-    append_entries+=("$path")
-  }
-
-  # Enumerate what to append rather than listing it: the semgrep payload alone is
-  # thousands of files, and a hand-kept list would drift from whatever the
-  # staging steps wrote. A C-locale sort puts every parent ahead of its children,
-  # which is what queue_entry relies on when it walks a path's parents.
-  while IFS= read -r path; do
-    queue_entry "$path"
-  done < <(cd "$BUILD_WORK_DIR/extra" && find . -mindepth 1 -printf '%P\n' | LC_ALL=C sort)
-
-  (
-    cd "$BUILD_WORK_DIR/extra"
-    printf '%s\n' "${append_entries[@]}" | cpio -o -H newc -R 0:0 -A -F "$BUILD_WORK_DIR/base.cpio" --quiet
-  )
-
-  echo "重新压缩并校验"
-
-  # gzip -n keeps local timestamps and filenames out of the gzip header, so the
-  # same inputs produce the same bytes. The candidate is validated before it is
-  # published to INITRD_OUT, so a failed build never overwrites a good output.
-  candidate_manifest="$BUILD_WORK_DIR/initrd.candidate.manifest"
-  gzip -n -9 < "$BUILD_WORK_DIR/base.cpio" > "$BUILD_WORK_DIR/initrd.candidate"
-  archive_manifest "$BUILD_WORK_DIR/initrd.candidate" "$candidate_manifest"
-
-  base_count="$(wc -l < "$base_manifest")"
-  out_count="$(wc -l < "$candidate_manifest")"
-
-  # Membership by set rather than by grep, for the same reason as the queueing
-  # above: this loop runs once per appended entry, so a fork here would put back
-  # the per-entry process the in-memory sets exist to avoid.
-  declare -A candidate_entries=()
-  while IFS= read -r entry; do
-    candidate_entries["$entry"]=1
-  done < "$candidate_manifest"
-
-  for entry in "${append_entries[@]}"; do
-    if [[ -z "${candidate_entries[$entry]:-}" ]]; then
-      echo "error: built initrd is missing $entry" >&2
-      exit 1
-    fi
-  done
-
-  # The append list must not repeat a path. A second entry for the same path is
-  # unpacked over the first, so the directory mode and timestamps that the staging
-  # step pins would be replaced by those of the later copy, and the measurement
-  # would stop being a function of the inputs. The count check below cannot see
-  # this -- both copies are appended and both are counted -- but the queueing set
-  # can: it holds one key per path queued, and it is already built.
-  if [[ "${#appended_entries[@]}" -ne "${#append_entries[@]}" ]]; then
-    echo "error: append list repeats a path: ${#appended_entries[@]} distinct of ${#append_entries[@]}" >&2
+  # The member must be a complete gzip stream before it is concatenated: a
+  # truncated member still yields a readable image (the kernel stops wherever
+  # decompression ends), but with contents this build never vouched for.
+  if ! gzip -t "$BUILD_WORK_DIR/taa.cpio.gz" 2>/dev/null; then
+    echo "error: TAA member is not a valid gzip stream" >&2
     exit 1
   fi
 
-  # The archive is append-only, so the entry count has to be exactly the base
-  # count plus what was queued. Any other number means something was queued
-  # twice or silently dropped -- either way the boot measurement would not be
-  # what this build claims it is.
-  if [[ "$out_count" -ne "$((base_count + ${#append_entries[@]}))" ]]; then
-    echo "error: unexpected entry count in built initrd: base $base_count + ${#append_entries[@]} appended != $out_count" >&2
+  cat "$SEED_IMAGE" "$BUILD_WORK_DIR/taa.cpio.gz" > "$candidate"
+
+  # The seed half is verified by identity rather than by relisting it: it has to
+  # be byte-for-byte the cached seed, which was fully listed when it was built
+  # and whose stamp still matches its inputs. Relisting 160 MiB here would only
+  # re-derive what the seed's own build already proved.
+  local seed_size member_size candidate_size
+  seed_size="$(stat -c %s "$SEED_IMAGE")"
+  member_size="$(stat -c %s "$BUILD_WORK_DIR/taa.cpio.gz")"
+  candidate_size="$(stat -c %s "$candidate")"
+  if [[ "$candidate_size" -ne $((seed_size + member_size)) ]]; then
+    echo "error: built initrd is not seed + TAA member: $candidate_size != $seed_size + $member_size" >&2
+    exit 1
+  fi
+  if ! cmp -s -n "$seed_size" "$SEED_IMAGE" "$candidate"; then
+    echo "error: built initrd does not start with the seed image bytes" >&2
     exit 1
   fi
 
-  mv "$BUILD_WORK_DIR/initrd.candidate" "$INITRD_OUT"
+  # The member must carry exactly the planned entries: a dropped path would
+  # silently weaken the image, a repeated one would be unpacked over the first
+  # and make the measurement depend on ordering. Both show up as a set mismatch.
+  local member_manifest="$BUILD_WORK_DIR/taa.member.manifest"
+  archive_manifest "$BUILD_WORK_DIR/taa.cpio.gz" "$member_manifest"
+  printf '%s\n' "${APPEND_ENTRIES[@]}" | LC_ALL=C sort > "$BUILD_WORK_DIR/taa.expected"
+  LC_ALL=C sort "$member_manifest" > "$BUILD_WORK_DIR/taa.actual"
+  if ! cmp -s "$BUILD_WORK_DIR/taa.expected" "$BUILD_WORK_DIR/taa.actual"; then
+    echo "error: TAA member entries do not match the planned list" >&2
+    diff -u "$BUILD_WORK_DIR/taa.expected" "$BUILD_WORK_DIR/taa.actual" | head -n 40 >&2 || true
+    exit 1
+  fi
+
+  local seed_count out_count
+  seed_count="$(wc -l < "$SEED_MANIFEST")"
+  out_count="$((seed_count + ${#APPEND_ENTRIES[@]}))"
+
+  mv "$candidate" "$INITRD_OUT"
 
   echo "输出结果摘要"
 
   echo "base initrd: $BASE_INITRD"
   echo "base initrd sha256: $(sha256sum "$BASE_INITRD" | awk '{print $1}')"
-  echo "base cpio entries: $base_count"
+  echo "seed: $SEED_IMAGE ($kind)"
+  echo "seed cpio entries: $seed_count"
   echo "output initrd: $INITRD_OUT"
   echo "output cpio entries: $out_count"
-  echo "appended entries (${#append_entries[@]}):"
-  # The full list is written next to the image: with the semgrep payload staged
-  # it runs to thousands of paths, which is more than a build log should carry but
-  # exactly what is needed to audit what the measurement covers.
+  echo "appended entries (${#APPEND_ENTRIES[@]}):"
+  # The list is written next to the image so the measurement's added paths can
+  # be audited later; with the payload in the seed it stays short.
   entries_file="${INITRD_OUT}.entries"
-  printf '%s\n' "${append_entries[@]}" > "$entries_file"
-  # Print the list in full while it still fits in a build log, otherwise the head
-  # of it; one bound drives both so the truncation can never contradict the
-  # "complete list" pointer.
-  local max_listed=20
-  if [[ "${#append_entries[@]}" -le $((max_listed * 2)) ]]; then
-    sed 's/^/  /' "$entries_file"
-  else
-    head -n "$max_listed" "$entries_file" | sed 's/^/  /'
-    echo "  ... （完整清单见 $entries_file）"
-  fi
+  printf '%s\n' "${APPEND_ENTRIES[@]}" > "$entries_file"
+  sed 's/^/  /' "$entries_file"
+  echo "seed entries are in $SEED_MANIFEST"
 }
 
 # Copy the authoritative base assets from the host that runs Kata. A committed
@@ -1264,6 +1417,7 @@ render_package() {
   # from the package and never copies anything out of the host's own tree.
   # Checked before the output directory is touched, so a missing input fails the
   # render instead of leaving a package that would not boot.
+  require_cmd python3
   check_deploy_inputs
   local asset_src
   for asset_src in "$INITRD_OUT" "$MEASURE_KERNEL" "$MEASURE_OVMF"; do
@@ -1733,7 +1887,7 @@ case "$cmd" in
                CONTAINERD_CONFIG KATA_CONFIG_TEMPLATE DIST_DIR \
                TEST_NODE_NAME TEST_POD_NAME TEST_IMAGE TEST_IMAGE_ARCHIVE TEST_POD_ANNOTATIONS \
                TEST_POD_RUN_AS_USER \
-               OUT_DIR INITRD_OUT BASE_INITRD; do
+               OUT_DIR INITRD_OUT SEED_DIR BASE_INITRD; do
       printf '%s=%q\n' "$key" "${!key}"
     done
     ;;
