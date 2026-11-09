@@ -359,16 +359,18 @@ def collect_settings(path):
 def image_tar_name(image, suffix=".tar"):
     """Return the filename the packaged copy of `image` is stored under.
 
-    The name keeps the image reference legible: `172.16.10.178:31313/taa-env`
-    `:slim-v2` becomes `172.16.10.178_31313_taa-env_slim-v2.tar`. Only
-    characters that cannot appear in a filename are rewritten, so the mapping is
-    easy to check by eye when someone has to find the image for a tag by hand.
+    The registry prefix is dropped, so `172.16.10.178:31313/taa-env:slim-v2`
+    becomes `taa-env_slim-v2.tar`. The host address only made the archive look
+    bound to the build host's registry, while the full reference is already in
+    the Pod manifest; the repository and tag are what a person searches for by
+    hand. Only characters that cannot appear in a filename are rewritten.
 
     `suffix` follows the archive as supplied, so a gzipped `docker save` output
     keeps its `.tar.gz` and a reader is not told it holds a plain tar. docker
     load sniffs the format either way; the name is for people.
     """
-    return re.sub(r"[/:]", "_", image) + suffix
+    name = image.split("/", 1)[-1]
+    return re.sub(r"[/:]", "_", name) + suffix
 
 
 # Archive suffixes docker load accepts, longest first so `.tar.gz` is not read
@@ -500,7 +502,7 @@ def package_info(pkg_dir):
         "REMOTE_KATA_CONFIG": options["ConfigPath"],
         "REMOTE_BUNDLE_DIR": str(bundle),
         "PACKAGE_KATA_CONFIG": str(kata_config.relative_to(pkg)),
-        "PACKAGE_IDENTITY_FILE": "config/identity.txt",
+        "PACKAGE_IDENTITY_FILE": "config/env.txt",
         "KATA_HYPERVISOR_SECTION": section,
         "TEST_POD_NAME": pod_name,
         "TEST_NODE_NAME": node_name,

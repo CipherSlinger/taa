@@ -1301,7 +1301,7 @@ IDENTITY
     for param in ${kernel_params[@]+"${kernel_params[@]}"}; do
       printf '%s\n' "$param"
     done
-  } > "$out_dir/config/identity.txt"
+  } > "$out_dir/config/env.txt"
 
   local -a memory_args=()
   [[ -n "$KATA_DEFAULT_MEMORY" ]] && memory_args=(--memory-mib "$KATA_DEFAULT_MEMORY")
@@ -1309,7 +1309,7 @@ IDENTITY
     --template "$template" \
     --section "$KATA_HYPERVISOR_SECTION" \
     --bundle-dir "$REMOTE_BUNDLE_DIR" \
-    --param-file "$out_dir/config/identity.txt" \
+    --param-file "$out_dir/config/env.txt" \
     "${memory_args[@]+"${memory_args[@]}"}" \
     --out "$out_dir/$PACKAGE_KATA_CONFIG"
 
@@ -1443,8 +1443,8 @@ MEASURE
   读 Pod 名与节点名）
 - \`install.sh\` / \`render.py\` / \`measure.py\` — 安装脚本、合并器与度量计算器
 $(if [[ -n "$TEST_IMAGE_ARCHIVE" ]]; then printf -- '- `%s/` — 测试 Pod 镜像的 `docker save` 归档。CoCo guest 由 CDH 自己从 registry 拉镜像，宿主机 docker 不在那条路径上，所以 install.sh 会先查 registry，缺这个 tag 时导入归档并推送过去\n' "$PACKAGE_IMAGE_SUBDIR"; fi)
-- \`config/identity.txt\` — **可在宿主机上编辑的部署身份**（见下文）
-- \`SHA256SUMS\` — 不可变文件的校验和（\`config/identity.txt\` 与由它渲染的
+- \`config/env.txt\` — **可在宿主机上编辑的部署身份**（见下文）
+- \`SHA256SUMS\` — 不可变文件的校验和（\`config/env.txt\` 与由它渲染的
   \`$PACKAGE_KATA_CONFIG\` 不在其中，这两个文件本来就允许在宿主机上改）
 $([[ -f "$out_dir/cmdline.txt" ]] && echo '- `cmdline.txt` — 计算预期度量所用的 QEMU `-append` 原文')
 
@@ -1473,19 +1473,19 @@ ConfigPath 指向包内这份配置，install.sh 不会再往 \`/etc\` 拷一份
 ## 部署身份（在宿主机上改）
 
 平台地址、dockerId、平台公钥、LLM 端点等身份，每行一个 \`taa.<key>=<value>\`
-写在 \`config/identity.txt\` 里。install.sh 用它重新渲染 \`$PACKAGE_KATA_CONFIG\`
+写在 \`config/env.txt\` 里。install.sh 用它重新渲染 \`$PACKAGE_KATA_CONFIG\`
 的 \`kernel_params\`，guest 内的 taa-init 再从 \`/proc/cmdline\` 读回这些值，覆盖
 镜像里烘焙的 \`/etc/default/taa.env\`。
 
 所以换一台平台、换一个 dockerId 或者换一个 LLM 端点，只需要在宿主机上：
 
 \`\`\`bash
-vi $(basename "$out_dir")/config/identity.txt
+vi $(basename "$out_dir")/config/env.txt
 sudo bash install.sh
 \`\`\`
 
 install.sh 会重渲染配置、删掉旧 Pod 再重建（新 Pod 才会带上新的命令行），
-不需要回构建机重新 render，也不需要重建 initrd。identity.txt 里删掉一行，
+不需要回构建机重新 render，也不需要重建 initrd。env.txt 里删掉一行，
 对应的参数就会从命令行上消失。
 
 只允许这 8 个键，写错键名、重复键、空值或含空白字符的值都会让 install.sh
@@ -1521,7 +1521,7 @@ EOF
   # both are supposed to change on the target host, and install.sh refuses to
   # run if any *immutable* file differs from its recorded digest.
   (cd "$out_dir" && find . -type f ! -name SHA256SUMS \
-    ! -path "./config/identity.txt" ! -path "./$PACKAGE_KATA_CONFIG" -print0 |
+    ! -path "./config/env.txt" ! -path "./$PACKAGE_KATA_CONFIG" -print0 |
     LC_ALL=C sort -z | xargs -0 sha256sum > SHA256SUMS)
 
   echo "交付包: $out_dir"

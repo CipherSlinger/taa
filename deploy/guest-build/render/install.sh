@@ -3,7 +3,7 @@
 #
 # The package is produced by `build-initrd.sh render` (or by `launch`, which
 # renders the same files first). This script re-renders the Kata config from the
-# editable `config/identity.txt`, merges the containerd runtime handler, and
+# editable `config/env.txt`, merges the containerd runtime handler, and
 # creates the test Pod.
 #
 # Every setting is derived from the package itself -- the runtime handler and
@@ -13,7 +13,7 @@
 # half-assembled directory fails before anything is touched.
 #
 # To change the deployment identity (platform address, docker id, public key,
-# LLM endpoint, ...) edit config/identity.txt and re-run this script. No
+# LLM endpoint, ...) edit config/env.txt and re-run this script. No
 # rebuild and no re-upload: the initrd's bytes, and with them its measurement
 # basis, stay as they are; only the measured kernel command line changes.
 #
@@ -128,7 +128,7 @@ if [[ -n "$TEST_NODE_NAME" ]]; then
 fi
 
 echo
-echo "== 2. Kata 配置（按 config/identity.txt 重新渲染）=="
+echo "== 2. Kata 配置（按 config/env.txt 重新渲染）=="
 package_kata_config="$pkg_dir/$PACKAGE_KATA_CONFIG"
 if [[ ! -f "$package_kata_config" ]]; then
   echo "error: 包内 Kata 配置缺失: $package_kata_config" >&2
@@ -136,7 +136,7 @@ if [[ ! -f "$package_kata_config" ]]; then
 fi
 
 if [[ -f "$identity_file" ]]; then
-  echo "部署身份 (config/identity.txt):"
+  echo "部署身份 (config/env.txt):"
   grep -vE '^[[:space:]]*(#|$)' "$identity_file" | sed 's/^/  /'
   tmp_kata_config="$(mktemp /tmp/kata-config.taa.XXXXXX.toml)"
   if ! python3 "$pkg_dir/render.py" kata-config \
@@ -145,7 +145,7 @@ if [[ -f "$identity_file" ]]; then
     --bundle-dir "$REMOTE_BUNDLE_DIR" \
     --param-file "$identity_file" \
     --out "$tmp_kata_config"; then
-    echo "error: 按 config/identity.txt 渲染 Kata 配置失败，未改动宿主配置" >&2
+    echo "error: 按 config/env.txt 渲染 Kata 配置失败，未改动宿主配置" >&2
     exit 1
   fi
   if cmp -s "$tmp_kata_config" "$package_kata_config"; then
@@ -155,7 +155,7 @@ if [[ -f "$identity_file" ]]; then
     run sudo install -o root -g root -m 0644 "$tmp_kata_config" "$package_kata_config"
   fi
 else
-  echo "warning: 包内没有 config/identity.txt，沿用交付时的 Kata 配置" >&2
+  echo "warning: 包内没有 config/env.txt，沿用交付时的 Kata 配置" >&2
 fi
 
 # The handler's ConfigPath points at the packaged copy (package_info verified
@@ -186,10 +186,43 @@ for expected in "$handler_header" "$handler_options" "ConfigPath = \"$REMOTE_KAT
     exit 1
   fi
 done
-if ! sudo containerd --config "$tmp_containerd" config dump >/dev/null; then
+
+# `config dump` is not only a syntax check: it renders the configuration
+# containerd will actually use, `imports` included. A drop-in that defines the
+# same handler wins over the file the installer just wrote, and the override is
+# silent -- containerd starts happily and the Pod then boots the drop-in's
+# ConfigPath, or fails on a directory that no longer exists. Checking the merged
+# file alone cannot see that, so the effective handler entry is checked too.
+if ! effective_dump="$(sudo containerd --config "$tmp_containerd" config dump)"; then
   echo "error: 生成的 containerd 配置无效，未改动宿主配置" >&2
   exit 1
 fi
+
+# The dump prints the handler table bare when the name is a valid TOML key and
+# quoted when it is not; both spellings are accepted here.
+effective_options="$(printf '%s\n' "$effective_dump" | awk \
+  -v pre='[plugins."io.containerd.grpc.v1.cri".containerd.runtimes.' \
+  -v handler="$RUNTIME_HANDLER" '
+  {
+    line = $0
+    sub(/^[[:space:]]+/, "", line)
+    if (line ~ /^\[/) {
+      in_table = (line == pre handler ".options]" ||
+                  line == pre "\"" handler "\".options]")
+      next
+    }
+    if (in_table) print line
+  }')"
+if ! grep -qxF "ConfigPath = \"$REMOTE_KATA_CONFIG\"" <<<"$effective_options"; then
+  echo "error: 生效的 containerd 配置里，$RUNTIME_HANDLER 的 ConfigPath 不是 $REMOTE_KATA_CONFIG" >&2
+  echo "       主配置: $CONTAINERD_CONFIG" >&2
+  echo "       生效的 options 表:" >&2
+  printf '%s\n' "${effective_options:-(缺失)}" | sed 's/^/         /' >&2
+  echo "hint: 多半是 imports 里的 drop-in 定义了同名 handler 并覆盖了主配置;" >&2
+  echo "      检查 imports 列出的文件（例如 /etc/containerd/conf.d/*.toml）" >&2
+  exit 1
+fi
+echo "生效配置校验通过: $RUNTIME_HANDLER -> $REMOTE_KATA_CONFIG"
 
 if sudo cmp -s "$tmp_containerd" "$CONTAINERD_CONFIG"; then
   echo "containerd 配置未变化，跳过重启"
@@ -337,7 +370,7 @@ echo "== 8. 度量核对 =="
 # rendered onto this host. That is the only input that can differ from the
 # build host: the kernel, initrd and OVMF are the package's own bytes, and the
 # command line follows from the config. A difference from the running VM then
-# means identity.txt changed or the host's Kata drifted, not that the package
+# means env.txt changed or the host's Kata drifted, not that the package
 # is stale.
 expected_hex=""
 expected_cmdline=""

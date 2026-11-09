@@ -135,7 +135,7 @@ identity_params="taa.platform_ip=172.16.10.116:18080 taa.docker_id=fixture-docke
 pkg="$tmp_dir/a/pkg"
 env "${common_env[@]}" DIST_DIR="$pkg" REMOTE_HOST=invalid.invalid "$BUILD" render >/dev/null
 
-for f in config/kata-config.toml config/identity.txt config/containerd-runtime-handler.toml \
+for f in config/kata-config.toml config/env.txt config/containerd-runtime-handler.toml \
          k8s/runtimeclass.yaml k8s/test-pod.yaml SHA256SUMS \
          install.sh render.py measure.py cmdline.txt README.md \
          bundle/initramfs.img bundle/vmlinuz bundle/OVMF.fd; do
@@ -210,8 +210,8 @@ check "memory: a template without the key still gets the override" "23552" \
 # file round-trips into exactly the command line the build rendered, that edits
 # take effect, and that a bad line fails instead of becoming a token the guest
 # silently drops while the install reports success.
-identity_file="$pkg/config/identity.txt"
-check "identity: the package ships config/identity.txt" "present" \
+identity_file="$pkg/config/env.txt"
+check "identity: the package ships config/env.txt" "present" \
   "$([[ -f "$identity_file" ]] && echo present || echo absent)"
 check "identity: holds exactly the eight tokens" "$identity_params" \
   "$(grep -vE '^[[:space:]]*(#|$)' "$identity_file" | tr '\n' ' ' | sed 's/ $//')"
@@ -305,8 +305,8 @@ env "${common_env[@]}" DIST_DIR="$image_pkg" REMOTE_HOST=invalid.invalid \
   TEST_IMAGE=172.16.10.178:31313/taa-env:fixture-tag \
   TEST_IMAGE_ARCHIVE="$image_archive" "$BUILD" render >/dev/null
 
-image_name="172.16.10.178_31313_taa-env_fixture-tag.tar.gz"
-check "image: the archive is packaged under a name derived from the image" "present" \
+image_name="taa-env_fixture-tag.tar.gz"
+check "image: the archive name drops the registry prefix" "present" \
   "$([[ -f "$image_pkg/image/$image_name" ]] && echo present || echo absent)"
 check "image: the packaged bytes are the archive's" "same" \
   "$(cmp -s "$image_archive" "$image_pkg/image/$image_name" && echo same || echo different)"
@@ -339,7 +339,7 @@ check "image: a failed render never creates the package" "absent" \
   "$([[ -d "$missing_pkg" ]] && echo present || echo absent)"
 
 # A plain .tar keeps its own suffix; the name is not allowed to claim gzip.
-check "image: a .tar archive keeps .tar" "172.16.10.178_31313_taa-env_fixture-tag.tar" \
+check "image: a .tar archive keeps .tar" "taa-env_fixture-tag.tar" \
   "$(python3 "$RENDER" image-archive-name --image 172.16.10.178:31313/taa-env:fixture-tag \
       --like "$tmp_dir/plain.tar")"
 
@@ -624,10 +624,10 @@ fi
 # else stays pinned: the edit is narrow on purpose.
 edited_pkg="$tmp_dir/edited-pkg"
 cp -a "$pkg" "$edited_pkg"
-sed -i 's/^taa\.docker_id=.*/taa.docker_id=host-edited/' "$edited_pkg/config/identity.txt"
+sed -i 's/^taa\.docker_id=.*/taa.docker_id=host-edited/' "$edited_pkg/config/env.txt"
 python3 "$edited_pkg/render.py" kata-config --template "$edited_pkg/config/kata-config.toml" \
   --section hypervisor.qemu --bundle-dir "$bundle" \
-  --param-file "$edited_pkg/config/identity.txt" \
+  --param-file "$edited_pkg/config/env.txt" \
   --out "$edited_pkg/config/kata-config.toml" >/dev/null
 if (cd "$edited_pkg" && sha256sum -c --quiet SHA256SUMS) >/dev/null 2>&1; then
   echo "ok   checksums: a host-side identity edit still verifies"
@@ -689,6 +689,8 @@ check_contains "install.sh: rebuilds the expectation from the current config" \
 check_contains "install.sh: recreates the Pod so the new command line takes effect" \
   'kubectl delete pod' "$(cat "$pkg/install.sh")"
 check_contains "install.sh: verifies the package first" 'sha256sum -c --quiet SHA256SUMS' "$(cat "$pkg/install.sh")"
+check_contains "install.sh: checks the effective config, imports included" \
+  '生效的 containerd 配置里' "$(cat "$pkg/install.sh")"
 check_contains "install.sh: supports dry-run" '--dry-run' "$(cat "$pkg/install.sh")"
 
 # ── 8. render reaches the renderer without a host preflight ────────────────
