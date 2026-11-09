@@ -24,3 +24,6 @@ __pycache__/
 *$py.class
 *.cover
 retina/
+
+# Node
+docs/node_modules/
