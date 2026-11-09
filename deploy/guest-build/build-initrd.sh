@@ -141,6 +141,28 @@ role_test_pod_run_as_user() {
   esac
 }
 
+# Guest RAM for the role, in MiB. This is a runtime floor, not a tuning knob: a
+# CSV2 guest's writable root is a tmpfs capped at roughly half the guest RAM, and
+# CDH unpacks the container image into it. The base template's 2048 leaves ~1 GiB
+# for an image that unpacks to 1.92 GB, so the pull dies with "Failed to unpack
+# layer" and the Pod lands in StartError -- which reads like an initrd failure but
+# is not one.
+#
+# The values are the ones measured working on the host, not a formula. The test
+# Pod sets no limits, so QEMU's -m is this number alone; with a Pod that does set
+# limits.memory, Kata adds it on top.
+#   train/infer  10240 -> tmpfs 4.75 GiB for a 2.02 GiB unpack (taa-env,
+#                2170275081 B), verified Running with 2.2 GiB used.
+#   analysis     20480 -> tmpfs ~10 GiB for a 6.90 GiB unpack
+#                (jupyter-nologin-full, 7411037667 B), the size the deployed
+#                analysis Pod runs at.
+role_default_memory() {
+  case "$TAA_ROLE" in
+    taa-train|taa-infer) echo 10240 ;;
+    taa-analysis) echo 20480 ;;
+  esac
+}
+
 # Local build inputs and outputs. TAA implements remote attestation natively in
 # Go, so no external helper is injected.
 # BASE_INITRD must be the original remote Kata CSV initrd, never an
@@ -336,13 +358,11 @@ PACKAGE_IMAGE_SUBDIR="image"
 REMOTE_KATA_CONFIG="$REMOTE_PACKAGE_DIR/$PACKAGE_KATA_CONFIG"
 CONTAINERD_CONFIG="${CONTAINERD_CONFIG:-/etc/containerd/config.toml}"
 KATA_HYPERVISOR_SECTION="${KATA_HYPERVISOR_SECTION:-hypervisor.qemu}"
-# Guest RAM, in MiB. This is a runtime dependency, not a tuning knob: a CSV2
-# guest's writable root is a tmpfs capped at roughly half the guest RAM, and the
-# CDH unpacks the container image into it. The base template's 2048 leaves ~1 GiB
-# for an image that unpacks to 1.92 GB, so the pull fails with "Failed to unpack
-# layer" and the Pod lands in StartError -- which reads like an initrd failure
-# but is not one. Empty means "keep the template's value".
-KATA_DEFAULT_MEMORY="${KATA_DEFAULT_MEMORY:-}"
+# Guest RAM, in MiB. A CSV2 guest's writable root is a tmpfs capped at roughly
+# half the guest RAM, and the CDH unpacks the container image into it, so this
+# has to fit the role's image. Defaulted per role by role_default_memory(); set
+# it to override, or to empty to keep the template's value.
+KATA_DEFAULT_MEMORY="${KATA_DEFAULT_MEMORY:-$(role_default_memory)}"
 RUNTIME_HANDLER="${RUNTIME_HANDLER:-$(role_runtime_handler)}"
 RUNTIME_TYPE="${RUNTIME_TYPE:-io.containerd.kata-qemu-csv2.v2}"
 RUNTIME_PATH="${RUNTIME_PATH:-/opt/kata/bin/containerd-shim-kata-v2}"
@@ -380,13 +400,14 @@ TEST_IMAGE="${TEST_IMAGE:-$(role_test_image)}"
 # the registry, not just the host's docker daemon. Empty means "expect the
 # registry to already hold the image".
 TEST_IMAGE_ARCHIVE="${TEST_IMAGE_ARCHIVE:-}"
-# A CoCo guest pulls the container image itself through CDH, and it trusts the
-# registry only if the Pod carries the init-data that configures it (on this
-# host cc_init_data embeds a cdh.toml with extra_root_certificates). Without it
-# CDH fails the pull with a TLS error and the Pod lands in StartError -- which
-# looks like an initrd failure but is not one. Copy the JSON annotations of a
-# working Pod when the test image lives behind a private registry:
-#   TEST_POD_ANNOTATIONS="$(kubectl get pod <working> -o jsonpath='{.metadata.annotations}')"
+# Extra annotations for the rendered test Pod, as a JSON object.
+#
+# The one a CoCo guest needs (io.katacontainers.config.runtime.cc_init_data) is
+# deliberately not defaulted here: it embeds the CA of the registry on the
+# target host, so it is per-host, and it is ~2 KiB of base64 that would bloat
+# every render. test/create-test-pod.sh reads it from the host at apply time
+# instead, so the operator never passes it. Set this only for annotations that
+# genuinely belong to the package.
 TEST_POD_ANNOTATIONS="${TEST_POD_ANNOTATIONS:-{\}}"
 # Render-time only: the cached base Kata config is compared against the host's
 # copy before it is used as a template. install.sh no longer repeats this check;
@@ -455,7 +476,7 @@ Environment overrides:
                                           (derived; always the packaged copy)
   REMOTE_BUNDLE_DIR                       derived as $REMOTE_PACKAGE_DIR/bundle
   KATA_HYPERVISOR_SECTION=$KATA_HYPERVISOR_SECTION
-  KATA_DEFAULT_MEMORY=${KATA_DEFAULT_MEMORY:-(keep the template's default_memory)}
+  KATA_DEFAULT_MEMORY=$KATA_DEFAULT_MEMORY               (default: from TAA_ROLE)
   RUNTIME_TYPE=$RUNTIME_TYPE
   RUNTIME_PATH=$RUNTIME_PATH
   SNAPSHOTTER=$SNAPSHOTTER
@@ -1446,7 +1467,9 @@ TAA 运行在 Kata CSV2 机密 VM 的 initrd 里，自证通过后才放行 kata
 - \`k8s/runtimeclass.yaml\` — 运行时类：Pod 用 \`runtimeClassName\` 选中本 handler。使用该
   runtime 的每个 Pod 都需要它，由 install.sh 安装
 - \`test/\` — 测试 Pod：\`test-pod.yaml\`、\`create-test-pod.sh\`（创建并等待 Ready，
-  核对 QEMU 用的 initrd 与 MEASUREMENT）、\`delete-test-pod.sh\`（删除测试 Pod）
+  核对 QEMU 用的 initrd 与 MEASUREMENT）、\`delete-test-pod.sh\`（删除测试 Pod）。
+  CoCo 客户机由 CDH 自己拉镜像，注册表 CA 经 \`cc_init_data\` 注解投递，而这个值逐宿主
+  不同，所以包里不带它：创建脚本在宿主机上读一条填进去
 - \`install.sh\` — 安装脚本（见下文）；\`render.py\` — install.sh 用的 Kata 配置渲染器；
   \`measure.py\` — test/create-test-pod.sh 用的 MEASUREMENT 计算器
 $(if [[ -n "$TEST_IMAGE_ARCHIVE" ]]; then printf -- '- `%s/` — 测试 Pod 镜像的 `docker save` 归档。CoCo guest 由 CDH 自己从 registry 拉镜像，宿主机 docker 不在那条路径上，所以 install.sh 会先查 registry，缺这个 tag 时导入归档并推送过去\n' "$PACKAGE_IMAGE_SUBDIR"; fi)

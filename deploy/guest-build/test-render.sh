@@ -698,6 +698,14 @@ check_contains "install.sh: still applies the RuntimeClass" \
   'PACKAGE_RUNTIMECLASS' "$(cat "$pkg/install.sh")"
 check_contains "create script: recreates the Pod so a new command line takes effect" \
   'kubectl delete pod' "$(cat "$pkg/test/create-test-pod.sh")"
+# The init-data a CoCo guest needs carries this host's registry CA, so the script
+# reads it from the host rather than the package carrying a per-host blob. The
+# value must never end up in the rendered manifest: a package rendered on one
+# host, installed on another, would then ship the wrong CA.
+check_contains "create script: fills cc_init_data from the host at apply time" \
+  'cc_init_data' "$(cat "$pkg/test/create-test-pod.sh")"
+check_absent "create script: copies only cc_init_data, not a Pod's whole annotations" \
+  'jsonpath=.{.metadata.annotations}' "$(cat "$pkg/test/create-test-pod.sh")"
 check_contains "create script: verifies the measurement of the running VM" \
   'measure.py" digest' "$(cat "$pkg/test/create-test-pod.sh")"
 check_contains "delete script: deletes the test Pod" \

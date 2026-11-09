@@ -57,6 +57,18 @@ default_config="$("$BUILD" print-config)"
 eval "$default_config"
 check "print-config: default annotations are an empty object" "{}" "$TEST_POD_ANNOTATIONS"
 check "print-config: default handler" "kata-qemu-csv2-taa-train" "$RUNTIME_HANDLER"
+
+# Guest RAM is a runtime floor, not a tuning knob: a CSV2 guest's writable root
+# is a tmpfs at about half of it and CDH unpacks the image there. 2048 (the base
+# template's value) fails the pull for both images, so the default has to come
+# from the role. Assert the ordering and the analysis floor, not the exact MiB,
+# which is free to grow when an image does.
+check "print-config: train guest RAM clears the base template" "yes" \
+  "$([[ "${KATA_DEFAULT_MEMORY:-0}" -gt 2048 ]] && echo yes || echo no)"
+analysis_memory="$(TAA_ROLE=taa-analysis "$BUILD" print-config |
+  sed -n 's/^KATA_DEFAULT_MEMORY=//p' | tr -d "'")"
+check "print-config: the analysis image gets a larger guest" "yes" \
+  "$([[ "${analysis_memory:-0}" -gt "${KATA_DEFAULT_MEMORY:-0}" ]] && echo yes || echo no)"
 check_contains "print-config: exposes the Kata config template" "KATA_CONFIG_TEMPLATE=" "$default_config"
 check_contains "print-config: exposes the delivery package directory" "DIST_DIR=" "$default_config"
 # The upload writes through sudo on the far side, so the default account has to

@@ -57,16 +57,23 @@ export TEST_POD_NAME=test-kata-csv2-taa
 # Pod 停在 StartError。另外 verify 步骤要在 Pod 内执行 curl，busybox 不带 curl。
 export TEST_IMAGE=172.16.10.178:31313/taa-env:v1-train-infer
 
-# 测试 Pod 的注解，必须是 JSON 对象。在这台宿主上 **不能省**：CoCo 的 CDH 在 guest 内拉镜像，
-# 注册表 CA 只能经 cc_init_data 注解投递，缺了就会 TLS 失败、Pod 停在 StartError。
-# 从宿主上任何一个跑得通的 CoCo Pod 取出来复用：
-#   kubectl -n <ns> get pod <pod> -o jsonpath='{.metadata.annotations.io\.katacontainers\.config\.runtime\.cc_init_data}'
-export TEST_POD_ANNOTATIONS='{"io.katacontainers.config.runtime.cc_init_data":"<从上面那条命令取到的 base64>"}'
+# 测试 Pod 的注解，**不用手工传**。CoCo 的 CDH 在 guest 内拉镜像，注册表 CA 只能经
+# cc_init_data 注解投递，缺了就会 TLS 失败、Pod 停在 StartError。这个值内嵌本机 registry
+# 的 CA，逐宿主不同，所以不打进交付包：test/create-test-pod.sh 在宿主上建 Pod 时自己
+# 从正在跑的 CoCo Pod（或 /root/cc_init_data.txt）读一条填进去。要显式指定就设 CC_INIT_DATA。
+# 这里只放真正属于包本身的注解。
+export TEST_POD_ANNOTATIONS='{}'
 
 # 注意：**不要**把原 Pod 的注解整份照抄。其中
 #   io.containerd.cri.runtime-handler            -> 会把 runtime 劫持回原 handler，测试 pod 不走我们的
 #   io.katacontainers.config.hypervisor.kernel_params -> 空值会覆盖掉 kata 配置里的 rdinit=，TAA 不再启动
-# 两者都会让验证静默失效（Pod 照样 Ready，但根本不是被测路径）。
+# 两者都会让验证静默失效（Pod 照样 Ready，但根本不是被测路径）。create-test-pod.sh 只取
+# cc_init_data 这一条，就是为了避开这两个坑。
+
+# 测试 Pod 的客户机内存**不用手工传**：按角色派生（train/infer 10240 MiB，analysis 20480 MiB）。
+# 这是运行期下限，不是调参：CSV2 客户机的可写根是 ≈ 客户机内存一半的 tmpfs，CDH 把镜像解到
+# 那里，2048（模板原值）连 1.92 GB 的镜像都放不下，拉取报 Failed to unpack layer。要覆盖就设
+# KATA_DEFAULT_MEMORY。
 
 # build-initrd.sh 的输入
 # 走仓库根 deploy-taa-vm.sh 时**不用设**这两个：它自带默认值（平台地址跟随
@@ -273,7 +280,6 @@ REMOTE_USER="${REMOTE_USER}" \
 REMOTE_HOST="${REMOTE_HOST}" \
 TEST_NODE_NAME="${TEST_NODE_NAME}" \
 RUNTIME_HANDLER="${RUNTIME_HANDLER}" \
-TEST_POD_ANNOTATIONS="${TEST_POD_ANNOTATIONS}" \
 ./build-initrd.sh launch
 ```
 
@@ -298,8 +304,8 @@ TEST_POD_ANNOTATIONS="${TEST_POD_ANNOTATIONS}" \
 install.sh 到此结束，**不再创建测试 Pod**（装包不等于起一台 guest）。需要验证时
 单独执行包内的 `test/create-test-pod.sh`：
 
-1. 删除已有的测试 Pod 再创建（Pod spec 不可变，旧 Pod 带的是旧命令行；
-   `TEST_POD_ANNOTATIONS` 也在这里生效）
+1. 删除已有的测试 Pod 再创建（Pod spec 不可变，旧 Pod 带的是旧命令行）。包内清单没带
+   `cc_init_data` 时，先在本机读一条填进 Pod 再 apply —— 不需要手工准备这个注解
 2. 等待 Pod Ready；超时会打印 Pod 状态与 `Events:` 再退出
 3. 校验 QEMU 是否使用了包内的 initrd
 4. 先按当前 `config/kata-config.toml` 在本机重算预期 MEASUREMENT，再从 QEMU 的
@@ -410,7 +416,9 @@ python3 "$pkg/measure.py" digest \
 - `MEASURE_APPEND`：整条覆盖推导出的 QEMU `-append`（单行）
 - `TEST_POD_NAME=test-kata-csv2-taa`
 - `TEST_IMAGE=172.16.10.178:31313/taa-env:v1-train-infer`（宿主本地 registry；guest 无外网）
-- `TEST_POD_ANNOTATIONS='{}'`（该宿主上需填 `cc_init_data`，见 §0）
+- `TEST_POD_ANNOTATIONS='{}'`（`cc_init_data` 由 `create-test-pod.sh` 在宿主上补，见 §0）
+- `KATA_DEFAULT_MEMORY`：测试 Pod 的客户机内存，按角色派生（train/infer 10240，analysis 20480），
+  是镜像解包所需的下限，不必手工设
 - `TAA_PLATFORM_IP`、`TAA_DOCKER_ID`：平台注册身份，必须成对。由**驱动**给默认值
   （`172.16.10.116:${PLATFORM_PORT}` / `kata-csv2-taa-test-0001`；平台跑在自己的宿主上，
   不跟随 `REMOTE_HOST`），直接调 `build-initrd.sh` 时默认仍为空。用

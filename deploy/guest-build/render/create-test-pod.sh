@@ -50,17 +50,69 @@ fi
 
 tmp_expected=""
 tmp_append=""
+tmp_pod=""
 cleanup() {
   if [[ -n "$tmp_expected" ]]; then rm -f "$tmp_expected"; fi
   if [[ -n "$tmp_append" ]]; then rm -f "$tmp_append"; fi
+  if [[ -n "$tmp_pod" ]]; then rm -f "$tmp_pod"; fi
   return 0
 }
 trap cleanup EXIT
 
-echo "== 1. 创建测试 Pod =="
+# A CoCo guest pulls the container image itself through CDH, and it trusts a
+# private registry only when the Pod carries the init-data that names that
+# registry's CA. Without it the pull fails with a TLS error and the Pod lands in
+# StartError, which reads like an initrd failure but is not one.
+#
+# The value cannot be a build-time default: it is per-host (it embeds the CA of
+# the registry on this host) and is ~2 KiB of base64. So it is read here, from
+# the host, at the only moment it is needed. Any running CoCo Pod already
+# carries it; /root/cc_init_data.txt holds the same blob.
+#
+# Only this one annotation is copied. Taking a Pod's whole annotation set does
+# not work: io.containerd.cri.runtime-handler would point the Pod back at the
+# original handler, and an empty hypervisor.kernel_params would override the
+# config's rdinit= so TAA never starts -- both leave the Pod Ready while testing
+# something other than this package.
+cc_init_annotation="io.katacontainers.config.runtime.cc_init_data"
+pod_manifest="$pkg_dir/$PACKAGE_TEST_POD"
+
+echo "== 1. 准备测试 Pod =="
+if python3 - "$pod_manifest" "$cc_init_annotation" <<'PY'
+import json, sys
+pod = json.load(open(sys.argv[1]))
+sys.exit(0 if sys.argv[2] in (pod["metadata"].get("annotations") or {}) else 1)
+PY
+then
+  echo "已带 $cc_init_annotation，直接使用"
+else
+  cc_init_data="${CC_INIT_DATA:-}"
+  if [[ -z "$cc_init_data" ]]; then
+    cc_init_data="$(kubectl get pods -A -o jsonpath='{range .items[*]}{.metadata.annotations.io\.katacontainers\.config\.runtime\.cc_init_data}{"\n"}{end}' 2>/dev/null | grep -m1 . || true)"
+  fi
+  if [[ -z "$cc_init_data" && -r /root/cc_init_data.txt ]]; then
+    cc_init_data="$(tr -d '[:space:]' < /root/cc_init_data.txt)"
+  fi
+  if [[ -z "$cc_init_data" ]]; then
+    echo "warning: 本机没有可用于 $cc_init_annotation 的值；镜像若在需要 CA 的私有 registry 上，" >&2
+    echo "         CDH 会拉取失败并把 Pod 留在 StartError。先起一个 CoCo Pod，或设 CC_INIT_DATA。" >&2
+  else
+    tmp_pod="$(mktemp /tmp/taa-test-pod.XXXXXX.yaml)"
+    python3 - "$pod_manifest" "$tmp_pod" "$cc_init_annotation" "$cc_init_data" <<'PY'
+import json, sys
+src, dst, key, value = sys.argv[1:5]
+pod = json.load(open(src))
+pod.setdefault("metadata", {}).setdefault("annotations", {})[key] = value
+open(dst, "w").write(json.dumps(pod, indent=2) + "\n")
+PY
+    pod_manifest="$tmp_pod"
+    echo "已从本机取到 $cc_init_annotation (${#cc_init_data} 字符)"
+  fi
+fi
+
 echo "pod: $TEST_POD_NAME  handler: $RUNTIME_HANDLER"
 kubectl delete pod "$TEST_POD_NAME" --ignore-not-found --wait=true
-kubectl apply -f "$pkg_dir/$PACKAGE_TEST_POD"
+kubectl apply -f "$pod_manifest"
 
 echo
 echo "== 2. 等待测试 Pod Ready =="
