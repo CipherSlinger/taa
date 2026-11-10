@@ -19,6 +19,12 @@
       "progress": "/opt/taa/output/progress/progress.json"
     }
   },
+  "runtime": {
+    "execution": {
+      "mode": "auto",
+      "containerId": ""
+    }
+  },
   "codeAudit": {
     "enabled": true,
     "codeScan": {

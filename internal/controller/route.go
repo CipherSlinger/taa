@@ -55,6 +55,9 @@ type SecurityConfig struct {
 	// ServerType is the startup config's server.type. It is read only to select
 	// the data-anaylsis import path; FHE still keys on the runner being non-nil.
 	ServerType string
+	// Execution selects where a model's runtimeConfig runs. It is an execution
+	// policy, never a security verdict; see config.ExecutionConfig.
+	Execution config.ExecutionConfig
 }
 
 const (
@@ -151,9 +154,8 @@ type TAAState struct {
 	// Set once by the startup path before any request is served; it selects
 	// where model work executes and is never a security verdict.
 	deployment deployment.Result
-	// execTarget is where a model's runtimeConfig runs. Nil means the local
-	// target, which is what every deployment used before the seam existed, so a
-	// hand-built state keeps working.
+	// execTarget overrides the configured execution policy when set; nil (the
+	// production value) means the policy in Security.Execution decides, per task.
 	execTarget execenv.Target
 
 	// auditGen identifies the audit that currently owns the audit fields above.
@@ -222,22 +224,20 @@ func (s *TAAState) Deployment() deployment.Result {
 	return s.deployment
 }
 
-// SetExecutionTarget installs where model runtimeConfig commands run. Called
-// once at startup; a nil target keeps the local behaviour.
+// SetExecutionTarget installs an explicit execution target, bypassing discovery.
+// Tests and tools use it to run a model under a stub environment; production
+// leaves it nil and lets selectExecutionTarget apply the configured policy.
 func (s *TAAState) SetExecutionTarget(target execenv.Target) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.execTarget = target
 }
 
-// executionTarget returns the installed target, or the local one. A hand-built
-// state (tests, tools) has none, and local is what the daemon always did.
-func (s *TAAState) executionTarget() execenv.Target {
+// injectedExecutionTarget returns the target installed by SetExecutionTarget, or
+// nil when the configured policy decides.
+func (s *TAAState) injectedExecutionTarget() execenv.Target {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	if s.execTarget == nil {
-		return execenv.NewLocalTarget()
-	}
 	return s.execTarget
 }
 

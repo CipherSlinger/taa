@@ -483,7 +483,15 @@ func (s *TAAState) executeTraining(trainReq importRequest, phase int, trainRecor
 	// target every path below is the one TAA has always used; for a container
 	// target they are the same contract seen from the model's side, and the
 	// result comes back through Visible.
-	target := s.executionTarget()
+	target, targetErr := s.selectExecutionTarget(context.Background())
+	if targetErr != nil {
+		if checkCancelled() {
+			s.Logs.Add(LogInfo, "train", "训练任务已中止: taskId=%s", trainReq.TaskID)
+			return
+		}
+		s.reportImportFailure(trainReq, phase, false, startedAt, fmt.Sprintf("选择模型执行环境失败: %v", targetErr))
+		return
+	}
 	spec := execenv.Spec{
 		ModelDir:     s.Security.ModelDir,
 		DataDir:      modelInputDir,

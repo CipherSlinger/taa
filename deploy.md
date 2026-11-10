@@ -584,6 +584,31 @@ kubelet 的 restartPolicy 处理重启；TAA 自己退出只在 10s 后重启循
 `etc/default/taa.env`；选中 semgrep 时整棵 `semgrep-payload/rootfs`（4242 文件，
 **自带 `python3.12`**，不依赖基座）。
 
+**模型执行环境（`runtime.execution.mode`）**
+
+基座没有 `python3`，也没有模型依赖，所以训练默认不在 init 根里跑：TAA 从 `/proc` 扫出与
+自身不同的挂载命名空间，用根挂载的设备号在 TAA 视图里定位该容器的 rootfs，再以
+`nsenter -t <pid> -m -r` 在容器内起 shell 执行模型的 `runtimeConfig`。容器在
+kata-agent 起来之后才被创建，而 TAA 比 kata-agent 更早启动，因此**每次训练开始时**才做发现，
+启动日志只记录策略。
+
+三个取值：
+
+| `mode` | 行为 |
+|---|---|
+| `auto`（默认） | 仅当部署形态是 initrd 且发现到容器时走容器；否则回到 local 并打告警 |
+| `local` | 回滚开关：永远在 init 根内执行，与引入容器执行前一致 |
+| `container` | 发现不到容器即任务失败（fail-closed），不退回 local |
+
+容器侧契约路径默认 `/opt/taa/{model,input,output/result,output/log,output/progress/progress.json}`，
+可用 `runtime.execution` 下同名键（`modelDir` / `inputDir` / `outputDir` / `logDir` /
+`progressPath`）覆盖。覆盖值必须是绝对路径、不含 `..`、不得为 `/`：这些目录每次执行前会被
+清空。同时有多个容器在跑时用 `containerId` 指定；只发现一个候选时可以不写，发现多个又没写
+`containerId` 会直接报错而不是任选一个。
+
+日志与进度由 TAA 以 500 ms 周期镜像回自己的路径（容器内写、TAA 侧读），镜像失败只上报告警，
+不影响任务结论。
+
 ## 6. DCU 机密测试 Pod — `/home/wj/dcu/dcu-tee-test-pod-create.sh`
 
 基础镜像 `harbor.sourcefind.cn:5443/dcu/admin/base/vllm:0.9.2-ubuntu22.04-dtk26.04-0130-py3.10-20260202`：

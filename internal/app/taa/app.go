@@ -98,6 +98,7 @@ func RunWithConfig(ctx context.Context, cfg config.StartupConfig) error {
 		return fmt.Errorf("detect deployment shape: %w", err)
 	}
 	logDeploymentShape(dep)
+	logExecutionPolicy(cfg, dep)
 
 	// 1. If LLM code audit is enabled, probe inference service readiness.
 	//
@@ -278,6 +279,7 @@ func RunWithConfig(ctx context.Context, cfg config.StartupConfig) error {
 	)
 	state.SetDeployment(dep)
 	reportDeploymentShape(state, dep)
+	reportExecutionPolicy(state, cfg, dep)
 
 	fheRunner, err := buildFHERunner(cfg)
 	if err != nil {
@@ -792,6 +794,7 @@ func buildSecurityConfig(cfg config.StartupConfig) (controller.SecurityConfig, e
 		ModelLogDir:      cfg.ModelLogDir,
 		ModelProgressDir: cfg.ModelProgressDir,
 		ServerType:       cfg.ServerType,
+		Execution:        cfg.Execution,
 		LLM: codeaudit.LLMConfig{
 			Enabled:                cfg.LLM.Enabled,
 			AttestationEnabled:     cfg.LLM.AttestationEnabled,
@@ -914,6 +917,51 @@ func reportDeploymentShape(state *controller.TAAState, dep deployment.Result) {
 		state.Logs.Add(controller.LogWarn, "deployment",
 			"部署形态未判定，运行时行为保持不变（本地执行）；请检查启动脚本是否导出了 %s", deployment.EnvVar)
 	}
+}
+
+// logExecutionPolicy prints what runtime.execution will do on this deployment.
+//
+// The target itself cannot be resolved here: on an initrd deployment the
+// container does not exist until kata-agent creates it, which is after TAA is
+// already serving. So the startup log states the policy and names the point at
+// which the decision will be made, and each run logs its own outcome.
+func logExecutionPolicy(cfg config.StartupConfig, dep deployment.Result) {
+	mode := strings.ToLower(strings.TrimSpace(cfg.Execution.Mode))
+	if mode == "" {
+		mode = config.ExecutionModeAuto
+	}
+	switch mode {
+	case config.ExecutionModeLocal:
+		log.Printf("model execution: local (runtime.execution.mode=local: the rollback path)")
+	case config.ExecutionModeContainer:
+		log.Printf("model execution: container (runtime.execution.mode=container: a task fails when no container is discoverable)")
+	case config.ExecutionModeAuto:
+		if dep.Shape == deployment.Initrd {
+			log.Printf("model execution: auto (deployment=%s: the model runs in the container discovered when a task starts, "+
+				"falling back to local with a warning)", dep.Shape)
+		} else {
+			log.Printf("model execution: auto (deployment=%s: models run locally)", dep.Shape)
+		}
+	default:
+		// Rejected at load; only a hand-built config reaches this.
+		log.Printf("WARNING: unknown runtime.execution.mode %q, models will run locally", mode)
+	}
+	if id := strings.TrimSpace(cfg.Execution.ContainerID); id != "" {
+		log.Printf("model execution: container id pinned to %q", id)
+	}
+}
+
+// reportExecutionPolicy sends the same policy to the platform log channel, once
+// per process. It is what an operator has when a task lands in an unexpected
+// environment and the Pod gives them no console.
+func reportExecutionPolicy(state *controller.TAAState, cfg config.StartupConfig, dep deployment.Result) {
+	mode := strings.ToLower(strings.TrimSpace(cfg.Execution.Mode))
+	if mode == "" {
+		mode = config.ExecutionModeAuto
+	}
+	state.Logs.Add(controller.LogInfo, "exec",
+		"模型执行策略: mode=%s, deployment=%s, containerId=%q；执行环境在每次训练开始时确定并单独上报",
+		mode, dep.Shape, cfg.Execution.ContainerID)
 }
 
 func logSecurityConfig(sec controller.SecurityConfig) {

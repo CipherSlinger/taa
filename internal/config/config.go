@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 )
@@ -88,10 +89,55 @@ type StartupConfig struct {
 	ModelLogDir            string
 	ModelProgressDir       string
 	KeysDir                string
+	// Execution selects where a model's runtimeConfig runs. It is an execution
+	// policy, never a security verdict: the container it names is discovered from
+	// the process table, and a container that is not there is a missing deployment
+	// artifact rather than an attack.
+	Execution ExecutionConfig
 	// LLM bundles the inference service the audit arbitrates findings with. It is
 	// nested because every one of these settings exists for the code audit and
 	// nothing else: TAA has no other use for a model.
 	LLM LLMConfig
+}
+
+// The values runtime.execution.mode accepts.
+const (
+	// ExecutionModeAuto runs a model inside a container only on an initrd
+	// deployment where one is discoverable, and falls back to local execution
+	// with a warning otherwise. It is the default because it is the only value
+	// that is right on both deployment shapes without being told which one it is.
+	ExecutionModeAuto = "auto"
+	// ExecutionModeLocal forces the pre-existing behaviour: the model runs in
+	// TAA's own namespaces. This is the rollback switch.
+	ExecutionModeLocal = "local"
+	// ExecutionModeContainer fails the task when no container can be discovered,
+	// rather than silently running in an environment that may not have the
+	// interpreter the model needs.
+	ExecutionModeContainer = "container"
+)
+
+// ExecutionConfig selects where a model's runtimeConfig runs. On an initrd
+// deployment the guest init carries no interpreter or Python dependencies, so
+// the model only works inside the container image; on every other deployment
+// local execution is what the daemon always did.
+type ExecutionConfig struct {
+	// Mode is one of ExecutionModeAuto, ExecutionModeLocal,
+	// ExecutionModeContainer.
+	Mode string
+	// ContainerID disambiguates when more than one container is running. It is
+	// matched against the container's mount namespace path and overlay upperdir;
+	// empty means the single discovered container, and several without an id is
+	// an error rather than a choice.
+	ContainerID string
+	// The path overrides describe the contract the model is executed against
+	// inside the container. Empty means the path the storage and model sections
+	// already define, which is what the packaged images ship. They only apply to
+	// container execution: a local run keeps TAA's own paths.
+	ModelDir     string
+	InputDir     string
+	OutputDir    string
+	LogDir       string
+	ProgressPath string
 }
 
 // LLMConfig is the inference service the code audit calls to adjudicate the
@@ -217,6 +263,7 @@ type startupConfigFile struct {
 	Platform  startupPlatformConfigFile  `json:"platform"`
 	Storage   startupStorageConfigFile   `json:"storage"`
 	Model     startupModelConfigFile     `json:"model"`
+	Runtime   startupRuntimeConfigFile   `json:"runtime"`
 	CodeAudit startupCodeAuditConfigFile `json:"codeAudit"`
 	// FHE is a pointer because "absent" and "present but empty" must be
 	// distinguishable: a type=fhe instance with no section at all is a different
@@ -265,6 +312,24 @@ type startupPlatformConfigFile struct {
 	// deliberately no publicKey field for the SM2 identity string: that one is
 	// environment-only (PLATFORM_SM2_ID).
 	PublicKey string `json:"publicKey"`
+}
+
+// startupRuntimeConfigFile is the runtime block: how the daemon executes a
+// model, as opposed to what it is asked to run (that lives in the imported
+// model's own runtimeConfig).
+type startupRuntimeConfigFile struct {
+	Execution startupExecutionConfigFile `json:"execution"`
+}
+
+// startupExecutionConfigFile is the runtime.execution block.
+type startupExecutionConfigFile struct {
+	Mode         string `json:"mode"`
+	ContainerID  string `json:"containerId"`
+	ModelDir     string `json:"modelDir"`
+	InputDir     string `json:"inputDir"`
+	OutputDir    string `json:"outputDir"`
+	LogDir       string `json:"logDir"`
+	ProgressPath string `json:"progressPath"`
 }
 
 type startupStorageConfigFile struct {
@@ -672,6 +737,57 @@ func validateStartupConfig(cfg StartupConfig) error {
 	if err := validateBinaryAudit(cfg); err != nil {
 		return err
 	}
+	if err := validateExecution(cfg); err != nil {
+		return err
+	}
+	return nil
+}
+
+// validateExecution rejects an execution mode or contract path that cannot mean
+// what it says. The paths are cleared before each run, so a relative one, a ".."
+// or "/" would delete something the deployment did not name - and they are
+// cleared inside a container root, which makes the consequence worse than a
+// failed task.
+func validateExecution(cfg StartupConfig) error {
+	exec := cfg.Execution
+	switch exec.Mode {
+	case ExecutionModeAuto, ExecutionModeLocal, ExecutionModeContainer:
+	case "":
+		return fmt.Errorf("runtime.execution.mode is empty: must be one of %s, %s, %s",
+			ExecutionModeAuto, ExecutionModeLocal, ExecutionModeContainer)
+	default:
+		return fmt.Errorf("unsupported runtime.execution.mode %q: must be one of %s, %s, %s",
+			exec.Mode, ExecutionModeAuto, ExecutionModeLocal, ExecutionModeContainer)
+	}
+
+	for _, field := range []struct{ name, value string }{
+		{"modelDir", exec.ModelDir},
+		{"inputDir", exec.InputDir},
+		{"outputDir", exec.OutputDir},
+		{"logDir", exec.LogDir},
+		{"progressPath", exec.ProgressPath},
+	} {
+		if field.value == "" {
+			continue
+		}
+		if err := validateExecutionPath(field.name, field.value); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func validateExecutionPath(name, value string) error {
+	if !filepath.IsAbs(value) {
+		return fmt.Errorf("runtime.execution.%s %q is not an absolute path", name, value)
+	}
+	if clean := filepath.Clean(value); clean != value {
+		return fmt.Errorf("runtime.execution.%s %q is not a clean path (%q): "+
+			"it is cleared before each run, so a relative or dot-carrying path could point somewhere else", name, value, clean)
+	}
+	if value == "/" {
+		return fmt.Errorf("runtime.execution.%s must not be the filesystem root", name)
+	}
 	return nil
 }
 
@@ -878,6 +994,7 @@ func defaultStartupConfig() StartupConfig {
 		ModelLogDir:        "/opt/taa/output/log",
 		ModelProgressDir:   "/opt/taa/output/progress/progress.json",
 		KeysDir:            "/root/taa/keys",
+		Execution:          ExecutionConfig{Mode: ExecutionModeAuto},
 		LLM: LLMConfig{
 			Enabled:             true,
 			AttestationEnabled:  true,
@@ -998,6 +1115,31 @@ func applyStartupConfigFile(cfg *StartupConfig, fileCfg startupConfigFile) {
 	}
 	if fileCfg.Platform.Contract != "" {
 		cfg.Contract = fileCfg.Platform.Contract
+	}
+
+	// Where a model executes is a property of the deployment, not of the role, so
+	// every role reads this block: an fhe instance runs no model of its own, but a
+	// data-analysis one imports and executes them.
+	exec := fileCfg.Runtime.Execution
+	if trimmed := strings.ToLower(strings.TrimSpace(exec.Mode)); trimmed != "" {
+		cfg.Execution.Mode = trimmed
+	}
+	if trimmed := strings.TrimSpace(exec.ContainerID); trimmed != "" {
+		cfg.Execution.ContainerID = trimmed
+	}
+	for _, field := range []struct {
+		dst *string
+		src string
+	}{
+		{&cfg.Execution.ModelDir, exec.ModelDir},
+		{&cfg.Execution.InputDir, exec.InputDir},
+		{&cfg.Execution.OutputDir, exec.OutputDir},
+		{&cfg.Execution.LogDir, exec.LogDir},
+		{&cfg.Execution.ProgressPath, exec.ProgressPath},
+	} {
+		if trimmed := strings.TrimSpace(field.src); trimmed != "" {
+			*field.dst = trimmed
+		}
 	}
 
 	if caps.audit {
