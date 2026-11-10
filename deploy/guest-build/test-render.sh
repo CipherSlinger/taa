@@ -480,7 +480,14 @@ check "role: analysis selects CONTRACT_TYPE=3" "3" \
 # The handler, the package directory and the Pod name are the three things that
 # must not be shared: the first two because containerd resolves boot assets
 # through them, the last because a Pod's role cannot be changed in place.
-for role in taa-train taa-infer taa-analysis; do
+for role in taa-train taa-infer taa-analysis taa-train-dcu taa-infer-dcu; do
+  # The two DCU roles extend a different runtime class and therefore carry a
+  # different handler prefix; everything else about the role naming is shared.
+  case "$role" in
+    taa-train-dcu) want_handler=kata-qemu-hygon-dcu-csv2-taa-train; want_pkg=package-train-dcu ;;
+    taa-infer-dcu) want_handler=kata-qemu-hygon-dcu-csv2-taa-infer; want_pkg=package-infer-dcu ;;
+    *) want_handler=kata-qemu-csv2-$role; want_pkg=package-${role#taa-} ;;
+  esac
   # The common fixture pins the handler, the package directory and the Pod name
   # (other sections assert against those literals), so they are blanked here:
   # an empty value is exactly what makes the role default apply.
@@ -491,18 +498,18 @@ for role in taa-train taa-infer taa-analysis; do
   dn="$(sed -n 's/^TEST_POD_NAME=//p' <<<"$derived" | tr -d "'")"
   # The suffix has to be the role's own, not merely present: a train package
   # installed under the infer handler would attach the wrong kernel.
-  check "role/$role: handler is $role's own" "kata-qemu-csv2-$role" "$dh"
+  check "role/$role: handler is $role's own" "$want_handler" "$dh"
   # Same rule as the handler: the directory owns the role's suffix, so an
   # explicit override can never quietly land one role on another's package.
-  check "role/$role: package dir is package-${role#taa-}" \
-    "/root/taa-images/package-${role#taa-}" "$dp"
+  check "role/$role: package dir is $want_pkg" \
+    "/root/taa-images/$want_pkg" "$dp"
   case "$dn" in
-    test-kata-csv2-taa*) echo "ok   role/$role: Pod name is role-scoped ($dn)" ;;
+    test-kata-*csv2-taa*) echo "ok   role/$role: Pod name is role-scoped ($dn)" ;;
     *) echo "FAIL role/$role: Pod name is not role-scoped: $dn" >&2; failures=$((failures + 1)) ;;
   esac
   printf '%s\n%s\n' "$dh" "$dp" >> "$tmp_dir/role-names.txt"
 done
-check "role: the three roles share no handler or package directory" "0" \
+check "role: none of the roles share a handler or package directory" "0" \
   "$(sort "$tmp_dir/role-names.txt" | uniq -d | wc -l)"
 
 # Only the training role ships the payload. The analysis role's config is
@@ -540,7 +547,54 @@ if problems:
 PY
 echo "ok   role: the analysis Pod carries runAsUser=0"
 
-# ── 5b. expected MEASUREMENT ───────────────────────────────────────────────
+# ── 5b. DCU role package ───────────────────────────────────────────────────
+# A DCU package has to differ from its CPU counterpart in exactly the places
+# the guest and the scheduler read: the runtime class the handler extends, the
+# kernel module taa-init loads and the extended resource the test Pod requests.
+# The same fixture template stands in for the DCU template here.
+dcu_pkg="$tmp_dir/role/pkg-train-dcu"
+env "${common_env[@]}" REMOTE_HOST=invalid.invalid DIST_DIR="$dcu_pkg" \
+  RUNTIME_HANDLER= RUNTIME_TYPE= REMOTE_PACKAGE_DIR= TEST_POD_NAME= \
+  TAA_MODULES= TEST_POD_DEVICE_RESOURCE= KATA_DEFAULT_MEMORY= \
+  "$BUILD" taa-train-dcu render >/dev/null
+dcu_kata="$(cat "$dcu_pkg/config/kata-config.toml")"
+check_contains "dcu: the handler is the DCU one" \
+  '"handler": "kata-qemu-hygon-dcu-csv2-taa-train"' "$(cat "$dcu_pkg/k8s/runtimeclass.yaml")"
+check_contains "dcu: the runtime type extends the DCU class" \
+  'runtime_type = "io.containerd.kata-qemu-hygon-dcu-csv2.v2"' \
+  "$(cat "$dcu_pkg/config/containerd-runtime-handler.toml")"
+check_contains "dcu: the guest is told to load hycu" 'taa.modules=hycu' "$dcu_kata"
+check_contains "dcu: the module rides with the other identity tokens" \
+  "taa.addr=0.0.0.0:6001 taa.modules=hycu" "$dcu_kata"
+check "dcu: guest RAM matches the other large-image role" "20480" \
+  "$(sed -n 's/^default_memory = //p' "$dcu_pkg/config/kata-config.toml")"
+# The card has to be requested and limited; the extended resource is scheduled
+# from requests, and a request without the matching limit is rejected.
+python3 - "$dcu_pkg/test/test-pod.yaml" <<'PY'
+import json, sys
+pod = json.load(open(sys.argv[1]))
+c = pod["spec"]["containers"][0]
+res = c.get("resources", {})
+want = {"hygon.cn/k100_ai": "1"}
+problems = []
+if res.get("requests") != want:
+    problems.append(f"requests: {res.get('requests')}")
+if res.get("limits") != want:
+    problems.append(f"limits: {res.get('limits')}")
+if problems:
+    print("\n".join(problems), file=sys.stderr)
+    sys.exit(1)
+PY
+echo "ok   dcu: the test Pod requests and is limited to the card"
+# The CPU package must not gain either of them: its initrd ships no kmod, and
+# an extended resource it never uses would keep the Pod Pending on nodes
+# without a DCU.
+check_absent "dcu: the CPU package names no module" 'taa.modules=' \
+  "$(cat "$pkg/config/kata-config.toml")"
+check_absent "dcu: the CPU test Pod requests no card" 'hygon.cn/k100_ai' \
+  "$(cat "$pkg/test/test-pod.yaml")"
+
+# ── 5c. expected MEASUREMENT ───────────────────────────────────────────────
 MEASURE="$SCRIPT_DIR/render/measure.py"
 expected_cmdline="tsc=reliable no_timer_check rcupdate.rcu_expedited=1 i8042.direct=1 i8042.dumbkbd=1 i8042.nopnp=1 i8042.noaux=1 noreplace-smp reboot=k cryptomgr.notests net.ifnames=0 pci=lastbus=0 console=hvc0 console=hvc1 debug panic=1 nr_cpus=3 selinux=0 scsi_mod.scan=none agent.log=debug agent.debug_console agent.debug_console_vport=1026 rdinit=/usr/local/bin/taa-init console=ttyS0 quiet $identity_params"
 check "measure: cmdline follows the rendered config" "$expected_cmdline" "$(cat "$pkg/cmdline.txt")"

@@ -7,10 +7,11 @@
 > 并且补上了本模板没有的一步——`delete` 清理。下面的手工命令仍适用于需要分步排查的场合。
 > 它自己不带任何默认值，全部设置都向这里的 `build-initrd.sh print-config` 要，所以两边不会漂移。
 
-> **三种角色**：`build-initrd.sh` 和 `deploy-taa-vm.sh` 都接受 `taa-train`（默认）、`taa-infer`、
-> `taa-analysis`。角色同时决定 `CONTRACT_TYPE`（1/2/3）、runtime handler、宿主机交付包目录、
-> 测试 Pod 名和默认镜像，所以三份可以并存于同一台宿主。**只有 `taa-train` 的 initrd 带 semgrep
-> 载荷**（约 350 MiB 未压缩）；另外两个角色的注入配置把扫描引擎改写成 `regex`。
+> **五种角色**：`build-initrd.sh` 和 `deploy-taa-vm.sh` 都接受 `taa-train`（默认）、`taa-infer`、
+> `taa-analysis`、`taa-train-dcu`、`taa-infer-dcu`（`taa-infer-duc` 是别名）。角色同时决定
+> `CONTRACT_TYPE`（1/2/3）、runtime handler、宿主机交付包目录、测试 Pod 名和默认镜像，所以
+> 五份可以并存于同一台宿主。**只有训练角色（`taa-train`、`taa-train-dcu`）的 initrd 带 semgrep
+> 载荷**（约 350 MiB 未压缩）；其余角色的注入配置把扫描引擎改写成 `regex`。
 > 下文的默认值全部是 `taa-train` 的：
 >
 > | 角色 | CONTRACT_TYPE | handler | 交付包目录 | 默认镜像 |
@@ -18,6 +19,13 @@
 > | `taa-train` | 1 | `kata-qemu-csv2-taa-train` | `/root/taa-images/package-train` | `taa-env:v1-train-infer` |
 > | `taa-infer` | 2 | `kata-qemu-csv2-taa-infer` | `/root/taa-images/package-infer` | `taa-env:v1-train-infer` |
 > | `taa-analysis` | 3 | `kata-qemu-csv2-taa-analysis` | `/root/taa-images/package-analysis` | `jupyter-nologin-full:v2.2` |
+> | `taa-train-dcu` | 1 | `kata-qemu-hygon-dcu-csv2-taa-train` | `/root/taa-images/package-train-dcu` | `172.16.10.178:31313/vllm:ubuntu-dtk` |
+> | `taa-infer-dcu` | 2 | `kata-qemu-hygon-dcu-csv2-taa-infer` | `/root/taa-images/package-infer-dcu` | `172.16.10.178:31313/vllm:ubuntu-dtk` |
+>
+> 两个 `-dcu` 角色面向 DCU 全机密运行时：用 DCU 内核与 `configuration-qemu-hygon-dcu-csv2.toml`，
+> 内核命令行带 `taa.modules=hycu`，测试 Pod 申请 `hygon.cn/k100_ai`。驱动是树外模块，宿主机上
+> 没有文件，**首次构建前必须先用该角色跑一次 `fetch-base`**，把模块、固件和 kmod 从 DCU guest
+> 镜像取到 `deploy/guest-build/base/dcu-payload/`。
 
 ## 0. 先确认基础变量
 

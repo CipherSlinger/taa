@@ -153,6 +153,96 @@ rc=$?
 set -e
 check "missing CMDLINE_FILE still returns 0" "0" "$rc"
 
+# taa.modules is the one identity key that is not a TAA setting: it names the
+# drivers taa-init has to load before anything looks for the device.
+modules_cmdline="$WORK_DIR/cmdline-modules"
+printf 'taa.modules=hycu,hycu-sched\n' >"$modules_cmdline"
+got="$(
+  unset TAA_MODULES
+  export CMDLINE_FILE="$modules_cmdline"
+  apply_cmdline_identity >/dev/null 2>&1
+  printf '%s' "${TAA_MODULES:-<unset>}"
+)"
+check "maps taa.modules onto TAA_MODULES" "hycu,hycu-sched" "$got"
+
+echo "== load_kernel_modules =="
+
+# A stub kmod records the argv it was called with; the real one only lives
+# inside the DCU payload and cannot be run here.
+stub_kmod="$WORK_DIR/kmod"
+kmod_log="$WORK_DIR/kmod.log"
+cat >"$stub_kmod" <<'EOF'
+#!/bin/sh
+printf '%s\n' "$*" >>"${KMOD_LOG:?}"
+exit "${KMOD_STUB_RC:-0}"
+EOF
+chmod +x "$stub_kmod"
+
+release="$(uname -r)"
+modules_dir="$WORK_DIR/modules"
+mkdir -p "$modules_dir/$release"
+: >"$modules_dir/$release/modules.dep"
+
+# Empty list: the function must not touch kmod at all. That is what every
+# non-DCU role relies on, since their initrd ships no kmod binary.
+rm -f "$kmod_log"
+set +e
+( unset TAA_MODULES
+  KMOD_BIN="$stub_kmod" MODULES_DIR="$modules_dir" load_kernel_modules ) >/dev/null 2>&1
+rc=$?
+set -e
+check "an empty module list is a no-op" "absent" \
+  "$([[ -e "$kmod_log" ]] && echo present || echo absent)"
+check "an empty module list still returns 0" "0" "$rc"
+
+# Comma-separated, in order, one modprobe per name; an empty element between
+# commas must not become an empty module name.
+got="$(
+  export KMOD_LOG="$kmod_log"
+  KMOD_BIN="$stub_kmod" MODULES_DIR="$modules_dir" TAA_MODULES=hycu,,hycu-sched \
+    load_kernel_modules >/dev/null 2>&1
+  cat "$kmod_log"
+)"
+check "loads each named module in order" 'modprobe hycu
+modprobe hycu-sched' "$got"
+
+# modules.dep is shipped, so the normal path must not pay for a depmod.
+rm -f "$kmod_log"
+( export KMOD_LOG="$kmod_log"
+  KMOD_BIN="$stub_kmod" MODULES_DIR="$modules_dir" TAA_MODULES=hycu \
+    load_kernel_modules ) >/dev/null 2>&1
+check "does not re-run depmod when modules.dep is present" "1" "$(wc -l <"$kmod_log")"
+
+# Without it the kernel cannot resolve dependencies, so depmod runs first; it
+# writes only into the initrd's ramfs and is cheap next to an unloadable module.
+empty_modules="$WORK_DIR/modules-empty"
+mkdir -p "$empty_modules"
+rm -f "$kmod_log"
+( export KMOD_LOG="$kmod_log"
+  KMOD_BIN="$stub_kmod" MODULES_DIR="$empty_modules" TAA_MODULES=hycu \
+    load_kernel_modules ) >/dev/null 2>&1
+check "runs depmod before loading when modules.dep is missing" "depmod -b / $release" \
+  "$(head -1 "$kmod_log")"
+
+# PID 1 must not exit: a module that fails to load is logged, and the boot goes
+# on. The task that needs the card fails later with an error naming it.
+set +e
+( export KMOD_LOG="$kmod_log"; export KMOD_STUB_RC=1
+  KMOD_BIN="$stub_kmod" MODULES_DIR="$modules_dir" TAA_MODULES=hycu,hycu-sched \
+    load_kernel_modules ) >/dev/null 2>&1
+rc=$?
+set -e
+check "a failed modprobe is not fatal" "0" "$rc"
+
+# A role whose initrd has no kmod (or a payload fetched without it) must warn
+# and continue rather than abort.
+set +e
+( KMOD_BIN="$WORK_DIR/no-such-kmod" MODULES_DIR="$modules_dir" TAA_MODULES=hycu \
+  load_kernel_modules ) >/dev/null 2>&1
+rc=$?
+set -e
+check "a missing kmod is not fatal" "0" "$rc"
+
 echo "== main flow invariants =="
 
 # The PATH extension is a side effect on the environment, so it lives in the main
@@ -175,6 +265,17 @@ check "exports the deployment marker before starting TAA" "yes" \
   "$([[ -n "$dep_line" && -n "$taa_line" && "$dep_line" -lt "$taa_line" ]] && echo yes || echo no)"
 check "declares the initrd shape rather than guessing" "yes" \
   "$(grep -qF 'TAA_DEPLOYMENT=initrd' "$TAA_INIT" && echo yes || echo no)"
+
+# Module loading sits between the two edges that define it: after
+# apply_cmdline_identity, because the list comes from the command line, and
+# before TAA starts, because the device has to exist by the time anything opens
+# it. Getting either edge wrong leaves the driver unloaded with no error.
+identity_line="$(grep -n '^apply_cmdline_identity$' "$TAA_INIT" | cut -d: -f1 | head -1 || true)"
+modules_line="$(grep -n '^load_kernel_modules$' "$TAA_INIT" | cut -d: -f1 | head -1 || true)"
+check "loads modules after the command line is read" "yes" \
+  "$([[ -n "$identity_line" && -n "$modules_line" && "$identity_line" -lt "$modules_line" ]] && echo yes || echo no)"
+check "loads modules before TAA starts" "yes" \
+  "$([[ -n "$modules_line" && -n "$taa_line" && "$modules_line" -lt "$taa_line" ]] && echo yes || echo no)"
 
 echo
 if [[ "$failures" -eq 0 ]]; then

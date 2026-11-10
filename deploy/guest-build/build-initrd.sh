@@ -57,13 +57,24 @@ fi
 # leave a running handler pointing at the other role's kernel. Two roles under
 # one handler is the same defect one level up.
 #
+# One spelling per role downstream. `taa-infer-duc` is accepted because it is an
+# easy transposition and was asked for by that name; everything after this point
+# only ever sees the canonical `taa-infer-dcu`.
+normalize_role() {
+  case "$1" in
+    taa-infer-duc) echo taa-infer-dcu ;;
+    *) echo "$1" ;;
+  esac
+}
+
 # The role argument is accepted anywhere in argv and removed before dispatch, so
 # both `build-initrd.sh taa-infer all` and `build-initrd.sh all taa-infer` work.
-TAA_ROLE="${TAA_ROLE:-}"
+TAA_ROLE="$(normalize_role "${TAA_ROLE:-}")"
 role_args=()
 for role_arg in "$@"; do
+  role_arg="$(normalize_role "$role_arg")"
   case "$role_arg" in
-    taa-train|taa-infer|taa-analysis) TAA_ROLE="$role_arg" ;;
+    taa-train|taa-infer|taa-analysis|taa-train-dcu|taa-infer-dcu) TAA_ROLE="$role_arg" ;;
     *) role_args+=("$role_arg") ;;
   esac
 done
@@ -82,18 +93,22 @@ TAA_ROLE="${TAA_ROLE:-taa-train}"
 # What the role means to the guest, in one place each.
 role_contract_type() {  # CONTRACT_TYPE: 1 train, 2 infer, 3 data analysis
   case "$TAA_ROLE" in
-    taa-train) echo 1 ;;
-    taa-infer) echo 2 ;;
+    taa-train|taa-train-dcu) echo 1 ;;
+    taa-infer|taa-infer-dcu) echo 2 ;;
     taa-analysis) echo 3 ;;
   esac
 }
 
-# Only the training role carries the semgrep payload. Both other roles land or
-# run models that were already audited where they were trained, so shipping a
-# 350 MiB Python runtime and scanner into their measured initrd buys nothing --
-# and the data-analysis role never audits at all.
+# Only the training roles carry the semgrep payload. Inference and data analysis
+# land or run models that were already audited where they were trained, so
+# shipping a 350 MiB Python runtime and scanner into their measured initrd buys
+# nothing -- and the data-analysis role never audits at all. The DCU variants
+# keep the split: a DCU training guest audits code like any other training one.
 role_wants_semgrep() {
-  [[ "$TAA_ROLE" == "taa-train" ]]
+  case "$TAA_ROLE" in
+    taa-train|taa-train-dcu) return 0 ;;
+    *) return 1 ;;
+  esac
 }
 
 # Handler and delivery directory are per role, so a host can hold all three side
@@ -105,6 +120,19 @@ role_runtime_handler() {
     taa-train) echo kata-qemu-csv2-taa-train ;;
     taa-infer) echo kata-qemu-csv2-taa-infer ;;
     taa-analysis) echo kata-qemu-csv2-taa-analysis ;;
+    taa-train-dcu) echo kata-qemu-hygon-dcu-csv2-taa-train ;;
+    taa-infer-dcu) echo kata-qemu-hygon-dcu-csv2-taa-infer ;;
+  esac
+}
+
+# The containerd runtime_type of the Kata class this handler extends. It is a
+# property of the *host runtime* the package layers on, not of the role name:
+# the plain CSV2 roles extend kata-qemu-csv2, and the DCU roles extend the
+# host's hygon-dcu-csv2 class, which is what makes QEMU hand the card through.
+role_runtime_type() {
+  case "$TAA_ROLE" in
+    taa-train-dcu|taa-infer-dcu) echo io.containerd.kata-qemu-hygon-dcu-csv2.v2 ;;
+    *) echo io.containerd.kata-qemu-csv2.v2 ;;
   esac
 }
 
@@ -113,6 +141,8 @@ role_package_subdir() {
     taa-train) echo package-train ;;
     taa-infer) echo package-infer ;;
     taa-analysis) echo package-analysis ;;
+    taa-train-dcu) echo package-train-dcu ;;
+    taa-infer-dcu) echo package-infer-dcu ;;
   esac
 }
 
@@ -121,6 +151,8 @@ role_test_pod_name() {
     taa-train) echo test-kata-csv2-taa ;;
     taa-infer) echo test-kata-csv2-taa-infer ;;
     taa-analysis) echo test-kata-csv2-taa-analysis ;;
+    taa-train-dcu) echo test-kata-hygon-dcu-csv2-taa ;;
+    taa-infer-dcu) echo test-kata-hygon-dcu-csv2-taa-infer ;;
   esac
 }
 
@@ -135,6 +167,58 @@ role_test_image() {
   case "$TAA_ROLE" in
     taa-train|taa-infer) echo 172.16.10.178:31313/taa-env:v1-train-infer ;;
     taa-analysis) echo 172.16.10.178:31313/jupyter-nologin-full:v2.2 ;;
+    # The DCU roles pull a DTK image: the guest runs the Hygon driver and the
+    # container needs the matching runtime stack. This is the image the verified
+    # DCU test Pod on the same host uses, so it is known to start there.
+    taa-train-dcu|taa-infer-dcu) echo 172.16.10.178:31313/vllm:ubuntu-dtk ;;
+  esac
+}
+
+# Kernel modules the guest must load before anything can use the device. The
+# DCU kernel builds hycu out of tree and the base initrd carries neither the
+# module tree nor kmod, so the package ships both and taa-init loads them from
+# this list, which it receives as taa.modules= on the kernel command line.
+role_kernel_modules() {
+  case "$TAA_ROLE" in
+    taa-train-dcu|taa-infer-dcu) echo hycu ;;
+    *) echo "" ;;
+  esac
+}
+
+# Whether the role's initrd carries the DCU driver tree. This is separate from
+# role_kernel_modules: the modules list is identity (it travels on the command
+# line), while the payload is a build input that has to be fetched once.
+role_wants_dcu_payload() {
+  case "$TAA_ROLE" in
+    taa-train-dcu|taa-infer-dcu) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+# Extended resource the test Pod must request for the card to reach the guest.
+# Empty for roles that do not need a device.
+role_device_resource() {
+  case "$TAA_ROLE" in
+    taa-train-dcu|taa-infer-dcu) echo hygon.cn/k100_ai=1 ;;
+    *) echo "" ;;
+  esac
+}
+
+# The guest kernel and Kata template the role boots. The DCU runtime uses its
+# own kernel (a different release with the hycu patches) and its own shipped
+# config, so both the fetch and the render follow the role instead of taking a
+# separate flag that could disagree with the package directory.
+role_kernel_src() {
+  case "$TAA_ROLE" in
+    taa-train-dcu|taa-infer-dcu) echo /opt/kata/share/kata-containers/vmlinuz-hycu-confidential-csv.container ;;
+    *) echo /opt/kata/share/kata-containers/vmlinuz-confidential-csv.container ;;
+  esac
+}
+
+role_kata_config_src() {
+  case "$TAA_ROLE" in
+    taa-train-dcu|taa-infer-dcu) echo /opt/kata/share/defaults/kata-containers/configuration-qemu-hygon-dcu-csv2.toml ;;
+    *) echo /opt/kata/share/defaults/kata-containers/configuration-qemu-csv2.toml ;;
   esac
 }
 
@@ -164,6 +248,9 @@ role_default_memory() {
   case "$TAA_ROLE" in
     taa-train|taa-infer) echo 10240 ;;
     taa-analysis) echo 20480 ;;
+    # A DCU guest runs the DTK image, which unpacks to roughly the same size as
+    # the analysis image above (~6.9 GiB), so it needs the same tmpfs headroom.
+    taa-train-dcu|taa-infer-dcu) echo 20480 ;;
   esac
 }
 
@@ -215,6 +302,15 @@ KATA_CONFIG_TEMPLATE="${KATA_CONFIG_TEMPLATE:-$SCRIPT_DIR/base/configuration-qem
 # has neither python3 nor semgrep, and TAA resolves the semgrep CLI through PATH.
 # Build it with build-semgrep-payload.sh; it is gitignored because of its size.
 TAA_SEMGREP_PAYLOAD_DIR="${TAA_SEMGREP_PAYLOAD_DIR:-$SCRIPT_DIR/semgrep-payload}"
+
+# DCU driver payload. The hycu modules and their firmware exist only inside the
+# DCU guest image's rootfs, and the base initrd has neither them nor kmod, so a
+# DCU initrd has to carry the whole tree plus the module loader. fetch-base
+# extracts it from the image (see fetch_dcu_payload); the layout mirrors the
+# semgrep payload, rootfs/ prefixed by the guest paths it will occupy.
+DCU_PAYLOAD_DIR="${DCU_PAYLOAD_DIR:-$SCRIPT_DIR/base/dcu-payload}"
+# The installed DCU guest image; fetch-base reads the modules out of it.
+DCU_REMOTE_IMAGE="${DCU_REMOTE_IMAGE:-/opt/kata/share/kata-containers/kata-containers-2026-10-27-13:31:15.991899743+0000-63f5ac56d-hycu-csv.img}"
 
 # Runtime configuration written into the init wrapper. These defaults must stay
 # in sync with the literal defaults in taa-init.sh: the wrapper is a standalone
@@ -268,6 +364,10 @@ if [[ -n "${TAA_CONTRACT_TYPE:-}" && "$TAA_CONTRACT_TYPE" != "$(role_contract_ty
 fi
 TAA_CONTRACT_TYPE="$(role_contract_type)"
 TAA_LLM_ENDPOINT="${TAA_LLM_ENDPOINT:-}"
+# Kernel modules the guest wrapper loads at boot (comma-separated). It travels as
+# taa.modules= on the kernel command line, like the rest of the identity, so an
+# operator can change it without rebuilding the measured initrd.
+TAA_MODULES="${TAA_MODULES:-$(role_kernel_modules)}"
 
 # Read the platform public key from a key file. The platform-mock persists
 # {"privateKeyPem": ..., "publicKeyHex": "04..."}; a file that is just the hex
@@ -333,9 +433,9 @@ REMOTE_USER="${REMOTE_USER:-root}"
 REMOTE_HOST="${REMOTE_HOST:-172.16.10.178}"
 REMOTE="${REMOTE_USER}@${REMOTE_HOST}"
 REMOTE_BASE_INITRD_SRC="${REMOTE_BASE_INITRD_SRC:-/opt/kata/share/kata-containers/kata-containers-initrd-confidential-csv.img}"
-REMOTE_KERNEL_SRC="${REMOTE_KERNEL_SRC:-/opt/kata/share/kata-containers/vmlinuz-confidential-csv.container}"
+REMOTE_KERNEL_SRC="${REMOTE_KERNEL_SRC:-$(role_kernel_src)}"
 REMOTE_OVMF_SRC="${REMOTE_OVMF_SRC:-/opt/kata/share/ovmf/OVMFCSV.fd}"
-REMOTE_KATA_CONFIG_SRC="${REMOTE_KATA_CONFIG_SRC:-/opt/kata/share/defaults/kata-containers/configuration-qemu-csv2.toml}"
+REMOTE_KATA_CONFIG_SRC="${REMOTE_KATA_CONFIG_SRC:-$(role_kata_config_src)}"
 # Where the delivery package lives on the host. The package is a runtime
 # dependency, not just a shipping container: it carries the initrd, the kernel
 # and the OVMF firmware, the Kata config points at those in-package copies, and
@@ -372,7 +472,7 @@ KATA_HYPERVISOR_SECTION="${KATA_HYPERVISOR_SECTION:-hypervisor.qemu}"
 # it to override, or to empty to keep the template's value.
 KATA_DEFAULT_MEMORY="${KATA_DEFAULT_MEMORY:-$(role_default_memory)}"
 RUNTIME_HANDLER="${RUNTIME_HANDLER:-$(role_runtime_handler)}"
-RUNTIME_TYPE="${RUNTIME_TYPE:-io.containerd.kata-qemu-csv2.v2}"
+RUNTIME_TYPE="${RUNTIME_TYPE:-$(role_runtime_type)}"
 RUNTIME_PATH="${RUNTIME_PATH:-/opt/kata/bin/containerd-shim-kata-v2}"
 SNAPSHOTTER="${SNAPSHOTTER:-nydus}"
 RESTART_KUBELET="${RESTART_KUBELET:-0}"
@@ -402,6 +502,10 @@ TEST_POD_RUN_AS_USER="${TEST_POD_RUN_AS_USER:-$(role_test_pod_run_as_user)}"
 # never pull it. The data-analysis role uses the jupyter base instead, whose
 # runtime owns /home/jovyan.
 TEST_IMAGE="${TEST_IMAGE:-$(role_test_image)}"
+# Extended resource the test Pod requests, as NAME=COUNT. Empty for roles that
+# need no device. The card is attached through the resource request itself (the
+# device plugin's CDI path), so a Pod that omits it boots a guest without a DCU.
+TEST_POD_DEVICE_RESOURCE="${TEST_POD_DEVICE_RESOURCE:-$(role_device_resource)}"
 # Optional `docker save` archive of TEST_IMAGE. When set, the package carries it
 # under image/ and install.sh loads and pushes it if the registry lacks the tag.
 # A CoCo guest pulls the image itself through CDH, so the archive has to reach
@@ -435,28 +539,37 @@ MEASURE_APPEND="${MEASURE_APPEND:-}"
 # 因此本地反复调试是安全的；只有显式指定 upload、launch 或 all 时才会触碰远程服务器。
 usage() {
   cat <<EOF
-Usage: $0 [taa-train|taa-infer|taa-analysis] [build|fetch-base|render|upload|launch|all|print-config]
+Usage: $0 [taa-train|taa-infer|taa-analysis|taa-train-dcu|taa-infer-dcu] [build|fetch-base|render|upload|launch|all|print-config]
 
 Role (first word, or TAA_ROLE; default taa-train):
   taa-train     Training instance. CONTRACT_TYPE=1, its own handler and package
-                directory, and the only role whose initrd carries the semgrep
-                payload.
+                directory, and the only non-DCU role whose initrd carries the
+                semgrep payload.
   taa-infer     Inference instance. CONTRACT_TYPE=2, its own handler and package
                 directory, no semgrep payload.
   taa-analysis  Data-analysis instance. CONTRACT_TYPE=3, its own handler and
                 package directory, the jupyter base image, no semgrep payload.
                 Its injected config selects the built-in regex engine instead.
+  taa-train-dcu Training instance on the Hygon DCU full-encryption runtime.
+                CONTRACT_TYPE=1, handler kata-qemu-hygon-dcu-csv2-taa-train,
+                the semgrep payload, the DCU kernel and the hycu driver tree.
+  taa-infer-dcu Inference on the same DCU runtime. CONTRACT_TYPE=2, no semgrep
+                payload, same kernel and driver tree. `taa-infer-duc` is accepted
+                as an alias of this role.
   The role decides the default INITRD_OUT, DIST_DIR, RUNTIME_HANDLER,
-  REMOTE_PACKAGE_DIR, TEST_POD_NAME and TEST_IMAGE; each of those still accepts
-  an explicit override.
+  RUNTIME_TYPE, REMOTE_KERNEL_SRC, REMOTE_PACKAGE_DIR, TEST_POD_NAME,
+  TEST_IMAGE and KATA_DEFAULT_MEMORY; each of those still accepts an explicit
+  override.
 
 Commands:
   build       Build $INITRD_OUT from $BASE_INITRD and inject TAA + init wrapper.
-              The base (plus the semgrep payload for taa-train) comes from a
-              cached seed image under $SEED_DIR, so only TAA is repacked on a
-              rerun; a changed base or payload rebuilds the seed once.
+              The base (plus the semgrep and DCU payloads the role names) comes
+              from a cached seed image under $SEED_DIR, so only TAA is repacked
+              on a rerun; a changed base or payload rebuilds the seed once.
   fetch-base  Copy the real base initrd, kernel, OVMF and shipped Kata config
-              from $REMOTE into $(basename "$SCRIPT_DIR")/base/.
+              from $REMOTE into $(basename "$SCRIPT_DIR")/base/. A DCU role also
+              extracts the hycu modules, their firmware and kmod out of the DCU
+              guest image into base/dcu-payload/.
   render      Render the Kata config, containerd handler, K8s manifests, the
               install script and the guest bundle (initrd, kernel, OVMF) into
               $DIST_DIR. Local only; no host access.
@@ -496,6 +609,7 @@ Environment overrides:
   TEST_POD_NAME=$TEST_POD_NAME
   TEST_IMAGE=$TEST_IMAGE
   TEST_IMAGE_ARCHIVE=${TEST_IMAGE_ARCHIVE:-(none; the registry must already hold TEST_IMAGE)}
+  TEST_POD_DEVICE_RESOURCE=${TEST_POD_DEVICE_RESOURCE:-(none)}
   TEST_POD_ANNOTATIONS=$TEST_POD_ANNOTATIONS
   TAA_ADDR=$TAA_ADDR
   TAA_PLATFORM_IP=$TAA_PLATFORM_IP
@@ -506,6 +620,9 @@ Environment overrides:
   TAA_CONTRACT_ID=$TAA_CONTRACT_ID
   TAA_CONTRACT_TYPE=$TAA_CONTRACT_TYPE
   TAA_LLM_ENDPOINT=$TAA_LLM_ENDPOINT
+  TAA_MODULES=${TAA_MODULES:-(none)}
+  DCU_PAYLOAD_DIR=$DCU_PAYLOAD_DIR
+  DCU_REMOTE_IMAGE=$DCU_REMOTE_IMAGE
   ALLOW_MISSING_TAA_ENV=$ALLOW_MISSING_TAA_ENV
   SKIP_KATA_TEMPLATE_CHECK=$SKIP_KATA_TEMPLATE_CHECK
   CONTAINERD_CONFIG=$CONTAINERD_CONFIG
@@ -697,6 +814,25 @@ check_build_inputs() {
       fi
     done
   fi
+
+  # A DCU initrd without the driver tree boots fine and then has no card: the
+  # hycu modules exist only in the DCU guest image, so the only fix is a fetch.
+  if role_wants_dcu_payload; then
+    local dcu_release
+    dcu_release="$(sed -n 's/^release=//p' "$DCU_PAYLOAD_DIR/SOURCE" 2>/dev/null | head -n 1)"
+    if [[ -z "$dcu_release" ]]; then
+      echo "error: $TAA_ROLE 需要 DCU 驱动载荷，但 $DCU_PAYLOAD_DIR 尚未取回" >&2
+      echo "hint: run '$0 fetch-base'（从 $REMOTE:$DCU_REMOTE_IMAGE 提取 hycu 模块与 kmod）" >&2
+      exit 1
+    fi
+    if [[ ! -x "$DCU_PAYLOAD_DIR/rootfs/usr/bin/kmod" ]] ||
+      ! find "$DCU_PAYLOAD_DIR/rootfs/usr/lib/modules/$dcu_release" -name 'hycu.ko' -print -quit |
+        grep -q .; then
+      echo "error: DCU 驱动载荷不完整（$dcu_release）: $DCU_PAYLOAD_DIR" >&2
+      echo "hint: FORCE_DCU_PAYLOAD=1 $0 fetch-base 重新提取" >&2
+      exit 1
+    fi
+  fi
 }
 
 # Copy the semgrep payload into the staging tree under the guest paths it will
@@ -720,6 +856,23 @@ stage_semgrep_payload() {
       awk '{n++; s += $1} END {printf "%d %.1f\n", n, s / 1048576}'
   )
   echo "semgrep 载荷（未压缩，按文件大小计）: ${payload_mib} MiB / ${payload_files} 个文件"
+}
+
+# Copy the DCU driver tree into the staging tree. The payload mirrors the guest
+# rootfs (usr/lib/modules, usr/lib/firmware, usr/bin/kmod), so this is one copy.
+stage_dcu_payload() {
+  local stage_dir="$1"
+  echo "注入 DCU 驱动载荷"
+
+  local payload_root="$DCU_PAYLOAD_DIR/rootfs"
+  cp -a "$payload_root/." "$stage_dir/"
+
+  local payload_files payload_mib
+  read -r payload_files payload_mib < <(
+    find "$payload_root" -mindepth 1 -printf '%s\n' |
+      awk '{n++; s += $1} END {printf "%d %.1f\n", n, s / 1048576}'
+  )
+  echo "DCU 载荷（未压缩，按文件大小计）: ${payload_mib} MiB / ${payload_files} 个文件"
 }
 
 # Install the injected TAA config into the staging tree.
@@ -851,11 +1004,18 @@ check_initrd_identity() {
 # initramfs.py (see archive_manifest).
 
 seed_kind() {
+  local kind="plain"
   if initrd_wants_semgrep; then
-    echo semgrep
-  else
-    echo plain
+    kind="semgrep"
   fi
+  if role_wants_dcu_payload; then
+    if [[ "$kind" == "semgrep" ]]; then
+      kind="semgrep-dcu"
+    else
+      kind="dcu"
+    fi
+  fi
+  echo "$kind"
 }
 
 # Content fingerprint of the payload tree: every path with its type, mode and
@@ -870,15 +1030,30 @@ semgrep_payload_fingerprint() {
   } | sha256sum | awk '{print $1}'
 }
 
+# Content fingerprint of the DCU driver tree, same shape as the semgrep one: a
+# re-extraction of the same image is a no-op, a different image or an edited file
+# invalidates the cached seed.
+dcu_payload_fingerprint() {
+  local rootfs="$DCU_PAYLOAD_DIR/rootfs"
+  {
+    ( cd "$rootfs" && find . -mindepth 1 -printf '%P\t%y\t%m\t%l\n' | LC_ALL=C sort )
+    ( cd "$rootfs" && find . -type f -print0 | LC_ALL=C sort -z | xargs -0 -r sha256sum )
+  } | sha256sum | awk '{print $1}'
+}
+
 # Everything a cached seed depends on. Bump the format line when the seed layout
 # itself changes, so an old cache cannot be mistaken for one built this way.
+# (format=3 added the DCU payload and the combined semgrep-dcu seed.)
 seed_fingerprint() {
   local kind="$1"
-  printf 'format=2\n'
+  printf 'format=3\n'
   printf 'base=%s\n' "$(sha256sum "$BASE_INITRD" | awk '{print $1}')"
-  if [[ "$kind" == semgrep ]]; then
-    printf 'semgrep_payload=%s\n' "$(semgrep_payload_fingerprint)"
-  fi
+  case "$kind" in
+    semgrep|semgrep-dcu) printf 'semgrep_payload=%s\n' "$(semgrep_payload_fingerprint)" ;;
+  esac
+  case "$kind" in
+    dcu|semgrep-dcu) printf 'dcu_payload=%s\n' "$(dcu_payload_fingerprint)" ;;
+  esac
 }
 
 # Fill APPEND_ENTRIES with the paths under $1 that the image $2 does not already
@@ -998,9 +1173,14 @@ ensure_seed() {
       cp "$BASE_INITRD" "$image_tmp"
       cp "$BASE_MANIFEST" "$manifest_tmp"
       ;;
-    semgrep)
+    semgrep|dcu|semgrep-dcu)
       mkdir -p "$seed_work/stage"
-      stage_semgrep_payload "$seed_work/stage"
+      case "$kind" in
+        semgrep|semgrep-dcu) stage_semgrep_payload "$seed_work/stage" ;;
+      esac
+      case "$kind" in
+        dcu|semgrep-dcu) stage_dcu_payload "$seed_work/stage" ;;
+      esac
 
       # The staged tree lands in the measured image, so its modes are pinned
       # rather than inherited from the builder's umask. `cp -a` already carries
@@ -1234,6 +1414,86 @@ build_initrd() {
 # copy of these files goes stale silently -- the initrd that used to live in this
 # repository was truncated, and cpio reported no error -- so the host is the only
 # authority and this subcommand is how the build obtains its input.
+# Fetch the DCU driver payload (hycu modules, firmware, kmod) out of the installed
+# DCU guest image. The tree is stored under $DCU_PAYLOAD_DIR/rootfs, mirroring the
+# guest paths it will occupy and the layout of the semgrep payload, so the seed
+# builder can append it with the same walker.
+#
+# Reuse is keyed on a SOURCE file and the module directory; FORCE_DCU_PAYLOAD=1
+# re-extracts. The remote helper (fetch-dcu-payload.sh) writes progress to stderr
+# and the archive to stdout, so the archive is captured into a temporary file
+# here and only then unpacked -- a dropped connection cannot leave a half-written
+# tree that a later seed would trust.
+fetch_dcu_payload() {
+  local base_dir="$1"
+  local dst="$base_dir/dcu-payload"
+  local tree="$dst/rootfs"
+
+  require_cmd ssh
+  require_cmd tar
+  require_cmd sha256sum
+  require_cmd sed
+
+  if [[ -s "$dst/SOURCE" && -d "$tree/usr/lib/modules" && "${FORCE_DCU_PAYLOAD:-0}" != "1" ]]; then
+    echo "复用 DCU 驱动载荷: $dst（FORCE_DCU_PAYLOAD=1 可强制重新提取）"
+    return 0
+  fi
+
+  echo "从 $REMOTE:$DCU_REMOTE_IMAGE 提取 DCU 内核模块、固件和 kmod"
+  local image_sha
+  if ! image_sha="$(ssh "$REMOTE" "sha256sum $(printf '%q' "$DCU_REMOTE_IMAGE")" 2>/dev/null | awk '{print $1}')" ||
+    [[ -z "$image_sha" ]]; then
+    echo "error: 无法读取 DCU guest 镜像: $REMOTE:$DCU_REMOTE_IMAGE" >&2
+    exit 1
+  fi
+
+  local archive="$base_dir/dcu-payload.tar.zst.part"
+  if ! ssh "$REMOTE" bash -s -- "$DCU_REMOTE_IMAGE" \
+    <"$SCRIPT_DIR/fetch-dcu-payload.sh" >"$archive"; then
+    rm -f "$archive"
+    echo "error: 从 $REMOTE:$DCU_REMOTE_IMAGE 提取 DCU 载荷失败" >&2
+    exit 1
+  fi
+
+  rm -rf "$dst"
+  mkdir -p "$tree"
+  if ! tar --zstd -xf "$archive" -C "$tree"; then
+    rm -f "$archive"
+    rm -rf "$dst"
+    echo "error: 解包 DCU 载荷失败: $archive" >&2
+    exit 1
+  fi
+  rm -f "$archive"
+
+  local release="" candidate
+  for candidate in "$tree"/usr/lib/modules/*; do
+    [[ -d "$candidate" ]] || continue
+    case "$(basename "$candidate")" in
+      *hycu*) release="$(basename "$candidate")" && break ;;
+    esac
+  done
+  if [[ -z "$release" ]] || [[ ! -x "$tree/usr/bin/kmod" ]]; then
+    rm -rf "$dst"
+    echo "error: DCU 载荷缺少 hycu 模块树或 kmod" >&2
+    exit 1
+  fi
+
+  {
+    printf 'image=%s\n' "$DCU_REMOTE_IMAGE"
+    printf 'image_sha256=%s\n' "$image_sha"
+    printf 'release=%s\n' "$release"
+    printf 'fetched=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  } >"$dst/SOURCE"
+
+  local payload_files payload_mib
+  read -r payload_files payload_mib < <(
+    find "$tree" -mindepth 1 -printf '%s\n' |
+      awk '{n++; s += $1} END {printf "%d %.1f\n", n, s / 1048576}'
+  )
+  echo "DCU 载荷: $release, ${payload_mib} MiB / ${payload_files} 个文件"
+  echo "  modules.dep: $( [[ -f "$tree/usr/lib/modules/$release/modules.dep" ]] && echo present || echo missing )"
+}
+
 fetch_base() {
   require_cmd scp
   require_cmd ssh
@@ -1279,6 +1539,14 @@ fetch_base() {
   if ! gzip -t "$initrd_dst" 2>/dev/null; then
     echo "error: fetched initrd is not a valid gzip stream: $initrd_dst" >&2
     exit 1
+  fi
+
+  # The DCU roles boot a different kernel and need the out-of-tree hycu driver,
+  # which only exists inside the DCU guest image. Fetching the image's module
+  # tree is part of the role's base assets, not a separate step an operator has
+  # to remember.
+  if role_wants_dcu_payload; then
+    fetch_dcu_payload "$base_dir"
   fi
 
   echo
@@ -1416,6 +1684,10 @@ render_package() {
   add_kernel_param contract_type "$TAA_CONTRACT_TYPE"
   add_kernel_param llm_endpoint "$TAA_LLM_ENDPOINT"
   add_kernel_param addr "$TAA_ADDR"
+  # Not a TAA setting: taa-init consumes it before starting TAA. It rides the
+  # same identity channel so the module list is part of the measured command
+  # line and can be changed without rebuilding the initrd.
+  add_kernel_param modules "$TAA_MODULES"
 
   # The package carries the three files QEMU boots. Shipping them is what lets
   # the same package be deployed on a host whose Kata installation lives
@@ -1475,9 +1747,9 @@ render_package() {
 # 改完本文件后执行 `sudo bash install.sh`：install.sh 会按它重新渲染
 # config/kata-config.toml。内核命令行只在新建 Pod 时被读入，再执行
 # `sudo bash test/create-test-pod.sh` 重建测试 Pod 才能让新身份生效。
-# 只允许下列 8 个键；值不能含空白字符；删掉一行就是去掉对应参数。
+# 只允许下列 9 个键；值不能含空白字符；删掉一行就是去掉对应参数。
 #   taa.platform_ip  taa.docker_id  taa.platform_public_key  taa.platform_sm2_id
-#   taa.contract_id  taa.contract_type  taa.llm_endpoint  taa.addr
+#   taa.contract_id  taa.contract_type  taa.llm_endpoint  taa.addr  taa.modules
 # 不要在这里放密钥：内核命令行在宿主机的 `ps` 与日志里可见。
 IDENTITY
     local param
@@ -1506,6 +1778,8 @@ IDENTITY
 
   local -a run_as_args=()
   [[ -n "$TEST_POD_RUN_AS_USER" ]] && run_as_args=(--run-as-user "$TEST_POD_RUN_AS_USER")
+  local -a device_args=()
+  [[ -n "$TEST_POD_DEVICE_RESOURCE" ]] && device_args=(--device-resource "$TEST_POD_DEVICE_RESOURCE")
   python3 "$RENDER_DIR/render.py" k8s \
     --handler "$RUNTIME_HANDLER" \
     --pod "$TEST_POD_NAME" \
@@ -1513,6 +1787,7 @@ IDENTITY
     --image "$TEST_IMAGE" \
     --annotations "$TEST_POD_ANNOTATIONS" \
     "${run_as_args[@]+"${run_as_args[@]}"}" \
+    "${device_args[@]+"${device_args[@]}"}" \
     --out-dir "$out_dir/k8s" \
     --pod-dir "$out_dir/test"
 
@@ -1885,14 +2160,15 @@ case "$cmd" in
     # Machine-readable dump of the resolved settings, so a driver script does not
     # have to duplicate (and drift from) the defaults defined above. %q quoting
     # makes the output safe to `eval` even when a value contains spaces.
-    for key in TAA_ROLE TAA_CONTRACT_TYPE REMOTE_USER REMOTE_HOST REMOTE_BUNDLE_DIR REMOTE_PACKAGE_DIR \
-               REMOTE_BASE_INITRD_SRC \
+    for key in TAA_ROLE TAA_CONTRACT_TYPE TAA_MODULES REMOTE_USER REMOTE_HOST REMOTE_BUNDLE_DIR REMOTE_PACKAGE_DIR \
+               REMOTE_BASE_INITRD_SRC REMOTE_KERNEL_SRC MEASURE_KERNEL \
                REMOTE_KATA_CONFIG_SRC REMOTE_KATA_CONFIG PACKAGE_KATA_CONFIG \
                KATA_HYPERVISOR_SECTION KATA_DEFAULT_MEMORY \
                RUNTIME_HANDLER RUNTIME_TYPE RUNTIME_PATH SNAPSHOTTER \
                CONTAINERD_CONFIG KATA_CONFIG_TEMPLATE DIST_DIR \
                TEST_NODE_NAME TEST_POD_NAME TEST_IMAGE TEST_IMAGE_ARCHIVE TEST_POD_ANNOTATIONS \
-               TEST_POD_RUN_AS_USER \
+               TEST_POD_RUN_AS_USER TEST_POD_DEVICE_RESOURCE \
+               DCU_PAYLOAD_DIR DCU_REMOTE_IMAGE \
                OUT_DIR INITRD_OUT SEED_DIR BASE_INITRD; do
       printf '%s=%q\n' "$key" "${!key}"
     done

@@ -28,6 +28,10 @@ IDENTITY_KEYS = (
     "contract_type",
     "llm_endpoint",
     "addr",
+    # Kernel modules the guest loads before starting TAA (comma-separated). Only
+    # the DCU roles set it (hycu); everywhere else it is absent, which is what
+    # taa-init treats as "load nothing".
+    "modules",
 )
 
 
@@ -515,8 +519,22 @@ def package_info(pkg_dir):
     return info
 
 
+def parse_device_resources(specs):
+    """Turn repeated NAME=COUNT options into a {name: count} mapping."""
+    resources = {}
+    for spec in specs:
+        name, sep, count = spec.partition("=")
+        name, count = name.strip(), count.strip()
+        if not sep or not name or not count:
+            raise SystemExit(f"--device-resource expects NAME=COUNT, got {spec!r}")
+        if not count.isdigit():
+            raise SystemExit(f"--device-resource count must be a non-negative integer: {spec!r}")
+        resources[name] = count
+    return resources
+
+
 def render_k8s(handler, pod_name, node_name, image, annotations_json, out_dir,
-               run_as_user="", pod_dir=""):
+               run_as_user="", pod_dir="", device_resources=None):
     try:
         annotations = json.loads(annotations_json)
     except json.JSONDecodeError as exc:
@@ -546,6 +564,14 @@ def render_k8s(handler, pod_name, node_name, image, annotations_json, out_dir,
     # /etc/passwd: no such file or directory" before the guest is reached.
     if str(run_as_user).strip():
         container["securityContext"] = {"runAsUser": int(run_as_user)}
+    # A device-plugin resource has to be requested and limited; requesting it
+    # without the limit leaves the extended resource unrestricted and the Pod is
+    # rejected. The count is echoed in both, which is what the plugin expects.
+    if device_resources:
+        container["resources"] = {
+            "requests": dict(device_resources),
+            "limits": dict(device_resources),
+        }
     pod_spec = {
         "runtimeClassName": handler,
         "restartPolicy": "Never",
@@ -660,6 +686,13 @@ def main(argv=None):
         default="",
         help="write test-pod.yaml here instead of into --out-dir",
     )
+    k8s.add_argument(
+        "--device-resource",
+        action="append",
+        default=[],
+        metavar="NAME=COUNT",
+        help="extended resource the test container requests and is limited to (repeatable)",
+    )
 
     args = parser.parse_args(argv)
 
@@ -708,6 +741,7 @@ def main(argv=None):
             args.out_dir,
             args.run_as_user,
             args.pod_dir,
+            parse_device_resources(args.device_resource),
         )
     return 0
 

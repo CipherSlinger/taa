@@ -6,14 +6,22 @@
 # anything -- the host is left untouched apart from having the files in place --
 # and the last line it prints is the command that installs there.
 #
-# Usage: ./deploy-taa-vm.sh [taa-train|taa-infer|taa-analysis]
+# Usage: ./deploy-taa-vm.sh [taa-train|taa-infer|taa-analysis|taa-train-dcu|taa-infer-dcu]
 #        ./deploy-taa-vm.sh --help   (this text)
 #
 # The role argument selects which package this run prepares and defaults to
 # taa-train. Each role gets its own initrd (CONTRACT_TYPE, plus the semgrep
 # payload for taa-train only), its own delivery directory on the host and its
-# own runtime handler, so the three can be installed side by side; see the role
+# own runtime handler, so they can be installed side by side; see the role
 # section of build-initrd.sh. Nothing else about the flow changes.
+#
+# The two -dcu roles build for the Hygon DCU full-encryption runtime instead of
+# the CPU-only CSV2 one: a different guest kernel, the out-of-tree hycu driver
+# and the DCU Kata template. `taa-infer-duc` is accepted as an alias.
+#
+# Before running a -dcu role for the first time, run `build-initrd.sh
+# fetch-base` with that role set: it also extracts the hycu module tree,
+# matching firmware and kmod from the DCU guest image into base/dcu-payload/.
 #
 # The mechanics stay under deploy/guest-build/: build-initrd.sh assembles the
 # initrd, fetches base assets, renders the package and performs the upload, and
@@ -51,9 +59,11 @@ fi
 # Everything this flow puts on the target host lives under one directory, with
 # one subdirectory per role:
 #
-#   $TAA_IMAGES_DIR/package-train/     taa-train
-#   $TAA_IMAGES_DIR/package-infer/     taa-infer
-#   $TAA_IMAGES_DIR/package-analysis/  taa-analysis
+#   $TAA_IMAGES_DIR/package-train/      taa-train
+#   $TAA_IMAGES_DIR/package-infer/      taa-infer
+#   $TAA_IMAGES_DIR/package-analysis/   taa-analysis
+#   $TAA_IMAGES_DIR/package-train-dcu/  taa-train-dcu
+#   $TAA_IMAGES_DIR/package-infer-dcu/  taa-infer-dcu
 #
 # each holding the rendered delivery package including its bundle/
 # (initramfs.img, vmlinuz, OVMF.fd).
@@ -146,10 +156,13 @@ usage() {
 case "${1:-}" in
   "") ;;
   -h|--help) usage; exit 0 ;;
-  taa-train|taa-infer|taa-analysis) export TAA_ROLE="$1" ;;
+  # The misspelling shipped in an earlier request; canonicalise it here so the
+  # rest of the flow only ever sees one spelling, as build-initrd.sh does too.
+  taa-infer-duc) export TAA_ROLE=taa-infer-dcu ;;
+  taa-train|taa-infer|taa-analysis|taa-train-dcu|taa-infer-dcu) export TAA_ROLE="$1" ;;
   *)
     echo "error: unknown role or argument: $1" >&2
-    echo "hint: ./deploy-taa-vm.sh [taa-train|taa-infer|taa-analysis]; '$0 --help' explains the flow" >&2
+    echo "hint: ./deploy-taa-vm.sh [taa-train|taa-infer|taa-analysis|taa-train-dcu|taa-infer-dcu]; '$0 --help' explains the flow" >&2
     exit 1
     ;;
 esac
@@ -280,6 +293,22 @@ preflight() {
     echo "error: base initrd 缺失: $BASE_INITRD" >&2
     echo "hint: 先跑 $BUILD_INITRD fetch-base" >&2
     exit 1
+  fi
+  # A DCU role needs two assets the CPU roles do not: its own guest kernel and
+  # the hycu module tree. Both arrive only from fetch-base (the modules are
+  # extracted from the DCU guest image), so a missing one means this role has
+  # never been fetched; say so now, not after a full compile and initrd build.
+  if [[ -n "${TAA_MODULES:-}" ]]; then
+    if [[ ! -f "$MEASURE_KERNEL" ]]; then
+      echo "error: DCU 内核缺失: $MEASURE_KERNEL" >&2
+      echo "hint: 先跑 TAA_ROLE=$TAA_ROLE $BUILD_INITRD fetch-base" >&2
+      exit 1
+    fi
+    if [[ ! -d "${DCU_PAYLOAD_DIR:-}/rootfs" ]]; then
+      echo "error: DCU 模块载荷缺失: ${DCU_PAYLOAD_DIR:-}/rootfs" >&2
+      echo "hint: 先跑 TAA_ROLE=$TAA_ROLE $BUILD_INITRD fetch-base（会从 DCU 镜像取出 hycu 模块、固件和 kmod）" >&2
+      exit 1
+    fi
   fi
   # Before the build: the key is baked into the image and rendered onto the
   # kernel command line, so it has to be resolved before either happens.

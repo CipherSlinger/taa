@@ -31,3 +31,22 @@ OVMFCSV.fd                                    sha256 508b8679be680fbc44621458701
 #     is inserted ahead of /sbin/init rather than replacing it.
 #   * /dev is a tmpfs with no devtmpfs and no udev, so /dev/csv-guest has to be
 #     created by hand before TAA can read its attestation report.
+
+# ── DCU full-encryption roles (taa-train-dcu / taa-infer-dcu) ────────────────
+# These roles boot another kernel and another Kata config, so `fetch-base` with
+# the role set fetches those instead of the CPU ones. Measured with
+# `TAA_ROLE=taa-train-dcu ./build-initrd.sh fetch-base` on 2026-11-10.
+/opt/kata/share/kata-containers/vmlinuz-hycu-confidential-csv.container -> release 6.6.0-hycu-confidential-csv+
+/opt/kata/share/defaults/kata-containers/configuration-qemu-hygon-dcu-csv2.toml
+/opt/kata/share/kata-containers/kata-containers-2026-10-27-13:31:15.991899743+0000-63f5ac56d-hycu-csv.img  (module/firmware/kmod source)
+
+vmlinuz-hycu-confidential-csv.container          sha256 cd4d60cc7e4dd87d8531844845855d5daac1b6dadadbea0d044608cabf53752a  bytes 8192000
+configuration-qemu-hygon-dcu-csv2.toml           sha256 f6652974f5057c12bacb7e063eaa33367c93a3a80674b13a131f88d881a7bd69  bytes 29189
+
+# hycu is out-of-tree: the DCU kernel config has no CONFIG_HYCU*, and the only
+# copy of the modules is inside the guest image above. fetch-base loop-mounts it
+# read-only and extracts these into the untracked base/dcu-payload/rootfs/:
+#   usr/lib/modules/6.6.0-hycu-confidential-csv+/   127.7 MiB / 116 files (modules.dep present)
+#   usr/lib/firmware/6.6.0-hycu-confidential-csv+/
+#   usr/bin/kmod
+dcu-image                                        sha256 e9af0c1e89a1dfebad911cda05342884607a5f8622f6c705494a3ddbc8d56e56  release 6.6.0-hycu-confidential-csv+  fetched 2026-11-10

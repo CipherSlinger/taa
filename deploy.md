@@ -552,10 +552,23 @@ kubelet 的 restartPolicy 处理重启；TAA 自己退出只在 10s 后重启循
 基座 `kata-containers-initrd-confidential-csv.img`：57.3 MB，4682 条目，只追加不重写。
 这一层的"依赖"是 guest 开机到 kata-agent 起来之前的全部家当。
 
-产物是两个 gzip member 的拼接：种子镜像（基座；`taa-train` 另含 semgrep 载荷）+
-只装 TAA 的成员。种子按基座 sha256 与载荷内容指纹缓存在 `deploy/guest-build/out/seeds/`，
-输入不变就直接复用，因此重跑只重压几 MiB 的 TAA（秒级），而不是整份镜像（分钟级）。
-内核逐个读取 gzip member，行为与单 member 等价。
+产物是两个 gzip member 的拼接：种子镜像（基座；`taa-train` 与 `taa-train-dcu` 另含
+semgrep 载荷；`-dcu` 角色还含 DCU 驱动载荷）+ 只装 TAA 的成员。种子按基座 sha256 与
+载荷内容指纹缓存在 `deploy/guest-build/out/seeds/`，输入不变就直接复用，因此重跑只重压
+几 MiB 的 TAA（秒级），而不是整份镜像（分钟级）。内核逐个读取 gzip member，行为与单
+member 等价。
+
+**DCU 全机密角色（`taa-train-dcu` / `taa-infer-dcu`）** 面向海光 DCU 全机密运行时：
+guest 内核换成 `vmlinuz-hycu-confidential-csv.container`（release
+`6.6.0-hycu-confidential-csv+`），Kata 模板换成 `configuration-qemu-hygon-dcu-csv2.toml`，
+runtime handler 为 `kata-qemu-hygon-dcu-csv2-taa-*`。`hycu`/`hycu-sched` 是该内核的树外
+模块，宿主机上没有对应文件，只存在于 DCU guest 镜像的 rootfs 里；因此 `fetch-base` 会
+只读挂载该镜像，把 `usr/lib/modules/6.6.0-hycu-confidential-csv+`（约 122 MiB）、
+同 release 的 firmware 与 `usr/bin/kmod` 取到 `deploy/guest-build/base/dcu-payload/`。
+initrd 里没有 udev / systemd-modules-load，`taa-init` 按内核命令行上的
+`taa.modules=hycu` 显式 `modprobe`；这是唯一能在容器运行时查找设备之前加载驱动的时机。
+注意该包只管 guest 侧：TEE VBIOS、卡绑 vfio-pci、宿主 IOMMU、`cc_init_data` 注解和
+DTK-tee 镜像仍需宿主侧就绪。
 
 **基座自带**
 

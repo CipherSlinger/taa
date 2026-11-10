@@ -69,6 +69,26 @@ analysis_memory="$(TAA_ROLE=taa-analysis "$BUILD" print-config |
   sed -n 's/^KATA_DEFAULT_MEMORY=//p' | tr -d "'")"
 check "print-config: the analysis image gets a larger guest" "yes" \
   "$([[ "${analysis_memory:-0}" -gt "${KATA_DEFAULT_MEMORY:-0}" ]] && echo yes || echo no)"
+# A DCU role differs from its CPU counterpart in four things the flow acts on:
+# the handler it installs, the runtime_type it layers on, the kernel module the
+# guest loads and the device the test Pod requests. They are all role defaults,
+# so assert them through print-config exactly as the driver reads them.
+dcu_config="$(REMOTE_HOST=invalid.invalid TAA_ROLE=taa-train-dcu "$BUILD" print-config)"
+check "print-config: DCU handler" "kata-qemu-hygon-dcu-csv2-taa-train" \
+  "$(sed -n 's/^RUNTIME_HANDLER=//p' <<<"$dcu_config" | tr -d "'")"
+check "print-config: DCU layers on the DCU runtime class" "io.containerd.kata-qemu-hygon-dcu-csv2.v2" \
+  "$(sed -n 's/^RUNTIME_TYPE=//p' <<<"$dcu_config" | tr -d "'")"
+check "print-config: DCU has its own package directory" "/root/taa-images/package-train-dcu" \
+  "$(sed -n 's/^REMOTE_PACKAGE_DIR=//p' <<<"$dcu_config" | tr -d "'")"
+check "print-config: DCU names the hycu module" "hycu" \
+  "$(sed -n 's/^TAA_MODULES=//p' <<<"$dcu_config" | tr -d "'")"
+check "print-config: DCU Pod requests the card" "hygon.cn/k100_ai=1" \
+  "$(sed -n 's/^TEST_POD_DEVICE_RESOURCE=//p' <<<"$dcu_config" | tr -d "'")"
+# The CPU roles must stay empty here: a module list on them would make taa-init
+# look for a kmod binary their initrd does not ship.
+check "print-config: a CPU role loads no modules" "" \
+  "$(sed -n 's/^TAA_MODULES=//p' <<<"$default_config" | tr -d "'")"
+
 check_contains "print-config: exposes the Kata config template" "KATA_CONFIG_TEMPLATE=" "$default_config"
 check_contains "print-config: exposes the delivery package directory" "DIST_DIR=" "$default_config"
 # The upload writes through sudo on the far side, so the default account has to
@@ -146,7 +166,8 @@ fi
 #
 # The one argument it takes is the role, and it is a selection rather than a
 # subcommand: it changes what is packaged, not which sequence runs.
-check_contains "driver: accepts the three roles" 'taa-train|taa-infer|taa-analysis)' "$driver_src"
+check_contains "driver: accepts the CPU and DCU roles" 'taa-train|taa-infer|taa-analysis|taa-train-dcu|taa-infer-dcu)' "$driver_src"
+check_contains "driver: canonicalises the taa-infer-duc spelling" 'taa-infer-duc) export TAA_ROLE=taa-infer-dcu' "$driver_src"
 check_contains "driver: hands the role to build-initrd.sh" 'export TAA_ROLE="$1"' "$driver_src"
 check_contains "driver: refuses an unknown role" 'unknown role or argument' "$driver_src"
 check_contains "driver: supports --help" '--help) usage; exit 0' "$driver_src"

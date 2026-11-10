@@ -17,6 +17,11 @@ out/
 # is exactly why it is not tracked.
 semgrep-payload/
 
+# DCU driver payload (hycu modules, firmware and kmod) extracted from the DCU
+# guest image by fetch-base. Like the semgrep payload it is rebuilt from the
+# image, not tracked: ~128 MiB of kernel modules.
+base/dcu-payload/
+
 # The shipped Kata config is host-authoritative like the initrd above; fetch-base
 # copies it and render rewrites it. A committed copy would go stale silently.
 base/*.toml
