@@ -259,7 +259,7 @@ func probeContainerNSEnter(ctx context.Context, _ string, pid int, rootFS string
 	probeCtx, cancel := context.WithTimeout(ctx, probeTimeout)
 	defer cancel()
 
-	cmd := nsenterShell(probeCtx, pid, "exit 0")
+	cmd := nsenterShell(probeCtx, containerInvocation{pid: pid, env: containerEnv}, "exit 0")
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("probe the container at pid %d: %w (output: %q)", pid, err, strings.TrimSpace(string(out)))
 	}

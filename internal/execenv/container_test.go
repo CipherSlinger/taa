@@ -11,18 +11,27 @@ import (
 
 const containerRootLine = "1 63 0:29 / / rw - overlay overlay rw,upperdir=/run/kata-containers/abc/rootfs\n"
 
-// newStagedTarget builds a container target over a temporary container root and
-// a proc fixture whose pid has no separately mounted paths.
-func newStagedTarget(t *testing.T) (*ContainerTarget, string) {
+// newTargetFixture creates the proc fixture and the container root a target is
+// built over, without building it: a test that supplies runtime configuration
+// must write it first, because the target reads it once at construction.
+func newTargetFixture(t *testing.T) (proc, rootFS string) {
 	t.Helper()
-	proc := t.TempDir()
+	proc = t.TempDir()
 	if err := os.MkdirAll(filepath.Join(proc, "208"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(proc, "208", "mountinfo"), []byte(containerRootLine), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	return newContainerTarget(proc, 208, t.TempDir(), DefaultContainerPaths()), proc
+	return proc, t.TempDir()
+}
+
+// newStagedTarget builds a container target over a temporary container root and
+// a proc fixture whose pid has no separately mounted paths.
+func newStagedTarget(t *testing.T) (*ContainerTarget, string) {
+	t.Helper()
+	proc, rootFS := newTargetFixture(t)
+	return newContainerTarget(proc, 208, rootFS, DefaultContainerPaths()), proc
 }
 
 func writeFile(t *testing.T, path, content string) {
@@ -195,6 +204,111 @@ func TestContainerBaseEnvKeepsTAAEnvironmentOut(t *testing.T) {
 	}
 	if len(target.BaseEnv()) == 0 {
 		t.Fatal("the container environment must at least provide PATH")
+	}
+}
+
+// writeOCIConfig places the runtime configuration where Kata keeps it: next to
+// the container root, not inside it.
+func writeOCIConfig(t *testing.T, rootFS, content string) {
+	t.Helper()
+	writeFile(t, filepath.Join(filepath.Dir(rootFS), "config.json"), content)
+}
+
+func TestContainerAppliesOCIEnvironmentAndUser(t *testing.T) {
+	proc, rootFS := newTargetFixture(t)
+	writeOCIConfig(t, rootFS, `{
+	  "hostname": "taa-model",
+	  "process": {
+	    "env": ["PATH=/usr/bin", "PYTHONPATH=/opt/app", "MODEL_HOME=/models"],
+	    "cwd": "/opt/app",
+	    "user": {"uid": 1000, "gid": 1001}
+	  },
+	  "linux": {"namespaces": [{"type": "mount"}, {"type": "pid"}, {"type": "network"}]}
+	}`)
+	target := newContainerTarget(proc, 208, rootFS, DefaultContainerPaths())
+
+	if target.ConfigError() != nil {
+		t.Fatalf("ConfigError: %v", target.ConfigError())
+	}
+	wantEnv := []string{"PATH=/usr/bin", "PYTHONPATH=/opt/app", "MODEL_HOME=/models"}
+	if strings.Join(target.BaseEnv(), "|") != strings.Join(wantEnv, "|") {
+		t.Fatalf("BaseEnv=%q, want the container's own environment", target.BaseEnv())
+	}
+
+	cmd := target.Command(context.Background(), "python3 train.py", "/opt/taa/model")
+	want := []string{"/usr/bin/nsenter", "-t", "208", "-m", "-p", "-r", "-S", "1000", "-G", "1001",
+		"--", "/bin/sh", "-c", "cd '/opt/taa/model' && python3 train.py"}
+	if strings.Join(cmd.Args, "|") != strings.Join(want, "|") {
+		t.Fatalf("argv=%q, want %q", cmd.Args, want)
+	}
+
+	desc := target.Describe()
+	for _, want := range []string{"hostname=\"taa-model\"", "uid=1000", "gid=1001",
+		"PYTHONPATH", "MODEL_HOME", "network"} {
+		if !strings.Contains(desc, want) {
+			t.Fatalf("Describe()=%q does not mention %q", desc, want)
+		}
+	}
+}
+
+func TestContainerFallsBackToProcessEnvironment(t *testing.T) {
+	proc, rootFS := newTargetFixture(t)
+	writeFile(t, filepath.Join(proc, "208", "environ"), "PATH=/custom/bin\x00FOO=bar\x00")
+	target := newContainerTarget(proc, 208, rootFS, DefaultContainerPaths())
+
+	if target.ConfigError() == nil {
+		t.Fatal("a missing OCI config must be reported, not silently ignored")
+	}
+	wantEnv := []string{"PATH=/custom/bin", "FOO=bar"}
+	if strings.Join(target.BaseEnv(), "|") != strings.Join(wantEnv, "|") {
+		t.Fatalf("BaseEnv=%q, want the container process environment", target.BaseEnv())
+	}
+	// The fallback leaves the process as root: no -S/-G.
+	cmd := target.Command(context.Background(), "true", "/opt/taa/model")
+	for _, arg := range cmd.Args {
+		if arg == "-S" || arg == "-G" {
+			t.Fatalf("argv=%q: the root fallback must not change credentials", cmd.Args)
+		}
+	}
+}
+
+func TestContainerDescribeOmitsEnvironmentValues(t *testing.T) {
+	proc, rootFS := newTargetFixture(t)
+	writeOCIConfig(t, rootFS, `{"process": {"env": ["API_TOKEN=sk-secret-value"]}}`)
+	target := newContainerTarget(proc, 208, rootFS, DefaultContainerPaths())
+
+	desc := target.Describe()
+	if !strings.Contains(desc, "API_TOKEN") {
+		t.Fatalf("Describe()=%q must name the variable", desc)
+	}
+	if strings.Contains(desc, "sk-secret-value") {
+		t.Fatalf("Describe()=%q leaks an environment value", desc)
+	}
+}
+
+func TestContainerPrepareChownsStagedTreeToImageUser(t *testing.T) {
+	if os.Geteuid() != 0 {
+		t.Skip("chown to another uid needs root")
+	}
+	proc, rootFS := newTargetFixture(t)
+	writeOCIConfig(t, rootFS, `{"process": {"user": {"uid": 12345, "gid": 12345}}}`)
+	target := newContainerTarget(proc, 208, rootFS, DefaultContainerPaths())
+
+	modelDir := t.TempDir()
+	writeFile(t, filepath.Join(modelDir, "train.py"), "x\n")
+	if err := target.Prepare(context.Background(), Spec{ModelDir: modelDir, DataDir: t.TempDir()}); err != nil {
+		t.Fatalf("Prepare: %v", err)
+	}
+
+	for _, rel := range []string{"opt/taa/model/train.py", "opt/taa/input", "opt/taa/output/result"} {
+		info, err := os.Stat(filepath.Join(target.rootFS, rel))
+		if err != nil {
+			t.Fatalf("stat %s: %v", rel, err)
+		}
+		st, ok := info.Sys().(*syscall.Stat_t)
+		if !ok || int(st.Uid) != 12345 || int(st.Gid) != 12345 {
+			t.Fatalf("%s is owned by %v, want uid/gid 12345", rel, info.Sys())
+		}
 	}
 }
 

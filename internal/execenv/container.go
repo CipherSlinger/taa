@@ -2,6 +2,7 @@ package execenv
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -17,13 +18,53 @@ import (
 // nsenter gets executed by shadowing it on PATH.
 const nsenterPath = "/usr/bin/nsenter"
 
-// containerEnv is the environment a container-executed model starts from.
-// It is deliberately minimal: TAA's own environment carries key material
+// containerEnv is the fallback environment a container-executed model starts
+// from when the container's own runtime configuration cannot be read. It is
+// deliberately minimal: TAA's own environment carries key material
 // (PLATFORM_PUBLIC_KEY, TAASECRETKEY), and the model is exactly the code whose
 // behaviour the platform is watching, so it must not receive what TAA holds.
+//
+// When the OCI configuration is readable, its process.env is used instead: it
+// is the environment the image's own entrypoint would run with, which is what
+// the model was written against. It carries no TAA variables either.
 var containerEnv = []string{
 	"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
 	"HOME=/root",
+}
+
+// ociSpec is the subset of the container's OCI runtime configuration that TAA
+// applies to the model process.
+type ociSpec struct {
+	Hostname string `json:"hostname"`
+	Process  struct {
+		Env  []string `json:"env"`
+		Cwd  string   `json:"cwd"`
+		User struct {
+			UID uint32 `json:"uid"`
+			GID uint32 `json:"gid"`
+		} `json:"user"`
+	} `json:"process"`
+	Linux struct {
+		Namespaces []struct {
+			Type string `json:"type"`
+		} `json:"namespaces"`
+	} `json:"linux"`
+}
+
+// loadOCISpec reads the runtime configuration Kata keeps beside the container
+// root (/run/kata-containers/<id>/config.json next to rootfs/). It is the only
+// authoritative statement of the environment and user the image expects.
+func loadOCISpec(rootFS string) (*ociSpec, error) {
+	path := filepath.Join(filepath.Dir(rootFS), "config.json")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	var spec ociSpec
+	if err := json.Unmarshal(data, &spec); err != nil {
+		return nil, fmt.Errorf("parse %s: %w", path, err)
+	}
+	return &spec, nil
 }
 
 // Paths is the container-side contract: where the model finds its code, its
@@ -122,12 +163,83 @@ type ContainerTarget struct {
 	rootFS   string
 	paths    Paths
 
+	// Runtime identity taken from the container's OCI configuration. The model
+	// runs as the user the image declares, with the environment the image
+	// declares; configErr records why that could not be read, so the fallback
+	// is visible in the task log instead of silently narrowing the environment.
+	env       []string
+	uid       int
+	gid       int
+	hostname  string
+	ociCwd    string
+	ociNS     []string
+	configErr error
+
 	mu   sync.Mutex
 	spec Spec
 }
 
 func newContainerTarget(procRoot string, pid int, rootFS string, paths Paths) *ContainerTarget {
-	return &ContainerTarget{procRoot: procRoot, pid: pid, rootFS: rootFS, paths: paths}
+	t := &ContainerTarget{procRoot: procRoot, pid: pid, rootFS: rootFS, paths: paths}
+	t.loadRuntimeConfig()
+	return t
+}
+
+// loadRuntimeConfig applies the container's OCI configuration. Only the
+// environment and the user are applied to the model process; the working
+// directory stays the model directory because the contract defines where the
+// model finds its code, and the image's own cwd (/ or the entrypoint's) would
+// not contain it.
+func (t *ContainerTarget) loadRuntimeConfig() {
+	spec, err := loadOCISpec(t.rootFS)
+	if err != nil {
+		t.configErr = err
+		t.env = readProcessEnv(t.procRoot, t.pid)
+		if len(t.env) == 0 {
+			t.env = append([]string(nil), containerEnv...)
+		}
+		return
+	}
+	t.hostname = spec.Hostname
+	t.ociCwd = spec.Process.Cwd
+	t.uid = int(spec.Process.User.UID)
+	t.gid = int(spec.Process.User.GID)
+	for _, ns := range spec.Linux.Namespaces {
+		t.ociNS = append(t.ociNS, ns.Type)
+	}
+	switch {
+	case len(spec.Process.Env) > 0:
+		t.env = append([]string(nil), spec.Process.Env...)
+	default:
+		t.env = readProcessEnv(t.procRoot, t.pid)
+		if len(t.env) == 0 {
+			t.env = append([]string(nil), containerEnv...)
+		}
+	}
+}
+
+// readProcessEnv reads the container process's environment as a second-best
+// source when its OCI configuration is unavailable.
+func readProcessEnv(procRoot string, pid int) []string {
+	data, err := os.ReadFile(filepath.Join(procRoot, strconv.Itoa(pid), "environ"))
+	if err != nil {
+		return nil
+	}
+	var env []string
+	for _, kv := range strings.Split(string(data), "\x00") {
+		if kv != "" {
+			env = append(env, kv)
+		}
+	}
+	return env
+}
+
+// containerInvocation is the identity nsenter applies before the shell starts.
+type containerInvocation struct {
+	pid int
+	uid int
+	gid int
+	env []string
 }
 
 var _ Target = (*ContainerTarget)(nil)
@@ -176,8 +288,12 @@ func (t *ContainerTarget) Visible(targetPath string) (string, error) {
 }
 
 // BaseEnv implements Target. A container-executed model gets the container's
-// minimal environment, never TAA's.
-func (t *ContainerTarget) BaseEnv() []string { return append([]string(nil), containerEnv...) }
+// own environment, never TAA's.
+func (t *ContainerTarget) BaseEnv() []string { return append([]string(nil), t.env...) }
+
+// ConfigError reports why the container's OCI configuration could not be read,
+// or nil when it was applied.
+func (t *ContainerTarget) ConfigError() error { return t.configErr }
 
 // StagesDataset implements Target: Prepare copies the dataset into the
 // container root, reading it from the source directory in TAA's view.
@@ -269,7 +385,34 @@ func (t *ContainerTarget) Prepare(ctx context.Context, spec Spec) error {
 			return fmt.Errorf("stage the dataset into the container: %w", err)
 		}
 	}
+	// The model runs as the user the image declares (nsenter -S/-G), so the
+	// staged trees have to belong to that user; otherwise it cannot read its own
+	// code or write results, and the failure looks like a broken model.
+	if t.uid != 0 || t.gid != 0 {
+		for _, dir := range t.paths.dirs() {
+			vis, err := t.Visible(dir)
+			if err != nil {
+				return err
+			}
+			if err := chownTree(vis, t.uid, t.gid); err != nil {
+				return fmt.Errorf("hand container path %s to uid %d: %w", dir, t.uid, err)
+			}
+		}
+	}
 	return nil
+}
+
+// chownTree hands a staged tree to the user the container's image declares.
+func chownTree(root string, uid, gid int) error {
+	return filepath.WalkDir(root, func(path string, _ os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if err := os.Lchown(path, uid, gid); err != nil {
+			return fmt.Errorf("chown %s: %w", path, err)
+		}
+		return nil
+	})
 }
 
 // Cleanup implements Target. It removes what Prepare staged and nothing else:
@@ -287,12 +430,82 @@ func (t *ContainerTarget) Cleanup(_ context.Context, _ Spec) {
 	}
 }
 
-// Command implements Target. nsenter changes the mount, PID and user
-// namespaces; the process group is set here so a stop still SIGKILLs the whole
-// tree, including the shell nsenter forks inside the container.
+// Command implements Target. nsenter changes the mount and PID namespaces and
+// drops to the user the image declares; the process group is set here so a stop
+// still SIGKILLs the whole tree, including the shell nsenter forks inside the
+// container.
 func (t *ContainerTarget) Command(ctx context.Context, commandLine, workDir string) *exec.Cmd {
 	shell := "cd " + shellQuote(workDir) + " && " + commandLine
-	return nsenterShell(ctx, t.pid, shell)
+	return nsenterShell(ctx, containerInvocation{pid: t.pid, uid: t.uid, gid: t.gid, env: t.env}, shell)
+}
+
+// Describe summarises the container configuration the model process was given,
+// for the task log. Environment values are never included - an image may carry
+// credentials there - only the key names.
+func (t *ContainerTarget) Describe() string {
+	return fmt.Sprintf("hostname=%q uid=%d gid=%d env=[%s] image_cwd=%q namespaces(configured)=[%s] namespaces(entered)=[mnt,pid] shm=%s net=[%s]",
+		t.hostname, t.uid, t.gid, strings.Join(envKeys(t.env), ","), t.ociCwd,
+		strings.Join(t.ociNS, ","), t.shmSize(), t.networkInterfaces())
+}
+
+// envKeys returns the variable names of an environment, in order.
+func envKeys(env []string) []string {
+	keys := make([]string, 0, len(env))
+	for _, kv := range env {
+		key, _, _ := strings.Cut(kv, "=")
+		keys = append(keys, key)
+	}
+	return keys
+}
+
+// shmSize reports /dev/shm inside the container. torch's DataLoader and any
+// multiprocessing user allocate shared memory there, and the default 64MiB
+// fails far from the actual cause.
+func (t *ContainerTarget) shmSize() string {
+	var st syscall.Statfs_t
+	if err := syscall.Statfs(filepath.Join(t.rootFS, "dev", "shm"), &st); err != nil {
+		return "unknown"
+	}
+	return humanBytes(st.Blocks * uint64(st.Bsize))
+}
+
+func humanBytes(n uint64) string {
+	const (
+		mib = 1024 * 1024
+		gib = 1024 * mib
+	)
+	switch {
+	case n >= gib:
+		return fmt.Sprintf("%.1fGiB", float64(n)/float64(gib))
+	case n >= mib:
+		return fmt.Sprintf("%.0fMiB", float64(n)/float64(mib))
+	default:
+		return fmt.Sprintf("%dKiB", n/1024)
+	}
+}
+
+// networkInterfaces lists the interfaces of the container's network namespace.
+func (t *ContainerTarget) networkInterfaces() string {
+	data, err := os.ReadFile(filepath.Join(t.procRoot, strconv.Itoa(t.pid), "net", "dev"))
+	if err != nil {
+		return "unknown"
+	}
+	var names []string
+	for _, line := range strings.Split(string(data), "\n") {
+		name, _, ok := strings.Cut(line, ":")
+		if !ok {
+			continue
+		}
+		name = strings.TrimSpace(name)
+		if name == "" || strings.Contains(name, "|") {
+			continue
+		}
+		names = append(names, name)
+	}
+	if len(names) == 0 {
+		return "unknown"
+	}
+	return strings.Join(names, ",")
 }
 
 // refuseContainerMounts rejects a contract path that the container mounts
@@ -316,8 +529,8 @@ func (t *ContainerTarget) refuseContainerMounts() error {
 	return nil
 }
 
-// nsenterShell builds a shell invocation inside the container's mount, PID and
-// user namespaces.
+// nsenterShell builds a shell invocation inside the container's mount and PID
+// namespaces, as the user the image declares.
 //
 // The PID namespace is not optional. The container's /proc is a procfs mounted
 // in that namespace, so a process from the guest's namespace sees no /proc/self
@@ -325,11 +538,16 @@ func (t *ContainerTarget) refuseContainerMounts() error {
 // /proc/self/statm` fails with ENOENT, and CatBoost aborts a training run on
 // exactly that file. Entering the PID namespace makes /proc mean what the
 // container's processes expect.
-func nsenterShell(ctx context.Context, pid int, shellCommand string) *exec.Cmd {
-	cmd := exec.CommandContext(ctx, nsenterPath,
-		"-t", strconv.Itoa(pid), "-m", "-p", "-r", "--", "/bin/sh", "-c", shellCommand)
+func nsenterShell(ctx context.Context, inv containerInvocation, shellCommand string) *exec.Cmd {
+	args := []string{"-t", strconv.Itoa(inv.pid), "-m", "-p", "-r"}
+	if inv.uid != 0 || inv.gid != 0 {
+		args = append(args, "-S", strconv.Itoa(inv.uid), "-G", strconv.Itoa(inv.gid))
+	}
+	args = append(args, "--", "/bin/sh", "-c", shellCommand)
+
+	cmd := exec.CommandContext(ctx, nsenterPath, args...)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	cmd.Env = append([]string(nil), containerEnv...)
+	cmd.Env = append([]string(nil), inv.env...)
 	return cmd
 }
 

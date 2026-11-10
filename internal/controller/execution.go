@@ -65,6 +65,11 @@ func (s *TAAState) selectExecutionTarget(ctx context.Context) (execenv.Target, e
 		"模型执行环境: container (pid=%d, rootfs=%s, 契约路径: model=%s input=%s output=%s log=%s progress=%s)",
 		target.PID(), target.RootFS(),
 		paths.ModelDir, paths.InputDir, paths.OutputDir, paths.LogDir, paths.ProgressPath)
+	s.Logs.Add(LogInfo, "exec", "容器运行配置: %s", target.Describe())
+	if err := target.ConfigError(); err != nil {
+		s.Logs.Add(LogWarn, "exec",
+			"读取容器 OCI 配置失败，模型环境取自容器进程环境或最小集合，uid/gid 按 root 处理: %v", err)
+	}
 	return target, nil
 }
 
