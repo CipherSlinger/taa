@@ -93,23 +93,6 @@ func TestSelectExecutionTargetContainerModeFailsClosed(t *testing.T) {
 	}
 }
 
-func TestSelectExecutionTargetHonoursInjectedTarget(t *testing.T) {
-	called := stubDiscovery(t, nil, errors.New("must not be called"))
-	state := executionTestState(t, config.ExecutionModeContainer, deployment.Initrd)
-	state.SetExecutionTarget(execenv.NewLocalTarget())
-
-	target, err := state.selectExecutionTarget(context.Background())
-	if err != nil {
-		t.Fatalf("an injected target must be used as-is: %v", err)
-	}
-	if target.Name() != "local" {
-		t.Fatalf("injected target selected %q", target.Name())
-	}
-	if *called {
-		t.Fatal("an injected target must bypass discovery")
-	}
-}
-
 func TestExecutionPathsDefaultsAndOverrides(t *testing.T) {
 	defaults := execenv.DefaultContainerPaths()
 	if got := executionPaths(config.ExecutionConfig{}); got != defaults {

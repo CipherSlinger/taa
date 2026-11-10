@@ -3,7 +3,6 @@ package controller
 import (
 	"context"
 	"fmt"
-	"strings"
 
 	"taa/internal/config"
 	"taa/internal/deployment"
@@ -28,15 +27,8 @@ var discoverContainer = execenv.Discover
 // the wrong place" is the first thing to check when a task misbehaves, and the
 // container is never named anywhere else.
 func (s *TAAState) selectExecutionTarget(ctx context.Context) (execenv.Target, error) {
-	if injected := s.injectedExecutionTarget(); injected != nil {
-		return injected, nil
-	}
-
 	exec := s.Security.Execution
-	mode := strings.ToLower(strings.TrimSpace(exec.Mode))
-	if mode == "" {
-		mode = config.ExecutionModeAuto
-	}
+	mode := exec.EffectiveMode()
 	shape := s.Deployment().Shape
 
 	if mode == config.ExecutionModeLocal {
@@ -81,19 +73,20 @@ func (s *TAAState) selectExecutionTarget(ctx context.Context) (execenv.Target, e
 // says nothing executes against the same paths every image ships.
 func executionPaths(exec config.ExecutionConfig) execenv.Paths {
 	paths := execenv.DefaultContainerPaths()
-	for _, field := range []struct {
-		dst *string
-		src string
-	}{
-		{&paths.ModelDir, exec.ModelDir},
-		{&paths.InputDir, exec.InputDir},
-		{&paths.OutputDir, exec.OutputDir},
-		{&paths.LogDir, exec.LogDir},
-		{&paths.ProgressPath, exec.ProgressPath},
-	} {
-		if trimmed := strings.TrimSpace(field.src); trimmed != "" {
-			*field.dst = trimmed
-		}
+	if exec.ModelDir != "" {
+		paths.ModelDir = exec.ModelDir
+	}
+	if exec.InputDir != "" {
+		paths.InputDir = exec.InputDir
+	}
+	if exec.OutputDir != "" {
+		paths.OutputDir = exec.OutputDir
+	}
+	if exec.LogDir != "" {
+		paths.LogDir = exec.LogDir
+	}
+	if exec.ProgressPath != "" {
+		paths.ProgressPath = exec.ProgressPath
 	}
 	return paths
 }

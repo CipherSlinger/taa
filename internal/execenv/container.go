@@ -179,6 +179,10 @@ func (t *ContainerTarget) Visible(targetPath string) (string, error) {
 // minimal environment, never TAA's.
 func (t *ContainerTarget) BaseEnv() []string { return append([]string(nil), containerEnv...) }
 
+// StagesDataset implements Target: Prepare copies the dataset into the
+// container root, reading it from the source directory in TAA's view.
+func (t *ContainerTarget) StagesDataset() bool { return true }
+
 // Prepare implements Target: it checks that the contract paths are not
 // container mounts, verifies the copy fits in the container's writable layer,
 // clears what a previous run left behind, and stages the model and dataset.

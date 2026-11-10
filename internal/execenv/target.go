@@ -43,6 +43,11 @@ type Target interface {
 	// model's own variables are merged in. The target decides this because the
 	// execution environment decides what it is safe to inherit.
 	BaseEnv() []string
+	// StagesDataset reports whether Prepare copies the dataset out of the source
+	// directory itself. When it is false the caller must place the dataset where
+	// the model reads it, because the target runs in a view where the source is
+	// already the destination.
+	StagesDataset() bool
 	// Prepare makes the environment ready for one execution: the directories
 	// that must exist and the model/data the process expects to find there.
 	Prepare(ctx context.Context, spec Spec) error
@@ -77,6 +82,10 @@ func (LocalTarget) Visible(path string) (string, error) { return path, nil }
 // BaseEnv implements Target. The local target runs as TAA always has, with the
 // process's own environment.
 func (LocalTarget) BaseEnv() []string { return os.Environ() }
+
+// StagesDataset implements Target: a local run reads the dataset where the
+// caller placed it, so the caller does the staging.
+func (LocalTarget) StagesDataset() bool { return false }
 
 // Prepare implements Target. The result directory is the only thing the
 // executor ever created, and it keeps that work with the target that owns the

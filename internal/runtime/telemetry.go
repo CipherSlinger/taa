@@ -57,6 +57,13 @@ func (r *JSONLLogReader) ReadNew() ([]platform.ModelLogEntry, error) {
 		if entry.IsDir() || !isLogFile(entry.Name()) {
 			continue
 		}
+		// A symlink is not a log the model wrote; it is a name pointing at some
+		// other file. The model is the code being audited, and the daemon reads
+		// the log directory from outside the model's namespace, so following the
+		// link would let the model hand any file TAA can read to the platform.
+		if entry.Type()&os.ModeSymlink != 0 {
+			continue
+		}
 		paths = append(paths, filepath.Join(r.dir, entry.Name()))
 	}
 	sort.Strings(paths)
@@ -78,12 +85,17 @@ func isLogFile(name string) bool {
 }
 
 func (r *JSONLLogReader) readFile(path string) ([]platform.ModelLogEntry, error) {
-	info, err := os.Stat(path)
+	info, err := os.Lstat(path)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil, nil
 		}
 		return nil, err
+	}
+	// The target may be a single file path rather than a directory; the same
+	// symlink rule as ReadNew applies to it.
+	if info.Mode()&os.ModeSymlink != 0 {
+		return nil, nil
 	}
 	cursor := r.files[path]
 	if info.Size() < cursor.Offset {

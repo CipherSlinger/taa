@@ -13,6 +13,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"taa/internal/execenv"
 )
 
 func TestTrainingControlCancellationAndFinish(t *testing.T) {
@@ -114,7 +116,7 @@ func TestRunRuntimeConfigCanBeCancelled(t *testing.T) {
 
 	errCh := make(chan error, 1)
 	go func() {
-		_, err := runRuntimeConfigWithControl(control, cfg, nil, tmpDir, dataDir, outputDir, "task-cancel-test", "2026-09-15T00:00:00Z")
+		_, err := runRuntimeConfigWithTarget(control, execenv.NewLocalTarget(), cfg, nil, tmpDir, dataDir, outputDir, "task-cancel-test", "2026-09-15T00:00:00Z")
 		errCh <- err
 	}()
 
@@ -146,10 +148,10 @@ func TestRunRuntimeConfigCanBeCancelled(t *testing.T) {
 	select {
 	case err := <-errCh:
 		if !errors.Is(err, context.Canceled) {
-			t.Fatalf("runRuntimeConfigWithControl error = %v, want context.Canceled", err)
+			t.Fatalf("runRuntimeConfigWithTarget error = %v, want context.Canceled", err)
 		}
 	case <-time.After(3 * time.Second):
-		t.Fatal("runRuntimeConfigWithControl did not return in time after process group kill")
+		t.Fatal("runRuntimeConfigWithTarget did not return in time after process group kill")
 	}
 }
 

@@ -370,49 +370,72 @@ func (s *TAAState) executeTraining(trainReq importRequest, phase int, trainRecor
 	modelInputDir := s.Security.GetModelInputDir()
 	modelOutputDir := s.Security.GetModelOutputDir()
 
+	// Where the run happens is decided before anything is staged: a target that
+	// stages the dataset itself reads it from the source directory, and the copy
+	// into the model input directory below would then be written only to be
+	// copied once more. Local execution keeps that copy, because there the model
+	// input directory is where the model reads from.
+	target, targetErr := s.selectExecutionTarget(context.Background())
+	if targetErr != nil {
+		if checkCancelled() {
+			s.Logs.Add(LogInfo, "train", "训练任务已中止: taskId=%s", trainReq.TaskID)
+			return
+		}
+		s.reportImportFailure(trainReq, phase, false, startedAt, fmt.Sprintf("选择模型执行环境失败: %v", targetErr))
+		return
+	}
+	dataInputDir := trainDataDir
+
 	StepSeparator("Stage Input Data")
 	s.setCurrentOp("staging")
-	s.Logs.Add(LogInfo, "train", "准备模型输入目录: %s (源数据目录: %s)", modelInputDir, trainDataDir)
-	if err := os.MkdirAll(modelInputDir, 0o755); err != nil {
+	if target.StagesDataset() {
+		// The target reads the dataset from its source path itself, so the
+		// intermediate copy into the model input directory is not made.
+		s.Logs.Add(LogInfo, "train", "训练数据集由执行目标暂存: %s (target=%s)", trainDataDir, target.Name())
+	} else {
+		s.Logs.Add(LogInfo, "train", "准备模型输入目录: %s (源数据目录: %s)", modelInputDir, trainDataDir)
+		if err := os.MkdirAll(modelInputDir, 0o755); err != nil {
+			if checkCancelled() {
+				s.Logs.Add(LogInfo, "train", "训练任务已中止: taskId=%s", trainReq.TaskID)
+				return
+			}
+			s.Logs.Add(LogError, "train", "创建模型输入目录失败: %v", err)
+			s.reportImportFailure(trainReq, phase, false, startedAt, fmt.Sprintf("创建模型输入目录失败: %v", err))
+			return
+		}
 		if checkCancelled() {
 			s.Logs.Add(LogInfo, "train", "训练任务已中止: taskId=%s", trainReq.TaskID)
 			return
 		}
-		s.Logs.Add(LogError, "train", "创建模型输入目录失败: %v", err)
-		s.reportImportFailure(trainReq, phase, false, startedAt, fmt.Sprintf("创建模型输入目录失败: %v", err))
-		return
-	}
-	if checkCancelled() {
-		s.Logs.Add(LogInfo, "train", "训练任务已中止: taskId=%s", trainReq.TaskID)
-		return
-	}
-	if err := cleanDirContents(modelInputDir); err != nil {
+		if err := cleanDirContents(modelInputDir); err != nil {
+			if checkCancelled() {
+				s.Logs.Add(LogInfo, "train", "训练任务已中止: taskId=%s", trainReq.TaskID)
+				return
+			}
+			s.Logs.Add(LogError, "train", "清空模型输入目录失败: %v", err)
+			s.reportImportFailure(trainReq, phase, false, startedAt, fmt.Sprintf("清空模型输入目录失败: %v", err))
+			return
+		}
 		if checkCancelled() {
 			s.Logs.Add(LogInfo, "train", "训练任务已中止: taskId=%s", trainReq.TaskID)
 			return
 		}
-		s.Logs.Add(LogError, "train", "清空模型输入目录失败: %v", err)
-		s.reportImportFailure(trainReq, phase, false, startedAt, fmt.Sprintf("清空模型输入目录失败: %v", err))
-		return
-	}
-	if checkCancelled() {
-		s.Logs.Add(LogInfo, "train", "训练任务已中止: taskId=%s", trainReq.TaskID)
-		return
-	}
-	if err := copyDir(modelInputDir, trainDataDir); err != nil {
+		if err := copyDir(modelInputDir, trainDataDir); err != nil {
+			if checkCancelled() {
+				s.Logs.Add(LogInfo, "train", "训练任务已中止: taskId=%s", trainReq.TaskID)
+				return
+			}
+			s.Logs.Add(LogError, "train", "复制训练数据到模型输入目录失败: %v", err)
+			s.reportImportFailure(trainReq, phase, false, startedAt, fmt.Sprintf("复制训练数据到模型输入目录失败: %v", err))
+			return
+		}
 		if checkCancelled() {
 			s.Logs.Add(LogInfo, "train", "训练任务已中止: taskId=%s", trainReq.TaskID)
 			return
 		}
-		s.Logs.Add(LogError, "train", "复制训练数据到模型输入目录失败: %v", err)
-		s.reportImportFailure(trainReq, phase, false, startedAt, fmt.Sprintf("复制训练数据到模型输入目录失败: %v", err))
-		return
+		s.Logs.Add(LogInfo, "train", "训练数据已复制到模型输入目录: %s", modelInputDir)
+		dataInputDir = modelInputDir
 	}
-	if checkCancelled() {
-		s.Logs.Add(LogInfo, "train", "训练任务已中止: taskId=%s", trainReq.TaskID)
-		return
-	}
-	s.Logs.Add(LogInfo, "train", "训练数据已复制到模型输入目录: %s", modelInputDir)
 
 	if err := os.MkdirAll(modelOutputDir, 0o755); err != nil {
 		if checkCancelled() {
@@ -483,18 +506,9 @@ func (s *TAAState) executeTraining(trainReq importRequest, phase int, trainRecor
 	// target every path below is the one TAA has always used; for a container
 	// target they are the same contract seen from the model's side, and the
 	// result comes back through Visible.
-	target, targetErr := s.selectExecutionTarget(context.Background())
-	if targetErr != nil {
-		if checkCancelled() {
-			s.Logs.Add(LogInfo, "train", "训练任务已中止: taskId=%s", trainReq.TaskID)
-			return
-		}
-		s.reportImportFailure(trainReq, phase, false, startedAt, fmt.Sprintf("选择模型执行环境失败: %v", targetErr))
-		return
-	}
 	spec := execenv.Spec{
 		ModelDir:     s.Security.ModelDir,
-		DataDir:      modelInputDir,
+		DataDir:      dataInputDir,
 		OutputDir:    modelOutputDir,
 		LogDir:       s.Security.GetModelLogDir(),
 		ProgressPath: s.Security.GetModelProgressDir(),
@@ -516,30 +530,20 @@ func (s *TAAState) executeTraining(trainReq importRequest, phase int, trainRecor
 	env["TAA_LOG_DIR"] = target.Resolve(spec.LogDir)
 	env["TAA_PROGRESS_DIR"] = target.Resolve(spec.ProgressPath)
 
-	// A container target writes logs and progress under the container root while
-	// the reporter reads TAA's own paths, so the two are bridged by a mirror. The
-	// local target writes straight into those paths and gets no mirror at all.
-	var mirror *logMirror
-	mirrorSource, visibleErr := target.Visible(spec.LogDir)
-	if visibleErr == nil {
-		var progressSource string
-		progressSource, visibleErr = target.Visible(spec.ProgressPath)
-		if visibleErr == nil {
-			mirror = startLogMirror(context.Background(), mirrorSource, spec.LogDir, progressSource, spec.ProgressPath,
-				func(format string, args ...any) { s.Logs.Add(LogWarn, "train", format, args...) })
-			if mirror != nil {
-				// The normal path stops the mirror right after the process exits so
-				// the reporter's final flush sees the last lines; this defer only
-				// covers the early returns below.
-				defer mirror.Stop()
-			}
-		}
+	// The reporter runs in TAA's own namespace, so it reads the model's log and
+	// progress through the target. For the local target these are the same paths.
+	logSource, err := target.Visible(spec.LogDir)
+	if err != nil {
+		s.Logs.Add(LogWarn, "train", "无法定位训练日志路径，日志与进度将不会上报: %v", err)
+		logSource = spec.LogDir
 	}
-	if visibleErr != nil {
-		s.Logs.Add(LogWarn, "train", "无法定位训练日志路径，日志与进度将不会上报: %v", visibleErr)
+	progressSource, err := target.Visible(spec.ProgressPath)
+	if err != nil {
+		s.Logs.Add(LogWarn, "train", "无法定位训练进度路径，日志与进度将不会上报: %v", err)
+		progressSource = spec.ProgressPath
 	}
 
-	watcher := s.startModelReportWatcher(context.Background(), trainReq.RequestID, trainReq.TaskID)
+	watcher := s.startModelReportWatcher(context.Background(), trainReq.RequestID, trainReq.TaskID, logSource, progressSource)
 	defer func() {
 		if checkCancelled() {
 			watcher.StopWithoutFlush()
@@ -564,11 +568,6 @@ func (s *TAAState) executeTraining(trainReq importRequest, phase int, trainRecor
 		s.Logs.Add(LogInfo, "train", "  [cmd %d] %s", i+1, cmd)
 	}
 	output, err := runRuntimeConfigWithTarget(control, target, cfg, env, execModelDir, execInputDir, execOutputDir, trainReq.TaskID, startedAt.UTC().Format(time.RFC3339))
-	if mirror != nil {
-		// Final sync before the reporter flushes: whatever the model wrote last
-		// belongs to this run's terminal report.
-		mirror.Stop()
-	}
 	if checkCancelled() || errors.Is(err, context.Canceled) {
 		watcher.StopWithoutFlush()
 	} else {

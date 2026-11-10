@@ -39,8 +39,9 @@ type Options struct {
 	// ContainerID disambiguates when several containers are found. It is
 	// matched against the container root's mount path and the overlay upperdir.
 	ContainerID string
-	// Paths overrides the container-side contract. Empty means
-	// DefaultContainerPaths, which is what the packaged images follow.
+	// Paths is the container-side contract. The zero value means
+	// DefaultContainerPaths, which is what the packaged images follow; a caller
+	// that overrides one field must fill the rest, since Paths is taken whole.
 	Paths Paths
 }
 
@@ -125,14 +126,8 @@ func Discover(ctx context.Context, opts Options) (*ContainerTarget, error) {
 	}
 
 	paths := opts.Paths
-	if paths.ModelDir == "" {
+	if paths == (Paths{}) {
 		paths = DefaultContainerPaths()
-	}
-	// Validate here rather than in the first Prepare: the paths are cleared
-	// inside the container root, and a bad one should stop the task before
-	// anything is staged, not after the model has been copied.
-	if err := paths.validate(); err != nil {
-		return nil, err
 	}
 
 	return newContainerTarget(procRoot, chosen.pid, rootFS, paths), nil

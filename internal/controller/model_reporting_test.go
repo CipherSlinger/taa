@@ -136,7 +136,7 @@ func TestReportWatcherSendsLogAndProgress(t *testing.T) {
 		ModelLogDir:      logDir,
 		ModelProgressDir: progressDir,
 	}}
-	watcher := newReportWatcher(context.Background(), state, "req-1", "task-1", 5*time.Millisecond)
+	watcher := newReportWatcher(context.Background(), state, "req-1", "task-1", 5*time.Millisecond, logDir, progressDir)
 	watcher.platformAddr = server.URL
 	watcher.start()
 	if err := os.WriteFile(filepath.Join(logDir, "train.jsonl"), []byte("{\"message\":\"epoch=1\"}\n"), 0o644); err != nil {

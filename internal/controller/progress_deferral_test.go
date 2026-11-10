@@ -126,7 +126,8 @@ func writeProgressFile(t *testing.T, state *TAAState, percent float64, timestamp
 func TestReportWatcherHoldsFullProgressUntilReleased(t *testing.T) {
 	capture, server := newProgressCaptureServer(t, nil)
 	state := newProgressTestState(t, server.URL)
-	watcher := newReportWatcher(context.Background(), state, "req-1", "task-1", time.Hour)
+	watcher := newReportWatcher(context.Background(), state, "req-1", "task-1", time.Hour,
+		state.Security.ModelLogDir, state.Security.GetModelProgressDir())
 
 	writeProgressFile(t, state, 88.5, "2026-09-15T00:00:00Z")
 	watcher.flushWithContext(context.Background())
@@ -156,7 +157,8 @@ func TestReportWatcherHoldsFullProgressUntilReleased(t *testing.T) {
 func TestReportWatcherWithoutAFullProgressReleasesNothing(t *testing.T) {
 	capture, server := newProgressCaptureServer(t, nil)
 	state := newProgressTestState(t, server.URL)
-	watcher := newReportWatcher(context.Background(), state, "req-1", "task-1", time.Hour)
+	watcher := newReportWatcher(context.Background(), state, "req-1", "task-1", time.Hour,
+		state.Security.ModelLogDir, state.Security.GetModelProgressDir())
 
 	writeProgressFile(t, state, 97, "2026-09-15T00:00:00Z")
 	watcher.flushWithContext(context.Background())

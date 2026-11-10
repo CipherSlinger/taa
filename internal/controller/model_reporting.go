@@ -194,6 +194,7 @@ type reportWatcher struct {
 	pendingLogs     []ModelLogEntry
 	lastProgressKey string
 	interval        time.Duration
+	progressPath    string
 
 	// deferredProgress holds the snapshot the watcher is sitting on because it is
 	// progressHoldPercent or above; see flushWithContext and reportDeferredProgress.
@@ -204,7 +205,12 @@ type reportWatcher struct {
 	stopOnce  sync.Once
 }
 
-func newReportWatcher(ctx context.Context, state *TAAState, requestID, taskID string, interval time.Duration) *reportWatcher {
+// newReportWatcher builds the watcher that tails the model's log directory and
+// progress file. Both paths are passed in rather than read from the state
+// because they are whichever paths the execution target can see: a model inside
+// a container writes under the container root, and those are the paths TAA has
+// to tail. The local target passes the state's own paths unchanged.
+func newReportWatcher(ctx context.Context, state *TAAState, requestID, taskID string, interval time.Duration, logDir, progressPath string) *reportWatcher {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -213,23 +219,24 @@ func newReportWatcher(ctx context.Context, state *TAAState, requestID, taskID st
 	}
 	watcherCtx, cancel := context.WithCancel(ctx)
 	w := &reportWatcher{
-		ctx:       watcherCtx,
-		cancel:    cancel,
-		state:     state,
-		requestID: strings.TrimSpace(requestID),
-		taskID:    strings.TrimSpace(taskID),
-		interval:  interval,
+		ctx:          watcherCtx,
+		cancel:       cancel,
+		state:        state,
+		requestID:    strings.TrimSpace(requestID),
+		taskID:       strings.TrimSpace(taskID),
+		interval:     interval,
+		progressPath: progressPath,
 	}
 	if state != nil {
 		w.platformAddr = state.PlatformIP
 		w.dockerID = state.DockerID
-		w.logs = newJSONLLogReader(state.Security.GetModelLogDir())
+		w.logs = newJSONLLogReader(logDir)
 	}
 	return w
 }
 
-func (s *TAAState) startModelReportWatcher(ctx context.Context, requestID, taskID string) *reportWatcher {
-	watcher := newReportWatcher(ctx, s, requestID, taskID, defaultReportInterval)
+func (s *TAAState) startModelReportWatcher(ctx context.Context, requestID, taskID, logDir, progressPath string) *reportWatcher {
+	watcher := newReportWatcher(ctx, s, requestID, taskID, defaultReportInterval, logDir, progressPath)
 	watcher.start()
 	return watcher
 }
@@ -297,7 +304,7 @@ func (w *reportWatcher) flushWithContext(ctx context.Context) {
 		w.pendingLogs = w.pendingLogs[batchSize:]
 	}
 
-	progress, ok, err := readLatestProgress(w.state.Security.GetModelProgressDir())
+	progress, ok, err := readLatestProgress(w.progressPath)
 	if err != nil {
 		w.warn("读取训练进度失败: %v", err)
 		return

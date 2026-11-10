@@ -154,9 +154,6 @@ type TAAState struct {
 	// Set once by the startup path before any request is served; it selects
 	// where model work executes and is never a security verdict.
 	deployment deployment.Result
-	// execTarget overrides the configured execution policy when set; nil (the
-	// production value) means the policy in Security.Execution decides, per task.
-	execTarget execenv.Target
 
 	// auditGen identifies the audit that currently owns the audit fields above.
 	// Every audit goroutine carries the generation it started with; writes and
@@ -222,23 +219,6 @@ func (s *TAAState) Deployment() deployment.Result {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.deployment
-}
-
-// SetExecutionTarget installs an explicit execution target, bypassing discovery.
-// Tests and tools use it to run a model under a stub environment; production
-// leaves it nil and lets selectExecutionTarget apply the configured policy.
-func (s *TAAState) SetExecutionTarget(target execenv.Target) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.execTarget = target
-}
-
-// injectedExecutionTarget returns the target installed by SetExecutionTarget, or
-// nil when the configured policy decides.
-func (s *TAAState) injectedExecutionTarget() execenv.Target {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	return s.execTarget
 }
 
 // SetStateStore 注入密封状态存储引擎
@@ -1345,10 +1325,6 @@ func resolveRuntimeEnv(env map[string]string, dataDir, outputDir string) map[str
 
 func runRuntimeConfig(cfg runtimeConfig, env map[string]string, modelDir, dataDir, outputDir, taskID, startedAt string) (string, error) {
 	return runtime.RunRuntimeConfig(cfg, env, modelDir, dataDir, outputDir, taskID, startedAt)
-}
-
-func runRuntimeConfigWithControl(control *trainingControl, cfg runtimeConfig, env map[string]string, modelDir, dataDir, outputDir, taskID, startedAt string) (string, error) {
-	return runtime.RunRuntimeConfigWithControl(control, cfg, env, modelDir, dataDir, outputDir, taskID, startedAt)
 }
 
 func runRuntimeConfigWithTarget(control *trainingControl, target execenv.Target, cfg runtimeConfig, env map[string]string, modelDir, dataDir, outputDir, taskID, startedAt string) (string, error) {

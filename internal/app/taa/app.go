@@ -926,42 +926,17 @@ func reportDeploymentShape(state *controller.TAAState, dep deployment.Result) {
 // already serving. So the startup log states the policy and names the point at
 // which the decision will be made, and each run logs its own outcome.
 func logExecutionPolicy(cfg config.StartupConfig, dep deployment.Result) {
-	mode := strings.ToLower(strings.TrimSpace(cfg.Execution.Mode))
-	if mode == "" {
-		mode = config.ExecutionModeAuto
-	}
-	switch mode {
-	case config.ExecutionModeLocal:
-		log.Printf("model execution: local (runtime.execution.mode=local: the rollback path)")
-	case config.ExecutionModeContainer:
-		log.Printf("model execution: container (runtime.execution.mode=container: a task fails when no container is discoverable)")
-	case config.ExecutionModeAuto:
-		if dep.Shape == deployment.Initrd {
-			log.Printf("model execution: auto (deployment=%s: the model runs in the container discovered when a task starts, "+
-				"falling back to local with a warning)", dep.Shape)
-		} else {
-			log.Printf("model execution: auto (deployment=%s: models run locally)", dep.Shape)
-		}
-	default:
-		// Rejected at load; only a hand-built config reaches this.
-		log.Printf("WARNING: unknown runtime.execution.mode %q, models will run locally", mode)
-	}
-	if id := strings.TrimSpace(cfg.Execution.ContainerID); id != "" {
-		log.Printf("model execution: container id pinned to %q", id)
-	}
+	log.Printf("model execution: mode=%s, deployment=%s, containerId=%q; the target is resolved when a task starts",
+		cfg.Execution.EffectiveMode(), dep.Shape, cfg.Execution.ContainerID)
 }
 
 // reportExecutionPolicy sends the same policy to the platform log channel, once
 // per process. It is what an operator has when a task lands in an unexpected
 // environment and the Pod gives them no console.
 func reportExecutionPolicy(state *controller.TAAState, cfg config.StartupConfig, dep deployment.Result) {
-	mode := strings.ToLower(strings.TrimSpace(cfg.Execution.Mode))
-	if mode == "" {
-		mode = config.ExecutionModeAuto
-	}
 	state.Logs.Add(controller.LogInfo, "exec",
 		"模型执行策略: mode=%s, deployment=%s, containerId=%q；执行环境在每次训练开始时确定并单独上报",
-		mode, dep.Shape, cfg.Execution.ContainerID)
+		cfg.Execution.EffectiveMode(), dep.Shape, cfg.Execution.ContainerID)
 }
 
 func logSecurityConfig(sec controller.SecurityConfig) {

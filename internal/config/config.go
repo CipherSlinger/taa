@@ -130,14 +130,26 @@ type ExecutionConfig struct {
 	// an error rather than a choice.
 	ContainerID string
 	// The path overrides describe the contract the model is executed against
-	// inside the container. Empty means the path the storage and model sections
-	// already define, which is what the packaged images ship. They only apply to
-	// container execution: a local run keeps TAA's own paths.
+	// inside the container. Empty means the packaged contract
+	// (execenv.DefaultContainerPaths), which is what every shipped image follows;
+	// these do not derive from the storage and model sections, which describe
+	// TAA's own view. They only apply to container execution: a local run keeps
+	// TAA's own paths.
 	ModelDir     string
 	InputDir     string
 	OutputDir    string
 	LogDir       string
 	ProgressPath string
+}
+
+// EffectiveMode returns Mode in the form the rest of the daemon compares against,
+// defaulting to auto when the field is empty. The loader already normalizes what
+// it reads, so this only matters for a hand-built configuration.
+func (e ExecutionConfig) EffectiveMode() string {
+	if mode := strings.ToLower(strings.TrimSpace(e.Mode)); mode != "" {
+		return mode
+	}
+	return ExecutionModeAuto
 }
 
 // LLMConfig is the inference service the code audit calls to adjudicate the
