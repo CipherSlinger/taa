@@ -84,6 +84,13 @@ check "print-config: DCU names the hycu module" "hycu" \
   "$(sed -n 's/^TAA_MODULES=//p' <<<"$dcu_config" | tr -d "'")"
 check "print-config: DCU Pod requests the card" "hygon.cn/k100_ai=1" \
   "$(sed -n 's/^TEST_POD_DEVICE_RESOURCE=//p' <<<"$dcu_config" | tr -d "'")"
+# The template's local name follows the remote one, as the kernel's does. A
+# fixed name here made render compare the CPU template with the DCU one and
+# fail after the initrd had already been built.
+check "print-config: the DCU template follows the role" "configuration-qemu-hygon-dcu-csv2.toml" \
+  "$(basename "$(sed -n 's/^KATA_CONFIG_TEMPLATE=//p' <<<"$dcu_config" | tr -d "'")")"
+check "print-config: the CPU template keeps its own name" "configuration-qemu-csv2.toml" \
+  "$(basename "$(sed -n 's/^KATA_CONFIG_TEMPLATE=//p' <<<"$default_config" | tr -d "'")")"
 # The CPU roles must stay empty here: a module list on them would make taa-init
 # look for a kmod binary their initrd does not ship.
 check "print-config: a CPU role loads no modules" "" \

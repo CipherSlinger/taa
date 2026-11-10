@@ -290,11 +290,11 @@ INITRD_OUT="${INITRD_OUT:-$INITRD_OUT_DEFAULT}"
 # Overridable so a caller can keep a warm cache outside the checkout.
 SEED_DIR="${SEED_DIR:-$OUT_DIR/seeds}"
 
-# Renderer support files and the shipped Kata config the rendered config is
-# derived from. The template is host-authoritative like the base initrd:
-# fetch-base copies it, and `render` refuses to guess when it is missing.
+# Renderer support files. The Kata config template is host-authoritative like
+# the base initrd: fetch-base copies it, and `render` refuses to guess when it is
+# missing. Its default lives next to REMOTE_KATA_CONFIG_SRC below, because the
+# DCU roles use a different template file with a different name.
 RENDER_DIR="${RENDER_DIR:-$SCRIPT_DIR/render}"
-KATA_CONFIG_TEMPLATE="${KATA_CONFIG_TEMPLATE:-$SCRIPT_DIR/base/configuration-qemu-csv2.toml}"
 
 # Optional semgrep payload. The injected config selects the scan engine, so
 # the payload is only required when that config asks for semgrep -- but when it
@@ -532,6 +532,11 @@ SKIP_KATA_TEMPLATE_CHECK="${SKIP_KATA_TEMPLATE_CHECK:-0}"
 # -append string.
 MEASURE_OVMF="${MEASURE_OVMF:-$SCRIPT_DIR/base/$(basename "$REMOTE_OVMF_SRC")}"
 MEASURE_KERNEL="${MEASURE_KERNEL:-$SCRIPT_DIR/base/$(basename "$REMOTE_KERNEL_SRC")}"
+# The template follows the same rule as the kernel: its local name is the remote
+# file's basename. The DCU roles fetch a differently named template, and a fixed
+# name here made the consistency check compare the CPU template with the DCU
+# one and fail after the initrd had already been built.
+KATA_CONFIG_TEMPLATE="${KATA_CONFIG_TEMPLATE:-$SCRIPT_DIR/base/$(basename "$REMOTE_KATA_CONFIG_SRC")}"
 MEASURE_SMP="${MEASURE_SMP:-}"
 MEASURE_APPEND="${MEASURE_APPEND:-}"
 
