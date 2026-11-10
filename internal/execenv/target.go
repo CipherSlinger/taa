@@ -35,8 +35,14 @@ type Target interface {
 	// Resolve maps a TAA-side path to the path the executed process sees.
 	Resolve(initPath string) string
 	// Visible maps a path the executed process sees back to one TAA itself can
-	// read and write.
-	Visible(targetPath string) string
+	// read and write. It can fail - a container path may pass through a symlink
+	// or leave the container root - and that failure must not be answered with
+	// a best guess: the result is used to decide where TAA writes.
+	Visible(targetPath string) (string, error)
+	// BaseEnv returns the environment the model process starts from, before the
+	// model's own variables are merged in. The target decides this because the
+	// execution environment decides what it is safe to inherit.
+	BaseEnv() []string
 	// Prepare makes the environment ready for one execution: the directories
 	// that must exist and the model/data the process expects to find there.
 	Prepare(ctx context.Context, spec Spec) error
@@ -66,7 +72,11 @@ func (LocalTarget) Name() string { return "local" }
 func (LocalTarget) Resolve(path string) string { return path }
 
 // Visible implements Target. Local execution needs no translation.
-func (LocalTarget) Visible(path string) string { return path }
+func (LocalTarget) Visible(path string) (string, error) { return path, nil }
+
+// BaseEnv implements Target. The local target runs as TAA always has, with the
+// process's own environment.
+func (LocalTarget) BaseEnv() []string { return os.Environ() }
 
 // Prepare implements Target. The result directory is the only thing the
 // executor ever created, and it keeps that work with the target that owns the

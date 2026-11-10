@@ -16,9 +16,22 @@ func TestLocalTargetIdentity(t *testing.T) {
 		if got := target.Resolve(p); got != p {
 			t.Fatalf("Resolve(%q)=%q, want identity", p, got)
 		}
-		if got := target.Visible(p); got != p {
-			t.Fatalf("Visible(%q)=%q, want identity", p, got)
+		if got, err := target.Visible(p); err != nil || got != p {
+			t.Fatalf("Visible(%q)=(%q, %v), want identity", p, got, err)
 		}
+	}
+}
+
+func TestLocalTargetBaseEnvIsTheProcessEnv(t *testing.T) {
+	t.Setenv("TAA_TEST_MARKER", "present")
+	found := false
+	for _, kv := range NewLocalTarget().BaseEnv() {
+		if kv == "TAA_TEST_MARKER=present" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("the local target must run with the process environment")
 	}
 }
 

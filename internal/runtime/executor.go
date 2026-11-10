@@ -51,7 +51,7 @@ func RunRuntimeConfigWithTarget(control ProcessController, target execenv.Target
 	}
 
 	cmd := target.Command(ctx, commandLine, modelDir)
-	cmd.Env = MergedRuntimeEnv(ResolveRuntimeEnv(env, dataDir, outputDir), map[string]string{
+	cmd.Env = mergedEnv(target.BaseEnv(), ResolveRuntimeEnv(env, dataDir, outputDir), map[string]string{
 		"TAA_TASK_ID":          taskID,
 		"TAA_STARTED_AT":       startedAt,
 		"TAA_DATA_DIR":         dataDir,
@@ -92,10 +92,18 @@ func isNilControl(c ProcessController) bool {
 	return (v.Kind() == reflect.Ptr || v.Kind() == reflect.Interface) && v.IsNil()
 }
 
-// MergedRuntimeEnv 合并当前进程环境变量与自定义业务环境变量
+// MergedRuntimeEnv merges the current process environment with the model's own
+// variables. It is the local target's base; the target-aware entry point below
+// merges whatever base its target supplies instead.
 func MergedRuntimeEnv(userEnv, systemEnv map[string]string) []string {
+	return mergedEnv(os.Environ(), userEnv, systemEnv)
+}
+
+// mergedEnv merges a base environment with the model's variables, the base
+// first so the model's values win on a collision.
+func mergedEnv(base []string, userEnv, systemEnv map[string]string) []string {
 	merged := map[string]string{}
-	for _, item := range os.Environ() {
+	for _, item := range base {
 		key, value, ok := strings.Cut(item, "=")
 		if ok {
 			merged[key] = value
