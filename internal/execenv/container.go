@@ -287,8 +287,8 @@ func (t *ContainerTarget) Cleanup(_ context.Context, _ Spec) {
 	}
 }
 
-// Command implements Target. nsenter only changes the mount (and user)
-// namespace; the process group is set here so a stop still SIGKILLs the whole
+// Command implements Target. nsenter changes the mount, PID and user
+// namespaces; the process group is set here so a stop still SIGKILLs the whole
 // tree, including the shell nsenter forks inside the container.
 func (t *ContainerTarget) Command(ctx context.Context, commandLine, workDir string) *exec.Cmd {
 	shell := "cd " + shellQuote(workDir) + " && " + commandLine
@@ -316,13 +316,18 @@ func (t *ContainerTarget) refuseContainerMounts() error {
 	return nil
 }
 
-// nsenterShell builds a shell invocation inside the container's mount
-// namespace. -m is the mount namespace and -r enters it as root; the pid
-// namespace is deliberately not changed, because that would only affect
-// processes nsenter forks and the model does not need a private PID view.
+// nsenterShell builds a shell invocation inside the container's mount, PID and
+// user namespaces.
+//
+// The PID namespace is not optional. The container's /proc is a procfs mounted
+// in that namespace, so a process from the guest's namespace sees no /proc/self
+// in it at all: measured in a live guest, `nsenter -m -r -- cat
+// /proc/self/statm` fails with ENOENT, and CatBoost aborts a training run on
+// exactly that file. Entering the PID namespace makes /proc mean what the
+// container's processes expect.
 func nsenterShell(ctx context.Context, pid int, shellCommand string) *exec.Cmd {
 	cmd := exec.CommandContext(ctx, nsenterPath,
-		"-t", strconv.Itoa(pid), "-m", "-r", "--", "/bin/sh", "-c", shellCommand)
+		"-t", strconv.Itoa(pid), "-m", "-p", "-r", "--", "/bin/sh", "-c", shellCommand)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	cmd.Env = append([]string(nil), containerEnv...)
 	return cmd

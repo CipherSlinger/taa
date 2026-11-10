@@ -202,7 +202,7 @@ func TestContainerCommandWrapsInNSEnter(t *testing.T) {
 	target, _ := newStagedTarget(t)
 	cmd := target.Command(context.Background(), "python3 train.py", "/opt/taa/model")
 
-	want := []string{"/usr/bin/nsenter", "-t", "208", "-m", "-r", "--", "/bin/sh", "-c",
+	want := []string{"/usr/bin/nsenter", "-t", "208", "-m", "-p", "-r", "--", "/bin/sh", "-c",
 		"cd '/opt/taa/model' && python3 train.py"}
 	if strings.Join(cmd.Args, "|") != strings.Join(want, "|") {
 		t.Fatalf("argv=%q, want %q", cmd.Args, want)
