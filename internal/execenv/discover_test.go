@@ -67,7 +67,9 @@ func TestDiscoverFindsTheSingleContainer(t *testing.T) {
 	proc := buildProcTree(t,
 		map[string]string{
 			"208/mountinfo": containerMountInfoABC,
+			"208/cmdline":   "python3\x00train.py\x00",
 			"300/mountinfo": containerMountInfoABC,
+			"300/cmdline":   "sleep\x00100\x00",
 		},
 		map[string]string{
 			"self/ns/mnt": "mnt:[111]",
@@ -135,7 +137,9 @@ func TestDiscoverRefusesAmbiguity(t *testing.T) {
 		map[string]string{
 			"self/mountinfo": self,
 			"208/mountinfo":  containerMountInfoABC,
+			"208/cmdline":    "python3\x00train.py\x00",
 			"400/mountinfo":  containerMountInfoDEF,
+			"400/cmdline":    "python3\x00train.py\x00",
 		},
 		map[string]string{
 			"self/ns/mnt": "mnt:[111]",
@@ -193,5 +197,85 @@ func TestParseMountInfo(t *testing.T) {
 	}
 	if entries[1].FSType != "sysfs" || entries[1].SuperOptions != "rw,seclabel" {
 		t.Fatalf("unexpected entry: %#v", entries[1])
+	}
+}
+
+// Measured on 2026-11-10 in a live CSV2 guest: kdevtmpfs, a kernel thread, lives
+// in its own mount namespace whose root is a devtmpfs. A scan that classifies a
+// namespace only by "its root is not the initrd's ramfs" counts it as a second
+// container, and discovery then refuses to choose and the task falls back to
+// running in the initrd.
+func TestDiscoverIgnoresKernelThreadNamespaces(t *testing.T) {
+	stubProbe(t)
+	rootFS := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(rootFS, "rootfs"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	proc := buildProcTree(t,
+		map[string]string{
+			"208/mountinfo": containerMountInfoABC,
+			"208/cmdline":   "python3\x00train.py\x00",
+			// A kernel thread has an empty cmdline, and kdevtmpfs' namespace root
+			// is a devtmpfs rather than the initrd's rootfs.
+			"18/mountinfo": "6 5 0:5 / / rw,relatime - devtmpfs devtmpfs rw,size=9669488k\n",
+		},
+		map[string]string{
+			"self/ns/mnt": "mnt:[111]",
+			"208/ns/mnt":  "mnt:[222]",
+			"18/ns/mnt":   "mnt:[333]",
+		})
+	if err := os.WriteFile(filepath.Join(proc, "self", "mountinfo"),
+		[]byte("1 1 0:2 / / rw - rootfs rootfs rw,size=9669488k\n"+
+			"22 1 0:29 / "+rootFS+"/rootfs rw - overlay overlay rw\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	target, err := Discover(context.Background(), Options{ProcRoot: proc})
+	if err != nil {
+		t.Fatalf("a kernel-thread namespace must not make discovery ambiguous: %v", err)
+	}
+	if target.PID() != 208 {
+		t.Fatalf("PID=%d, want the container's process (208)", target.PID())
+	}
+}
+
+// The container id is on the path TAA sees the root at, not on the overlay's
+// own upperdir, which carries a layer id instead. Pinning containerId has to
+// work with the measured layout.
+func TestFilterByContainerIDUsesTheResolvedRootPath(t *testing.T) {
+	stubProbe(t)
+	base := filepath.Join(t.TempDir(), "run", "kata-containers")
+	for _, id := range []string{"c5a2012e0d1b", "def"} {
+		if err := os.MkdirAll(filepath.Join(base, id, "rootfs"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	layerOverlay := "1 63 0:29 / / rw - overlay overlay rw," +
+		"lowerdir=/run/kata-containers/image/layers/7," +
+		"upperdir=/run/kata-containers/image/overlay/2b9378f17c27/upperdir," +
+		"workdir=/run/kata-containers/image/overlay/2b9378f17c27/workdir,uuid=on\n"
+	self := "1 1 0:2 / / rw - rootfs rootfs rw\n" +
+		"22 1 0:29 / " + base + "/c5a2012e0d1b/rootfs rw - overlay overlay rw\n" +
+		"23 1 0:30 / " + base + "/def/rootfs rw - overlay overlay rw\n"
+	proc := buildProcTree(t,
+		map[string]string{
+			"self/mountinfo": self,
+			"208/mountinfo":  layerOverlay,
+			"208/cmdline":    "python3\x00train.py\x00",
+			"400/mountinfo":  strings.ReplaceAll(layerOverlay, "0:29", "0:30"),
+			"400/cmdline":    "python3\x00train.py\x00",
+		},
+		map[string]string{
+			"self/ns/mnt": "mnt:[111]",
+			"208/ns/mnt":  "mnt:[222]",
+			"400/ns/mnt":  "mnt:[333]",
+		})
+
+	target, err := Discover(context.Background(), Options{ProcRoot: proc, ContainerID: "c5a2012e0d1b"})
+	if err != nil {
+		t.Fatalf("Discover with a container id: %v", err)
+	}
+	if target.PID() != 208 {
+		t.Fatalf("PID=%d, want the container whose root path carries the id (208)", target.PID())
 	}
 }

@@ -1,6 +1,7 @@
 package execenv
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"os"
@@ -52,6 +53,14 @@ type candidate struct {
 	root mountEntry // the candidate's own root mount line
 }
 
+// resolvedCandidate is a candidate whose root has been located in TAA's own
+// mount namespace, which is the path discovery and the id filter work with.
+type resolvedCandidate struct {
+	*candidate
+	rootFS string
+	exact  bool
+}
+
 // Discover finds the container this TAA process should execute models in.
 //
 // The scan does not rely on any Kata path convention: a container's own root
@@ -85,31 +94,46 @@ func Discover(ctx context.Context, opts Options) (*ContainerTarget, error) {
 		return nil, fmt.Errorf("no container mount namespace found under %s", procRoot)
 	}
 
-	if len(candidates) > 1 && opts.ContainerID != "" {
-		candidates = filterByContainerID(candidates, opts.ContainerID)
-	}
-	if len(candidates) == 0 {
-		return nil, fmt.Errorf("no container matching %q was found", opts.ContainerID)
-	}
-	if len(candidates) > 1 {
-		pids := make([]string, 0, len(candidates))
-		for _, c := range candidates {
-			pids = append(pids, strconv.Itoa(c.pid))
-		}
-		return nil, fmt.Errorf("found %d candidate containers (pids %s); set an explicit container id to choose one",
-			len(candidates), strings.Join(pids, ", "))
-	}
-	chosen := candidates[0]
-
 	selfData, err := os.ReadFile(filepath.Join(procRoot, "self", "mountinfo"))
 	if err != nil {
 		return nil, fmt.Errorf("read own mount table: %w", err)
 	}
-	rootFS, exact := resolveRootFS(parseMountInfo(string(selfData)), chosen.root)
-	if rootFS == "" {
-		return nil, fmt.Errorf("the container root (device %s, fstype %s) is not mounted in TAA's namespace",
-			chosen.root.MajorMinor, chosen.root.FSType)
+	selfMounts := parseMountInfo(string(selfData))
+
+	// Resolve where TAA sees each candidate's root before choosing: a namespace
+	// whose root is not mounted here cannot be used, and the container id is
+	// usually visible only in that resolved path (the overlay's upperdir carries
+	// a layer id, not the container id).
+	resolved := make([]resolvedCandidate, 0, len(candidates))
+	for _, c := range candidates {
+		rootFS, exact := resolveRootFS(selfMounts, c.root)
+		if rootFS == "" {
+			continue
+		}
+		resolved = append(resolved, resolvedCandidate{candidate: c, rootFS: rootFS, exact: exact})
 	}
+	if len(resolved) == 0 {
+		first := candidates[0]
+		return nil, fmt.Errorf("the container root (device %s, fstype %s) is not mounted in TAA's namespace",
+			first.root.MajorMinor, first.root.FSType)
+	}
+
+	if len(resolved) > 1 && opts.ContainerID != "" {
+		resolved = filterByContainerID(resolved, opts.ContainerID)
+	}
+	if len(resolved) == 0 {
+		return nil, fmt.Errorf("no container matching %q was found", opts.ContainerID)
+	}
+	if len(resolved) > 1 {
+		pids := make([]string, 0, len(resolved))
+		for _, r := range resolved {
+			pids = append(pids, strconv.Itoa(r.pid))
+		}
+		return nil, fmt.Errorf("found %d candidate containers (pids %s); set an explicit container id to choose one",
+			len(resolved), strings.Join(pids, ", "))
+	}
+	chosen := resolved[0]
+	rootFS, exact := chosen.rootFS, chosen.exact
 	if !exact {
 		// The fallback found nothing with a matching device, so the container's
 		// rootfs path was guessed from the Kata convention. It still has to pass
@@ -156,6 +180,17 @@ func scanNamespaces(procRoot, selfNS string) ([]*candidate, error) {
 		if ns == selfNS || seen[ns] {
 			continue
 		}
+
+		// A container mount namespace is entered by processes with a command
+		// line. A namespace holding only kernel threads is not one: the guest's
+		// early devtmpfs mount is such a namespace, its root is a devtmpfs and
+		// it would otherwise be counted as a second container. Skipping before
+		// marking the namespace seen lets a later userspace process in the same
+		// namespace still be considered.
+		cmdline, err := os.ReadFile(filepath.Join(procRoot, entry.Name(), "cmdline"))
+		if err != nil || len(bytes.Trim(cmdline, "\x00")) == 0 {
+			continue
+		}
 		seen[ns] = true
 
 		data, err := os.ReadFile(filepath.Join(procRoot, entry.Name(), "mountinfo"))
@@ -172,13 +207,17 @@ func scanNamespaces(procRoot, selfNS string) ([]*candidate, error) {
 	return candidates, nil
 }
 
-// filterByContainerID keeps the candidates whose root mount path or overlay
-// upperdir names the given container id.
-func filterByContainerID(candidates []*candidate, id string) []*candidate {
-	var kept []*candidate
+// filterByContainerID keeps the candidates that name the given container id.
+// The id appears in the path TAA sees the root at (Kata mounts each container
+// root under /run/kata-containers/<id>/), while the overlay's own upperdir
+// carries a layer id instead; the upperdir form is kept for deployments whose
+// overlay names the container directly.
+func filterByContainerID(candidates []resolvedCandidate, id string) []resolvedCandidate {
+	var kept []resolvedCandidate
 	for _, c := range candidates {
 		if strings.Contains(c.ns, id) ||
-			strings.Contains(c.root.SuperOptions, "upperdir="+"/run/kata-containers/"+id+"/") {
+			strings.Contains(c.rootFS, "kata-containers/"+id) ||
+			strings.Contains(c.root.SuperOptions, "upperdir=/run/kata-containers/"+id+"/") {
 			kept = append(kept, c)
 		}
 	}
