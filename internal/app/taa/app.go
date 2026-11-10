@@ -16,6 +16,7 @@ import (
 	"taa/internal/codeaudit"
 	"taa/internal/config"
 	"taa/internal/controller"
+	"taa/internal/deployment"
 	"taa/internal/fhe"
 	"taa/internal/llmclient"
 	"taa/internal/platform"
@@ -87,6 +88,17 @@ func Run(ctx context.Context, configPath, addr string) error {
 //  6. Build security policy configuration and ensure directories are ready
 //  7. Construct global controller state and start HTTP service, supporting graceful shutdown via ctx
 func RunWithConfig(ctx context.Context, cfg config.StartupConfig) error {
+	// 0. Establish the deployment shape before anything else, so every later log
+	// line can be read against it. The marker is set by the starter script; the
+	// mount-based inference only covers a script that forgot it. A malformed
+	// marker is refused here rather than guessed past, because it can only come
+	// from a typo in the very script that decides where model work runs.
+	dep, err := deployment.Detect()
+	if err != nil {
+		return fmt.Errorf("detect deployment shape: %w", err)
+	}
+	logDeploymentShape(dep)
+
 	// 1. If LLM code audit is enabled, probe inference service readiness.
 	//
 	// The probe's verdict is advisory, even with failClosed set. It runs before the HTTP
@@ -264,6 +276,8 @@ func RunWithConfig(ctx context.Context, cfg config.StartupConfig) error {
 		userData,
 		sec,
 	)
+	state.SetDeployment(dep)
+	reportDeploymentShape(state, dep)
 
 	fheRunner, err := buildFHERunner(cfg)
 	if err != nil {
@@ -874,6 +888,34 @@ func ensureSecurityDirectories(sec controller.SecurityConfig) error {
 }
 
 // logSecurityConfig 打印安全扫描、大模型审计及结果检查策略的配置摘要
+// logDeploymentShape prints the detected shape and its provenance to the
+// console. The platform-visible copy is emitted separately, once TAAState -
+// which owns the log store - exists.
+func logDeploymentShape(dep deployment.Result) {
+	log.Printf("deployment shape: %s (source: %s, root mount fstype: %q, %s=%q)",
+		dep.Shape, dep.Source(), dep.RootFSType, deployment.EnvVar, dep.Marker)
+	if dep.Warning != "" {
+		log.Printf("WARNING: %s", dep.Warning)
+	}
+}
+
+// reportDeploymentShape sends the same facts to the platform log channel. An
+// operator diagnosing a Pod has no console access, and this is the first thing
+// to check when model work lands in an unexpected place, so the marker, the
+// root mount fstype and every warning travel with it.
+func reportDeploymentShape(state *controller.TAAState, dep deployment.Result) {
+	state.Logs.Add(controller.LogInfo, "deployment",
+		"部署形态: %s (来源: %s, 根挂载 fstype: %q, %s=%q)",
+		dep.Shape, dep.Source(), dep.RootFSType, deployment.EnvVar, dep.Marker)
+	if dep.Warning != "" {
+		state.Logs.Add(controller.LogWarn, "deployment", "%s", dep.Warning)
+	}
+	if dep.Shape == deployment.Unknown {
+		state.Logs.Add(controller.LogWarn, "deployment",
+			"部署形态未判定，运行时行为保持不变（本地执行）；请检查启动脚本是否导出了 %s", deployment.EnvVar)
+	}
+}
+
 func logSecurityConfig(sec controller.SecurityConfig) {
 	log.Printf("model staging directories: input=%s output=%s log=%s progress=%s", sec.GetModelInputDir(), sec.GetModelOutputDir(), sec.GetModelLogDir(), sec.GetModelProgressDir())
 	if sec.ScanEnabled {

@@ -53,6 +53,19 @@ if grep -q 'taa-fhe-supervisor' "$ROOT_DIR/deploy-fhe.sh"; then
   fail "deploy-fhe.sh still refers to the old /opt/taa-fhe-supervisor.sh entrypoint"
 fi
 
+# The deployment marker names the shape these scripts run in. It has to be
+# exported, and it has to sit outside the TAA_LOOP block: the block is kept
+# byte-identical across roles, while the marker is a property of the file's
+# entrypoint. TAA only ever sees it as an environment variable, so a bare
+# assignment without export would look right here and never reach the daemon.
+for f in "$TEE" "$FHE" "$DATA"; do
+  grep -qF 'TAA_DEPLOYMENT=container' "$f" || fail "$f does not set TAA_DEPLOYMENT=container"
+  grep -qF 'export TAA_DEPLOYMENT' "$f" || fail "$f sets TAA_DEPLOYMENT without exporting it"
+  marker_line="$(grep -nF 'TAA_DEPLOYMENT=container' "$f" | cut -d: -f1 | head -1)"
+  loop_line="$(grep -n '^# >>> TAA_LOOP' "$f" | cut -d: -f1 | head -1)"
+  [ "$marker_line" -lt "$loop_line" ] || fail "$f sets TAA_DEPLOYMENT inside the TAA_LOOP block"
+done
+
 # Both combined supervisors keep the loop in a child selected by --taa-loop.
 for f in "$FHE" "$DATA"; do
   grep -q '"\${1:-}" = "--taa-loop"' "$f" \

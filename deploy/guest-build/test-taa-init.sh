@@ -166,6 +166,16 @@ taa_line="$(grep -nF '"$TAA_BIN" -config' "$TAA_INIT" | cut -d: -f1 | head -1)"
 check "extends PATH before starting TAA" "yes" \
   "$([[ -n "$path_line" && -n "$taa_line" && "$path_line" -lt "$taa_line" ]] && echo yes || echo no)"
 
+# The deployment marker tells TAA it runs from the initrd. It has to be exported
+# before the TAA invocation, and it has to be the literal initrd value: TAA's
+# mount-based inference exists so a forgotten export shows up as a warning, not
+# so this script can stop declaring itself.
+dep_line="$(grep -nF 'export TAA_DEPLOYMENT' "$TAA_INIT" | cut -d: -f1 | head -1)"
+check "exports the deployment marker before starting TAA" "yes" \
+  "$([[ -n "$dep_line" && -n "$taa_line" && "$dep_line" -lt "$taa_line" ]] && echo yes || echo no)"
+check "declares the initrd shape rather than guessing" "yes" \
+  "$(grep -qF 'TAA_DEPLOYMENT=initrd' "$TAA_INIT" && echo yes || echo no)"
+
 echo
 if [[ "$failures" -eq 0 ]]; then
   echo "all checks passed"

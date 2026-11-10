@@ -11,6 +11,14 @@
 set -u
 TAA_WORKDIR="${TAA_WORKDIR:-/root/taa}"
 
+# Tell TAA how it was started. This supervisor is the container image's
+# ENTRYPOINT, so TAA is always a container process here; the value decides where
+# model work executes, never a security verdict. It stays outside the
+# TAA_LOOP block because that block is kept byte-identical across the three
+# role scripts.
+TAA_DEPLOYMENT=container
+export TAA_DEPLOYMENT
+
 # >>> TAA_LOOP -- keep byte-identical in deploy/taa-supervisor.sh,
 # deploy/fhe/taa-supervisor.sh and deploy/dataanaylsis/taa-supervisor.sh: each role
 # installs one self-contained file, so the loop cannot live in a shared file.

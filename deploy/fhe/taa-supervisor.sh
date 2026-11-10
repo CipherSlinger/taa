@@ -26,6 +26,14 @@ FHE_ENTRYPOINT="${FHE_ENTRYPOINT:-/opt/entrypoint.sh}"
 TAA_RESTART_DELAY="${TAA_RESTART_DELAY:-10}"
 SELF="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
 
+# Tell TAA how it was started. This supervisor is the container image's
+# ENTRYPOINT, so TAA is always a container process here; the value decides where
+# model work executes, never a security verdict. It stays outside the
+# TAA_LOOP block because that block is kept byte-identical across the three
+# role scripts, and exporting it here covers the --taa-loop child as well.
+TAA_DEPLOYMENT=container
+export TAA_DEPLOYMENT
+
 # ── The TAA loop (child) ─────────────────────────────────────────────────────
 # Selected by the parent below with --taa-loop. It is the same loop the tee role
 # runs inline, so a role still has exactly one file to install.

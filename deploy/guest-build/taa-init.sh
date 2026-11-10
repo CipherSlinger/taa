@@ -157,6 +157,14 @@ fi
 PATH="/usr/local/bin:$PATH"
 export PATH
 
+#    Tell TAA how it was started. This script is measured code that only ever
+#    runs as the initrd's first userspace process, and environment does not
+#    cross namespaces into a container, so the value cannot leak into the
+#    container deployment's own process. It decides where model work executes,
+#    never a security verdict.
+TAA_DEPLOYMENT=initrd
+export TAA_DEPLOYMENT
+
 if [ -r "$TAA_CONFIG" ]; then
   "$TAA_BIN" -config "$TAA_CONFIG" -addr "$TAA_ADDR" >"$TAA_LOG" 2>&1 &
   taa_pid="$!"

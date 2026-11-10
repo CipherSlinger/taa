@@ -17,6 +17,7 @@ import (
 
 	"taa/internal/codeaudit"
 	"taa/internal/config"
+	"taa/internal/deployment"
 	"taa/internal/fhe"
 	"taa/internal/platform/envelope"
 	"taa/internal/runtime"
@@ -145,6 +146,11 @@ type TAAState struct {
 	ActiveAuditTaskID     string                 // Current active audit task ID
 	ActiveAuditRequestID  string                 // Current active audit request ID
 
+	// deployment records how this process was launched (initrd or container).
+	// Set once by the startup path before any request is served; it selects
+	// where model work executes and is never a security verdict.
+	deployment deployment.Result
+
 	// auditGen identifies the audit that currently owns the audit fields above.
 	// Every audit goroutine carries the generation it started with; writes and
 	// reports are dropped once the field no longer matches, so an aborted or
@@ -193,6 +199,22 @@ func (s *TAAState) SetEnvelopeKeys(keys *envelope.Keys) {
 // mode".
 func (s *TAAState) envelopeKeys() *envelope.Keys {
 	return s.EnvelopeKeys
+}
+
+// SetDeployment records the detected deployment shape. It is called once during
+// startup, before the HTTP server accepts requests.
+func (s *TAAState) SetDeployment(res deployment.Result) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.deployment = res
+}
+
+// Deployment returns the deployment shape recorded at startup. The zero value
+// is deployment.Unknown, which callers must treat as "keep current behaviour".
+func (s *TAAState) Deployment() deployment.Result {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.deployment
 }
 
 // SetStateStore 注入密封状态存储引擎
