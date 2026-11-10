@@ -18,6 +18,7 @@ import (
 	"taa/internal/codeaudit"
 	"taa/internal/config"
 	"taa/internal/deployment"
+	"taa/internal/execenv"
 	"taa/internal/fhe"
 	"taa/internal/platform/envelope"
 	"taa/internal/runtime"
@@ -150,6 +151,10 @@ type TAAState struct {
 	// Set once by the startup path before any request is served; it selects
 	// where model work executes and is never a security verdict.
 	deployment deployment.Result
+	// execTarget is where a model's runtimeConfig runs. Nil means the local
+	// target, which is what every deployment used before the seam existed, so a
+	// hand-built state keeps working.
+	execTarget execenv.Target
 
 	// auditGen identifies the audit that currently owns the audit fields above.
 	// Every audit goroutine carries the generation it started with; writes and
@@ -215,6 +220,25 @@ func (s *TAAState) Deployment() deployment.Result {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.deployment
+}
+
+// SetExecutionTarget installs where model runtimeConfig commands run. Called
+// once at startup; a nil target keeps the local behaviour.
+func (s *TAAState) SetExecutionTarget(target execenv.Target) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.execTarget = target
+}
+
+// executionTarget returns the installed target, or the local one. A hand-built
+// state (tests, tools) has none, and local is what the daemon always did.
+func (s *TAAState) executionTarget() execenv.Target {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.execTarget == nil {
+		return execenv.NewLocalTarget()
+	}
+	return s.execTarget
 }
 
 // SetStateStore 注入密封状态存储引擎
@@ -1325,6 +1349,10 @@ func runRuntimeConfig(cfg runtimeConfig, env map[string]string, modelDir, dataDi
 
 func runRuntimeConfigWithControl(control *trainingControl, cfg runtimeConfig, env map[string]string, modelDir, dataDir, outputDir, taskID, startedAt string) (string, error) {
 	return runtime.RunRuntimeConfigWithControl(control, cfg, env, modelDir, dataDir, outputDir, taskID, startedAt)
+}
+
+func runRuntimeConfigWithTarget(control *trainingControl, target execenv.Target, cfg runtimeConfig, env map[string]string, modelDir, dataDir, outputDir, taskID, startedAt string) (string, error) {
+	return runtime.RunRuntimeConfigWithTarget(control, target, cfg, env, modelDir, dataDir, outputDir, taskID, startedAt)
 }
 
 // KillProcessGroup 级联清理进程及其所属的整个进程组。

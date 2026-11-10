@@ -16,6 +16,7 @@ import (
 	"unicode/utf8"
 
 	"taa/internal/codeaudit"
+	"taa/internal/execenv"
 	"taa/internal/llmclient"
 	"taa/internal/resource"
 	"taa/internal/runtime"
@@ -478,11 +479,57 @@ func (s *TAAState) executeTraining(trainReq importRequest, phase int, trainRecor
 		}
 	}
 
+	// The execution target owns where these directories live. For the local
+	// target every path below is the one TAA has always used; for a container
+	// target they are the same contract seen from the model's side, and the
+	// result comes back through Visible.
+	target := s.executionTarget()
+	spec := execenv.Spec{
+		ModelDir:     s.Security.ModelDir,
+		DataDir:      modelInputDir,
+		OutputDir:    modelOutputDir,
+		LogDir:       s.Security.GetModelLogDir(),
+		ProgressPath: s.Security.GetModelProgressDir(),
+	}
+	if err := target.Prepare(context.Background(), spec); err != nil {
+		if checkCancelled() {
+			s.Logs.Add(LogInfo, "train", "训练任务已中止: taskId=%s", trainReq.TaskID)
+			return
+		}
+		s.Logs.Add(LogError, "train", "准备模型执行环境失败(target=%s): %v", target.Name(), err)
+		s.reportImportFailure(trainReq, phase, false, startedAt, fmt.Sprintf("准备模型执行环境失败: %v", err))
+		return
+	}
+	defer target.Cleanup(context.Background(), spec)
+
 	if env == nil {
 		env = make(map[string]string)
 	}
-	env["TAA_LOG_DIR"] = s.Security.GetModelLogDir()
-	env["TAA_PROGRESS_DIR"] = s.Security.GetModelProgressDir()
+	env["TAA_LOG_DIR"] = target.Resolve(spec.LogDir)
+	env["TAA_PROGRESS_DIR"] = target.Resolve(spec.ProgressPath)
+
+	// A container target writes logs and progress under the container root while
+	// the reporter reads TAA's own paths, so the two are bridged by a mirror. The
+	// local target writes straight into those paths and gets no mirror at all.
+	var mirror *logMirror
+	mirrorSource, visibleErr := target.Visible(spec.LogDir)
+	if visibleErr == nil {
+		var progressSource string
+		progressSource, visibleErr = target.Visible(spec.ProgressPath)
+		if visibleErr == nil {
+			mirror = startLogMirror(context.Background(), mirrorSource, spec.LogDir, progressSource, spec.ProgressPath,
+				func(format string, args ...any) { s.Logs.Add(LogWarn, "train", format, args...) })
+			if mirror != nil {
+				// The normal path stops the mirror right after the process exits so
+				// the reporter's final flush sees the last lines; this defer only
+				// covers the early returns below.
+				defer mirror.Stop()
+			}
+		}
+	}
+	if visibleErr != nil {
+		s.Logs.Add(LogWarn, "train", "无法定位训练日志路径，日志与进度将不会上报: %v", visibleErr)
+	}
 
 	watcher := s.startModelReportWatcher(context.Background(), trainReq.RequestID, trainReq.TaskID)
 	defer func() {
@@ -499,13 +546,21 @@ func (s *TAAState) executeTraining(trainReq importRequest, phase int, trainRecor
 		s.Logs.Add(LogInfo, "train", "训练任务已中止: taskId=%s", trainReq.TaskID)
 		return
 	}
-	resolvedCommands := resolveRuntimeCommands(cfg.Commands, modelInputDir, modelOutputDir)
-	s.Logs.Add(LogInfo, "train", "开始执行 runtimeConfig: commands=%d, envKeys=%v, 输入目录: %s (源hash=%s), 输出目录: %s",
-		len(cfg.Commands), envKeys(env), modelInputDir, trainRecord.Hash, modelOutputDir)
+	execModelDir := target.Resolve(spec.ModelDir)
+	execInputDir := target.Resolve(spec.DataDir)
+	execOutputDir := target.Resolve(spec.OutputDir)
+	resolvedCommands := resolveRuntimeCommands(cfg.Commands, execInputDir, execOutputDir)
+	s.Logs.Add(LogInfo, "train", "开始执行 runtimeConfig (target=%s): commands=%d, envKeys=%v, 输入目录: %s (源hash=%s), 输出目录: %s",
+		target.Name(), len(cfg.Commands), envKeys(env), execInputDir, trainRecord.Hash, execOutputDir)
 	for i, cmd := range resolvedCommands {
 		s.Logs.Add(LogInfo, "train", "  [cmd %d] %s", i+1, cmd)
 	}
-	output, err := runRuntimeConfigWithControl(control, cfg, env, s.Security.ModelDir, modelInputDir, modelOutputDir, trainReq.TaskID, startedAt.UTC().Format(time.RFC3339))
+	output, err := runRuntimeConfigWithTarget(control, target, cfg, env, execModelDir, execInputDir, execOutputDir, trainReq.TaskID, startedAt.UTC().Format(time.RFC3339))
+	if mirror != nil {
+		// Final sync before the reporter flushes: whatever the model wrote last
+		// belongs to this run's terminal report.
+		mirror.Stop()
+	}
 	if checkCancelled() || errors.Is(err, context.Canceled) {
 		watcher.StopWithoutFlush()
 	} else {
@@ -527,7 +582,20 @@ func (s *TAAState) executeTraining(trainReq importRequest, phase int, trainRecor
 	s.Logs.Add(LogInfo, "train", "runtimeConfig 执行成功")
 
 	StepSeparator("Collect Output Results")
-	s.Logs.Add(LogInfo, "train", "从模型输出目录拷贝产物到结果目录: %s -> %s", modelOutputDir, trainOutputDir)
+	// Where the artifacts actually are. Local execution wrote straight into
+	// modelOutputDir; a container wrote into the container root, which TAA reaches
+	// through the same mapping it staged the inputs through.
+	resultSource, err := target.Visible(spec.OutputDir)
+	if err != nil {
+		if checkCancelled() {
+			s.Logs.Add(LogInfo, "train", "训练任务已中止: taskId=%s", trainReq.TaskID)
+			return
+		}
+		s.Logs.Add(LogError, "train", "定位模型输出目录失败: %v", err)
+		s.reportImportFailure(trainReq, phase, false, startedAt, fmt.Sprintf("定位模型输出目录失败: %v", err))
+		return
+	}
+	s.Logs.Add(LogInfo, "train", "从模型输出目录拷贝产物到结果目录: %s -> %s", resultSource, trainOutputDir)
 	if err := os.MkdirAll(trainOutputDir, 0o755); err != nil {
 		if checkCancelled() {
 			s.Logs.Add(LogInfo, "train", "训练任务已中止: taskId=%s", trainReq.TaskID)
@@ -541,7 +609,7 @@ func (s *TAAState) executeTraining(trainReq importRequest, phase int, trainRecor
 		s.Logs.Add(LogInfo, "train", "训练任务已中止: taskId=%s", trainReq.TaskID)
 		return
 	}
-	if err := copyDir(trainOutputDir, modelOutputDir); err != nil {
+	if err := copyDir(trainOutputDir, resultSource); err != nil {
 		if checkCancelled() {
 			s.Logs.Add(LogInfo, "train", "训练任务已中止: taskId=%s", trainReq.TaskID)
 			return
