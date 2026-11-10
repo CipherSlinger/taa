@@ -5,27 +5,43 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"os/exec"
 	"reflect"
 	"strings"
-	"syscall"
+
+	"taa/internal/execenv"
 )
 
-// RunRuntimeConfig 在目标环境下执行运行配置命令序列
+// RunRuntimeConfig executes the runtimeConfig command sequence locally.
 func RunRuntimeConfig(cfg RuntimeConfig, env map[string]string, modelDir, dataDir, outputDir, taskID, startedAt string) (string, error) {
 	return RunRuntimeConfigWithControl(nil, cfg, env, modelDir, dataDir, outputDir, taskID, startedAt)
 }
 
-// RunRuntimeConfigWithControl 支持受控生命周期的运行配置执行器
+// RunRuntimeConfigWithControl executes the runtimeConfig locally under a
+// controllable lifecycle. It is the local target's entry point: the target
+// prepares the environment and then runs it.
 func RunRuntimeConfigWithControl(control ProcessController, cfg RuntimeConfig, env map[string]string, modelDir, dataDir, outputDir, taskID, startedAt string) (string, error) {
+	target := execenv.NewLocalTarget()
+	spec := execenv.Spec{ModelDir: modelDir, DataDir: dataDir, OutputDir: outputDir}
+	if err := target.Prepare(context.Background(), spec); err != nil {
+		return "", err
+	}
+	return RunRuntimeConfigWithTarget(control, target, cfg, env, modelDir, dataDir, outputDir, taskID, startedAt)
+}
+
+// RunRuntimeConfigWithTarget executes the runtimeConfig through the given
+// target. The directories are the ones the executed process will see, so a
+// caller using a non-local target resolves them first; the target's Prepare
+// must already have run, because only it knows how to create them in its own
+// view. The legacy entry points above wrap this with LocalTarget.
+func RunRuntimeConfigWithTarget(control ProcessController, target execenv.Target, cfg RuntimeConfig, env map[string]string, modelDir, dataDir, outputDir, taskID, startedAt string) (string, error) {
+	if target == nil {
+		return "", fmt.Errorf("runtimeConfig execution target is not set")
+	}
 	if isNilControl(control) {
 		control = nil
 	}
 	if control != nil && control.IsCancelled() {
 		return "", context.Canceled
-	}
-	if err := os.MkdirAll(outputDir, 0o755); err != nil {
-		return "", fmt.Errorf("create output dir: %w", err)
 	}
 
 	commandLine := strings.Join(ResolveRuntimeCommands(cfg.Commands, dataDir, outputDir), " && ")
@@ -34,10 +50,7 @@ func RunRuntimeConfigWithControl(control ProcessController, cfg RuntimeConfig, e
 		ctx = control.Ctx()
 	}
 
-	cmd := exec.CommandContext(ctx, "/bin/sh", "-c", commandLine)
-	// Set Setpgid: true to ensure an independent process group for full SIGKILL cascading cleanup
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	cmd.Dir = modelDir
+	cmd := target.Command(ctx, commandLine, modelDir)
 	cmd.Env = MergedRuntimeEnv(ResolveRuntimeEnv(env, dataDir, outputDir), map[string]string{
 		"TAA_TASK_ID":          taskID,
 		"TAA_STARTED_AT":       startedAt,
