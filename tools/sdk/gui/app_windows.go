@@ -178,9 +178,9 @@ type rect struct {
 }
 
 type minMaxInfo struct {
-	ptReserved    point
-	ptMaxSize     point
-	ptMaxPosition point
+	ptReserved     point
+	ptMaxSize      point
+	ptMaxPosition  point
 	ptMinTrackSize point
 	ptMaxTrackSize point
 }
@@ -223,25 +223,25 @@ type app struct {
 	hwndBrowseBtn       uintptr
 	hwndBrowseFolderBtn uintptr
 	hwndEncryptBtn      uintptr
-	hwndDecryptBtn   uintptr
-	hwndSaveBtn      uintptr
-	hwndFileIcon     uintptr
-	hwndKeyPanel     uintptr
-	hwndFilePanel    uintptr
-	hwndStatusLabel  uintptr
-	hwndImportPubBtn uintptr
-	hwndImportPrvBtn uintptr
-	hwndSavePubBtn   uintptr // Save public key
-	hwndSavePrvBtn   uintptr // Save private key
-	hwndGenKeyBtn    uintptr
-	hwndKeyTitle     uintptr // "密钥管理" section title
-	hwndFileTitle    uintptr // "加密管理" section title
-	hwndSeparator    uintptr // Gray horizontal line between PEM and file sections
-	hwndFileLabel    uintptr
-	hwndPubLabel     uintptr
-	hwndPrvLabel     uintptr
-	hwndStatusMsg    uintptr
-	hwndProgressBar  uintptr // Progress bar for operations
+	hwndDecryptBtn      uintptr
+	hwndSaveBtn         uintptr
+	hwndFileIcon        uintptr
+	hwndKeyPanel        uintptr
+	hwndFilePanel       uintptr
+	hwndStatusLabel     uintptr
+	hwndImportPubBtn    uintptr
+	hwndImportPrvBtn    uintptr
+	hwndSavePubBtn      uintptr // Save public key
+	hwndSavePrvBtn      uintptr // Save private key
+	hwndGenKeyBtn       uintptr
+	hwndKeyTitle        uintptr // "密钥管理" section title
+	hwndFileTitle       uintptr // "加密管理" section title
+	hwndSeparator       uintptr // Gray horizontal line between PEM and file sections
+	hwndFileLabel       uintptr
+	hwndPubLabel        uintptr
+	hwndPrvLabel        uintptr
+	hwndStatusMsg       uintptr
+	hwndProgressBar     uintptr // Progress bar for operations
 
 	// View switch buttons
 	hwndEncryptViewBtn     uintptr // Switch to encrypt/decrypt view
@@ -249,21 +249,21 @@ type app struct {
 	currentView            int     // Current view (0=encrypt/decrypt, 1=attestation)
 
 	// Attestation controls
-	hwndAttestationPanel  uintptr // Panel for attestation controls
-	hwndReportFileLabel   uintptr // Report file label
-	hwndReportFileInput   uintptr // Report file path input
-	hwndReportBrowseBtn   uintptr // Browse button for report file
-	hwndVerifyChainCheck  uintptr // Checkbox for certificate chain verification
-	hwndVerifyBtn         uintptr // Verify button
-	hwndAttestationTable  uintptr // Attestation field table (ListView)
+	hwndAttestationPanel uintptr // Panel for attestation controls
+	hwndReportFileLabel  uintptr // Report file label
+	hwndReportFileInput  uintptr // Report file path input
+	hwndReportBrowseBtn  uintptr // Browse button for report file
+	hwndVerifyChainCheck uintptr // Checkbox for certificate chain verification
+	hwndVerifyBtn        uintptr // Verify button
+	hwndAttestationTable uintptr // Attestation field table (ListView)
 
 	// All controls are now native Win32
 	cursorOn bool
 
 	// Scaled fonts (recreated on resize)
-	uiFont      uintptr // Microsoft YaHei UI for labels/buttons
-	pemFont     uintptr // Consolas for PEM text/technical controls
-	lastFontPx  int32   // last computed font pixel size (avoid redundant recreation)
+	uiFont     uintptr // Microsoft YaHei UI for labels/buttons
+	pemFont    uintptr // Consolas for PEM text/technical controls
+	lastFontPx int32   // last computed font pixel size (avoid redundant recreation)
 }
 
 var currentApp *app
@@ -911,7 +911,7 @@ func (a *app) layoutControls(w, h int32) {
 
 	labelOffset := int32(4)
 	// Vertical centering heights for labels within their respective areas
-	keyAreaH := sepY - keyInnerTop    // key area: from keyInnerTop to separator
+	keyAreaH := sepY - keyInnerTop        // key area: from keyInnerTop to separator
 	fileAreaH := s.fileSectionH() + s.gap // file area: fixed to content + bottom padding
 
 	if a.hwndPubLabel == 0 {
@@ -994,7 +994,6 @@ func (a *app) onPaint(hwnd uintptr) {
 	procBeginPaint.Call(hwnd, uintptr(unsafe.Pointer(&ps)))
 	procEndPaint.Call(hwnd, uintptr(unsafe.Pointer(&ps)))
 }
-
 
 // onDropFiles handles files dropped onto the window
 func (a *app) onDropFiles(hDrop uintptr) {

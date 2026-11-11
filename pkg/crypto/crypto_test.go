@@ -84,7 +84,6 @@ func TestDecryptTooShort(t *testing.T) {
 	}
 }
 
-
 func TestSM3KnownDigests(t *testing.T) {
 	cases := []struct {
 		name string
@@ -235,4 +234,3 @@ func newTestSM2Key(t *testing.T) *SM2PrivateKey {
 	}
 	return priv
 }
-

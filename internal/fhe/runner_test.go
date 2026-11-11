@@ -704,7 +704,7 @@ func TestNewValidatesConfigAndCreatesDirs(t *testing.T) {
 		Endpoint: "http://127.0.0.1:1", DataDir: layout.DataDir(), KeyCacheDir: t.TempDir(),
 		CallbackBaseURL: "http://taa:6001",
 		PollInterval:    time.Second,
-		RequestTimeout: time.Second,
+		RequestTimeout:  time.Second,
 	}
 	if _, err := New(cfg, nil); err != nil {
 		t.Fatalf("New: %v", err)

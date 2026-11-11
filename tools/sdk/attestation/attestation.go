@@ -19,13 +19,13 @@ import (
 )
 
 const (
-	ReportSize     = 0x9f4
-	SignedSize     = 0xb4
-	HrkCertSize    = 0x340
-	CSVCertSize    = 0x824
-	HskCekSize     = HrkCertSize + CSVCertSize
-	HRKCertURL     = "https://cert.hygon.cn/hrk"
-	KDSCertURL     = "https://cert.hygon.cn/hsk_cek?snumber="
+	ReportSize  = 0x9f4
+	SignedSize  = 0xb4
+	HrkCertSize = 0x340
+	CSVCertSize = 0x824
+	HskCekSize  = HrkCertSize + CSVCertSize
+	HRKCertURL  = "https://cert.hygon.cn/hrk"
+	KDSCertURL  = "https://cert.hygon.cn/hsk_cek?snumber="
 
 	OffsetReportPubkeyDigest = 0x000
 	OffsetReportVMID         = 0x020

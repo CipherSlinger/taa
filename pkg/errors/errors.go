@@ -9,17 +9,17 @@ import (
 
 // Standard error codes
 const (
-	CodeOK                  = 0
-	CodeUnknown             = 1
-	CodeInvalidArgument     = 400
-	CodeUnauthorized        = 401
-	CodeForbidden           = 403
-	CodeNotFound            = 404
-	CodeMethodNotAllowed    = 405
-	CodeConflict            = 409
-	CodeInternal            = 500
-	CodeNotImplemented      = 501
-	CodeServiceUnavailable  = 503
+	CodeOK                 = 0
+	CodeUnknown            = 1
+	CodeInvalidArgument    = 400
+	CodeUnauthorized       = 401
+	CodeForbidden          = 403
+	CodeNotFound           = 404
+	CodeMethodNotAllowed   = 405
+	CodeConflict           = 409
+	CodeInternal           = 500
+	CodeNotImplemented     = 501
+	CodeServiceUnavailable = 503
 )
 
 // Error 表示一个包含业务/系统错误码与错误信息的结构体。

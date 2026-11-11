@@ -245,20 +245,20 @@ const (
 
 	// Progress bar messages
 	pbmSetMarquee = 0x0400 + 10 // WM_USER + 10
-	ssLeft         = 0x00000000
-	ssVertical     = 0x00000002
-	ssCenterImage  = 0x00001000
-	ssIcon         = 0x00000003
-	hwndTop        = 0
-	hwndBottom     = 1           // HWND_BOTTOM = 1
-	hwndTopMost    = ^uintptr(0) // HWND_TOPMOST = -1
-	swpNoMove      = 0x0002
-	swpNoSize      = 0x0001
-	swpShowWindow  = 0x0040
-	rdwInvalidate  = 0x0001
-	rdwErase       = 0x0004
-	rdwFrame       = 0x0400
-	rdwUpdatNow = 0x0100
+	ssLeft        = 0x00000000
+	ssVertical    = 0x00000002
+	ssCenterImage = 0x00001000
+	ssIcon        = 0x00000003
+	hwndTop       = 0
+	hwndBottom    = 1           // HWND_BOTTOM = 1
+	hwndTopMost   = ^uintptr(0) // HWND_TOPMOST = -1
+	swpNoMove     = 0x0002
+	swpNoSize     = 0x0001
+	swpShowWindow = 0x0040
+	rdwInvalidate = 0x0001
+	rdwErase      = 0x0004
+	rdwFrame      = 0x0400
+	rdwUpdatNow   = 0x0100
 
 	// ListView messages
 	lvmInsertColumnW  = 0x1061
@@ -373,9 +373,9 @@ func (ni *nativeInput) setFocus(f bool)  {}
 func (ni *nativeInput) draw(res *d2dResources) {
 	// Native control draws itself
 }
-func (ni *nativeInput) onMouseDown(x, y int) bool { return false }
-func (ni *nativeInput) onMouseUp(x, y int)        {}
-func (ni *nativeInput) onMouseMove(x, y int)      {}
+func (ni *nativeInput) onMouseDown(x, y int) bool            { return false }
+func (ni *nativeInput) onMouseUp(x, y int)                   {}
+func (ni *nativeInput) onMouseMove(x, y int)                 {}
 func (ni *nativeInput) onKeyDown(key uint32, ch uint16) bool { return false }
 
 func newTextInput(placeholder string) *textInput {
@@ -687,7 +687,7 @@ func (ta *textArea) ensureCursorVisible() {
 	// Calculate cursor Y position relative to content
 	cursorY := float32(lineIdx) * ta.lineHeight
 	pad := float32(8)
-	viewH := float32(ta.rc.bottom - ta.rc.top) - pad*2
+	viewH := float32(ta.rc.bottom-ta.rc.top) - pad*2
 
 	// Scroll down if cursor is below visible area
 	if cursorY-ta.scrollY > viewH-ta.lineHeight {
@@ -1169,7 +1169,7 @@ func createNativePanel(parent uintptr, x, y, w, h int32) uintptr {
 	hwnd, _, _ := procCreateWindowExW.Call(
 		0,
 		uintptr(unsafe.Pointer(className)),
-		0,  // No text
+		0, // No text
 		style,
 		uintptr(x), uintptr(y), uintptr(w), uintptr(h),
 		parent,
@@ -1197,8 +1197,8 @@ func panelWndProc(hwnd uintptr, msg uint32, wParam uintptr, lParam uintptr) uint
 	case 0x0138: // WM_CTLCOLORSTATIC
 		// Handle static control colors (labels)
 		hdc := wParam
-		procSetBkColor.Call(hdc, 0x00FFFFFF)    // White background
-		procSetTextColor.Call(hdc, 0x001E1E1E)  // Near black text
+		procSetBkColor.Call(hdc, 0x00FFFFFF)   // White background
+		procSetTextColor.Call(hdc, 0x001E1E1E) // Near black text
 		if whiteBrush != 0 {
 			return whiteBrush
 		}
@@ -1207,8 +1207,8 @@ func panelWndProc(hwnd uintptr, msg uint32, wParam uintptr, lParam uintptr) uint
 	case 0x0133: // WM_CTLCOLOREDIT
 		// Handle edit control colors
 		hdc := wParam
-		procSetBkColor.Call(hdc, 0x00FFFFFF)    // White background
-		procSetTextColor.Call(hdc, 0x001E1E1E)  // Near black text
+		procSetBkColor.Call(hdc, 0x00FFFFFF)   // White background
+		procSetTextColor.Call(hdc, 0x001E1E1E) // Near black text
 		if whiteBrush != 0 {
 			return whiteBrush
 		}
@@ -1296,19 +1296,19 @@ func stopProgressMarquee(hwnd uintptr) {
 func createControlFont(height int32, faceName string) uintptr {
 	faceNamePtr := utf16PtrStr(faceName)
 	font, _, _ := procCreateFontW.Call(
-		uintptr(height),    // height
-		0,                  // width
-		0,                  // escapement
-		0,                  // orientation
-		400,                // weight (FW_NORMAL)
-		0,                  // italic
-		0,                  // underline
-		0,                  // strikeout
-		1,                  // charset (DEFAULT_CHARSET)
-		0,                  // outPrecision
-		0,                  // clipPrecision
-		0,                  // quality
-		0,                  // pitchAndFamily
+		uintptr(height), // height
+		0,               // width
+		0,               // escapement
+		0,               // orientation
+		400,             // weight (FW_NORMAL)
+		0,               // italic
+		0,               // underline
+		0,               // strikeout
+		1,               // charset (DEFAULT_CHARSET)
+		0,               // outPrecision
+		0,               // clipPrecision
+		0,               // quality
+		0,               // pitchAndFamily
 		uintptr(unsafe.Pointer(faceNamePtr)),
 	)
 	return font
@@ -1328,17 +1328,17 @@ func setControlFont(hwnd, font uintptr, redraw bool) {
 // === ListView helpers (SysListView32) ===
 
 type lvColumnW struct {
-	Mask      uint32
-	Fmt       int32
-	Cx        int32
-	PszText   *uint16
+	Mask       uint32
+	Fmt        int32
+	Cx         int32
+	PszText    *uint16
 	CchTextMax int32
-	ISubItem  int32
-	IImage    int32
-	IOrder    int32
-	CxMin     int32
-	CxDefault int32
-	CxIdeal   int32
+	ISubItem   int32
+	IImage     int32
+	IOrder     int32
+	CxMin      int32
+	CxDefault  int32
+	CxIdeal    int32
 }
 
 type lvItemW struct {
@@ -1406,10 +1406,10 @@ func listViewInsertColumn(hwnd uintptr, col int32, text string, width int32) {
 func listViewInsertItem(hwnd uintptr, index int32, text string) int32 {
 	textPtr, _ := syscall.UTF16PtrFromString(text)
 	item := lvItemW{
-		Mask:    0x0001, // LVIF_TEXT
-		IItem:   index,
+		Mask:     0x0001, // LVIF_TEXT
+		IItem:    index,
 		ISubItem: 0,
-		PszText: textPtr,
+		PszText:  textPtr,
 	}
 	ret, _, _ := procSendMessageW.Call(hwnd, lvmInsertItemW, 0, uintptr(unsafe.Pointer(&item)))
 	return int32(ret)
@@ -1441,4 +1441,3 @@ func populateAttestationTable(hwnd uintptr, rows []attestationFieldRow) {
 		listViewSetItemText(hwnd, int32(i), 1, row.Value)
 	}
 }
-

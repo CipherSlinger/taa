@@ -143,4 +143,3 @@ func TestClient_ReportModelLog_Payload(t *testing.T) {
 		t.Fatalf("expected entry 1 level, got: %#v", e1["level"])
 	}
 }
-

@@ -229,4 +229,3 @@ func ResolvePlaintextResource(resourceURL, downloadedPath string, privKey *teecr
 	}
 	return decryptedPath, true, nil
 }
-

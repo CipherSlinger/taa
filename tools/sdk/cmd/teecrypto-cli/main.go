@@ -17,8 +17,8 @@ import (
 	"path/filepath"
 	"strings"
 
-	"teecrypto/attestation"
 	"taa/pkg/crypto"
+	"teecrypto/attestation"
 )
 
 func main() {
