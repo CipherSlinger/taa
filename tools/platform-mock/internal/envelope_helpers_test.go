@@ -56,9 +56,9 @@ func registerTestTAAKey(t *testing.T) *keystore {
 	return ks
 }
 
-// sealAsTAA builds what TAA sends: encrypted to the platform public key and
-// signed with the test TAA private key.
-func sealAsTAA(t *testing.T, plaintext string) []byte {
+// testEnvelopeKeys builds the key material TAA holds in production: the test
+// TAA private key and the mock's platform public key.
+func testEnvelopeKeys(t *testing.T) *envelope.Keys {
 	t.Helper()
 	ks := registerTestTAAKey(t)
 	platformPriv := ks.platformPrivate()
@@ -69,7 +69,14 @@ func sealAsTAA(t *testing.T, plaintext string) []byte {
 	if err != nil {
 		t.Fatalf("build the test TAA envelope keys: %v", err)
 	}
-	sealed, err := keys.Seal([]byte(plaintext), "")
+	return keys
+}
+
+// sealAsTAA builds what TAA sends: encrypted to the platform public key and
+// signed with the test TAA private key.
+func sealAsTAA(t *testing.T, plaintext string) []byte {
+	t.Helper()
+	sealed, err := testEnvelopeKeys(t).Seal([]byte(plaintext), "")
 	if err != nil {
 		t.Fatalf("seal the test TAA body: %v", err)
 	}
@@ -114,15 +121,7 @@ func openBodyForTest(t *testing.T, body []byte) []byte {
 // direction and cannot decrypt what the platform sealed to TAA.
 func openAsTAA(t *testing.T, body []byte) []byte {
 	t.Helper()
-	ks := registerTestTAAKey(t)
-	platformPriv := ks.platformPrivate()
-	if platformPriv == nil {
-		t.Fatalf("the platform private key is not available")
-	}
-	keys, err := envelope.NewKeys(&platformPriv.PublicKey, testTAAKey(t), ks.userIDBytes())
-	if err != nil {
-		t.Fatalf("build the test TAA envelope keys: %v", err)
-	}
+	keys := testEnvelopeKeys(t)
 	env, err := envelope.Parse(body)
 	if err != nil {
 		t.Fatalf("parse the request sent to TAA: %v", err)
