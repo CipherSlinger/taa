@@ -122,7 +122,7 @@ TAA_POD_PULL_POLICY="${TAA_POD_PULL_POLICY:-IfNotPresent}"
 TAA_POD_NODE="${TAA_POD_NODE:-hygon-master}"
 TAA_POD_RUNTIME_CLASS="${TAA_POD_RUNTIME_CLASS:-kata-qemu-csv2}"
 TAA_POD_CPU="${TAA_POD_CPU:-3}"
-TAA_POD_MEMORY="${TAA_POD_MEMORY:-98Gi}"
+TAA_POD_MEMORY="${TAA_POD_MEMORY:-60Gi}"
 # The instance role the Pod runs, injected as CONTRACT_TYPE. This script creates the tee and
 # data-analysis roles only: 1 (tee training) and 2 (tee inference) both select the ordinary tee
 # role -- the difference is carried by the requests, not by the daemon -- and 3 selects data
