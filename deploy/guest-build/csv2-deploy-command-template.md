@@ -16,11 +16,11 @@
 >
 > | 角色 | CONTRACT_TYPE | handler | 交付包目录 | 默认镜像 |
 > |---|---|---|---|---|
-> | `taa-train` | 1 | `kata-qemu-csv2-taa-train` | `/root/taa-images/package-train` | `taa-env:v1-train-infer` |
-> | `taa-infer` | 2 | `kata-qemu-csv2-taa-infer` | `/root/taa-images/package-infer` | `taa-env:v1-train-infer` |
-> | `taa-analysis` | 3 | `kata-qemu-csv2-taa-analysis` | `/root/taa-images/package-analysis` | `jupyter-nologin-full:v2.2` |
-> | `taa-train-dcu` | 1 | `kata-qemu-hygon-dcu-csv2-taa-train` | `/root/taa-images/package-train-dcu` | `172.16.10.178:31313/vllm:ubuntu-dtk` |
-> | `taa-infer-dcu` | 2 | `kata-qemu-hygon-dcu-csv2-taa-infer` | `/root/taa-images/package-infer-dcu` | `172.16.10.178:31313/vllm:ubuntu-dtk` |
+> | `taa-train` | 1 | `kata-qemu-nondcu-csv2-taa-train` | `/root/taa-images/package-train` | `taa-env:v1-train-infer` |
+> | `taa-infer` | 2 | `kata-qemu-nondcu-csv2-taa-infer` | `/root/taa-images/package-infer` | `taa-env:v1-train-infer` |
+> | `taa-analysis` | 3 | `kata-qemu-nondcu-csv2-taa-analysis` | `/root/taa-images/package-analysis` | `jupyter-nologin-full:v2.2` |
+> | `taa-train-dcu` | 1 | `kata-qemu-dcu-csv2-taa-train` | `/root/taa-images/package-train-dcu` | `172.16.10.178:31313/vllm:ubuntu-dtk` |
+> | `taa-infer-dcu` | 2 | `kata-qemu-dcu-csv2-taa-infer` | `/root/taa-images/package-infer-dcu` | `172.16.10.178:31313/vllm:ubuntu-dtk` |
 >
 > 两个 `-dcu` 角色面向 DCU 全机密运行时：用 DCU 内核与 `configuration-qemu-hygon-dcu-csv2.toml`，
 > 内核命令行带 `taa.modules=hycu`，测试 Pod 申请 `hygon.cn/k100_ai`。驱动是树外模块，宿主机上
@@ -52,7 +52,7 @@ export REMOTE_BASE_INITRD_SRC=/opt/kata/share/kata-containers/kata-containers-in
 export REMOTE_KERNEL_SRC=/opt/kata/share/kata-containers/vmlinuz-confidential-csv.container
 export REMOTE_OVMF_SRC=/opt/kata/share/ovmf/OVMFCSV.fd
 export REMOTE_KATA_CONFIG_SRC=/opt/kata/share/defaults/kata-containers/configuration-qemu-csv2.toml
-export RUNTIME_HANDLER=kata-qemu-csv2-taa-train
+export RUNTIME_HANDLER=kata-qemu-nondcu-csv2-taa-train
 export RUNTIME_TYPE=io.containerd.kata-qemu-csv2.v2
 export RUNTIME_PATH=/opt/kata/bin/containerd-shim-kata-v2
 export SNAPSHOTTER=nydus
@@ -240,18 +240,20 @@ cd /home/hjy/taa/deploy/guest-build
 ./build-initrd.sh render
 ```
 
-产物在 `dist/kata-qemu-csv2-taa-train/`：
+产物在 `dist/kata-qemu-nondcu-csv2-taa-train/`：
 
 - `bundle/initramfs.img`、`bundle/vmlinuz`、`bundle/OVMF.fd` — QEMU 实际启动的三份文件
 - `config/kata-config.toml` — 改写后的 Kata hypervisor 配置（指向包内 bundle）
 - `config/containerd-runtime-handler.toml` — 本包 handler 的片段（供审阅）
-- `config/containerd-runtimes.toml` — **安装时生成**：宿主当前 runtimes 表的完整快照
-  加本包 handler，由 `install.sh` 拷贝到 `/etc/containerd/conf.d/zz-taa-runtimes.toml`
-  （已存在则覆盖）
+- `config/zz-taa-runtimes.toml` — **首次安装时生成**：宿主 `conf.d` 中最后生效的
+  runtimes 表（排除 TAA 自己的 drop-in）加本包 handler，之后重装复用包内这份；
+  `install.sh` 把它拷贝到 `/etc/containerd/conf.d/zz-taa-runtimes.toml`（已存在则覆盖），
+  `uninstall.sh` 从中摘掉本包 handler
 - `k8s/runtimeclass.yaml` — 运行时类（使用该 runtime 的 Pod 都要它）
 - `test/test-pod.yaml`、`test/create-test-pod.sh`、`test/delete-test-pod.sh` — 测试 Pod
   及其创建/删除脚本
-- `install.sh`、`render.py`、`measure.py` — 包内自带的安装器、合并器与度量计算器
+- `install.sh`、`uninstall.sh`、`render.py`、`measure.py` — 包内自带的安装/卸载器、
+  合并器与度量计算器
 - `cmdline.txt` — 计算预期度量所用的 QEMU `-append` 原文
 - `SHA256SUMS` — 包内文件校验和（含 `bundle/` 三份）
 - `README.md` — 包内使用说明，含预期 MEASUREMENT
@@ -270,12 +272,16 @@ cd /home/hjy/taa/deploy/guest-build
 拒绝安装并提示重新渲染。
 
 安装不再改写 `/etc/containerd/config.toml`，也不往别人的 `conf.d/*.toml` 里合并：
-`install.sh` 把 handler 写进包内的 `config/containerd-runtimes.toml`，再覆盖
-`/etc/containerd/conf.d/zz-taa-runtimes.toml`。这个文件是「宿主当前 runtimes 表 +
-本包 handler」的完整快照，因为 containerd 用最后一个定义 runtimes 的 import 整个替换
-CRI 插件树——只写本包 handler 会把宿主其它 runtime 一并删掉。安装前后各做一次
-`containerd config dump`：预检确认不丢任何已有 handler，安装后再按真实配置复核，
-失败则回滚 drop-in。
+`install.sh` 首次从 `/etc/containerd/conf.d/` 中最后生效的 runtimes 文件采集快照
+（排除 `zz-taa-runtimes.toml` 自身），加上本包 handler 后写进包内的
+`config/zz-taa-runtimes.toml`，再覆盖 `/etc/containerd/conf.d/zz-taa-runtimes.toml`；
+重装直接复用包内副本。这个文件必须是「宿主当前 runtimes 表 + 本包 handler」的完整
+快照，因为 containerd 用最后一个定义 runtimes 的 import 整个替换 CRI 插件树——只写
+本包 handler 会把宿主其它 runtime 一并删掉。安装前后各做一次 `containerd config dump`：
+预检确认不丢任何已有 handler，安装后再按真实配置复核，失败则回滚 drop-in。
+`uninstall.sh` 是这一步的反操作：从安装生效的 drop-in（是包含其它 TAA 包 handler 的
+超集）里删掉本包 handler，写回包内副本并覆盖安装；若不再剩任何 TAA handler，则删除
+`/etc/containerd/conf.d/zz-taa-runtimes.toml` 并重启 containerd。
 
 `render` 会从**包内**这三份文件算出预期 MEASUREMENT：
 
@@ -314,7 +320,7 @@ RUNTIME_HANDLER="${RUNTIME_HANDLER}" \
 2. 使用包内的 Kata 配置 `$REMOTE_PACKAGE_DIR/config/kata-config.toml`
    （它已经在 `render` 时指向同一包内的 `bundle/`），不再往 `/etc` 装第二份
 3. 在 `containerd` 中新增 runtime handler：
-   - `kata-qemu-csv2-taa-train`，其 `ConfigPath` 指向上面那份包内配置
+   - `kata-qemu-nondcu-csv2-taa-train`，其 `ConfigPath` 指向上面那份包内配置
 4. 重启 `containerd`——**只有在配置真的变了才重启**（先 `cmp` 一次，未变化就打印
    `containerd 配置未变化，跳过重启`）。这决定了 `launch` 对已在跑的 Pod 有没有动效
 5. 视配置可选重启 `kubelet`
@@ -337,15 +343,18 @@ install.sh 到此结束，**不再创建测试 Pod**（装包不等于起一台 
 手工在目标宿主上安装同一个包时：
 
 ```bash
-cd dist/kata-qemu-csv2-taa-train
+cd dist/kata-qemu-nondcu-csv2-taa-train
 sha256sum -c SHA256SUMS
 sudo bash install.sh --dry-run   # 先看会改什么
 sudo bash install.sh
 sudo bash test/create-test-pod.sh   # 需要验证时
+sudo bash uninstall.sh --dry-run    # 卸载（只动 containerd handler）
+sudo bash uninstall.sh
 ```
 
-`install.sh` 只支持 `--dry-run`；其余可用环境变量是 `CONTAINERD_CONFIG` 和
-`RESTART_KUBELET`，`test/create-test-pod.sh` 另有 `MEASURE_SMP`。包内的绝对路径在
+`install.sh` / `uninstall.sh` 只支持 `--dry-run`；其它可用环境变量是
+`CONTAINERD_CONFIG` 和（仅 install）`RESTART_KUBELET`，`test/create-test-pod.sh`
+另有 `MEASURE_SMP`。包内的绝对路径在
 `render` 时就写进了两份配置，
 所以包绑定 `REMOTE_PACKAGE_DIR` 这个位置：换宿主照搬整包即可，换了目录就要重新
 `render`。`install.sh` 发现包被挪过位置会直接拒绝并提示重新渲染。
@@ -379,11 +388,11 @@ sudo grep -nE '^(kernel|initrd|firmware|kernel_params)\s*=' \
   "$pkg/config/kata-config.toml"
 
 # containerd 里必须有 runtime handler
-sudo grep -nF '[plugins."io.containerd.grpc.v1.cri".containerd.runtimes."kata-qemu-csv2-taa-train"]' \
-  /etc/containerd/config.toml
+sudo grep -nF '[plugins."io.containerd.grpc.v1.cri".containerd.runtimes."kata-qemu-nondcu-csv2-taa-train"]' \
+  /etc/containerd/conf.d/zz-taa-runtimes.toml
 
 # RuntimeClass 必须存在
-kubectl get runtimeclass kata-qemu-csv2-taa-train
+kubectl get runtimeclass kata-qemu-nondcu-csv2-taa-train
 
 # 测试 Pod
 kubectl get pod test-kata-csv2-taa -o wide
@@ -425,8 +434,8 @@ python3 "$pkg/measure.py" digest \
 - `REMOTE_PACKAGE_DIR=/root/taa-images/package-train`（整包安装位置）
 - `REMOTE_BUNDLE_DIR`：**派生值**，恒为 `$REMOTE_PACKAGE_DIR/bundle`，不要单独设置
 - `REMOTE_KATA_CONFIG`：**派生值**，恒为 `$REMOTE_PACKAGE_DIR/config/kata-config.toml`
-- `RUNTIME_HANDLER=kata-qemu-csv2-taa-train`
-- `DIST_DIR=dist/kata-qemu-csv2-taa-train`（`render` 的固定输出目录）
+- `RUNTIME_HANDLER=kata-qemu-nondcu-csv2-taa-train`
+- `DIST_DIR=dist/kata-qemu-nondcu-csv2-taa-train`（`render` 的固定输出目录）
 - `KATA_CONFIG_TEMPLATE=base/configuration-qemu-csv2.toml`（宿主权威模板，`fetch-base` 拉取）
 - `LAUNCH_KEEP_DIST=1`（`launch` 用的临时渲染结果额外复制一份到 `DIST_DIR`）
 - `MEASURE_OVMF` / `MEASURE_KERNEL`：预期度量的本地输入（默认 `base/` 下的 OVMF 与 kernel）；

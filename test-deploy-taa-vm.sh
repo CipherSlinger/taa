@@ -56,7 +56,7 @@ check "print-config: JSON with a space survives eval" '{"a.b":"c d"}' "$TEST_POD
 default_config="$("$BUILD" print-config)"
 eval "$default_config"
 check "print-config: default annotations are an empty object" "{}" "$TEST_POD_ANNOTATIONS"
-check "print-config: default handler" "kata-qemu-csv2-taa-train" "$RUNTIME_HANDLER"
+check "print-config: default handler" "kata-qemu-nondcu-csv2-taa-train" "$RUNTIME_HANDLER"
 
 # Guest RAM is a runtime floor, not a tuning knob: a CSV2 guest's writable root
 # is a tmpfs at about half of it and CDH unpacks the image there. 2048 (the base
@@ -74,7 +74,7 @@ check "print-config: the analysis image gets a larger guest" "yes" \
 # guest loads and the device the test Pod requests. They are all role defaults,
 # so assert them through print-config exactly as the driver reads them.
 dcu_config="$(REMOTE_HOST=invalid.invalid TAA_ROLE=taa-train-dcu "$BUILD" print-config)"
-check "print-config: DCU handler" "kata-qemu-hygon-dcu-csv2-taa-train" \
+check "print-config: DCU handler" "kata-qemu-dcu-csv2-taa-train" \
   "$(sed -n 's/^RUNTIME_HANDLER=//p' <<<"$dcu_config" | tr -d "'")"
 check "print-config: DCU layers on the DCU runtime class" "io.containerd.kata-qemu-hygon-dcu-csv2.v2" \
   "$(sed -n 's/^RUNTIME_TYPE=//p' <<<"$dcu_config" | tr -d "'")"
@@ -264,9 +264,21 @@ main_installs="$(grep -cF 'install -o root -g root -m 0644 "$tmp_containerd" "$C
 check "install.sh: never rewrites the shared containerd config" "0" "$main_installs"
 check_contains "install.sh: installs a TAA-owned drop-in" 'zz-taa-runtimes.toml' "$install_src"
 check_contains "install.sh: the drop-in lives inside the package" \
-  'config/containerd-runtimes.toml' "$install_src"
+  'config/zz-taa-runtimes.toml' "$install_src"
 check_contains "install.sh: generates the drop-in as a full snapshot" \
   'containerd-dropin' "$install_src"
+check_contains "install.sh: reuses the package copy on reinstall" \
+  '--base "$package_dropin"' "$install_src"
+
+# The reverse operation ships with every package and edits exactly the file the
+# installer wrote; it must not need a second parameter sheet.
+uninstall_src="$(cat "$SCRIPT_DIR/deploy/guest-build/render/uninstall.sh")"
+check_contains "uninstall.sh: removes one handler from the installed drop-in" \
+  'containerd-remove' "$uninstall_src"
+check_contains "uninstall.sh: deletes the drop-in when no TAA handler remains" \
+  'TAA_HANDLER_RE' "$uninstall_src"
+check_contains "uninstall.sh: shares the drop-in filename with install.sh" \
+  'zz-taa-runtimes.toml' "$uninstall_src"
 
 # upload renders and uploads; the install happens in launch, one function away.
 # The hint it prints names install.sh, so the assertion is on the invocation

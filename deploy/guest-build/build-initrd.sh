@@ -113,15 +113,16 @@ role_wants_semgrep() {
 
 # Handler and delivery directory are per role, so a host can hold all three side
 # by side. Both carry the role suffix, including training: a bare `package` or
-# `kata-qemu-csv2-taa` would read as "the default one" and invite a second role
-# to be installed over it.
+# `kata-qemu-nondcu-csv2-taa` would read as "the default one" and invite a
+# second role to be installed over it. The `nondcu` / `dcu` infix makes the two
+# device families explicit and keeps every TAA handler under a shared prefix.
 role_runtime_handler() {
   case "$TAA_ROLE" in
-    taa-train) echo kata-qemu-csv2-taa-train ;;
-    taa-infer) echo kata-qemu-csv2-taa-infer ;;
-    taa-analysis) echo kata-qemu-csv2-taa-analysis ;;
-    taa-train-dcu) echo kata-qemu-hygon-dcu-csv2-taa-train ;;
-    taa-infer-dcu) echo kata-qemu-hygon-dcu-csv2-taa-infer ;;
+    taa-train) echo kata-qemu-nondcu-csv2-taa-train ;;
+    taa-infer) echo kata-qemu-nondcu-csv2-taa-infer ;;
+    taa-analysis) echo kata-qemu-nondcu-csv2-taa-analysis ;;
+    taa-train-dcu) echo kata-qemu-dcu-csv2-taa-train ;;
+    taa-infer-dcu) echo kata-qemu-dcu-csv2-taa-infer ;;
   esac
 }
 
@@ -556,7 +557,7 @@ Role (first word, or TAA_ROLE; default taa-train):
                 package directory, the jupyter base image, no semgrep payload.
                 Its injected config selects the built-in regex engine instead.
   taa-train-dcu Training instance on the Hygon DCU full-encryption runtime.
-                CONTRACT_TYPE=1, handler kata-qemu-hygon-dcu-csv2-taa-train,
+                CONTRACT_TYPE=1, handler kata-qemu-dcu-csv2-taa-train,
                 the semgrep payload, the DCU kernel and the hycu driver tree.
   taa-infer-dcu Inference on the same DCU runtime. CONTRACT_TYPE=2, no semgrep
                 payload, same kernel and driver tree. `taa-infer-duc` is accepted
@@ -1631,6 +1632,7 @@ render_package() {
     exit 1
   fi
   if [[ ! -f "$RENDER_DIR/render.py" || ! -f "$RENDER_DIR/install.sh" ||
+        ! -f "$RENDER_DIR/uninstall.sh" ||
         ! -f "$RENDER_DIR/create-test-pod.sh" || ! -f "$RENDER_DIR/delete-test-pod.sh" ]]; then
     echo "error: 渲染器缺失: $RENDER_DIR" >&2
     exit 1
@@ -1796,11 +1798,12 @@ IDENTITY
     --out-dir "$out_dir/k8s" \
     --pod-dir "$out_dir/test"
 
-  # The package is self-contained: the installer, the merger and the
-  # measurement helper travel with it.
+  # The package is self-contained: the installer, its reverse, the merge
+  # helpers and the measurement helper travel with it.
   cp "$RENDER_DIR/render.py" "$out_dir/render.py"
   cp "$RENDER_DIR/measure.py" "$out_dir/measure.py"
   cp "$RENDER_DIR/install.sh" "$out_dir/install.sh"
+  cp "$RENDER_DIR/uninstall.sh" "$out_dir/uninstall.sh"
   cp "$RENDER_DIR/create-test-pod.sh" "$out_dir/test/create-test-pod.sh"
   cp "$RENDER_DIR/delete-test-pod.sh" "$out_dir/test/delete-test-pod.sh"
 
@@ -1904,17 +1907,21 @@ TAA 运行在 Kata CSV2 机密 VM 的 initrd 里，自证通过后才放行 kata
   的 ConfigPath 就指向它，安装脚本也从这里读安装所需的全部参数
 - \`config/containerd-runtime-handler.toml\` — 本包 handler 的片段（供审阅，安装脚本
   从这里解析 handler 名、runtime、snapshotter 与 ConfigPath）
-- \`config/containerd-runtimes.toml\` — **安装时生成**的完整快照：宿主当前 runtimes 表
-  加上本包 handler，随后原样拷贝到 \`/etc/containerd/conf.d/zz-taa-runtimes.toml\`
-  （已存在则覆盖）。containerd 用最后一个定义 runtimes 的 import 整个替换 CRI 插件树，
-  只写本包 handler 会删掉宿主其它 runtime，所以该文件必须带全量快照；不要手工编辑
+- \`config/zz-taa-runtimes.toml\` — **首次安装时生成**的完整快照：宿主
+  \`/etc/containerd/conf.d/\` 中最后生效的那份 runtimes 文件（排除 TAA 自己的
+  drop-in）加上本包 handler。之后重装复用包内这份，不再从宿主重新采集，这样
+  \`uninstall.sh\` 才能可靠地把本包 handler 摘掉。安装时拷贝到
+  \`/etc/containerd/conf.d/zz-taa-runtimes.toml\`（已存在则覆盖）。containerd 用最后
+  一个定义 runtimes 的 import 整个替换 CRI 插件树，只写本包 handler 会删掉宿主其它
+  runtime，所以该文件必须带全量快照；不要手工编辑
 - \`k8s/runtimeclass.yaml\` — 运行时类：Pod 用 \`runtimeClassName\` 选中本 handler。使用该
   runtime 的每个 Pod 都需要它，由 install.sh 安装
 - \`test/\` — 测试 Pod：\`test-pod.yaml\`、\`create-test-pod.sh\`（创建并等待 Ready，
   核对 QEMU 用的 initrd 与 MEASUREMENT）、\`delete-test-pod.sh\`（删除测试 Pod）。
   CoCo 客户机由 CDH 自己拉镜像，注册表 CA 经 \`cc_init_data\` 注解投递，而这个值逐宿主
   不同，所以包里不带它：创建脚本在宿主机上读一条填进去
-- \`install.sh\` — 安装脚本（见下文）；\`render.py\` — install.sh 用的 Kata 配置渲染器；
+- \`install.sh\` / \`uninstall.sh\` — 安装与卸载脚本（见下文）；\`render.py\` —
+  两个脚本共用的 Kata 配置与 containerd drop-in 渲染器；
   \`measure.py\` — test/create-test-pod.sh 用的 MEASUREMENT 计算器
 $(if [[ -n "$TEST_IMAGE_ARCHIVE" ]]; then printf -- '- `%s/` — 测试 Pod 镜像的 `docker save` 归档。CoCo guest 由 CDH 自己从 registry 拉镜像，宿主机 docker 不在那条路径上，所以 install.sh 会先查 registry，缺这个 tag 时导入归档并推送过去\n' "$PACKAGE_IMAGE_SUBDIR"; fi)
 - \`config/env.txt\` — **可在宿主机上编辑的部署身份**（见下文）
@@ -1940,11 +1947,18 @@ ssh root@<host> 'cd $REMOTE_PACKAGE_DIR && bash test/create-test-pod.sh'
 \`\`\`
 
 install.sh 依次完成：校验 \`SHA256SUMS\`、按 \`config/env.txt\` 重渲染 Kata 配置、
-把 runtime handler 合并进 containerd 配置（校验生效配置后重启 containerd）、
-必要时把测试镜像导入 registry、创建 RuntimeClass。\`--dry-run\` 只打印，不落盘。
+把 runtime handler 写入 TAA 自有 drop-in（首次从宿主最后生效的 runtimes 文件
+采集快照，之后复用包内副本；校验生效配置后重启 containerd）、必要时把测试镜像
+导入 registry、创建 RuntimeClass。\`--dry-run\` 只打印，不落盘。
+
+卸载用 \`uninstall.sh\`，它是 containerd 这一步的反操作：从
+\`/etc/containerd/conf.d/zz-taa-runtimes.toml\` 中删掉本包 handler（其它 TAA 包
+的 handler 保留），写回包内副本并覆盖安装；若文件里不再有任何 TAA handler，则删除
+该 drop-in，让 containerd 回到宿主自己的配置，最后重启 containerd。RuntimeClass
+与镜像不由它删除。
 
 ConfigPath 指向包内这份配置：这台宿主上该 runtime 的 Kata 配置就是包里的这一份，
-删除或替换目录前先把 runtime handler 摘掉。
+删除或替换目录前先用 \`uninstall.sh\` 把 runtime handler 摘掉。
 
 ## 部署身份（在宿主机上改）
 

@@ -9,12 +9,14 @@
 # test/, so an install no longer starts a guest.
 #
 # The handler is never merged into /etc/containerd/config.toml or into another
-# drop-in. install.sh writes `config/containerd-runtimes.toml` inside the
-# package and copies it to /etc/containerd/conf.d/, overwriting the previous
-# copy. containerd replaces the whole CRI plugin tree with the last imported
-# file that defines it, so that file is generated as a snapshot of the host's
-# current runtimes map plus this package's handler; a file holding only the new
-# handler would silently delete every other runtime.
+# drop-in. The first install seeds `config/zz-taa-runtimes.toml` from the last
+# file under /etc/containerd/conf.d that defines runtimes (ignoring TAA's own
+# drop-in), adds this package's handler and copies it to
+# /etc/containerd/conf.d/, overwriting the previous copy. Later installs reuse
+# the package copy, so the package owns the snapshot and uninstall.sh can take
+# the handler out again. containerd replaces the whole CRI plugin tree with the
+# last imported file that defines it, so the file must carry every handler; one
+# holding only the new handler would silently delete all the others.
 #
 # Every setting is derived from the package itself -- the runtime handler and
 # its ConfigPath from config/containerd-runtime-handler.toml, the boot assets
@@ -215,7 +217,7 @@ grep -nE '^[[:space:]]*(kernel|initrd|firmware|kernel_params)[[:space:]]*=' "$pa
 echo
 echo "== 3. 安装 containerd runtime handler（TAA 自有 drop-in）=="
 dropin_dest="$CONTAINERD_CONF_DIR/$CONTAINERD_DROPIN_NAME"
-package_dropin="$pkg_dir/config/containerd-runtimes.toml"
+package_dropin="$pkg_dir/config/zz-taa-runtimes.toml"
 
 # The drop-in only takes effect through an import. Refuse early rather than
 # install a file nothing reads.
@@ -241,14 +243,24 @@ carry_args=()
 if [[ -f "$dropin_dest" ]]; then
   carry_args=(--carry "$dropin_dest")
 fi
+# First install: seed from the file that currently wins under conf.d, ignoring
+# TAA's own drop-in (deriving from it would freeze the host at the first
+# install). Reinstall: reuse the package copy, which is the snapshot the
+# package owns and uninstall.sh edits. Either way, carry over handlers other
+# TAA packages installed, because two packages seeded from the same host file
+# would otherwise overwrite each other.
+base_args=()
+if [[ -f "$package_dropin" ]]; then
+  base_args=(--base "$package_dropin")
+fi
 # A drop-in holding only our handler would replace the whole CRI plugin tree and
 # delete every other runtime (containerd merges the plugins map key by key, and
-# the CRI tree is one value). So the generator starts from the file that
-# currently wins, carries over handlers other packages already installed, and
+# the CRI tree is one value). So the generator starts from a full snapshot and
 # appends ours.
 if ! python3 "$pkg_dir/render.py" containerd-dropin \
   --config "$CONTAINERD_CONFIG" \
   --exclude-prefix zz-taa \
+  "${base_args[@]+"${base_args[@]}"}" \
   "${carry_args[@]+"${carry_args[@]}"}" \
   --handler "$RUNTIME_HANDLER" \
   --runtime-type "$RUNTIME_TYPE" \

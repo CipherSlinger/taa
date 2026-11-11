@@ -561,7 +561,7 @@ member 等价。
 **DCU 全机密角色（`taa-train-dcu` / `taa-infer-dcu`）** 面向海光 DCU 全机密运行时：
 guest 内核换成 `vmlinuz-hycu-confidential-csv.container`（release
 `6.6.0-hycu-confidential-csv+`），Kata 模板换成 `configuration-qemu-hygon-dcu-csv2.toml`，
-runtime handler 为 `kata-qemu-hygon-dcu-csv2-taa-*`。`hycu`/`hycu-sched` 是该内核的树外
+runtime handler 为 `kata-qemu-dcu-csv2-taa-*`。`hycu`/`hycu-sched` 是该内核的树外
 模块，宿主机上没有对应文件，只存在于 DCU guest 镜像的 rootfs 里；因此 `fetch-base` 会
 只读挂载该镜像，把 `usr/lib/modules/6.6.0-hycu-confidential-csv+`（约 122 MiB）、
 同 release 的 firmware 与 `usr/bin/kmod` 取到 `deploy/guest-build/base/dcu-payload/`。
