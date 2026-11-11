@@ -163,8 +163,42 @@ load_kernel_modules() {
 TAA_RESTART_DELAY="${TAA_RESTART_DELAY:-5}"
 TAA_RESTART_MAX_DELAY="${TAA_RESTART_MAX_DELAY:-60}"
 TAA_RESTART_STABLE_SECONDS="${TAA_RESTART_STABLE_SECONDS:-60}"
+# Keep at most this much of /tmp/taa.log, plus one previous generation: /tmp is
+# tmpfs here, so an unrotated log is guest RAM. Overridable so the rotation can
+# be tested without writing a megabyte.
+TAA_LOG_MAX_BYTES="${TAA_LOG_MAX_BYTES:-1048576}"
 # Overridable only so the helpers can be tested locally, like CSV_MISC_FILE.
 UPTIME_FILE="${UPTIME_FILE:-/proc/uptime}"
+
+# These knobs are baked into the measured script rather than read from the host,
+# so a bad value can only come from a mistake here. It still has to be caught: a
+# non-numeric delay reaches `$(( delay * 2 ))`, and dash treats an arithmetic
+# error as fatal to the shell. The supervisor would die silently and TAA would
+# never be restarted again, which is exactly the failure this loop exists to
+# prevent. Fall back to the documented default and say so on the console.
+sanitize_restart_settings() {
+  case "$TAA_RESTART_DELAY" in
+    ''|*[!0-9]*)
+      log "WARNING: TAA_RESTART_DELAY='$TAA_RESTART_DELAY' is not a non-negative integer; using 5"
+      TAA_RESTART_DELAY=5 ;;
+  esac
+  case "$TAA_RESTART_MAX_DELAY" in
+    ''|*[!0-9]*)
+      log "WARNING: TAA_RESTART_MAX_DELAY='$TAA_RESTART_MAX_DELAY' is not a non-negative integer; using 60"
+      TAA_RESTART_MAX_DELAY=60 ;;
+  esac
+  case "$TAA_RESTART_STABLE_SECONDS" in
+    ''|*[!0-9]*)
+      log "WARNING: TAA_RESTART_STABLE_SECONDS='$TAA_RESTART_STABLE_SECONDS' is not a non-negative integer; using 60"
+      TAA_RESTART_STABLE_SECONDS=60 ;;
+  esac
+  case "$TAA_LOG_MAX_BYTES" in
+    ''|*[!0-9]*)
+      log "WARNING: TAA_LOG_MAX_BYTES='$TAA_LOG_MAX_BYTES' is not a non-negative integer; using 1048576"
+      TAA_LOG_MAX_BYTES=1048576 ;;
+  esac
+}
+sanitize_restart_settings
 
 # Seconds since boot, as an integer. /proc/uptime is mounted before the
 # supervisor starts; a missing or malformed file reads as 0, which only makes
@@ -203,10 +237,33 @@ double_restart_delay() {
   printf '%s\n' "$next"
 }
 
+# Bound the daemon log before each launch. One previous generation is kept so
+# the crash that preceded a restart is still readable; without the check a crash
+# loop would append a startup log every few seconds for the life of the VM.
+rotate_taa_log() {
+  local size
+  [ -f "$TAA_LOG" ] || return 0
+  size="$(wc -c <"$TAA_LOG" 2>/dev/null || echo 0)"
+  case "$size" in
+    ''|*[!0-9]*) size=0 ;;
+  esac
+  if [ "$size" -le "$TAA_LOG_MAX_BYTES" ]; then
+    return 0
+  fi
+  if ! mv -f "$TAA_LOG" "$TAA_LOG.1" 2>/dev/null; then
+    : >"$TAA_LOG" 2>/dev/null || true
+  fi
+  return 0
+}
+
 supervise_taa() {
   local delay started ran rc taa_pid
+  # If this loop dies, nothing restarts TAA and the guest keeps looking healthy.
+  # There is no logger to escalate to, so make the exit itself visible.
+  trap 'log "WARNING: TAA supervisor exited; TAA will not be restarted"' EXIT
   delay="$TAA_RESTART_DELAY"
   while :; do
+    rotate_taa_log
     started="$(uptime_seconds)"
     "$TAA_BIN" -config "$TAA_CONFIG" -addr "$TAA_ADDR" >>"$TAA_LOG" 2>&1 &
     taa_pid="$!"

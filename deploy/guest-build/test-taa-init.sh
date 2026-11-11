@@ -271,6 +271,41 @@ check "a malformed uptime reads as 0" "0" \
 check "a missing uptime reads as 0" "0" \
   "$(UPTIME_FILE="$WORK_DIR/no-such-uptime" uptime_seconds)"
 
+# A malformed knob reaches `$(( delay * 2 ))`, which dash treats as a fatal
+# shell error: the supervisor would exit silently and TAA would never be
+# restarted. Sanitizing has to restore the default rather than pass it through.
+got="$(
+  TAA_RESTART_DELAY=abc TAA_RESTART_MAX_DELAY=-1 TAA_RESTART_STABLE_SECONDS=60s
+  sanitize_restart_settings >/dev/null 2>&1
+  printf '%s|%s|%s' "$TAA_RESTART_DELAY" "$TAA_RESTART_MAX_DELAY" \
+    "$TAA_RESTART_STABLE_SECONDS"
+)"
+check "invalid restart knobs fall back to the defaults" "5|60|60" "$got"
+
+got="$(
+  TAA_RESTART_DELAY=7 TAA_RESTART_MAX_DELAY=90 TAA_RESTART_STABLE_SECONDS=30
+  sanitize_restart_settings >/dev/null 2>&1
+  printf '%s|%s|%s' "$TAA_RESTART_DELAY" "$TAA_RESTART_MAX_DELAY" \
+    "$TAA_RESTART_STABLE_SECONDS"
+)"
+check "valid restart knobs are left alone" "7|90|30" "$got"
+
+# /tmp is tmpfs, so an unrotated log costs guest RAM. Rotation must leave a
+# small log alone, move an oversized one aside, and keep a generation so the
+# crash before the restart stays readable.
+taa_log="$WORK_DIR/taa.log"
+printf 'small\n' >"$taa_log"
+TAA_LOG="$taa_log" TAA_LOG_MAX_BYTES=100 rotate_taa_log >/dev/null 2>&1
+check "keeps a small daemon log in place" "present" \
+  "$([[ -f "$taa_log" && ! -e "$taa_log.1" ]] && echo present || echo absent)"
+
+head -c 300 /dev/zero | tr '\0' 'x' >"$taa_log"
+TAA_LOG="$taa_log" TAA_LOG_MAX_BYTES=100 rotate_taa_log >/dev/null 2>&1
+check "rotates an oversized daemon log to .1" "yes" \
+  "$([[ -f "$taa_log.1" ]] && echo yes || echo no)"
+check "removes the oversized current log" "yes" \
+  "$([[ ! -e "$taa_log" ]] && echo yes || echo no)"
+
 echo "== main flow invariants =="
 
 # The PATH extension is a side effect on the environment, so it lives in the main
@@ -316,6 +351,10 @@ check "the supervisor waits for the TAA process to exit" "yes" \
   "$(grep -qF 'wait "$taa_pid"' <<<"$supervisor_body" && echo yes || echo no)"
 check "the supervisor pauses before restarting" "yes" \
   "$(grep -qF 'sleep "$delay"' <<<"$supervisor_body" && echo yes || echo no)"
+check "bounds the daemon log before each launch" "yes" \
+  "$(grep -qF 'rotate_taa_log' <<<"$supervisor_body" && echo yes || echo no)"
+check "makes its own exit visible on the console" "yes" \
+  "$(grep -qE "^[[:space:]]*trap 'log .*' EXIT$" "$TAA_INIT" && echo yes || echo no)"
 check "backgrounds the supervisor so PID 1 can exec" "yes" \
   "$(grep -qE '^[[:space:]]*supervise_taa &[[:space:]]*$' "$TAA_INIT" && echo yes || echo no)"
 
