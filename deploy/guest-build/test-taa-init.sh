@@ -243,6 +243,34 @@ rc=$?
 set -e
 check "a missing kmod is not fatal" "0" "$rc"
 
+echo "== TAA restart supervision =="
+
+# Nothing in the initrd restarts TAA, so these helpers are the only thing between
+# a crash and a guest that is up but no longer serves /v1/taa/*. The backoff has
+# to double on a quick crash and reset after a stable run, or a permanently
+# broken config either spins or never gets a fast retry after a one-off exit.
+check "keeps backing off while failures are quick" "20" \
+  "$(TAA_RESTART_DELAY=5 TAA_RESTART_STABLE_SECONDS=60 restart_delay_after 20 5)"
+check "resets the delay once a run was stable" "5" \
+  "$(TAA_RESTART_DELAY=5 TAA_RESTART_STABLE_SECONDS=60 restart_delay_after 40 60)"
+check "doubles the delay after a quick exit" "40" \
+  "$(TAA_RESTART_MAX_DELAY=60 double_restart_delay 20)"
+check "caps the delay at the maximum" "60" \
+  "$(TAA_RESTART_MAX_DELAY=60 double_restart_delay 40)"
+
+# The delay is compared as an integer, so a fractional or malformed uptime must
+# not leak into the arithmetic (which would abort the supervisor under set -u).
+uptime_ok="$WORK_DIR/uptime-ok"
+printf '123.45 67.89\n' >"$uptime_ok"
+check "truncates /proc/uptime to whole seconds" "123" \
+  "$(UPTIME_FILE="$uptime_ok" uptime_seconds)"
+uptime_bad="$WORK_DIR/uptime-bad"
+printf 'not-a-number\n' >"$uptime_bad"
+check "a malformed uptime reads as 0" "0" \
+  "$(UPTIME_FILE="$uptime_bad" uptime_seconds)"
+check "a missing uptime reads as 0" "0" \
+  "$(UPTIME_FILE="$WORK_DIR/no-such-uptime" uptime_seconds)"
+
 echo "== main flow invariants =="
 
 # The PATH extension is a side effect on the environment, so it lives in the main
@@ -252,7 +280,9 @@ echo "== main flow invariants =="
 # on every audit -- after a build, a deploy and a boot. Order matters too: the
 # export has to precede the TAA invocation below it.
 path_line="$(grep -nF 'PATH="/usr/local/bin:$PATH"' "$TAA_INIT" | cut -d: -f1 | head -1)"
-taa_line="$(grep -nF '"$TAA_BIN" -config' "$TAA_INIT" | cut -d: -f1 | head -1)"
+# The call site, not the definition inside supervise_taa: the ordering below is
+# about the main flow starting TAA after its environment is in place.
+taa_line="$(grep -nF 'supervise_taa &' "$TAA_INIT" | cut -d: -f1 | head -1)"
 check "extends PATH before starting TAA" "yes" \
   "$([[ -n "$path_line" && -n "$taa_line" && "$path_line" -lt "$taa_line" ]] && echo yes || echo no)"
 
@@ -276,6 +306,24 @@ check "loads modules after the command line is read" "yes" \
   "$([[ -n "$identity_line" && -n "$modules_line" && "$identity_line" -lt "$modules_line" ]] && echo yes || echo no)"
 check "loads modules before TAA starts" "yes" \
   "$([[ -n "$modules_line" && -n "$taa_line" && "$modules_line" -lt "$taa_line" ]] && echo yes || echo no)"
+
+# The supervisor itself must wait on each TAA process and pause between retries;
+# without both it would either spawn unbounded processes or exit on the first
+# crash. It has to be started in the background: PID 1 reaches the final exec,
+# which would otherwise replace the loop.
+supervisor_body="$(awk '/^supervise_taa\(\) \{/{f=1} f{print} f&&/^\}/{exit}' "$TAA_INIT")"
+check "the supervisor waits for the TAA process to exit" "yes" \
+  "$(grep -qF 'wait "$taa_pid"' <<<"$supervisor_body" && echo yes || echo no)"
+check "the supervisor pauses before restarting" "yes" \
+  "$(grep -qF 'sleep "$delay"' <<<"$supervisor_body" && echo yes || echo no)"
+check "backgrounds the supervisor so PID 1 can exec" "yes" \
+  "$(grep -qE '^[[:space:]]*supervise_taa &[[:space:]]*$' "$TAA_INIT" && echo yes || echo no)"
+
+exec_line="$(grep -n '^exec /sbin/init' "$TAA_INIT" | cut -d: -f1 | head -1)"
+check "starts the supervisor before exec'ing kata-agent" "yes" \
+  "$([[ -n "$taa_line" && -n "$exec_line" && "$taa_line" -lt "$exec_line" ]] && echo yes || echo no)"
+check "the final exec is still the last statement" "yes" \
+  "$([[ -n "$exec_line" && "$(tail -n 1 "$TAA_INIT" | grep -c '^exec /sbin/init')" == "1" ]] && echo yes || echo no)"
 
 echo
 if [[ "$failures" -eq 0 ]]; then

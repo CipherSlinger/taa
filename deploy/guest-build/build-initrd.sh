@@ -339,8 +339,9 @@ ALLOW_MISSING_TAA_ENV="${ALLOW_MISSING_TAA_ENV:-0}"
 # PLATFORM_PUBLIC_KEY is the one setting TAA cannot start without: every
 # platform message is sealed with it, and TAA exits 1 rather than fall back to
 # plaintext. Because the guest has no other injection path, a build without it
-# produces an initrd that boots, hangs the Pod at "TAA exited immediately", and
-# reports nothing useful. The build therefore refuses unless it can resolve one.
+# produces an initrd that boots but whose TAA exits 1 on every start, so the
+# restart loop just backs off and the guest reports nothing useful. The build
+# therefore refuses unless it can resolve one.
 #
 # Resolution order: PLATFORM_PUBLIC_KEY (TAA's own name) > TAA_PLATFORM_PUBLIC_KEY
 # > TAA_PLATFORM_KEY_FILE. The key file is read from the platform-mock's state

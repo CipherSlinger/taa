@@ -146,6 +146,80 @@ load_kernel_modules() {
   return 0
 }
 
+# ---- TAA restart supervision ----------------------------------------------
+#
+# The initrd has no init system that could restart a dead daemon, and this
+# script becomes /sbin/init (kata-agent) after starting TAA. A backgrounded TAA
+# that exits would therefore leave the guest with no TAA at all: the VM and
+# kata-agent stay up, so the Pod can still look Running while registration,
+# heartbeats and /v1/taa/* are gone. The supervisor is a subshell precisely so
+# it survives that exec; PID 1 must never wait on it, or kata-agent would never
+# start.
+#
+# Backoff: a quick exit doubles the delay up to TAA_RESTART_MAX_DELAY, and a run
+# that stayed up for TAA_RESTART_STABLE_SECONDS resets it. That keeps a
+# persistently broken config from spinning, while a one-off crash recovers
+# immediately.
+TAA_RESTART_DELAY="${TAA_RESTART_DELAY:-5}"
+TAA_RESTART_MAX_DELAY="${TAA_RESTART_MAX_DELAY:-60}"
+TAA_RESTART_STABLE_SECONDS="${TAA_RESTART_STABLE_SECONDS:-60}"
+# Overridable only so the helpers can be tested locally, like CSV_MISC_FILE.
+UPTIME_FILE="${UPTIME_FILE:-/proc/uptime}"
+
+# Seconds since boot, as an integer. /proc/uptime is mounted before the
+# supervisor starts; a missing or malformed file reads as 0, which only makes
+# the backoff more conservative.
+uptime_seconds() {
+  local up=0
+  if [ -r "$UPTIME_FILE" ]; then
+    read -r up _ 2>/dev/null <"$UPTIME_FILE" || up=0
+  fi
+  case "$up" in
+    *.*) up="${up%%.*}" ;;
+  esac
+  case "$up" in
+    ''|*[!0-9]*) up=0 ;;
+  esac
+  printf '%s\n' "$up"
+}
+
+# The delay to wait after an exit: reset when the daemon had been stable,
+# otherwise keep the current (already backed-off) delay.
+restart_delay_after() {
+  local current="$1" ran="$2"
+  if [ "$ran" -ge "$TAA_RESTART_STABLE_SECONDS" ]; then
+    printf '%s\n' "$TAA_RESTART_DELAY"
+  else
+    printf '%s\n' "$current"
+  fi
+}
+
+# Double the delay for the next failure, capped.
+double_restart_delay() {
+  local next=$(( $1 * 2 ))
+  if [ "$next" -gt "$TAA_RESTART_MAX_DELAY" ]; then
+    next="$TAA_RESTART_MAX_DELAY"
+  fi
+  printf '%s\n' "$next"
+}
+
+supervise_taa() {
+  local delay started ran rc taa_pid
+  delay="$TAA_RESTART_DELAY"
+  while :; do
+    started="$(uptime_seconds)"
+    "$TAA_BIN" -config "$TAA_CONFIG" -addr "$TAA_ADDR" >>"$TAA_LOG" 2>&1 &
+    taa_pid="$!"
+    wait "$taa_pid"
+    rc=$?
+    ran=$(( $(uptime_seconds) - started ))
+    delay="$(restart_delay_after "$delay" "$ran")"
+    log "WARNING: TAA exited (code $rc) after ${ran}s; restarting in ${delay}s"
+    sleep "$delay"
+    delay="$(double_restart_delay "$delay")"
+  done
+}
+
 # ===== main flow (local tests source only the part above this line) =====
 
 # Read the build-time /etc/default/taa.env. It carries the wrapper switch
@@ -218,12 +292,10 @@ TAA_DEPLOYMENT=initrd
 export TAA_DEPLOYMENT
 
 if [ -r "$TAA_CONFIG" ]; then
-  "$TAA_BIN" -config "$TAA_CONFIG" -addr "$TAA_ADDR" >"$TAA_LOG" 2>&1 &
-  taa_pid="$!"
-  # Liveness probe. A live process is not a working service; this only proves it
-  # did not exit immediately, and it is reported rather than acted on.
-  sleep 2
-  kill -0 "$taa_pid" >/dev/null 2>&1 || log "WARNING: TAA exited immediately; see $TAA_LOG"
+  # Run the supervisor in a subshell: the exec below would otherwise replace it,
+  # and PID 1 must not wait for it. The loop keeps TAA alive for the rest of the
+  # VM's life, including after this script is gone.
+  supervise_taa &
 else
   log "WARNING: missing $TAA_CONFIG; not starting TAA"
 fi
