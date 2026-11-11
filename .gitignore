@@ -1,6 +1,6 @@
 .claude/
-CLAUDE.md
 .local/
+CLAUDE.md
 
 # 编译产物
 bin/
@@ -27,3 +27,5 @@ retina/
 
 # Node
 docs/node_modules/
+docs/patent/
+docs/software_copyright/
