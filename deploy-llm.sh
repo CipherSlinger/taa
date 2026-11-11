@@ -338,7 +338,7 @@ TEELLM_POD_ATTESTATION_HOST_PORT="${TEELLM_POD_ATTESTATION_HOST_PORT:-16001}"
 # Kata sizes the guest as default_memory + limits.memory and default_vcpus + limits.cpu, and
 # encrypted memory is resident from boot, so these two numbers are a permanent host cost. Two vCPUs
 # is the reference create script's figure, kept so both paths ask the host for the same thing.
-TEELLM_POD_CPU="${TEELLM_POD_CPU:-2}"
+TEELLM_POD_CPU="${TEELLM_POD_CPU:-8}"
 # 16Gi, not the 8Gi the TAA Pod gets away with: this container also has to hold a whole model.
 # At 8Gi the first deployment of this feature came up, reported the hardware evidence provider,
 # and then had llama-server SIGKILLed while loading qwen2.5-coder:7b -- the container's cgroup
