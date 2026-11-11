@@ -34,18 +34,20 @@ func SetOutboundEnvelope(seal func(plaintext []byte) ([]byte, error)) {
 
 // SealOutbound applies the installed sealer.
 //
-// sealed reports whether a sealer was installed. A caller that owns the send
-// itself (controller.sendReportingJSON) must use it and must not fall back to
-// the plaintext when sealing fails: the platform would reject the request, and
-// the fallback would put business data on the wire unsealed.
-func SealOutbound(payload []byte) (out []byte, sealed bool, err error) {
+// With no sealer installed the payload is returned unchanged: production never
+// runs that way (startup refuses to continue without the platform public key),
+// but the package tests and tools built directly on it do. A sealing failure is
+// returned as an error and callers must not fall back to the plaintext: the
+// platform would reject the request, and the fallback would put business data
+// on the wire unsealed.
+func SealOutbound(payload []byte) ([]byte, error) {
 	seal := outboundSealer.Load()
 	if seal == nil {
-		return payload, false, nil
+		return payload, nil
 	}
-	out, err = (*seal)(payload)
+	out, err := (*seal)(payload)
 	if err != nil {
-		return nil, true, fmt.Errorf("seal platform request: %w", err)
+		return nil, fmt.Errorf("seal platform request: %w", err)
 	}
-	return out, true, nil
+	return out, nil
 }

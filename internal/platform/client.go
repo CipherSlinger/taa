@@ -92,12 +92,11 @@ func SendPlatformJSON(ctx context.Context, client *http.Client, url string, payl
 	// functions and registration pass through. A sealing failure returns without
 	// sending: falling back to the plaintext would put the same business data on
 	// the wire in a form the platform no longer accepts.
-	if sealed, ok, err := SealOutbound(payload); ok {
-		if err != nil {
-			return err
-		}
-		payload = sealed
+	sealed, err := SealOutbound(payload)
+	if err != nil {
+		return err
 	}
+	payload = sealed
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(payload))
 	if err != nil {

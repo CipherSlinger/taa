@@ -8,7 +8,6 @@
 package envelope
 
 import (
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -69,29 +68,7 @@ func NewKeys(platformPub *teecrypto.SM2PublicKey, taaPriv *teecrypto.SM2PrivateK
 // ciphertext would let anyone who can encrypt to the platform public key mint a
 // message TAA's own routes would accept.
 func (k *Keys) Seal(plaintext []byte, dockerID string) ([]byte, error) {
-	if len(plaintext) == 0 {
-		return nil, errors.New("envelope: plaintext is empty")
-	}
-
-	ciphertext, err := teecrypto.EncryptSM2(k.PlatformPub, plaintext)
-	if err != nil {
-		return nil, fmt.Errorf("envelope: encrypt: %w", err)
-	}
-
-	r, s, err := teecrypto.SignSM2Signature(k.TAAPriv, k.UserID, plaintext)
-	if err != nil {
-		return nil, fmt.Errorf("envelope: sign: %w", err)
-	}
-	der, err := teecrypto.MarshalSM2SignatureDER(r, s)
-	if err != nil {
-		return nil, fmt.Errorf("envelope: encode signature: %w", err)
-	}
-
-	return json.Marshal(Envelope{
-		DockerID: dockerID,
-		Cipher:   base64.StdEncoding.EncodeToString(ciphertext),
-		Sign:     base64.StdEncoding.EncodeToString(der),
-	})
+	return sealWith(k.TAAPriv, k.PlatformPub, k.UserID, plaintext, dockerID)
 }
 
 // Open decrypts and verifies an inbound envelope, returning the plaintext.
@@ -105,38 +82,7 @@ func (k *Keys) Seal(plaintext []byte, dockerID string) ([]byte, error) {
 // error covers every other case, including a well-formed envelope with a bad
 // signature, which is the shape an attacker can produce cheaply.
 func (k *Keys) Open(env *Envelope) ([]byte, error) {
-	if env == nil {
-		return nil, errors.New("envelope: nil envelope")
-	}
-	if env.Cipher == "" {
-		return nil, errors.New("envelope: missing cipher")
-	}
-	if env.Sign == "" {
-		return nil, errors.New("envelope: missing sign")
-	}
-
-	ciphertext, err := base64.StdEncoding.DecodeString(env.Cipher)
-	if err != nil {
-		return nil, fmt.Errorf("envelope: decode cipher: %w", err)
-	}
-	plaintext, err := teecrypto.DecryptSM2(k.TAAPriv, ciphertext)
-	if err != nil {
-		return nil, fmt.Errorf("envelope: decrypt: %w", err)
-	}
-
-	der, err := base64.StdEncoding.DecodeString(env.Sign)
-	if err != nil {
-		return nil, fmt.Errorf("envelope: decode sign: %w", err)
-	}
-	r, s, err := teecrypto.UnmarshalSM2SignatureDER(der)
-	if err != nil {
-		return nil, fmt.Errorf("envelope: decode signature: %w", err)
-	}
-	if !teecrypto.VerifySM2Signature(k.PlatformPub, k.UserID, plaintext, r, s) {
-		return nil, errors.New("envelope: signature verification failed")
-	}
-
-	return plaintext, nil
+	return openWith(k.TAAPriv, k.PlatformPub, k.UserID, env)
 }
 
 // Parse reads the outer JSON. It is separate from Open so a caller can tell
