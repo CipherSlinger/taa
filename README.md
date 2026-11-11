@@ -188,6 +188,7 @@ flowchart TB
 │   ├── taa-supervisor.sh             # tee role: TAA autostart supervisor (keep-alive & manual mode)
 │   ├── dataanaylsis/taa-supervisor.sh # data-analysis role: jupyter + TAA (jupyter priority)
 │   ├── fhe/taa-supervisor.sh         # FHE role: FHE entrypoint + TAA (FHE priority)
+│   ├── fhe/handoff/                  # FHE delivery bundle: base image archive, models, client, docs
 │   ├── teellm-supervisor.sh          # TEE-LLM Pod supervisor (teellm-service + ollama)
 │   ├── base/                         # Base image archives (inputs: taa-env, jupyter-nologin-full)
 │   ├── certs/                        # Hygon CSV certificate chain fixtures (hrk.cert, hsk_cek.cert) for pkg/csvattest tests and the csv2-vm chain smoke run

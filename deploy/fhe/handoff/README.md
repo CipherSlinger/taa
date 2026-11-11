@@ -10,7 +10,7 @@
 ## 1. 交付内容
 
 ```
-latti-fhe-handoff/
+deploy/fhe/handoff/
 ├── image/
 │   └── latti-server-latest.tar.gz  # 服务端镜像 latti/latti-server-node:latest（667 MB）
 ├── data/

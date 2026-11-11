@@ -20,7 +20,7 @@ set -Eeuo pipefail
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # ── FHE side ─────────────────────────────────────────────────────────────────
-HANDOFF_DIR="${HANDOFF_DIR:-$PROJECT_DIR/latti-fhe-handoff}"
+HANDOFF_DIR="${HANDOFF_DIR:-$PROJECT_DIR/deploy/fhe/handoff}"
 FHE_IMAGE="${FHE_IMAGE:-latti/latti-server-node:latest}"
 # The archive the bundle ships. It is both the default for FHE_IMAGE_ARCHIVE and
 # the file the bundle's own SHA256SUMS entry covers.

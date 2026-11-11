@@ -625,7 +625,7 @@ footer {
           <h4>文档与仓库卫生</h4>
           <ul class="plain small muted">
             <li>README 引用了 2 个不存在的文件：<code class="inline">docs/model-provider-integration-guide.md</code>、<code class="inline">docs/state-persistence-and-self-healing.md</code>。</li>
-            <li>README 的仓库结构缺少 <code class="inline">internal/fhe</code>、<code class="inline">tools/csv2-vm</code>、<code class="inline">latti-fhe-handoff</code>、<code class="inline">deploy/guest-build</code> 等现有目录。</li>
+            <li>README 的仓库结构缺少 <code class="inline">internal/fhe</code>、<code class="inline">tools/csv2-vm</code>、<code class="inline">deploy/fhe/handoff</code>、<code class="inline">deploy/guest-build</code> 等现有目录。</li>
             <li><code class="inline">docs/superpowers/</code> 下仍有 15 份历史 spec/plan，与 CLAUDE.md 要求的 <code class="inline">.claude/specs/</code>、<code class="inline">.claude/plans/</code> 约定冲突。</li>
             <li><code class="inline">gofmt -l</code> 报告 12 个未格式化文件（含 <code class="inline">tools/sdk</code> 与 <code class="inline">tools/platform-mock</code>）。</li>
             <li>仓库跟踪了构建产物：<code class="inline">tools/sdk/teecrypto-cli</code>（约 9 MB）、两个 <code class="inline">.exe</code>、<code class="inline">tools/sdk/decrypt-result</code>、<code class="inline">dcu/HIP-Examples-master.zip</code>。是否为交付物需要确认。</li>
@@ -762,7 +762,7 @@ footer {
           <input type="checkbox" id="t1-5" data-batch="1">
           <label for="t1-5"><span class="tid">1.5</span>README 仓库结构同步</label>
           <ul class="sub">
-            <li>补上 <code class="inline">internal/fhe</code>、<code class="inline">tools/csv2-vm</code>、<code class="inline">latti-fhe-handoff</code>、<code class="inline">deploy/guest-build</code>、<code class="inline">deploy/manifest</code>、<code class="inline">api/proto/cipherflow</code> 等现有目录。</li>
+            <li>补上 <code class="inline">internal/fhe</code>、<code class="inline">tools/csv2-vm</code>、<code class="inline">deploy/fhe/handoff</code>、<code class="inline">deploy/guest-build</code>、<code class="inline">deploy/manifest</code>、<code class="inline">api/proto/cipherflow</code> 等现有目录。</li>
             <li>修正 <code class="inline">models/</code> 的描述：当前目录是本地模型/审计证据/语料，不是“随镜像打包的模型”。</li>
             <li>修正 <code class="inline">configs/</code> 列表，补上 <code class="inline">taa-initrd.json</code>。</li>
           </ul>

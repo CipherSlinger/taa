@@ -94,6 +94,7 @@ Pod 的环境变量不能原地修改，已有 Pod 的角色与本次请求不�
 一个容器同时运行 FHE 服务（redis + api_server + worker，镜像
 `latti/latti-server-node:latest`）与 TAA。TAA 在容器内经 `127.0.0.1:58996` 访问 FHE，
 58996 不发布到宿主机；只发布 TAA 的 6001 供平台调用。
+交付包（镜像归档、模型、客户端和供应商文档）在 `deploy/fhe/handoff/`；`HANDOFF_DIR` 可覆盖。
 
 有两种部署目标，默认 `pod`：
 
