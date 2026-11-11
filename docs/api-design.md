@@ -52,7 +52,7 @@ CONTRACT_TYPE=1                            # 实例角色：1 tee 训练、2 tee
 CONTRACT_ID=合约ID（预留）  
 TAA_LLM_ENDPOINT={IP}:{PORT}               # TEE-LLM 推理服务。可写裸 IP 或完整 URL：没有 `://` 补 `https://`，写成 `http://` 自动改写为 `https://`，没有端口补 `:8443`。
 PLATFORM_PUBLIC_KEY=04||X||Y 的 hex        # 平台 SM2 公钥，必填（见 2.1）
-PLATFORM_SM2_ID=1234567812345678           # 可选，签名用 ID_A，缺省即该值
+PLATFORM_SM2_ID=1234567812345678           # 可选，缺省即该值
 ```
 
 ```env
@@ -130,12 +130,12 @@ TAA **主动发起**的请求是另一个方向（注册与 6 类上报，见 [3
 ```
 
 - **密钥归属**：TAA 与平台**各持一对 SM2 密钥**，不是共用一对。TAA 知道平台的公钥——部署时由 `PLATFORM_PUBLIC_KEY` 下发；平台知道 TAA 的公钥——由 `/v1/taa/register` 的 `taaPublicKey` 上报。所以请求加密到 **TAA 公钥**、用 **平台私钥** 签名；响应加密到 **平台公钥**、用 **TAA 私钥** 签名。
-- `dockerId` 不在签名范围内（签名只覆盖 `cipher` 解密后的明文）。平台按请求端点定位实例，所以请求方向它可以填也可以不填；响应方向 TAA 一律不填。
+- `dockerId` 不在签名范围内（签名只覆盖 `cipher` 解密后的明文）。
 - `cipher` 是 SM2 **C1C3C2 原始密文字节**的 base64，不是 hex 再 base64；`sign` 是 SM2 签名 DER 字节的 base64。
-- **签名对象是明文，不是 `cipher`**。TAA 的顺序固定为：解 base64 → SM2 解密 → 验签（对解密后的明文）→ 才交给业务处理；验签失败即拒绝，业务代码永远看不到未验签的请求体。
-- 信封里的明文就是下文各接口的请求体/响应体，字段一个不改。所以下文的请求示例均应理解为 `cipher` 解密后的内容。
+- **签名对象是明文，不是 `cipher`**。TAA 的顺序固定为：解 base64 → SM2 解密 → 验签（对解密后的明文）→ 业务处理；验签失败即拒绝。
+- 信封里的明文就是下文各接口的请求体/响应体，下文的请求示例均应理解为 `cipher` 解密后的内容。
 - 响应端的明文用 `json.Marshal` 序列化（**不带**尾随换行）：签名的字节必须与平台解出来的字节逐字节一致，换行会变成签名的一部分而在任何 JSON 视图里都看不见。
-- SM2 用户 ID（`ID_A`）默认 `1234567812345678`，可用环境变量 `PLATFORM_SM2_ID` 覆盖；该值按字符串原始 UTF-8 字节使用，不做 hex/base64 解码、不做 trim。两端必须逐字节一致，否则验签必然失败且只报「验签失败」。TAA 启动时会把这一个生效值打进日志，便于与平台侧比对。
+- SM2 用户 ID 默认 `1234567812345678`，可用环境变量 `PLATFORM_SM2_ID` 覆盖；该值按字符串原始 UTF-8 字节使用，不做 hex/base64 解码、不做 trim。两端必须逐字节一致，否则验签必然失败且只报「验签失败」。TAA 启动时会把这一个生效值打进日志，便于与平台侧比对。
 
 **信封层的错误**（此时尚未进入业务处理，响应同样封装）：
 
@@ -151,8 +151,6 @@ TAA **主动发起**的请求是另一个方向（注册与 6 类上报，见 [3
 > **豁免的路由只有 `/v1/taa/fheCallback`**：调用方是 FHE 服务而不是平台，拿不到平台私钥；它沿用「只接受回环地址来源、不鉴权」的保护。
 >
 > **`/v1/taa/export` 的成功响应仍是二进制流**，不套信封；它的错误响应走上面的封装 JSON。
->
-> **`health`/`status` 也要求信封**，因此本地探针（curl、部署脚本的就绪等待）签不出合法 `sign`，对这两条路由不可达——部署侧的就绪判定只能探测 TCP 端口（`deploy.sh` / `deploy-fhe.sh` / `deploy-taa-vm.sh` 均已改为 TCP 连接），不再有 HTTP 层的替代方案。
 >
 > **`405` 走明文 JSON**：方法过滤包在信封中间件**外层**，非 `POST` 请求在拆信封之前就被拒绝，此时没有可用于封装的会话，只能返回明文（见 [2. 公共返回格式](#2-公共返回格式)的 `405` 示例）。`OPTIONS` 预检是 `204` 空响应体。平台正常只发 `POST`，这两条只在误用时出现。
 
@@ -1741,6 +1739,8 @@ TEE-LLM 同时起两个监听：TEE-TLS 给 TAA 用，明文端口给平台用�
 
 平台通过明文 `:6001` 主动调用 TEE-LLM。TEE-LLM 不再注册，也不主动上报。
 
+三个接口的响应都是 `{msg, result, error, dockerId}` 信封。`dockerId` 由 TEE-LLM 在进程启动时自动生成，形如 `teellm-<10 位随机数字>`，与地址、配置均无关——每次启动都会变，同一进程内恒定。平台保存上一次看到的 `dockerId`，值发生变化即表示该实例被重启或重建过。错误响应（4xx/5xx）同样携带该字段，因此平台无论调用哪个接口都能读到。
+
 #### 7.2.1 LLM 心跳（/v1/llm/heartbeat）
 
 **请求**：`POST http://{llm-host}:6001/v1/llm/heartbeat`
@@ -1764,14 +1764,15 @@ TEE-LLM 同时起两个监听：TEE-TLS 给 TAA 用，明文端口给平台用�
   "msg": "success",
   "result": {
     "alive": true,
-    "model": "qwen2.5-coder:3b",
+    "model": "qwen2.5-coder:7b",
     "uptimeSeconds": 86400
   },
-  "error": 0
+  "error": 0,
+  "dockerId": "teellm-5739201846"
 }
 ```
 
-连接失败或非 `200` 都按离线处理；TEE-LLM 只在自己还能应答时返回 `200`。
+连接失败或非 `200` 都按离线处理。
 
 #### 7.2.2 LLM 运行日志（/v1/llm/log）
 
@@ -1824,7 +1825,8 @@ TEE-LLM 同时起两个监听：TEE-TLS 给 TAA 用，明文端口给平台用�
     "latestSeq": 43,
     "dropped": false
   },
-  "error": 0
+  "error": 0,
+  "dockerId": "teellm-5739201846"
 }
 ```
 
@@ -1853,18 +1855,10 @@ TEE-LLM 同时起两个监听：TEE-TLS 给 TAA 用，明文端口给平台用�
 | 参数 | 类型 | 说明 |
 | --- | --- | --- |
 | `requestId` | `string` | 与请求中的 `requestId` 一致 |
-| `verifiedPass` | `bool` | 自检结果：报告内嵌的 PEK 证书签发了报告本体。**不校验** HRK/HSK-CEK 证书链与 USERDATA 绑定（证书按机器签发，校验会让镜像与设备绑定） |
+| `verifiedPass` | `bool` | 自检结果 |
 | `attestation` | `string` | 远程证明报告，Base64 编码（`0x9F4` = 2548 字节），二进制格式见 [4.1.1](#411-远程证明报告二进制格式) |
 | `attestationValues` | `string` (JSON) | 报告核心字段的 JSON **字符串**：`userdata`/`mnonce`/`digest` 为 hex，`chipId` 为 ASCII；**`userdata` 的值回填为请求里的 `requestId`** |
 
-**与 TAA `/v1/taa/getAttestation` 的差异**：
-
-| 项 | TAA `/v1/taa/getAttestation` | LLM `/v1/llm/getAttestation` |
-| --- | --- | --- |
-| 传输与信封 | 明文 HTTP，请求/响应都套信封 | 明文 HTTP（`:6001`），报文本身**无信封** |
-| 报告来源 | 每次重新生成（30s 超时，进程内互斥） | 当前缓存证书里的那一份，不重新 IOCTL |
-| `attestationValues.userdata` | PEM（TAA 自己的 SM2 公钥） | **请求里的 `requestId` 原值**（不回填报告里的 userdata） |
-| 调用方认证 | 信封验签 | 无传输层认证；报告自证（内嵌 PEK 证书对报告本体的签名） |
 
 **成功响应示例**（200 OK）：
 
@@ -1877,13 +1871,12 @@ TEE-LLM 同时起两个监听：TEE-TLS 给 TAA 用，明文端口给平台用�
     "attestation": "base64-encoded-attestation-report...",
     "attestationValues": "{\"userdata\":\"req-att-001\",\"mnonce\":\"0123...\",\"digest\":\"0123...\",\"chipId\":\"CSV-CHIP-0123456789\"}"
   },
-  "error": 0
+  "error": 0,
+  "dockerId": "teellm-5739201846"
 }
 ```
 
 > 自检失败时 HTTP 仍为 `200`、`error` 仍为 `0`：`verifiedPass` 为 `false`，`msg` 为 `自检验证失败: <原因>`，报告照常返回，与 TAA 的降级行为一致。
->
-> 平台当前**不校验**证明报告，只保存 `attestation` 与 `attestationValues` 供展示；`verifiedPass` 是 TEE-LLM 的自检结果。
 
 **错误响应示例**（400，`requestId` 为空）：
 
@@ -1891,6 +1884,7 @@ TEE-LLM 同时起两个监听：TEE-TLS 给 TAA 用，明文端口给平台用�
 {
   "msg": "requestId 不能为空",
   "result": null,
-  "error": 400
+  "error": 400,
+  "dockerId": "teellm-5739201846"
 }
 ```
