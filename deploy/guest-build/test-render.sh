@@ -390,6 +390,95 @@ else
   failures=$((failures + 1))
 fi
 
+# ── 4b. containerd drop-in ──────────────────────────────────────────────────
+# containerd loads the main config and then its imports in order; the last file
+# that defines a runtime handler replaces the whole CRI plugin tree. A drop-in
+# carrying only its own handler therefore deletes every other runtime, so the
+# generator has to emit a full snapshot of the host's current map.
+dropin_dir="$tmp_dir/dropin"
+dconf="$dropin_dir/conf.d"
+mkdir -p "$dconf"
+cat > "$dropin_dir/main.toml" <<EOF
+version = 2
+imports = ["$dconf/*.toml"]
+
+[plugins."io.containerd.grpc.v1.cri"]
+  sandbox_image = "example/pause:3.8"
+
+[plugins."io.containerd.grpc.v1.cri".containerd.runtimes.main-only]
+  runtime_type = "io.containerd.runc.v2"
+EOF
+cat > "$dconf/99-nvidia.toml" <<'TOML'
+version = 2
+[plugins]
+  [plugins."io.containerd.grpc.v1.cri"]
+    sandbox_image = "registry.aliyuncs.com/google_containers/pause:3.9"
+    [plugins."io.containerd.grpc.v1.cri".containerd.runtimes.nvidia]
+      runtime_type = "io.containerd.runc.v2"
+    [plugins."io.containerd.grpc.v1.cri".containerd.runtimes.kata-qemu-csv2]
+      runtime_type = "io.containerd.kata-qemu-csv2.v2"
+      [plugins."io.containerd.grpc.v1.cri".containerd.runtimes.kata-qemu-csv2.options]
+        ConfigPath = "/etc/kata-containers/configuration-qemu-csv2.toml"
+TOML
+cat > "$dconf/zz-taa-runtimes.toml" <<'TOML'
+version = 2
+[plugins."io.containerd.grpc.v1.cri".containerd.runtimes.fixture-handler]
+  runtime_type = "old"
+[plugins."io.containerd.grpc.v1.cri".containerd.runtimes.fixture-handler.options]
+  ConfigPath = "/tmp/old-path.toml"
+[plugins."io.containerd.grpc.v1.cri".containerd.runtimes.other-package]
+  runtime_type = "io.containerd.kata-qemu-csv2.v2"
+TOML
+
+# The derived drop-in must not become its own source, or the host's later
+# changes to 99-nvidia.toml would never be picked up again.
+check "dropin: skips TAA-owned files when choosing the base" "$dconf/99-nvidia.toml" \
+  "$(python3 "$RENDER" containerd-effective-source --config "$dropin_dir/main.toml" \
+      --exclude-prefix zz-taa)"
+
+dropin_args=(--config "$dropin_dir/main.toml" --exclude-prefix zz-taa
+  --handler fixture-handler --runtime-type io.containerd.kata-qemu-csv2.v2
+  --runtime-path /opt/kata/bin/containerd-shim-kata-v2 --snapshotter nydus
+  --kata-config /root/taa-images/pkg/config/kata-config.toml)
+python3 "$RENDER" containerd-dropin "${dropin_args[@]}" \
+  --carry "$dconf/zz-taa-runtimes.toml" --out "$dropin_dir/first.toml"
+dropin="$(cat "$dropin_dir/first.toml")"
+check_contains "dropin: keeps the host's nvidia handler" 'runtimes.nvidia]' "$dropin"
+check_contains "dropin: keeps the host's kata handler" 'runtimes.kata-qemu-csv2]' "$dropin"
+check_contains "dropin: carries another package's handler" 'runtimes.other-package]' "$dropin"
+check_contains "dropin: keeps the host's CRI settings" \
+  'sandbox_image = "registry.aliyuncs.com/google_containers/pause:3.9"' "$dropin"
+check "dropin: does not snapshot the whole main config" "0" \
+  "$(grep -c 'runtimes.main-only' "$dropin_dir/first.toml" || true)"
+check "dropin: defines its own handler exactly once" "1" \
+  "$(grep -cE 'runtimes\."?fixture-handler"?\]$' "$dropin_dir/first.toml" || true)"
+check_contains "dropin: writes the new ConfigPath" \
+  'ConfigPath = "/root/taa-images/pkg/config/kata-config.toml"' "$dropin"
+check_absent "dropin: drops the stale ConfigPath" \
+  'ConfigPath = "/tmp/old-path.toml"' "$dropin"
+check_contains "dropin: explains why it is a snapshot" 'Regenerated and' "$dropin"
+
+# Reinstalling is the common case: the same two files must produce the same
+# bytes, which is only true if handlers already in the base are not re-appended.
+python3 "$RENDER" containerd-dropin "${dropin_args[@]}" \
+  --carry "$dropin_dir/first.toml" --out "$dropin_dir/second.toml"
+if cmp -s "$dropin_dir/first.toml" "$dropin_dir/second.toml"; then
+  echo "ok   dropin: a second run is byte-for-byte identical"
+else
+  echo "FAIL dropin: a second run changed the file" >&2
+  diff -u "$dropin_dir/first.toml" "$dropin_dir/second.toml" >&2 || true
+  failures=$((failures + 1))
+fi
+
+# The staging config is how install.sh resolves the prospective result before
+# touching /etc; the new drop-in has to be the last import so it wins.
+python3 "$RENDER" containerd-stage --config "$dropin_dir/main.toml" \
+  --extra "$dropin_dir/first.toml" --out "$dropin_dir/stage.toml"
+stage_imports="$(grep '^imports' "$dropin_dir/stage.toml")"
+check_contains "stage: keeps the expanded imports" "$dconf/99-nvidia.toml" "$stage_imports"
+check_contains "stage: appends the drop-in last" "first.toml\"]" "$stage_imports"
+check_absent "stage: the glob is gone" '*.toml' "$stage_imports"
+
 # ── 4. Kubernetes manifests ────────────────────────────────────────────────
 python3 - "$pkg/k8s/runtimeclass.yaml" "$pkg/test/test-pod.yaml" <<'PY'
 import json, sys
@@ -765,8 +854,23 @@ check_contains "create script: verifies the measurement of the running VM" \
 check_contains "delete script: deletes the test Pod" \
   'kubectl delete pod' "$(cat "$pkg/test/delete-test-pod.sh")"
 check_contains "install.sh: verifies the package first" 'sha256sum -c --quiet SHA256SUMS' "$(cat "$pkg/install.sh")"
-check_contains "install.sh: checks the effective config, imports included" \
-  '生效的 containerd 配置里' "$(cat "$pkg/install.sh")"
+check_contains "install.sh: preflights the prospective config" \
+  '预检通过' "$(cat "$pkg/install.sh")"
+check_contains "install.sh: verifies the installed drop-in in place" \
+  '生效配置校验通过' "$(cat "$pkg/install.sh")"
+check_contains "install.sh: owns a TAA drop-in under conf.d" \
+  'zz-taa-runtimes.toml' "$(cat "$pkg/install.sh")"
+check_contains "install.sh: keeps the drop-in inside the package" \
+  'config/containerd-runtimes.toml' "$(cat "$pkg/install.sh")"
+check_contains "install.sh: generates the drop-in as a snapshot" \
+  'containerd-dropin' "$(cat "$pkg/install.sh")"
+check_contains "install.sh: refuses to lose an existing handler" \
+  '会丢掉已生效的 handler' "$(cat "$pkg/install.sh")"
+check_absent "install.sh: no longer rewrites the main config" \
+  'install -o root -g root -m 0644 "$tmp_containerd" "$CONTAINERD_CONFIG"' \
+  "$(cat "$pkg/install.sh")"
+check_absent "install.sh: no longer merges into a shared file" \
+  'containerd-merge' "$(cat "$pkg/install.sh")"
 check_contains "install.sh: supports dry-run" '--dry-run' "$(cat "$pkg/install.sh")"
 
 # ── 8. render reaches the renderer without a host preflight ────────────────

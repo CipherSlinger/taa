@@ -244,7 +244,10 @@ cd /home/hjy/taa/deploy/guest-build
 
 - `bundle/initramfs.img`、`bundle/vmlinuz`、`bundle/OVMF.fd` — QEMU 实际启动的三份文件
 - `config/kata-config.toml` — 改写后的 Kata hypervisor 配置（指向包内 bundle）
-- `config/containerd-runtime-handler.toml` — containerd handler 片段（供审阅）
+- `config/containerd-runtime-handler.toml` — 本包 handler 的片段（供审阅）
+- `config/containerd-runtimes.toml` — **安装时生成**：宿主当前 runtimes 表的完整快照
+  加本包 handler，由 `install.sh` 拷贝到 `/etc/containerd/conf.d/zz-taa-runtimes.toml`
+  （已存在则覆盖）
 - `k8s/runtimeclass.yaml` — 运行时类（使用该 runtime 的 Pod 都要它）
 - `test/test-pod.yaml`、`test/create-test-pod.sh`、`test/delete-test-pod.sh` — 测试 Pod
   及其创建/删除脚本
@@ -265,6 +268,14 @@ cd /home/hjy/taa/deploy/guest-build
 确实指向本目录内的文件。包绑定的是渲染时的绝对路径 `REMOTE_PACKAGE_DIR`，不是宿主
 本身：换宿主时只要整包放到同一个绝对路径就直接可用；放到别的路径则 `install.sh`
 拒绝安装并提示重新渲染。
+
+安装不再改写 `/etc/containerd/config.toml`，也不往别人的 `conf.d/*.toml` 里合并：
+`install.sh` 把 handler 写进包内的 `config/containerd-runtimes.toml`，再覆盖
+`/etc/containerd/conf.d/zz-taa-runtimes.toml`。这个文件是「宿主当前 runtimes 表 +
+本包 handler」的完整快照，因为 containerd 用最后一个定义 runtimes 的 import 整个替换
+CRI 插件树——只写本包 handler 会把宿主其它 runtime 一并删掉。安装前后各做一次
+`containerd config dump`：预检确认不丢任何已有 handler，安装后再按真实配置复核，
+失败则回滚 drop-in。
 
 `render` 会从**包内**这三份文件算出预期 MEASUREMENT：
 

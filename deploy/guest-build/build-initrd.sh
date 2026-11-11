@@ -1902,8 +1902,12 @@ TAA 运行在 Kata CSV2 机密 VM 的 initrd 里，自证通过后才放行 kata
   宿主机自己的 \`/opt/kata/share/...\` 一律不读、不复制
 - \`$PACKAGE_KATA_CONFIG\` — 指向包内 bundle 的 Kata hypervisor 配置；runtime handler
   的 ConfigPath 就指向它，安装脚本也从这里读安装所需的全部参数
-- \`config/containerd-runtime-handler.toml\` — containerd handler 片段（供审阅，安装脚本
+- \`config/containerd-runtime-handler.toml\` — 本包 handler 的片段（供审阅，安装脚本
   从这里解析 handler 名、runtime、snapshotter 与 ConfigPath）
+- \`config/containerd-runtimes.toml\` — **安装时生成**的完整快照：宿主当前 runtimes 表
+  加上本包 handler，随后原样拷贝到 \`/etc/containerd/conf.d/zz-taa-runtimes.toml\`
+  （已存在则覆盖）。containerd 用最后一个定义 runtimes 的 import 整个替换 CRI 插件树，
+  只写本包 handler 会删掉宿主其它 runtime，所以该文件必须带全量快照；不要手工编辑
 - \`k8s/runtimeclass.yaml\` — 运行时类：Pod 用 \`runtimeClassName\` 选中本 handler。使用该
   runtime 的每个 Pod 都需要它，由 install.sh 安装
 - \`test/\` — 测试 Pod：\`test-pod.yaml\`、\`create-test-pod.sh\`（创建并等待 Ready，

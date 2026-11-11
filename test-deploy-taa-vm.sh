@@ -255,6 +255,19 @@ kata_installs="$(grep -cF 'install -o root -g root -m 0644 "$package_kata_config
   <<<"$install_src" || true)"
 check "install.sh: installs nothing under /etc for the Kata config" "0" "$kata_installs"
 
+# The runtime handler now lives in a TAA-owned drop-in: the shared main config
+# and other people's drop-ins are read, never rewritten. A drop-in carrying only
+# our handler would replace the whole CRI tree, so it is generated as a snapshot
+# of the host's current map.
+main_installs="$(grep -cF 'install -o root -g root -m 0644 "$tmp_containerd" "$CONTAINERD_CONFIG"' \
+  <<<"$install_src" || true)"
+check "install.sh: never rewrites the shared containerd config" "0" "$main_installs"
+check_contains "install.sh: installs a TAA-owned drop-in" 'zz-taa-runtimes.toml' "$install_src"
+check_contains "install.sh: the drop-in lives inside the package" \
+  'config/containerd-runtimes.toml' "$install_src"
+check_contains "install.sh: generates the drop-in as a full snapshot" \
+  'containerd-dropin' "$install_src"
+
 # upload renders and uploads; the install happens in launch, one function away.
 # The hint it prints names install.sh, so the assertion is on the invocation
 # (`sudo bash ...$package_dir/install.sh`), which lives in launch's heredoc.

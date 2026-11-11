@@ -3,10 +3,18 @@
 #
 # The package is produced by `build-initrd.sh render` (or by `launch`, which
 # renders the same files first). This script re-renders the Kata config from the
-# editable `config/env.txt`, merges the containerd runtime handler, pushes the
-# Pod image into its registry and creates the RuntimeClass. Creating and
-# deleting the test Pod is a separate step under test/, so an install no longer
-# starts a guest.
+# editable `config/env.txt`, installs the runtime handler as a TAA-owned
+# containerd drop-in, pushes the Pod image into its registry and creates the
+# RuntimeClass. Creating and deleting the test Pod is a separate step under
+# test/, so an install no longer starts a guest.
+#
+# The handler is never merged into /etc/containerd/config.toml or into another
+# drop-in. install.sh writes `config/containerd-runtimes.toml` inside the
+# package and copies it to /etc/containerd/conf.d/, overwriting the previous
+# copy. containerd replaces the whole CRI plugin tree with the last imported
+# file that defines it, so that file is generated as a snapshot of the host's
+# current runtimes map plus this package's handler; a file holding only the new
+# handler would silently delete every other runtime.
 #
 # Every setting is derived from the package itself -- the runtime handler and
 # its ConfigPath from config/containerd-runtime-handler.toml, the boot assets
@@ -24,9 +32,11 @@
 # Usage: sudo bash install.sh [--dry-run]
 #
 # Environment overrides:
-#   CONTAINERD_CONFIG   containerd config to merge the handler into
-#                       (default /etc/containerd/config.toml)
-#   RESTART_KUBELET     1 also restarts kubelet after containerd (default 0)
+#   CONTAINERD_CONFIG    containerd main config whose imports are read
+#                        (default /etc/containerd/config.toml)
+#   CONTAINERD_CONF_DIR  directory the drop-in is copied into
+#                        (default /etc/containerd/conf.d)
+#   RESTART_KUBELET      1 also restarts kubelet after containerd (default 0)
 set -euo pipefail
 
 pkg_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -47,18 +57,55 @@ for arg in "$@"; do
 done
 
 CONTAINERD_CONFIG="${CONTAINERD_CONFIG:-/etc/containerd/config.toml}"
-RESTART_KUBELET="${RESTART_KUBELET:-0}"
+CONTAINERD_CONF_DIR="${CONTAINERD_CONF_DIR:-/etc/containerd/conf.d}"
+# Sort after every other drop-in: 99-nvidia.toml and the numeric prefixes all
+# sort before a leading letter. The install verifies the ordering outcome rather
+# than trusting the name alone.
+CONTAINERD_DROPIN_NAME="zz-taa-runtimes.toml"
 
 tmp_kata_config=""
-tmp_containerd=""
-containerd_backup=""
+tmp_dropin=""
+tmp_stage=""
+dropin_backup=""
 cleanup() {
   if [[ -n "$tmp_kata_config" ]]; then rm -f "$tmp_kata_config"; fi
-  if [[ -n "$tmp_containerd" ]]; then rm -f "$tmp_containerd"; fi
-  if [[ -n "$containerd_backup" ]]; then sudo rm -f "$containerd_backup" || true; fi
+  if [[ -n "$tmp_dropin" ]]; then rm -f "$tmp_dropin"; fi
+  if [[ -n "$tmp_stage" ]]; then rm -f "$tmp_stage"; fi
+  if [[ -n "$dropin_backup" ]]; then sudo rm -f "$dropin_backup" || true; fi
   return 0
 }
 trap cleanup EXIT
+
+# Handler names in a `containerd config dump`. Tables are indented and the
+# handler name is quoted only when it is not a bare TOML key; both spellings are
+# accepted, and the child options table is dropped.
+handlers_of_dump() {
+  sed -n \
+    's/^[[:space:]]*\[plugins\."io\.containerd\.grpc\.v1\.cri"\.containerd\.runtimes\.\([^]]*\)\][[:space:]]*$/\1/p' |
+    { grep -v '\.options$' || true; } |
+    sed 's/^"//; s/"$//' |
+    sort -u
+}
+
+# The effective options table of one handler in a dump (stdin).
+handler_options_of() {
+  awk -v pre='[plugins."io.containerd.grpc.v1.cri".containerd.runtimes.' -v handler="$1" '
+    {
+      line = $0
+      sub(/^[[:space:]]+/, "", line)
+      if (line ~ /^\[/) {
+        in_table = (line == pre handler ".options]" ||
+                    line == pre "\"" handler "\".options]")
+        next
+      }
+      if (in_table) print line
+    }'
+}
+
+# Handlers present in the first set but missing from the second.
+lost_handlers() {
+  comm -23 <(printf '%s\n' "$1" | sed '/^$/d') <(printf '%s\n' "$2" | sed '/^$/d')
+}
 
 run() {
   if [[ "$dry_run" == "1" ]]; then
@@ -166,76 +213,139 @@ echo "Kata guest assets in $REMOTE_KATA_CONFIG:"
 grep -nE '^[[:space:]]*(kernel|initrd|firmware|kernel_params)[[:space:]]*=' "$package_kata_config"
 
 echo
-echo "== 3. 合并 containerd runtime handler =="
-tmp_containerd="$(mktemp /tmp/containerd-config.taa.XXXXXX.toml)"
+echo "== 3. 安装 containerd runtime handler（TAA 自有 drop-in）=="
+dropin_dest="$CONTAINERD_CONF_DIR/$CONTAINERD_DROPIN_NAME"
+package_dropin="$pkg_dir/config/containerd-runtimes.toml"
 
-cp "$CONTAINERD_CONFIG" "$tmp_containerd"
-python3 "$pkg_dir/render.py" containerd-merge \
-  --config "$tmp_containerd" \
+# The drop-in only takes effect through an import. Refuse early rather than
+# install a file nothing reads.
+if ! grep -qF "$CONTAINERD_CONF_DIR/*.toml" "$CONTAINERD_CONFIG" &&
+   ! grep -qF "$dropin_dest" "$CONTAINERD_CONFIG"; then
+  echo "error: $CONTAINERD_CONFIG 的 imports 没有包含 $CONTAINERD_CONF_DIR/*.toml" >&2
+  echo "       drop-in 不会被 containerd 读取，安装会静默失效" >&2
+  exit 1
+fi
+
+# The handler set in effect today. install.sh must not remove any of it; the
+# only permitted change is adding or refreshing this package's handler.
+if ! before_dump="$(sudo containerd --config "$CONTAINERD_CONFIG" config dump)"; then
+  echo "error: 当前 containerd 配置无法解析，未改动宿主" >&2
+  exit 1
+fi
+before_handlers="$(handlers_of_dump <<<"$before_dump")"
+echo "当前生效 handler 数: $(sed '/^$/d' <<<"$before_handlers" | wc -l)"
+
+tmp_dropin="$(mktemp /tmp/containerd-dropin.taa.XXXXXX.toml)"
+tmp_stage="$(mktemp /tmp/containerd-stage.taa.XXXXXX.toml)"
+carry_args=()
+if [[ -f "$dropin_dest" ]]; then
+  carry_args=(--carry "$dropin_dest")
+fi
+# A drop-in holding only our handler would replace the whole CRI plugin tree and
+# delete every other runtime (containerd merges the plugins map key by key, and
+# the CRI tree is one value). So the generator starts from the file that
+# currently wins, carries over handlers other packages already installed, and
+# appends ours.
+if ! python3 "$pkg_dir/render.py" containerd-dropin \
+  --config "$CONTAINERD_CONFIG" \
+  --exclude-prefix zz-taa \
+  "${carry_args[@]+"${carry_args[@]}"}" \
   --handler "$RUNTIME_HANDLER" \
   --runtime-type "$RUNTIME_TYPE" \
   --runtime-path "$RUNTIME_PATH" \
   --snapshotter "$SNAPSHOTTER" \
-  --kata-config "$REMOTE_KATA_CONFIG"
-
-handler_header="[plugins.\"io.containerd.grpc.v1.cri\".containerd.runtimes.\"$RUNTIME_HANDLER\"]"
-handler_options="[plugins.\"io.containerd.grpc.v1.cri\".containerd.runtimes.\"$RUNTIME_HANDLER\".options]"
-for expected in "$handler_header" "$handler_options" "ConfigPath = \"$REMOTE_KATA_CONFIG\""; do
-  if ! grep -qF "$expected" "$tmp_containerd"; then
-    echo "error: containerd 配置缺少预期内容: $expected" >&2
-    exit 1
-  fi
-done
-
-# `config dump` is not only a syntax check: it renders the configuration
-# containerd will actually use, `imports` included. A drop-in that defines the
-# same handler wins over the file the installer just wrote, and the override is
-# silent -- containerd starts happily and the Pod then boots the drop-in's
-# ConfigPath, or fails on a directory that no longer exists. Checking the merged
-# file alone cannot see that, so the effective handler entry is checked too.
-if ! effective_dump="$(sudo containerd --config "$tmp_containerd" config dump)"; then
-  echo "error: 生成的 containerd 配置无效，未改动宿主配置" >&2
+  --kata-config "$REMOTE_KATA_CONFIG" \
+  --out "$tmp_dropin"; then
+  echo "error: 生成 containerd drop-in 失败，未改动宿主" >&2
   exit 1
 fi
 
-# The dump prints the handler table bare when the name is a valid TOML key and
-# quoted when it is not; both spellings are accepted here.
-effective_options="$(printf '%s\n' "$effective_dump" | awk \
-  -v pre='[plugins."io.containerd.grpc.v1.cri".containerd.runtimes.' \
-  -v handler="$RUNTIME_HANDLER" '
-  {
-    line = $0
-    sub(/^[[:space:]]+/, "", line)
-    if (line ~ /^\[/) {
-      in_table = (line == pre handler ".options]" ||
-                  line == pre "\"" handler "\".options]")
-      next
-    }
-    if (in_table) print line
-  }')"
-if ! grep -qxF "ConfigPath = \"$REMOTE_KATA_CONFIG\"" <<<"$effective_options"; then
-  echo "error: 生效的 containerd 配置里，$RUNTIME_HANDLER 的 ConfigPath 不是 $REMOTE_KATA_CONFIG" >&2
-  echo "       主配置: $CONTAINERD_CONFIG" >&2
+# Stage the prospective configuration: same imports, plus this drop-in last.
+# `config dump` then resolves exactly what containerd would load on restart,
+# while /etc is still untouched.
+if ! python3 "$pkg_dir/render.py" containerd-stage \
+  --config "$CONTAINERD_CONFIG" --extra "$tmp_dropin" --out "$tmp_stage"; then
+  echo "error: 生成 containerd 预检配置失败，未改动宿主" >&2
+  exit 1
+fi
+if ! stage_dump="$(sudo containerd --config "$tmp_stage" config dump)"; then
+  echo "error: 生成的 drop-in 无法被 containerd 解析，未改动宿主" >&2
+  exit 1
+fi
+stage_handlers="$(handlers_of_dump <<<"$stage_dump")"
+if ! grep -qxF "$RUNTIME_HANDLER" <<<"$stage_handlers"; then
+  echo "error: 预检配置里没有出现 $RUNTIME_HANDLER" >&2
+  exit 1
+fi
+lost="$(lost_handlers "$before_handlers" "$stage_handlers")"
+if [[ -n "$lost" ]]; then
+  echo "error: 新 drop-in 会丢掉已生效的 handler:" >&2
+  printf '%s\n' "$lost" | sed 's/^/         /' >&2
+  echo "hint: drop-in 必须是宿主当前 runtimes 表的完整快照，而不是只有本包的 handler" >&2
+  exit 1
+fi
+stage_options="$(handler_options_of "$RUNTIME_HANDLER" <<<"$stage_dump")"
+if ! grep -qxF "ConfigPath = \"$REMOTE_KATA_CONFIG\"" <<<"$stage_options"; then
+  echo "error: 预检配置里，$RUNTIME_HANDLER 的 ConfigPath 不是 $REMOTE_KATA_CONFIG" >&2
   echo "       生效的 options 表:" >&2
-  printf '%s\n' "${effective_options:-(缺失)}" | sed 's/^/         /' >&2
-  echo "hint: 多半是 imports 里的 drop-in 定义了同名 handler 并覆盖了主配置;" >&2
-  echo "      检查 imports 列出的文件（例如 /etc/containerd/conf.d/*.toml）" >&2
+  printf '%s\n' "${stage_options:-(缺失)}" | sed 's/^/         /' >&2
   exit 1
 fi
-echo "生效配置校验通过: $RUNTIME_HANDLER -> $REMOTE_KATA_CONFIG"
+echo "预检通过: $RUNTIME_HANDLER -> $REMOTE_KATA_CONFIG（未丢 handler）"
 
-if sudo cmp -s "$tmp_containerd" "$CONTAINERD_CONFIG"; then
-  echo "containerd 配置未变化，跳过重启"
+if [[ "$dry_run" == "1" ]]; then
+  echo "dry-run: 将写入 $package_dropin"
+  echo "dry-run: sudo install -o root -g root -m 0644 $tmp_dropin $dropin_dest"
+  echo "dry-run: sudo systemctl restart containerd"
 else
-  echo "重启 containerd"
-  containerd_backup="$(mktemp /tmp/containerd-config.backup.XXXXXX.toml)"
-  sudo cp -a "$CONTAINERD_CONFIG" "$containerd_backup"
-  run sudo install -o root -g root -m 0644 "$tmp_containerd" "$CONTAINERD_CONFIG"
-  if [[ "$dry_run" != "1" ]]; then
+  # The package keeps its own copy, so the drop-in can be inspected and the
+  # install is reproducible from the package directory alone.
+  sudo install -o root -g root -m 0644 "$tmp_dropin" "$package_dropin"
+  echo "已写入包内 drop-in: $package_dropin"
+
+  if [[ -f "$dropin_dest" ]] && sudo cmp -s "$tmp_dropin" "$dropin_dest"; then
+    echo "drop-in 未变化，跳过重启: $dropin_dest"
+  else
+    if [[ -f "$dropin_dest" ]]; then
+      dropin_backup="$(mktemp /tmp/containerd-dropin.backup.XXXXXX.toml)"
+      sudo cp -a "$dropin_dest" "$dropin_backup"
+    fi
+    rollback_dropin() {
+      if [[ -n "$dropin_backup" && -f "$dropin_backup" ]]; then
+        sudo install -o root -g root -m 0644 "$dropin_backup" "$dropin_dest"
+      else
+        sudo rm -f "$dropin_dest"
+      fi
+    }
+    sudo install -o root -g root -m 0644 "$tmp_dropin" "$dropin_dest"
+    echo "已安装 drop-in: $dropin_dest"
+
+    # The authoritative check: the real config, resolved in place.
+    if ! after_dump="$(sudo containerd --config "$CONTAINERD_CONFIG" config dump)"; then
+      echo "error: 安装 drop-in 后 containerd 配置无法解析，回滚" >&2
+      rollback_dropin
+      exit 1
+    fi
+    after_handlers="$(handlers_of_dump <<<"$after_dump")"
+    lost="$(lost_handlers "$before_handlers" "$after_handlers")"
+    if [[ -n "$lost" ]] ||
+       ! grep -qxF "$RUNTIME_HANDLER" <<<"$after_handlers" ||
+       ! grep -qxF "ConfigPath = \"$REMOTE_KATA_CONFIG\"" \
+         <<<"$(handler_options_of "$RUNTIME_HANDLER" <<<"$after_dump")"; then
+      echo "error: 生效配置校验失败，回滚 drop-in" >&2
+      if [[ -n "$lost" ]]; then
+        printf '%s\n' "$lost" | sed 's/^/         丢失: /' >&2
+      fi
+      rollback_dropin
+      exit 1
+    fi
+    echo "生效配置校验通过: $RUNTIME_HANDLER -> $REMOTE_KATA_CONFIG"
+
+    echo "重启 containerd"
     if ! sudo systemctl restart containerd || ! sudo systemctl is-active --quiet containerd; then
       sudo journalctl -u containerd -n 50 --no-pager >&2 || true
-      echo "error: containerd 重启失败，回滚配置" >&2
-      sudo install -o root -g root -m 0644 "$containerd_backup" "$CONTAINERD_CONFIG"
+      echo "error: containerd 重启失败，回滚 drop-in" >&2
+      rollback_dropin
       sudo systemctl restart containerd || true
       exit 1
     fi
@@ -248,8 +358,8 @@ else
         exit 1
       fi
     fi
-    sudo rm -f "$containerd_backup"
-    containerd_backup=""
+    sudo rm -f "$dropin_backup"
+    dropin_backup=""
     echo "containerd 已重启"
   fi
 fi
@@ -354,3 +464,5 @@ echo "使用方创建 Pod 时指定 runtimeClassName: $RUNTIME_HANDLER"
 echo
 echo "注意: runtime handler 的 ConfigPath 指向本交付包: $REMOTE_KATA_CONFIG"
 echo "      删除或替换该目录前先移除 handler，否则下次拉起该 runtime 的 Pod 会失败。"
+echo "      handler 由 $dropin_dest 提供（完整快照，含宿主原有 handler）；"
+echo "      不要直接编辑，重跑本脚本会覆盖它。"

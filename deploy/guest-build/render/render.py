@@ -7,6 +7,7 @@ the network or the target host.
 """
 
 import argparse
+import glob
 import json
 import re
 import shlex
@@ -313,20 +314,213 @@ def containerd_merge(config, handler, runtime_type, runtime_path, snapshotter, k
 
 def containerd_strip(config, handler):
     """Inverse of containerd_merge: drop the handler and its child table."""
+    lines = strip_handler_lines(Path(config).read_text().splitlines(), handler)
+    while lines and not lines[-1].strip():
+        lines.pop()
+    Path(config).write_text("\n".join(lines) + "\n")
+
+
+def strip_handler_lines(lines, handler):
+    """Drop one handler's table and its child tables from `lines`."""
     target = containerd_target(handler)
-    out_lines = []
+    kept = []
     skip = False
-    for line in Path(config).read_text().splitlines():
+    for line in lines:
         parts = table_path(line)
         if parts is not None:
             skip = is_target_or_child(parts, target)
             if skip:
                 continue
         if not skip:
-            out_lines.append(line)
-    while out_lines and not out_lines[-1].strip():
-        out_lines.pop()
-    Path(config).write_text("\n".join(out_lines) + "\n")
+            kept.append(line)
+    return kept
+
+
+CRI_PLUGIN = "io.containerd.grpc.v1.cri"
+
+# Tables under this prefix are the runtime handlers. containerd loads the main
+# config and then its `imports` in order, and the last file that defines any of
+# these tables replaces the whole CRI plugin tree -- the plugins map is merged
+# key by key, and the CRI tree is one value. A drop-in holding only the handler
+# it adds therefore erases every other handler, so one has to carry them all.
+RUNTIMES_PREFIX = ("plugins", CRI_PLUGIN, "containerd", "runtimes")
+
+
+def is_runtime_table(parts):
+    return parts is not None and len(parts) > len(RUNTIMES_PREFIX) and tuple(
+        parts[: len(RUNTIMES_PREFIX)]
+    ) == RUNTIMES_PREFIX
+
+
+def read_imports(config):
+    """Return the `imports` array of `config`, without expanding globs."""
+    imports = []
+    buf = ""
+    collecting = False
+    for line in Path(config).read_text().splitlines():
+        if not collecting:
+            if not active_key(line, "imports"):
+                continue
+            collecting = True
+            buf = line.split("=", 1)[1]
+        else:
+            buf += " " + line.strip()
+        if "]" in buf:
+            break
+    for raw in re.findall(r'"((?:[^"\\]|\\.)*)"', buf):
+        imports.append(json.loads(f'"{raw}"'))
+    return imports
+
+
+def expand_imports(config):
+    """Expand `imports` into the files containerd loads, in load order."""
+    base_dir = Path(config).resolve().parent
+    paths = []
+    for entry in read_imports(config):
+        path = entry if Path(entry).is_absolute() else str(base_dir / entry)
+        if any(ch in path for ch in "*?["):
+            matches = sorted(glob.glob(path))
+        else:
+            matches = [path]
+        paths.extend(match for match in matches if Path(match).is_file())
+    return paths
+
+
+def defines_runtimes(path):
+    return any(is_runtime_table(table_path(line))
+               for line in Path(path).read_text().splitlines())
+
+
+def effective_runtimes_source(config, exclude_prefix=""):
+    """Return the file whose runtimes map is the last one containerd loads.
+
+    TAA-owned drop-ins (matching `exclude_prefix`) are skipped: they are derived
+    from the host's own files, so deriving a new one from them would freeze the
+    host's configuration at the first install.
+    """
+    winner = Path(config)
+    for path in [config, *expand_imports(config)]:
+        if exclude_prefix and Path(path).name.startswith(exclude_prefix):
+            continue
+        if defines_runtimes(path):
+            winner = Path(path)
+    return winner
+
+
+def handler_blocks(path):
+    """Return [(handler, lines)] for every runtime handler table in `path`."""
+    blocks = []
+    current = None
+    for line in Path(path).read_text().splitlines():
+        parts = table_path(line)
+        if parts is not None:
+            if is_runtime_table(parts):
+                name = parts[len(RUNTIMES_PREFIX)]
+                if current is None or current[0] != name:
+                    current = (name, [])
+                    blocks.append(current)
+                current[1].append(line)
+                continue
+            current = None
+            continue
+        if current is not None:
+            current[1].append(line)
+    for _, lines in blocks:
+        while lines and not lines[-1].strip():
+            lines.pop()
+    return blocks
+
+
+def cri_subtree_lines(path):
+    """Return only the CRI plugin tables of `path`.
+
+    Used when the host has no imported file defining runtimes: copying the main
+    config wholesale into a drop-in would replay every other plugin section and
+    the `imports` array itself.
+    """
+    out = []
+    keep = False
+    for line in Path(path).read_text().splitlines():
+        parts = table_path(line)
+        if parts is not None:
+            keep = tuple(parts[:2]) == ("plugins", CRI_PLUGIN)
+            if keep:
+                out.append(line)
+            continue
+        if keep:
+            out.append(line)
+    while out and not out[-1].strip():
+        out.pop()
+    return out
+
+
+DROPIN_HEADER = """\
+# Generated by TAA install.sh. containerd loads this file last and the last file
+# defining a runtime handler replaces the whole
+# plugins."io.containerd.grpc.v1.cri" tree, so this drop-in carries the host's
+# current runtimes map and the handler this package installs. Regenerated and
+# overwritten on every install; do not edit by hand."""
+
+
+def containerd_dropin(config, carry, exclude_prefix, handler, runtime_type,
+                      runtime_path, snapshotter, kata_config, out):
+    """Write the TAA-owned drop-in: host runtimes map + this package's handler."""
+    base = effective_runtimes_source(config, exclude_prefix)
+    base_names = {name for name, _ in handler_blocks(base)}
+    carried = {}
+    for path in carry:
+        if not Path(path).is_file():
+            continue
+        for name, lines in handler_blocks(path):
+            # Base already supplies these; re-appending them would reorder the
+            # snapshot on every reinstall and make the output non-idempotent.
+            if name == handler or name in base_names:
+                continue
+            carried[name] = lines
+
+    managed = set(carried) | {handler}
+    if base.resolve() == Path(config).resolve():
+        lines = cri_subtree_lines(base)
+    else:
+        lines = Path(base).read_text().splitlines()
+    for name in managed:
+        lines = strip_handler_lines(lines, name)
+    while lines and not lines[-1].strip():
+        lines.pop()
+    while lines and not lines[0].strip():
+        lines.pop(0)
+
+    out_lines = DROPIN_HEADER.splitlines() + [""] + lines
+    for name, block in carried.items():
+        out_lines.extend(["", *block])
+    out_lines.extend(
+        ["", *containerd_block(handler, runtime_type, runtime_path, snapshotter, kata_config)]
+    )
+    Path(out).write_text("\n".join(out_lines) + "\n")
+
+
+def containerd_stage(config, extra, out):
+    """Copy `config`, replacing its imports with the expanded list plus `extra`.
+
+    Lets the installer ask containerd to resolve the prospective configuration
+    before anything under /etc changes.
+    """
+    lines = Path(config).read_text().splitlines()
+    start = None
+    for index, line in enumerate(lines):
+        if active_key(line, "imports"):
+            start = index
+            break
+    if start is None:
+        raise SystemExit(f"{config}: no imports array to extend")
+    end = start
+    depth = lines[start].count("[") - lines[start].count("]")
+    while depth > 0 and end + 1 < len(lines):
+        end += 1
+        depth += lines[end].count("[") - lines[end].count("]")
+    entries = [*expand_imports(config), extra]
+    replacement = "imports = [" + ", ".join(toml_string(entry) for entry in entries) + "]"
+    Path(out).write_text("\n".join(lines[:start] + [replacement] + lines[end + 1:]) + "\n")
 
 
 def toml_value(raw):
@@ -652,6 +846,36 @@ def main(argv=None):
     strip.add_argument("--config", required=True)
     strip.add_argument("--handler", required=True)
 
+    source = sub.add_parser(
+        "containerd-effective-source",
+        help="print the file whose runtime map containerd loads last",
+    )
+    source.add_argument("--config", required=True)
+    source.add_argument("--exclude-prefix", default="")
+
+    dropin = sub.add_parser(
+        "containerd-dropin",
+        help="write a self-contained handler drop-in: host runtimes + one handler",
+    )
+    dropin.add_argument("--config", required=True)
+    dropin.add_argument("--carry", action="append", default=[],
+                        help="existing TAA drop-in whose other handlers must survive")
+    dropin.add_argument("--exclude-prefix", default="zz-taa")
+    dropin.add_argument("--handler", required=True)
+    dropin.add_argument("--runtime-type", required=True)
+    dropin.add_argument("--runtime-path", default="")
+    dropin.add_argument("--snapshotter", default="")
+    dropin.add_argument("--kata-config", required=True)
+    dropin.add_argument("--out", required=True)
+
+    stage = sub.add_parser(
+        "containerd-stage",
+        help="copy a containerd config with one extra import appended",
+    )
+    stage.add_argument("--config", required=True)
+    stage.add_argument("--extra", required=True)
+    stage.add_argument("--out", required=True)
+
     info = sub.add_parser(
         "package-info",
         help="derive the installer's settings from a rendered package (KEY=value lines)",
@@ -726,6 +950,22 @@ def main(argv=None):
         Path(args.out).write_text("\n".join(block) + "\n")
     elif args.command == "containerd-strip":
         containerd_strip(args.config, args.handler)
+    elif args.command == "containerd-effective-source":
+        print(effective_runtimes_source(args.config, args.exclude_prefix))
+    elif args.command == "containerd-dropin":
+        containerd_dropin(
+            args.config,
+            args.carry,
+            args.exclude_prefix,
+            args.handler,
+            args.runtime_type,
+            args.runtime_path,
+            args.snapshotter,
+            args.kata_config,
+            args.out,
+        )
+    elif args.command == "containerd-stage":
+        containerd_stage(args.config, args.extra, args.out)
     elif args.command == "package-info":
         for key, value in package_info(args.dir).items():
             print(f"{key}={shlex.quote(value)}")
