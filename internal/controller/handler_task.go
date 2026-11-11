@@ -416,7 +416,7 @@ func (s *TAAState) modelImportHandler(w http.ResponseWriter, r *http.Request) {
 		s.RuntimeConfig = req.RuntimeConfig
 		_ = s.sealStateLocked()
 		s.mu.Unlock()
-		s.Logs.Add(LogInfo, "importModel", "已保存 runtimeConfig (长度=%d)", len(req.RuntimeConfig))
+		s.Logs.Add(LogInfo, "importModel", "已保存模型命令配置 (长度=%d)", len(req.RuntimeConfig))
 	}
 
 	// 若 resourceUrl 为空且已有保存的模型，仅更新 runtimeConfig，绝不触发训练任务
@@ -438,16 +438,16 @@ func (s *TAAState) modelImportHandler(w http.ResponseWriter, r *http.Request) {
 		// validated. A tee instance runs it, so the checks stay there untouched.
 		if !s.fheEnabled() {
 			if strings.TrimSpace(runtimeConfigToUse) == "" {
-				writeErr(w, http.StatusBadRequest, pkgerrors.New(pkgerrors.CodeInvalidArgument, "runtimeConfig 不能为空"))
+				writeErr(w, http.StatusBadRequest, pkgerrors.New(pkgerrors.CodeInvalidArgument, "模型命令配置不能为空"))
 				return
 			}
 			cfg, _, err := parseRuntimeConfig(runtimeConfigToUse)
 			if err != nil {
-				writeErr(w, http.StatusBadRequest, pkgerrors.Wrap(pkgerrors.CodeInvalidArgument, fmt.Sprintf("runtimeConfig 解析失败: %v", err), err))
+				writeErr(w, http.StatusBadRequest, pkgerrors.Wrap(pkgerrors.CodeInvalidArgument, err.Error(), err))
 				return
 			}
 			if len(cfg.Commands) == 0 {
-				writeErr(w, http.StatusBadRequest, pkgerrors.New(pkgerrors.CodeInvalidArgument, "runtimeConfig.commands 不能为空"))
+				writeErr(w, http.StatusBadRequest, pkgerrors.New(pkgerrors.CodeInvalidArgument, "模型命令不能为空"))
 				return
 			}
 		}
@@ -484,7 +484,7 @@ func (s *TAAState) modelImportHandler(w http.ResponseWriter, r *http.Request) {
 
 	s.setSavedModelResourceURL(req.ResourceURL)
 	if !s.fheEnabled() && strings.TrimSpace(req.RuntimeConfig) == "" {
-		s.Logs.Add(LogWarn, "importModel", "runtimeConfig 为空，后续训练将失败")
+		s.Logs.Add(LogWarn, "importModel", "模型命令配置为空，后续训练将失败")
 	}
 
 	s.Logs.Add(LogInfo, "importModel", "开始下载资源: %s", req.ResourceURL)

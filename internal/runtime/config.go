@@ -17,7 +17,7 @@ type RuntimeConfig struct {
 // ParseRuntimeConfig 解析 JSON 格式的运行配置，兼容 env 为对象或字符串的混合形态
 func ParseRuntimeConfig(raw string) (RuntimeConfig, map[string]string, error) {
 	if strings.TrimSpace(raw) == "" {
-		return RuntimeConfig{}, nil, fmt.Errorf("runtimeConfig 不能为空")
+		return RuntimeConfig{}, nil, fmt.Errorf("模型命令配置不能为空")
 	}
 
 	var cfg RuntimeConfig
@@ -29,7 +29,7 @@ func ParseRuntimeConfig(raw string) (RuntimeConfig, map[string]string, error) {
 				Env      map[string]any `json:"env"`
 			}
 			if errObj := json.Unmarshal([]byte(raw), &objCfg); errObj != nil {
-				return RuntimeConfig{}, nil, fmt.Errorf("解析 runtimeConfig 失败: %w", errObj)
+				return RuntimeConfig{}, nil, fmt.Errorf("解析模型命令配置失败: %w", errObj)
 			}
 			cfg.Commands = objCfg.Commands
 			if objCfg.Env != nil {
@@ -52,15 +52,15 @@ func ParseRuntimeConfig(raw string) (RuntimeConfig, map[string]string, error) {
 				}
 			}
 		} else {
-			return RuntimeConfig{}, nil, fmt.Errorf("解析 runtimeConfig 失败: %w", err)
+			return RuntimeConfig{}, nil, fmt.Errorf("解析模型命令配置失败: %w", err)
 		}
 	}
 	if len(cfg.Commands) == 0 {
-		return RuntimeConfig{}, nil, fmt.Errorf("runtimeConfig.commands 不能为空")
+		return RuntimeConfig{}, nil, fmt.Errorf("模型命令不能为空")
 	}
 	for i, command := range cfg.Commands {
 		if strings.TrimSpace(command) == "" {
-			return RuntimeConfig{}, nil, fmt.Errorf("runtimeConfig.commands[%d] 不能为空", i)
+			return RuntimeConfig{}, nil, fmt.Errorf("第 %d 条模型命令不能为空", i)
 		}
 	}
 
@@ -68,7 +68,7 @@ func ParseRuntimeConfig(raw string) (RuntimeConfig, map[string]string, error) {
 		env = map[string]string{}
 		if strings.TrimSpace(cfg.Env) != "" {
 			if err := json.Unmarshal([]byte(cfg.Env), &env); err != nil {
-				return RuntimeConfig{}, nil, fmt.Errorf("解析 runtimeConfig.env 失败: %w", err)
+				return RuntimeConfig{}, nil, fmt.Errorf("解析模型环境变量配置失败: %w", err)
 			}
 		}
 	}

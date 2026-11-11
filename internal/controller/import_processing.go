@@ -213,9 +213,9 @@ func (s *TAAState) processImportedResource(req importRequest, phase int, isModel
 
 	// 2. 检查运行配置 runtimeConfig 是否有效
 	if strings.TrimSpace(runtimeConfigRaw) == "" {
-		s.Logs.Add(LogError, "train", "runtimeConfig 不能为空")
+		s.Logs.Add(LogError, "train", "模型命令配置不能为空")
 		s.setCurrentOp("idle")
-		s.reportImportFailure(req, phase, false, startedAt, "runtimeConfig 不能为空")
+		s.reportImportFailure(req, phase, false, startedAt, "模型命令配置不能为空")
 		return
 	}
 	cfg, env, err := parseRuntimeConfig(runtimeConfigRaw)
@@ -226,9 +226,9 @@ func (s *TAAState) processImportedResource(req importRequest, phase int, isModel
 		return
 	}
 	if len(cfg.Commands) == 0 {
-		s.Logs.Add(LogError, "train", "runtimeConfig.commands 不能为空")
+		s.Logs.Add(LogError, "train", "模型命令不能为空")
 		s.setCurrentOp("idle")
-		s.reportImportFailure(req, phase, false, startedAt, "runtimeConfig.commands 不能为空")
+		s.reportImportFailure(req, phase, false, startedAt, "模型命令不能为空")
 		return
 	}
 
@@ -552,7 +552,7 @@ func (s *TAAState) executeTraining(trainReq importRequest, phase int, trainRecor
 		watcher.Stop()
 	}()
 
-	StepSeparator("Run runtimeConfig")
+	StepSeparator("Run Model Commands")
 	s.setCurrentOp("training")
 	if checkCancelled() {
 		s.Logs.Add(LogInfo, "train", "训练任务已中止: taskId=%s", trainReq.TaskID)
@@ -562,7 +562,7 @@ func (s *TAAState) executeTraining(trainReq importRequest, phase int, trainRecor
 	execInputDir := target.Resolve(spec.DataDir)
 	execOutputDir := target.Resolve(spec.OutputDir)
 	resolvedCommands := resolveRuntimeCommands(cfg.Commands, execInputDir, execOutputDir)
-	s.Logs.Add(LogInfo, "train", "开始执行 runtimeConfig (target=%s): commands=%d, envKeys=%v, 输入目录: %s (源hash=%s), 输出目录: %s",
+	s.Logs.Add(LogInfo, "train", "开始执行模型命令 (target=%s): commands=%d, envKeys=%v, 输入目录: %s (源hash=%s), 输出目录: %s",
 		target.Name(), len(cfg.Commands), envKeys(env), execInputDir, trainRecord.Hash, execOutputDir)
 	for i, cmd := range resolvedCommands {
 		s.Logs.Add(LogInfo, "train", "  [cmd %d] %s", i+1, cmd)
@@ -578,7 +578,7 @@ func (s *TAAState) executeTraining(trainReq importRequest, phase int, trainRecor
 			s.Logs.Add(LogInfo, "train", "训练任务已中止: taskId=%s", trainReq.TaskID)
 			return
 		}
-		s.Logs.Add(LogError, "train", "执行 runtimeConfig 失败: %v\noutput: %s", err, output)
+		s.Logs.Add(LogError, "train", "模型命令执行失败: %v\noutput: %s", err, output)
 		s.reportImportFailure(trainReq, phase, false, startedAt, runtimeFailureReason(err, output))
 		return
 	}
@@ -586,7 +586,7 @@ func (s *TAAState) executeTraining(trainReq importRequest, phase int, trainRecor
 		s.Logs.Add(LogInfo, "train", "训练任务已中止: taskId=%s", trainReq.TaskID)
 		return
 	}
-	s.Logs.Add(LogInfo, "train", "runtimeConfig 执行成功")
+	s.Logs.Add(LogInfo, "train", "模型命令执行成功")
 
 	StepSeparator("Collect Output Results")
 	// Where the artifacts actually are. Local execution wrote straight into
@@ -947,13 +947,13 @@ func newLLMClient(cfg codeaudit.LLMConfig) codeaudit.LLMClient {
 //
 // It tracks the client's own health budget rather than an ordinary request
 // timeout, because the probe is not a ping: a cold inference service loads the
-// model before answering /healthz. Cutting the probe off mid-load does not just
+// model before answering /v1/llm/healthz. Cutting the probe off mid-load does not just
 // fail the attempt, it cancels the load, so a short budget makes the gate
 // unwinnable on a cold start rather than merely slow.
 const auditLLMHealthCheckTimeout = llmclient.DefaultHealthCheckTimeout
 
 // isLLMServiceAvailable probes whether the inference service is healthy and reachable.
-// It prioritizes standard TEE-LLM client health checking (/healthz over TEE-TLS),
+// It prioritizes standard TEE-LLM client health checking (/v1/llm/healthz over TEE-TLS),
 // and falls back to legacy raw Ollama probe (/api/tags) if client creation failed but endpoint is HTTP.
 func isLLMServiceAvailable(ctx context.Context, client codeaudit.LLMClient, endpoint, model string) bool {
 	if client != nil {
@@ -1156,10 +1156,10 @@ func (s *TAAState) clearImportedState(isModel bool, phase int) {
 const maxFailureOutputBytes = 4096
 
 // runtimeFailureReason builds the reason reported through reportRes for a
-// non-zero runtimeConfig exit: the executor error, followed by the tail of the
+// non-zero model command exit: the executor error, followed by the tail of the
 // process output when there is any.
 func runtimeFailureReason(err error, output string) string {
-	reason := fmt.Sprintf("执行 runtimeConfig 失败: %v", err)
+	reason := fmt.Sprintf("模型命令执行失败: %v", err)
 	tail := lastBytes(output, maxFailureOutputBytes)
 	if tail == "" {
 		return reason

@@ -71,7 +71,7 @@ func RunRuntimeConfigWithTarget(control ProcessController, target execenv.Target
 		}
 		defer control.ClearCommand(cmd)
 	} else if err := cmd.Start(); err != nil {
-		return "", fmt.Errorf("runtimeConfig command exited with error: %w", err)
+		return "", err
 	}
 
 	err := cmd.Wait()
@@ -79,7 +79,9 @@ func RunRuntimeConfigWithTarget(control ProcessController, target execenv.Target
 		return output.String(), context.Canceled
 	}
 	if err != nil {
-		return output.String(), fmt.Errorf("runtimeConfig command exited with error: %w", err)
+		// The caller owns the operator-facing wording ("模型命令执行失败"),
+		// so the error stays the exit status or start failure itself.
+		return output.String(), err
 	}
 	return output.String(), nil
 }

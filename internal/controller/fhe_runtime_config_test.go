@@ -114,7 +114,7 @@ func TestTEEModelImportStillRejectsEmptyRuntimeConfig(t *testing.T) {
 		t.Fatalf("status=%d error=%d msg=%s, want 400 for a tee instance with no runtimeConfig",
 			status, api.Error, api.Msg)
 	}
-	if !strings.Contains(api.Msg, "runtimeConfig 不能为空") {
+	if !strings.Contains(api.Msg, "模型命令配置不能为空") {
 		t.Fatalf("msg = %q, want it to name the missing runtimeConfig", api.Msg)
 	}
 

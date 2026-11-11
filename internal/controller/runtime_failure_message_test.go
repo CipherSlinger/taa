@@ -8,12 +8,12 @@ import (
 )
 
 func TestRuntimeFailureReasonCarriesProcessOutput(t *testing.T) {
-	err := errors.New("runtimeConfig command exited with error: exit status 1")
+	err := errors.New("exit status 1")
 	output := "epoch 1/3 loss=0.42\nTraceback (most recent call last):\n  File \"train.py\", line 7\nValueError: bad shape\n"
 
 	reason := runtimeFailureReason(err, output)
 
-	if !strings.HasPrefix(reason, "执行 runtimeConfig 失败: runtimeConfig command exited with error: exit status 1") {
+	if !strings.HasPrefix(reason, "模型命令执行失败: exit status 1") {
 		t.Fatalf("reason lost the executor error: %q", reason)
 	}
 	if !strings.Contains(reason, "ValueError: bad shape") {
@@ -25,10 +25,10 @@ func TestRuntimeFailureReasonCarriesProcessOutput(t *testing.T) {
 }
 
 func TestRuntimeFailureReasonWithoutOutput(t *testing.T) {
-	err := errors.New("runtimeConfig command exited with error: exit status 137")
+	err := errors.New("exit status 137")
 	for _, output := range []string{"", "   \n\t "} {
 		reason := runtimeFailureReason(err, output)
-		if reason != "执行 runtimeConfig 失败: runtimeConfig command exited with error: exit status 137" {
+		if reason != "模型命令执行失败: exit status 137" {
 			t.Fatalf("empty output changed the reason: %q", reason)
 		}
 		if strings.Contains(reason, "进程输出") {
@@ -38,7 +38,7 @@ func TestRuntimeFailureReasonWithoutOutput(t *testing.T) {
 }
 
 func TestRuntimeFailureReasonKeepsOnlyTheTail(t *testing.T) {
-	err := errors.New("runtimeConfig command exited with error: exit status 1")
+	err := errors.New("exit status 1")
 	head := "HEAD-MARKER\n" + strings.Repeat("progress line\n", 2000)
 	tail := "FATAL: out of memory"
 	reason := runtimeFailureReason(err, head+tail)

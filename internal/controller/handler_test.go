@@ -571,7 +571,7 @@ func TestImportHandler(t *testing.T) {
 			if payload.Code != 1 {
 				t.Fatalf("reportRes code = %d, want 1", payload.Code)
 			}
-			if payload.Msg == nil || !strings.Contains(*payload.Msg, "runtimeConfig 不能为空") {
+			if payload.Msg == nil || !strings.Contains(*payload.Msg, "模型命令配置不能为空") {
 				t.Fatalf("reportRes msg = %v, want runtimeConfig failure", payload.Msg)
 			}
 		case <-time.After(60 * time.Second):
@@ -638,7 +638,7 @@ func TestImportHandler(t *testing.T) {
 			if payload.Code != 1 {
 				t.Fatalf("reportRes code = %d, want 1", payload.Code)
 			}
-			if payload.Msg == nil || !strings.Contains(*payload.Msg, "runtimeConfig 不能为空") {
+			if payload.Msg == nil || !strings.Contains(*payload.Msg, "模型命令配置不能为空") {
 				t.Fatalf("reportRes msg = %v, want runtimeConfig failure", payload.Msg)
 			}
 		case <-time.After(60 * time.Second):

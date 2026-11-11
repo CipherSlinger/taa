@@ -300,8 +300,8 @@ func TestImportModel_ResourceURLReuseValidation(t *testing.T) {
 		if resp.StatusCode != http.StatusBadRequest || api.Error == 0 {
 			t.Fatalf("expected 400 error, got status=%d error=%d", resp.StatusCode, api.Error)
 		}
-		if !strings.Contains(api.Msg, "runtimeConfig 不能为空") {
-			t.Fatalf("expected 'runtimeConfig 不能为空', got: %q", api.Msg)
+		if !strings.Contains(api.Msg, "模型命令配置不能为空") {
+			t.Fatalf("expected '模型命令配置不能为空', got: %q", api.Msg)
 		}
 	})
 
@@ -315,8 +315,8 @@ func TestImportModel_ResourceURLReuseValidation(t *testing.T) {
 		if resp.StatusCode != http.StatusBadRequest || api.Error == 0 {
 			t.Fatalf("expected 400 error, got status=%d error=%d", resp.StatusCode, api.Error)
 		}
-		if !strings.Contains(api.Msg, "runtimeConfig.commands 不能为空") {
-			t.Fatalf("expected 'runtimeConfig.commands 不能为空', got: %q", api.Msg)
+		if !strings.Contains(api.Msg, "模型命令不能为空") {
+			t.Fatalf("expected '模型命令不能为空', got: %q", api.Msg)
 		}
 	})
 
