@@ -51,6 +51,13 @@ check_absent() {
   fi
 }
 
+# A host script ships no separate Python file: its logic is a heredoc block. Cut
+# that block out so a test can run exactly what the script runs on the host.
+extract_py() {
+  sed -n "/^cat > \"\$\(taa_py\|tmp_pod_name\)\" <<'TAA_PY'$/,/^TAA_PY$/p" "$1" |
+    sed '1d;$d' > "$2"
+}
+
 # ssh/scp must never run during rendering. Wrappers that record the call and
 # fail hard make that visible instead of silently succeeding.
 fakebin="$tmp_dir/fakebin"
@@ -499,6 +506,20 @@ remaining_taa="$(python3 "$RENDER" containerd-handlers --file "$dropin_dir/remov
   grep -E '^kata-qemu-(nondcu|dcu)-csv2-taa-' || true)"
 check "remove: no TAA handler remains, so the drop-in is deletable" "" "$remaining_taa"
 
+extract_py "$pkg/uninstall.sh" "$tmp_dir/uninstall-block.py"
+python3 "$tmp_dir/uninstall-block.py" remove \
+  --file "$dropin_dir/first.toml" --handler fixture-handler \
+  --out "$dropin_dir/embedded-removed.toml"
+if cmp -s "$dropin_dir/removed.toml" "$dropin_dir/embedded-removed.toml"; then
+  echo "ok   uninstall block: remove matches the build-host renderer"
+else
+  echo "FAIL uninstall block: remove differs" >&2
+  diff -u "$dropin_dir/removed.toml" "$dropin_dir/embedded-removed.toml" >&2 || true
+  failures=$((failures + 1))
+fi
+check "uninstall block: handlers match the build-host renderer" "$handlers_out" \
+  "$(python3 "$tmp_dir/uninstall-block.py" handlers "$dropin_dir/first.toml")"
+
 # The staging config is how install.sh resolves the prospective result before
 # touching /etc; the new drop-in has to be the last import so it wins.
 python3 "$RENDER" containerd-stage --config "$dropin_dir/main.toml" \
@@ -507,6 +528,30 @@ stage_imports="$(grep '^imports' "$dropin_dir/stage.toml")"
 check_contains "stage: keeps the expanded imports" "$dconf/99-nvidia.toml" "$stage_imports"
 check_contains "stage: appends the drop-in last" "first.toml\"]" "$stage_imports"
 check_absent "stage: the glob is gone" '*.toml' "$stage_imports"
+
+# 3b. Each host script carries its own copy of the TOML handling. Run those
+# copies over the same fixtures and compare bytes: a helper left out of an
+# embedded block then fails here instead of on a host in the middle of install.
+extract_py "$pkg/install.sh" "$tmp_dir/install-block.py"
+python3 "$tmp_dir/install-block.py" dropin "${dropin_args[@]}" \
+  --carry "$dconf/zz-taa-runtimes.toml" --out "$dropin_dir/embedded-first.toml"
+if cmp -s "$dropin_dir/first.toml" "$dropin_dir/embedded-first.toml"; then
+  echo "ok   install block: dropin matches the build-host renderer"
+else
+  echo "FAIL install block: dropin differs" >&2
+  diff -u "$dropin_dir/first.toml" "$dropin_dir/embedded-first.toml" >&2 || true
+  failures=$((failures + 1))
+fi
+python3 "$tmp_dir/install-block.py" stage \
+  --config "$dropin_dir/main.toml" --extra "$dropin_dir/first.toml" \
+  --out "$dropin_dir/embedded-stage.toml"
+if cmp -s "$dropin_dir/stage.toml" "$dropin_dir/embedded-stage.toml"; then
+  echo "ok   install block: stage matches the build-host renderer"
+else
+  echo "FAIL install block: stage differs" >&2
+  diff -u "$dropin_dir/stage.toml" "$dropin_dir/embedded-stage.toml" >&2 || true
+  failures=$((failures + 1))
+fi
 
 # ── 4. Kubernetes manifests ────────────────────────────────────────────────
 python3 - "$pkg/k8s/runtimeclass.yaml" "$pkg/test/test-pod.yaml" <<'PY'
@@ -559,10 +604,6 @@ self_pkg="$tmp_dir/self/pkg"
 env "${common_env[@]}" REMOTE_PACKAGE_DIR="$self_pkg" DIST_DIR="$self_pkg" \
   REMOTE_HOST=invalid.invalid "$BUILD" render >/dev/null
 # The package ships no renderer: the host scripts carry the reading they need.
-# Extract install.sh's block and run it, which is exactly what install.sh does.
-extract_py() {
-  sed -n "/^cat > \"\$taa_py\" <<'TAA_PY'$/,/^TAA_PY$/p" "$1" | sed '1d;$d' > "$2"
-}
 extract_py "$self_pkg/install.sh" "$tmp_dir/self-info.py"
 info="$(python3 "$tmp_dir/self-info.py" info "$self_pkg")"
 check_contains "package-info: reports the runtime handler" "RUNTIME_HANDLER=kata-qemu-nondcu-csv2-taa-train" "$info"

@@ -104,6 +104,7 @@ CRI = "io.containerd.grpc.v1.cri"
 RUNTIMES = ("plugins", CRI, "containerd", "runtimes")
 KERNEL_PARAMS_ANNOTATION = "io.katacontainers.config.hypervisor.kernel_params"
 IMAGE_ARCHIVE_SUFFIXES = (".tar.gz", ".tgz", ".tar")
+RUNTIMES_PREFIX = ("plugins", CRI, "containerd", "runtimes")
 
 
 def split_table_path(src):
@@ -319,6 +320,14 @@ def package_info(pkg_dir):
         ),
     }
     return info
+
+
+def containerd_target(handler):
+    return ["plugins", "io.containerd.grpc.v1.cri", "containerd", "runtimes", handler]
+
+
+def is_target_or_child(parts, target):
+    return parts is not None and len(parts) >= len(target) and parts[: len(target)] == target
 
 
 def is_runtime_table(parts):
