@@ -1025,6 +1025,8 @@ check_absent "install.sh: no longer rewrites the main config" \
   "$(cat "$pkg/install.sh")"
 check_absent "install.sh: no longer merges into a shared file" \
   'containerd-merge' "$(cat "$pkg/install.sh")"
+check_contains "install.sh: RESTART_KUBELET is defaulted under set -u" \
+  'RESTART_KUBELET="${RESTART_KUBELET:-0}"' "$(cat "$pkg/install.sh")"
 check_contains "install.sh: supports dry-run" '--dry-run' "$(cat "$pkg/install.sh")"
 
 # ── 8. render reaches the renderer without a host preflight ────────────────

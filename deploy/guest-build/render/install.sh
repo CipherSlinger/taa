@@ -64,6 +64,10 @@ done
 
 CONTAINERD_CONFIG="${CONTAINERD_CONFIG:-/etc/containerd/config.toml}"
 CONTAINERD_CONF_DIR="${CONTAINERD_CONF_DIR:-/etc/containerd/conf.d}"
+# Referenced below under `set -u`, so the documented default has to be spelled
+# out here as well; an unset value used to abort the install after containerd
+# had already been restarted.
+RESTART_KUBELET="${RESTART_KUBELET:-0}"
 # Sort after every other drop-in: 99-nvidia.toml and the numeric prefixes all
 # sort before a leading letter. The install verifies the ordering outcome rather
 # than trusting the name alone.
