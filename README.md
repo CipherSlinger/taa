@@ -524,13 +524,12 @@ A delivered package looks like this (`taa-train` shown; the other roles differ o
 │   └── delete-test-pod.sh   deletes the Pod
 ├── install.sh               installs the handler and the RuntimeClass (idempotent, --dry-run)
 ├── uninstall.sh             removes this package's handler, keeps other packages'
-├── measure.py               MEASUREMENT calculator used by create-test-pod.sh
 ├── README.md
 ├── SHA256SUMS               checksums of the immutable files (test-pod.yaml excluded)
 └── image/                   optional: docker-save archive of the test image, pushed to the registry
 ```
 
-Nothing in the package renders: `install.sh`, `uninstall.sh` and the two test scripts each embed the small Python reader they need, so there is no standalone renderer file to go missing in transit. The `zz-taa-runtimes.toml` snapshot the installer writes is shared and lives one directory above the package, not inside it.
+Nothing in the package renders: `install.sh`, `uninstall.sh` and the two test scripts each embed the small Python they need — the package reader, or the MEASUREMENT computation in `create-test-pod.sh` — so no renderer or measurement script travels separately and goes missing in transit. The `zz-taa-runtimes.toml` snapshot the installer writes is shared and lives one directory above the package, not inside it.
 
 The two `-dcu` roles are for the Hygon DCU full-encryption runtime, not a CPU-only guest: they ship the DCU guest kernel, load the out-of-tree `hycu` driver from the initrd (`taa.taa_modules=hycu` on the kernel command line, after `taa-init` mounts `/proc`), use the `kata-qemu-hygon-dcu-csv2` runtime class and request `hygon.cn/k100_ai` in the test Pod. The driver tree, matching firmware and `kmod` are not on the host as files — they are extracted from the DCU guest image by `build-initrd.sh fetch-base` into `deploy/guest-build/base/dcu-payload/`, so a `-dcu` role needs one `fetch-base` run before its first build. Loading `hycu` from the initrd is new and only proven once a DCU Pod boots; `taa-init: module loaded: hycu` on the guest console is the first thing to read if `hy-smi` fails.
 

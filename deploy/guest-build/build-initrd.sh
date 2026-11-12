@@ -1797,11 +1797,10 @@ render_package() {
     --out-dir "$out_dir/k8s" \
     --pod-dir "$out_dir/test"
 
-  # The package is self-contained: the installer, its reverse and the
-  # measurement helper travel with it. The renderer does not: each script reads
-  # the package's own files with a block embedded in it, so the package carries
-  # one fewer file that must survive the trip.
-  cp "$RENDER_DIR/measure.py" "$out_dir/measure.py"
+  # The package is self-contained: the installer and its reverse travel with it.
+  # Neither the renderer nor the measurement helper does: each host script
+  # carries the code it needs in a block embedded in it, so the package has one
+  # fewer file that must survive the trip.
   cp "$RENDER_DIR/install.sh" "$out_dir/install.sh"
   cp "$RENDER_DIR/uninstall.sh" "$out_dir/uninstall.sh"
   cp "$RENDER_DIR/create-test-pod.sh" "$out_dir/test/create-test-pod.sh"
@@ -1887,16 +1886,8 @@ CSV2 的启动度量是 \`SM3(OVMF || 哈希表)\`：哈希表里按 cmdline、i
 - base64：\`$measure_b64\`
 
 运行 \`test/create-test-pod.sh\` 时，它会从 QEMU 进程的 \`/proc/<pid>/cmdline\` 取
-实际 \`-append\`，用包内 \`measure.py\` 重算并对比。也可以手工重算：
-
-\`\`\`bash
-pid=\$(ps -eo pid=,args= | grep -F qemu | grep -F "$REMOTE_BUNDLE_DIR/initramfs.img" | awk '{print \$1}' | head -1)
-tr '\\0' '\\n' < /proc/\$pid/cmdline | grep -A1 '^-append\$' | tail -n1 > /tmp/append
-echo >> /tmp/append
-python3 measure.py digest --ovmf "$REMOTE_BUNDLE_DIR/OVMF.fd" \\
-  --kernel "$REMOTE_BUNDLE_DIR/vmlinuz" \\
-  --initrd "$REMOTE_BUNDLE_DIR/initramfs.img" --cmdline /tmp/append
-\`\`\`
+实际 \`-append\`，用脚本内嵌的同一套 SM3 计算重算，并打印预期与实际的 hex/base64。
+需要独立复核时，可用海光的 \`csv-measure.py\`（本包的计算与它等价，只是不依赖 pysmx）。
 
 再与 guest 报告里的 digest（\`getAttestation\` 的 attestationValues，已解掩码）对照。
 cmdline 里的 \`nr_cpus\` 与调试参数由 Kata 版本决定；若与本包预测不一致，
@@ -1932,8 +1923,8 @@ TAA 运行在 Kata CSV2 机密 VM 的 initrd 里，自证通过后才放行 kata
   不同，所以包里不带它：创建脚本在宿主机上读一条填进去
 - \`install.sh\` / \`uninstall.sh\` — 安装与卸载脚本（见下文）。它们各自内嵌读取本包的
   一小段 Python（解析 handler 片段、Kata 配置、Pod 清单与 containerd drop-in），
-  包里不再有单独的渲染器文件；\`measure.py\` — test/create-test-pod.sh 用的
-  MEASUREMENT 计算器
+  包里不再有单独的渲染器文件；\`test/create-test-pod.sh\` 同样把 MEASUREMENT 的计算
+  内嵌在自己身上，不单独带度量脚本
 $(if [[ -n "$TEST_IMAGE_ARCHIVE" ]]; then printf -- '- `%s/` — 测试 Pod 镜像的 `docker save` 归档。CoCo guest 由 CDH 自己从 registry 拉镜像，宿主机 docker 不在那条路径上，所以 install.sh 会先查 registry，缺这个 tag 时导入归档并推送过去\n' "$PACKAGE_IMAGE_SUBDIR"; fi)
 - \`SHA256SUMS\` — 不可变文件的校验和（\`test/test-pod.yaml\` 不在其中：它是运维要改
   的文件，部署身份就在里面）

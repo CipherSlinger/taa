@@ -139,7 +139,7 @@ env "${common_env[@]}" DIST_DIR="$pkg" REMOTE_HOST=invalid.invalid "$BUILD" rend
 for f in kata-config.toml config/containerd-runtime-handler.toml \
          k8s/runtimeclass.yaml test/test-pod.yaml \
          test/create-test-pod.sh test/delete-test-pod.sh SHA256SUMS \
-         install.sh uninstall.sh measure.py README.md \
+         install.sh uninstall.sh README.md \
          bundle/initramfs.img bundle/vmlinuz bundle/OVMF.fd; do
   if [[ -f "$pkg/$f" ]]; then
     echo "ok   render: produced $f"
@@ -150,6 +150,8 @@ for f in kata-config.toml config/containerd-runtime-handler.toml \
 done
 check "render: ships no separate renderer" "absent" \
   "$([[ -e "$pkg/render.py" ]] && echo present || echo absent)"
+check "render: ships no separate measurement script" "absent" \
+  "$([[ -e "$pkg/measure.py" ]] && echo present || echo absent)"
 check "render: never contacted a host" "absent" \
   "$([[ -e "$tmp_dir/fakebin/ssh.called" || -e "$tmp_dir/fakebin/scp.called" ]] && echo called || echo absent)"
 check "render: ships no per-package drop-in (it is shared beside the packages)" "absent" \
@@ -746,6 +748,17 @@ measure_hex="$(python3 "$MEASURE" digest \
 check "measure: a 64-hex digest is produced" "1" "$(grep -cE '^[0-9a-f]{64}$' <<<"$measure_hex")"
 check_contains "README: shows the expected hex" "$measure_hex" "$(cat "$pkg/README.md")"
 check_absent "README: no cmdline.txt reference" 'cmdline.txt' "$(cat "$pkg/README.md")"
+# create-test-pod.sh carries the same SM3 and hashes-table code inline. Run that
+# copy over the same inputs so a drift from the build host's measure.py is caught
+# here rather than on a target host.
+extract_py "$pkg/test/create-test-pod.sh" "$tmp_dir/create-measure.py"
+embedded_hex="$(python3 "$tmp_dir/create-measure.py" digest \
+  --ovmf "$tmp_dir/fixture-ovmf.fd" \
+  --kernel "$tmp_dir/fixture-vmlinuz" \
+  --initrd "$tmp_dir/fixture-initrd.img" \
+  --cmdline "$cmdline_file" | sed -n 's/^hex=//p')"
+check "measure: the embedded helper agrees with the build-host one" \
+  "$measure_hex" "$embedded_hex"
 check "package: ships no cmdline.txt" "absent" \
   "$([[ -e "$pkg/cmdline.txt" ]] && echo present || echo absent)"
 
@@ -929,7 +942,9 @@ check_contains "create script: fills cc_init_data from the host at apply time" \
 check_absent "create script: copies only cc_init_data, not a Pod's whole annotations" \
   'jsonpath=.{.metadata.annotations}' "$(cat "$pkg/test/create-test-pod.sh")"
 check_contains "create script: verifies the measurement of the running VM" \
-  'measure.py" digest' "$(cat "$pkg/test/create-test-pod.sh")"
+  '"$taa_py" digest' "$(cat "$pkg/test/create-test-pod.sh")"
+check_absent "create script: calls no shipped measurement script" \
+  'pkg_dir/measure.py' "$(cat "$pkg/test/create-test-pod.sh")"
 check_contains "delete script: deletes the test Pod" \
   'kubectl delete pod' "$(cat "$pkg/test/delete-test-pod.sh")"
 check_contains "install.sh: verifies the package first" 'sha256sum -c --quiet SHA256SUMS' "$(cat "$pkg/install.sh")"
