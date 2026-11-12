@@ -17,13 +17,31 @@ for cmd in kubectl python3; do
   fi
 done
 
-# package-info also refuses a moved package, so a rename cannot silently make
-# this script delete a Pod that belongs to another package.
-if ! pkg_settings="$(python3 "$pkg_dir/render.py" package-info --dir "$pkg_dir")"; then
+# The Pod name comes from the package's own manifest. Reading it here rather
+# than from a rendered settings block keeps this script to the one thing it
+# needs, and a rename cannot silently make it delete another package's Pod.
+tmp_pod_name="$(mktemp /tmp/taa-pod.XXXXXX.py)"
+trap 'rm -f "$tmp_pod_name"' EXIT
+cat > "$tmp_pod_name" <<'TAA_PY'
+import json, sys
+from pathlib import Path
+
+manifest = Path(sys.argv[1]) / "test" / "test-pod.yaml"
+try:
+    pod = json.loads(manifest.read_text())
+except FileNotFoundError:
+    raise SystemExit(f"package is incomplete, missing {manifest}")
+except json.JSONDecodeError as exc:
+    raise SystemExit(f"{manifest}: not valid JSON ({exc})")
+name = pod.get("metadata", {}).get("name", "")
+if not name:
+    raise SystemExit(f"{manifest}: metadata.name is missing")
+print(name)
+TAA_PY
+if ! TEST_POD_NAME="$(python3 "$tmp_pod_name" "$pkg_dir")"; then
   echo "error: 交付包自校验失败" >&2
   exit 1
 fi
-eval "$pkg_settings"
 
 if ! kubectl get pod "$TEST_POD_NAME" >/dev/null 2>&1; then
   echo "测试 Pod 不存在，无需删除: $TEST_POD_NAME"

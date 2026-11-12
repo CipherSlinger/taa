@@ -1797,9 +1797,10 @@ render_package() {
     --out-dir "$out_dir/k8s" \
     --pod-dir "$out_dir/test"
 
-  # The package is self-contained: the installer, its reverse, the merge
-  # helpers and the measurement helper travel with it.
-  cp "$RENDER_DIR/render.py" "$out_dir/render.py"
+  # The package is self-contained: the installer, its reverse and the
+  # measurement helper travel with it. The renderer does not: each script reads
+  # the package's own files with a block embedded in it, so the package carries
+  # one fewer file that must survive the trip.
   cp "$RENDER_DIR/measure.py" "$out_dir/measure.py"
   cp "$RENDER_DIR/install.sh" "$out_dir/install.sh"
   cp "$RENDER_DIR/uninstall.sh" "$out_dir/uninstall.sh"
@@ -1929,9 +1930,10 @@ TAA 运行在 Kata CSV2 机密 VM 的 initrd 里，自证通过后才放行 kata
   **部署身份就写在 \`test-pod.yaml\` 的 \`kernel_params\` 注解里**（见下文）。
   CoCo 客户机由 CDH 自己拉镜像，注册表 CA 经 \`cc_init_data\` 注解投递，而这个值逐宿主
   不同，所以包里不带它：创建脚本在宿主机上读一条填进去
-- \`install.sh\` / \`uninstall.sh\` — 安装与卸载脚本（见下文）；\`render.py\` —
-  两个脚本共用的 Kata 配置与 containerd drop-in 渲染器；
-  \`measure.py\` — test/create-test-pod.sh 用的 MEASUREMENT 计算器
+- \`install.sh\` / \`uninstall.sh\` — 安装与卸载脚本（见下文）。它们各自内嵌读取本包的
+  一小段 Python（解析 handler 片段、Kata 配置、Pod 清单与 containerd drop-in），
+  包里不再有单独的渲染器文件；\`measure.py\` — test/create-test-pod.sh 用的
+  MEASUREMENT 计算器
 $(if [[ -n "$TEST_IMAGE_ARCHIVE" ]]; then printf -- '- `%s/` — 测试 Pod 镜像的 `docker save` 归档。CoCo guest 由 CDH 自己从 registry 拉镜像，宿主机 docker 不在那条路径上，所以 install.sh 会先查 registry，缺这个 tag 时导入归档并推送过去\n' "$PACKAGE_IMAGE_SUBDIR"; fi)
 - \`SHA256SUMS\` — 不可变文件的校验和（\`test/test-pod.yaml\` 不在其中：它是运维要改
   的文件，部署身份就在里面）

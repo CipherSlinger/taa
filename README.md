@@ -505,6 +505,33 @@ The CSV2 initrd runs `configs/taa-production.json` as well; it no longer has a t
 
 The initrd path builds one package per role, selected by a `taa-train` / `taa-infer` / `taa-analysis` / `taa-train-dcu` / `taa-infer-dcu` argument (default `taa-train`). The role fixes the baked `CONTRACT_TYPE` (1/2/3), the runtime handler, the delivery directory on the host and the test Pod name, so all of them can be installed side by side. Only `taa-train` and `taa-train-dcu` carry the semgrep payload; the others inject the shared template with `codeAudit.codeScan.engine` rewritten to `regex`, matching the role's audit being off — a package whose config named an engine it cannot run would log a fallback on every boot.
 
+A delivered package looks like this (`taa-train` shown; the other roles differ only in the files the renderer writes and the values inside them):
+
+```text
+<package dir>/
+├── kata-config.toml         Kata hypervisor config the runtime handler's ConfigPath names
+├── bundle/
+│   ├── vmlinuz              guest kernel QEMU boots
+│   ├── initramfs.img        the initrd that carries TAA
+│   └── OVMF.fd              firmware
+├── config/
+│   └── containerd-runtime-handler.toml   this package's handler fragment (for review)
+├── k8s/
+│   └── runtimeclass.yaml    RuntimeClass selecting the handler; installed by install.sh
+├── test/
+│   ├── test-pod.yaml        test Pod; the deployment identity is its kernel_params annotation
+│   ├── create-test-pod.sh   creates the Pod, waits for Ready, checks initrd and MEASUREMENT
+│   └── delete-test-pod.sh   deletes the Pod
+├── install.sh               installs the handler and the RuntimeClass (idempotent, --dry-run)
+├── uninstall.sh             removes this package's handler, keeps other packages'
+├── measure.py               MEASUREMENT calculator used by create-test-pod.sh
+├── README.md
+├── SHA256SUMS               checksums of the immutable files (test-pod.yaml excluded)
+└── image/                   optional: docker-save archive of the test image, pushed to the registry
+```
+
+Nothing in the package renders: `install.sh`, `uninstall.sh` and the two test scripts each embed the small Python reader they need, so there is no standalone renderer file to go missing in transit. The `zz-taa-runtimes.toml` snapshot the installer writes is shared and lives one directory above the package, not inside it.
+
 The two `-dcu` roles are for the Hygon DCU full-encryption runtime, not a CPU-only guest: they ship the DCU guest kernel, load the out-of-tree `hycu` driver from the initrd (`taa.taa_modules=hycu` on the kernel command line, after `taa-init` mounts `/proc`), use the `kata-qemu-hygon-dcu-csv2` runtime class and request `hygon.cn/k100_ai` in the test Pod. The driver tree, matching firmware and `kmod` are not on the host as files — they are extracted from the DCU guest image by `build-initrd.sh fetch-base` into `deploy/guest-build/base/dcu-payload/`, so a `-dcu` role needs one `fetch-base` run before its first build. Loading `hycu` from the initrd is new and only proven once a DCU Pod boots; `taa-init: module loaded: hycu` on the guest console is the first thing to read if `hy-smi` fails.
 
 All three templates ship `platform.publicKey` as an empty string rather than a real key: the key is deployment-specific, and an empty value makes TAA refuse to start (see [SM2 Envelope Key Material](#sm2-envelope-key-material)) instead of silently exchanging plaintext with a platform that expects an envelope. The JSON templates are parsed by `encoding/json`, which does not accept comments, so the field is documented here rather than inline in the files.

@@ -139,7 +139,7 @@ env "${common_env[@]}" DIST_DIR="$pkg" REMOTE_HOST=invalid.invalid "$BUILD" rend
 for f in kata-config.toml config/containerd-runtime-handler.toml \
          k8s/runtimeclass.yaml test/test-pod.yaml \
          test/create-test-pod.sh test/delete-test-pod.sh SHA256SUMS \
-         install.sh render.py measure.py README.md \
+         install.sh uninstall.sh measure.py README.md \
          bundle/initramfs.img bundle/vmlinuz bundle/OVMF.fd; do
   if [[ -f "$pkg/$f" ]]; then
     echo "ok   render: produced $f"
@@ -148,6 +148,8 @@ for f in kata-config.toml config/containerd-runtime-handler.toml \
     failures=$((failures + 1))
   fi
 done
+check "render: ships no separate renderer" "absent" \
+  "$([[ -e "$pkg/render.py" ]] && echo present || echo absent)"
 check "render: never contacted a host" "absent" \
   "$([[ -e "$tmp_dir/fakebin/ssh.called" || -e "$tmp_dir/fakebin/scp.called" ]] && echo called || echo absent)"
 check "render: ships no per-package drop-in (it is shared beside the packages)" "absent" \
@@ -543,13 +545,20 @@ PY
 echo "ok   k8s: unknown node is omitted; the identity annotation is the only one"
 
 # ── 5. package self-description ────────────────────────────────────────────
-# The package carries no parameter sheet: install.sh asks render.py to read the
-# handler, the ConfigPath and the boot assets back out of the files themselves.
+# The package carries no parameter sheet and no renderer: install.sh carries a
+# small reader of its own, which the block below is extracted from and run, so
+# the test exercises exactly what the script does on the host.
 # Render one where it will live, so the absolute paths resolve.
 self_pkg="$tmp_dir/self/pkg"
 env "${common_env[@]}" REMOTE_PACKAGE_DIR="$self_pkg" DIST_DIR="$self_pkg" \
   REMOTE_HOST=invalid.invalid "$BUILD" render >/dev/null
-info="$(python3 "$self_pkg/render.py" package-info --dir "$self_pkg")"
+# The package ships no renderer: the host scripts carry the reading they need.
+# Extract install.sh's block and run it, which is exactly what install.sh does.
+extract_py() {
+  sed -n "/^cat > \"\$taa_py\" <<'TAA_PY'$/,/^TAA_PY$/p" "$1" | sed '1d;$d' > "$2"
+}
+extract_py "$self_pkg/install.sh" "$tmp_dir/self-info.py"
+info="$(python3 "$tmp_dir/self-info.py" info "$self_pkg")"
 check_contains "package-info: reports the runtime handler" "RUNTIME_HANDLER=kata-qemu-nondcu-csv2-taa-train" "$info"
 check_contains "package-info: reports the runtime type" \
   "RUNTIME_TYPE=io.containerd.kata-qemu-csv2.v2" "$info"
@@ -559,19 +568,23 @@ check_contains "package-info: derives the ConfigPath" \
   "REMOTE_KATA_CONFIG=$self_pkg/kata-config.toml" "$info"
 check_contains "package-info: derives the hypervisor section" \
   "KATA_HYPERVISOR_SECTION=hypervisor.qemu" "$info"
-check_contains "package-info: derives the Pod name" "TEST_POD_NAME=test-kata-csv2-taa" "$info"
 check_contains "package-info: derives the node name" "TEST_NODE_NAME=fixture-node" "$info"
-check_contains "package-info: locates the test Pod under test/" \
-  "PACKAGE_TEST_POD=test/test-pod.yaml" "$info"
 check_contains "package-info: locates the RuntimeClass under k8s/" \
   "PACKAGE_RUNTIMECLASS=k8s/runtimeclass.yaml" "$info"
+# The Pod name and location are read by the script that acts on the Pod, not by
+# the installer, so they are asserted against create-test-pod.sh's own reader.
+extract_py "$self_pkg/test/create-test-pod.sh" "$tmp_dir/self-create-info.py"
+pod_info="$(python3 "$tmp_dir/self-create-info.py" info "$self_pkg")"
+check_contains "package-info: derives the Pod name" "TEST_POD_NAME=test-kata-csv2-taa" "$pod_info"
+check_contains "package-info: locates the test Pod under test/" \
+  "PACKAGE_TEST_POD=test/test-pod.yaml" "$pod_info"
 
 # A package moved after rendering names files that are no longer beside it. That
 # is the check the manifest used to carry, now made from the package's own text.
 moved_pkg="$tmp_dir/moved/pkg"
 mkdir -p "$tmp_dir/moved"
 mv "$self_pkg" "$moved_pkg"
-out="$(python3 "$moved_pkg/render.py" package-info --dir "$moved_pkg" 2>&1 || true)"
+out="$(python3 "$tmp_dir/self-info.py" info "$moved_pkg" 2>&1 || true)"
 check_contains "package-info: refuses a moved package" "does not point at" "$out"
 
 # ── 5a. instance role ──────────────────────────────────────────────────────
@@ -829,7 +842,8 @@ else
 fi
 check_contains "checksums: the edit reached the Pod annotation" \
   'taa.docker_id=host-edited' \
-  "$(python3 "$edited_pkg/render.py" pod-kernel-params --pod "$edited_pkg/test/test-pod.yaml")"
+  "$(extract_py "$edited_pkg/test/create-test-pod.sh" "$tmp_dir/create-py.py"; \
+     python3 "$tmp_dir/create-py.py" kernel-params "$edited_pkg/test/test-pod.yaml")"
 
 tampered_kata="$tmp_dir/tampered-kata"
 cp -a "$pkg" "$tampered_kata"
@@ -879,7 +893,11 @@ else
 fi
 check_absent "install.sh: carries no parameter sheet" 'manifest.env' "$(cat "$pkg/install.sh")"
 check_contains "install.sh: derives its settings from the package" \
-  'package-info --dir' "$(cat "$pkg/install.sh")"
+  '"$taa_py" info "$pkg_dir"' "$(cat "$pkg/install.sh")"
+check_contains "install.sh: carries its reader inline" \
+  "cat > \"\$taa_py\" <<'TAA_PY'" "$(cat "$pkg/install.sh")"
+check_absent "install.sh: calls no shipped renderer" \
+  'render.py' "$(cat "$pkg/install.sh")"
 check_contains "install.sh: refuses a package that does not describe itself" \
   '交付包自校验失败' "$(cat "$pkg/install.sh")"
 check_contains "create script: recomputes MEASUREMENT from the running QEMU" \
@@ -893,7 +911,7 @@ check_contains "install.sh: prints the Pod identity annotation for consumers" \
 check_absent "install.sh: carries no editable identity file" \
   'config/env.txt' "$(cat "$pkg/install.sh")"
 check_contains "create script: includes the Pod annotation in the expectation" \
-  'pod-kernel-params' "$(cat "$pkg/test/create-test-pod.sh")"
+  'kernel-params "$pod_manifest"' "$(cat "$pkg/test/create-test-pod.sh")"
 check_contains "create script: rebuilds the expectation from the current config" \
   '预期 MEASUREMENT (hex)' "$(cat "$pkg/test/create-test-pod.sh")"
 check_absent "install.sh: no longer creates the test Pod" \
