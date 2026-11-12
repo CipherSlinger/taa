@@ -582,7 +582,7 @@ def package_info(pkg_dir):
     """
     pkg = Path(pkg_dir).resolve()
     fragment = pkg / "config" / "containerd-runtime-handler.toml"
-    kata_config = pkg / "config" / "kata-config.toml"
+    kata_config = pkg / "kata-config.toml"
     pod_file = pkg / "test" / "test-pod.yaml"
     runtimeclass_file = pkg / "k8s" / "runtimeclass.yaml"
     bundle = pkg / "bundle"

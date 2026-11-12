@@ -469,7 +469,7 @@ REMOTE_BUNDLE_DIR="$REMOTE_PACKAGE_DIR/$PACKAGE_BUNDLE_SUBDIR"
 # so the package is the host's only copy and install.sh installs nothing under
 # /etc. Derived, never overridable: package_info resolves ConfigPath back to this
 # exact path, so a package rendered with any other value could not install.
-PACKAGE_KATA_CONFIG="config/kata-config.toml"
+PACKAGE_KATA_CONFIG="kata-config.toml"
 PACKAGE_IMAGE_SUBDIR="image"
 REMOTE_KATA_CONFIG="$REMOTE_PACKAGE_DIR/$PACKAGE_KATA_CONFIG"
 CONTAINERD_CONFIG="${CONTAINERD_CONFIG:-/etc/containerd/config.toml}"
@@ -1821,7 +1821,7 @@ render_package() {
     local -a smp_args=()
     [[ -n "$MEASURE_SMP" ]] && smp_args=(--smp "$MEASURE_SMP")
     measure_cmdline="$(python3 "$RENDER_DIR/measure.py" cmdline \
-      --config "$out_dir/config/kata-config.toml" \
+      --config "$out_dir/$PACKAGE_KATA_CONFIG" \
       --section "$KATA_HYPERVISOR_SECTION" \
       "${smp_args[@]}")"
     # Kata appends the Pod's kernel_params annotation to the config's parameters,

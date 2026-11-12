@@ -136,7 +136,7 @@ identity_params="taa.platform_ip=172.16.10.116:18080 taa.docker_id=fixture-docke
 pkg="$tmp_dir/a/pkg"
 env "${common_env[@]}" DIST_DIR="$pkg" REMOTE_HOST=invalid.invalid "$BUILD" render >/dev/null
 
-for f in config/kata-config.toml config/containerd-runtime-handler.toml \
+for f in kata-config.toml config/containerd-runtime-handler.toml \
          k8s/runtimeclass.yaml test/test-pod.yaml \
          test/create-test-pod.sh test/delete-test-pod.sh SHA256SUMS \
          install.sh render.py measure.py README.md \
@@ -159,7 +159,7 @@ check "bundle: ships the kernel" "fixture-kernel" "$(cat "$pkg/bundle/vmlinuz")"
 check "bundle: ships OVMF" "fixture-ovmf" "$(cat "$pkg/bundle/OVMF.fd")"
 
 # ── 2. Kata config rewrite ─────────────────────────────────────────────────
-kata="$(cat "$pkg/config/kata-config.toml")"
+kata="$(cat "$pkg/kata-config.toml")"
 check_contains "kata: the image line is commented out" '# image = "/usr/share/kata-containers/kata-containers.img"' "$kata"
 check_absent "kata: no active image remains" $'\nimage = ' "$kata"
 check_contains "kata: kernel points at the bundle" "kernel = \"$bundle/vmlinuz\"" "$kata"
@@ -167,14 +167,14 @@ check_contains "kata: initrd points at the bundle" "initrd = \"$bundle/initramfs
 check_contains "kata: firmware points at the bundle" "firmware = \"$bundle/OVMF.fd\"" "$kata"
 check_contains "kata: rdinit is first and stale init= is gone" \
   "kernel_params = \"rdinit=/usr/local/bin/taa-init console=ttyS0 quiet\"" "$kata"
-check "kata: rdinit appears exactly once" "1" "$(grep -c 'rdinit=/usr/local/bin/taa-init' "$pkg/config/kata-config.toml")"
+check "kata: rdinit appears exactly once" "1" "$(grep -c 'rdinit=/usr/local/bin/taa-init' "$pkg/kata-config.toml")"
 check_contains "kata: other sections are untouched" 'kernel_params = "must not be touched"' "$kata"
 check_contains "kata: other keys in the section survive" 'burst = 10' "$kata"
 
 # Rendering an already-rendered config is the realistic way to duplicate tokens.
 # --param replaces a token with the same key instead of appending a second one,
 # so a re-render cannot leave two values for the guest to choose between.
-python3 "$RENDER" kata-config --template "$pkg/config/kata-config.toml" \
+python3 "$RENDER" kata-config --template "$pkg/kata-config.toml" \
   --section hypervisor.qemu --bundle-dir "$bundle" \
   --param taa.platform_ip=10.0.0.1 --param taa.taa_addr=0.0.0.0:6001 \
   --out "$tmp_dir/kata-again.toml" >/dev/null
@@ -196,7 +196,7 @@ check_absent "kata: a re-render drops the old value" 'taa.platform_ip=10.0.0.1' 
 # its writable root at about half of it and the CDH unpacks the image there. The
 # override has to replace the template's value (never add a second key) and has
 # to appear even when the template has none.
-python3 "$RENDER" kata-config --template "$pkg/config/kata-config.toml" \
+python3 "$RENDER" kata-config --template "$pkg/kata-config.toml" \
   --section hypervisor.qemu --bundle-dir "$bundle" \
   --memory-mib 23552 --out "$tmp_dir/kata-mem.toml" >/dev/null
 check "memory: the override replaces the template value" "23552" \
@@ -204,7 +204,7 @@ check "memory: the override replaces the template value" "23552" \
 check "memory: exactly one key survives" "1" \
   "$(grep -c '^default_memory = ' "$tmp_dir/kata-mem.toml")"
 
-sed 's/^default_memory = .*/# default_memory removed/' "$pkg/config/kata-config.toml" > "$tmp_dir/kata-no-mem.toml"
+sed 's/^default_memory = .*/# default_memory removed/' "$pkg/kata-config.toml" > "$tmp_dir/kata-no-mem.toml"
 python3 "$RENDER" kata-config --template "$tmp_dir/kata-no-mem.toml" \
   --section hypervisor.qemu --bundle-dir "$bundle" \
   --memory-mib 23552 --out "$tmp_dir/kata-mem-added.toml" >/dev/null
@@ -220,7 +220,7 @@ check "memory: a template without the key still gets the override" "23552" \
 # instead of silently splitting the command line.
 pod_file="$pkg/test/test-pod.yaml"
 check "identity: the Kata config carries no taa.* token" "0" \
-  "$(grep -o 'taa\.[a-z0-9_]*=' "$pkg/config/kata-config.toml" | wc -l)"
+  "$(grep -o 'taa\.[a-z0-9_]*=' "$pkg/kata-config.toml" | wc -l)"
 check "identity: the test Pod carries exactly the eight tokens" "$identity_params" \
   "$(python3 "$RENDER" pod-kernel-params --pod "$pod_file")"
 
@@ -295,7 +295,7 @@ image_pkg="$tmp_dir/image-pkg"
 # package to ask package-info about.
 env "${common_env[@]}" DIST_DIR="$image_pkg" REMOTE_HOST=invalid.invalid \
   REMOTE_PACKAGE_DIR="$image_pkg" REMOTE_BUNDLE_DIR="$image_pkg/bundle" \
-  REMOTE_KATA_CONFIG="$image_pkg/config/kata-config.toml" \
+  REMOTE_KATA_CONFIG="$image_pkg/kata-config.toml" \
   TEST_IMAGE=172.16.10.178:31313/taa-env:fixture-tag \
   TEST_IMAGE_ARCHIVE="$image_archive" "$BUILD" render >/dev/null
 
@@ -316,7 +316,7 @@ check "image: package-info reports the image reference" "172.16.10.178:31313/taa
 noimg_pkg="$tmp_dir/noimg-pkg"
 env "${common_env[@]}" DIST_DIR="$noimg_pkg" REMOTE_HOST=invalid.invalid \
   REMOTE_PACKAGE_DIR="$noimg_pkg" REMOTE_BUNDLE_DIR="$noimg_pkg/bundle" \
-  REMOTE_KATA_CONFIG="$noimg_pkg/config/kata-config.toml" \
+  REMOTE_KATA_CONFIG="$noimg_pkg/kata-config.toml" \
   "$BUILD" render >/dev/null
 check "image: no archive means no image/ directory" "absent" \
   "$([[ -d "$noimg_pkg/image" ]] && echo present || echo absent)"
@@ -432,7 +432,7 @@ check "dropin: skips TAA-owned files when choosing the base" "$dconf/99-nvidia.t
 dropin_args=(--config "$dropin_dir/main.toml" --exclude-prefix zz-taa
   --handler fixture-handler --runtime-type io.containerd.kata-qemu-csv2.v2
   --runtime-path /opt/kata/bin/containerd-shim-kata-v2 --snapshotter nydus
-  --kata-config /root/taa-images/pkg/config/kata-config.toml)
+  --kata-config /root/taa-images/pkg/kata-config.toml)
 python3 "$RENDER" containerd-dropin "${dropin_args[@]}" \
   --carry "$dconf/zz-taa-runtimes.toml" --out "$dropin_dir/first.toml"
 dropin="$(cat "$dropin_dir/first.toml")"
@@ -446,7 +446,7 @@ check "dropin: does not snapshot the whole main config" "0" \
 check "dropin: defines its own handler exactly once" "1" \
   "$(grep -cE 'runtimes\."?fixture-handler"?\]$' "$dropin_dir/first.toml" || true)"
 check_contains "dropin: writes the new ConfigPath" \
-  'ConfigPath = "/root/taa-images/pkg/config/kata-config.toml"' "$dropin"
+  'ConfigPath = "/root/taa-images/pkg/kata-config.toml"' "$dropin"
 check_absent "dropin: drops the stale ConfigPath" \
   'ConfigPath = "/tmp/old-path.toml"' "$dropin"
 check_contains "dropin: explains why it is a snapshot" 'Seeded once from' "$dropin"
@@ -556,7 +556,7 @@ check_contains "package-info: reports the runtime type" \
 check_contains "package-info: reports the snapshotter" "SNAPSHOTTER=nydus" "$info"
 check_contains "package-info: derives the bundle directory" "REMOTE_BUNDLE_DIR=$self_pkg/bundle" "$info"
 check_contains "package-info: derives the ConfigPath" \
-  "REMOTE_KATA_CONFIG=$self_pkg/config/kata-config.toml" "$info"
+  "REMOTE_KATA_CONFIG=$self_pkg/kata-config.toml" "$info"
 check_contains "package-info: derives the hypervisor section" \
   "KATA_HYPERVISOR_SECTION=hypervisor.qemu" "$info"
 check_contains "package-info: derives the Pod name" "TEST_POD_NAME=test-kata-csv2-taa" "$info"
@@ -682,7 +682,7 @@ check_contains "dcu: the guest is told to load hycu" 'taa.taa_modules=hycu' "$dc
 check_contains "dcu: the module rides with the other identity tokens" \
   "taa.taa_addr=0.0.0.0:6001 taa.taa_modules=hycu" "$dcu_identity"
 check "dcu: guest RAM matches the other large-image role" "20480" \
-  "$(sed -n 's/^default_memory = //p' "$dcu_pkg/config/kata-config.toml")"
+  "$(sed -n 's/^default_memory = //p' "$dcu_pkg/kata-config.toml")"
 # The card has to be requested and limited; the extended resource is scheduled
 # from requests, and a request without the matching limit is rejected.
 python3 - "$dcu_pkg/test/test-pod.yaml" <<'PY'
@@ -705,7 +705,7 @@ echo "ok   dcu: the test Pod requests and is limited to the card"
 # an extended resource it never uses would keep the Pod Pending on nodes
 # without a DCU.
 check_absent "dcu: the CPU package names no module" 'taa.taa_modules=' \
-  "$(cat "$pkg/config/kata-config.toml")"
+  "$(cat "$pkg/kata-config.toml")"
 check_absent "dcu: the CPU test Pod requests no card" 'hygon.cn/k100_ai' \
   "$(cat "$pkg/test/test-pod.yaml")"
 
@@ -713,7 +713,7 @@ check_absent "dcu: the CPU test Pod requests no card" 'hygon.cn/k100_ai' \
 MEASURE="$SCRIPT_DIR/render/measure.py"
 expected_cmdline="tsc=reliable no_timer_check rcupdate.rcu_expedited=1 i8042.direct=1 i8042.dumbkbd=1 i8042.nopnp=1 i8042.noaux=1 noreplace-smp reboot=k cryptomgr.notests net.ifnames=0 pci=lastbus=0 console=hvc0 console=hvc1 debug panic=1 nr_cpus=3 selinux=0 scsi_mod.scan=none agent.log=debug agent.debug_console agent.debug_console_vport=1026 rdinit=/usr/local/bin/taa-init console=ttyS0 quiet $identity_params"
 rendered_cmdline="$(python3 "$MEASURE" cmdline \
-  --config "$pkg/config/kata-config.toml" \
+  --config "$pkg/kata-config.toml" \
   --section hypervisor.qemu)"
 # Kata appends the Pod's kernel_params annotation to the config's parameters,
 # so the measured -append is the config-derived line plus the identity.
@@ -833,7 +833,7 @@ check_contains "checksums: the edit reached the Pod annotation" \
 
 tampered_kata="$tmp_dir/tampered-kata"
 cp -a "$pkg" "$tampered_kata"
-printf '# tampered\n' >> "$tampered_kata/config/kata-config.toml"
+printf '# tampered\n' >> "$tampered_kata/kata-config.toml"
 if (cd "$tampered_kata" && sha256sum -c --quiet SHA256SUMS) >/dev/null 2>&1; then
   echo "FAIL checksums: the Kata config is supposed to be pinned" >&2
   failures=$((failures + 1))
@@ -953,7 +953,7 @@ check_contains "install.sh: supports dry-run" '--dry-run' "$(cat "$pkg/install.s
 drv_pkg="$tmp_dir/drv/pkg"
 env "${common_env[@]}" DIST_DIR="$drv_pkg" REMOTE_HOST=invalid.invalid \
   "$BUILD" render >/dev/null
-if [[ -f "$drv_pkg/config/kata-config.toml" && -f "$drv_pkg/install.sh" ]]; then
+if [[ -f "$drv_pkg/kata-config.toml" && -f "$drv_pkg/install.sh" ]]; then
   echo "ok   render reaches the renderer without a host preflight"
 else
   echo "FAIL render did not produce a package" >&2

@@ -243,7 +243,7 @@ cd /home/hjy/taa/deploy/guest-build
 产物在 `dist/kata-qemu-nondcu-csv2-taa-train/`：
 
 - `bundle/initramfs.img`、`bundle/vmlinuz`、`bundle/OVMF.fd` — QEMU 实际启动的三份文件
-- `config/kata-config.toml` — 改写后的 Kata hypervisor 配置（指向包内 bundle）
+- `kata-config.toml` — 改写后的 Kata hypervisor 配置（指向包内 bundle）
 - `config/containerd-runtime-handler.toml` — 本包 handler 的片段（供审阅）
 - 完整的 runtimes 快照不在包内：所有 TAA 交付包共用包目录上一级的
   `zz-taa-runtimes.toml`（默认 `/root/taa-images/zz-taa-runtimes.toml`，可用
@@ -267,7 +267,7 @@ cd /home/hjy/taa/deploy/guest-build
 
 包里没有参数清单：`install.sh` 在宿主上调用 `render.py package-info`，从
 `config/containerd-runtime-handler.toml` 读出 handler 与 `ConfigPath`，从
-`config/kata-config.toml` 读出 hypervisor 段与三份启动文件路径，并校验这些绝对路径
+`kata-config.toml` 读出 hypervisor 段与三份启动文件路径，并校验这些绝对路径
 确实指向本目录内的文件。包绑定的是渲染时的绝对路径 `REMOTE_PACKAGE_DIR`，不是宿主
 本身：换宿主时只要整包放到同一个绝对路径就直接可用；放到别的路径则 `install.sh`
 拒绝安装并提示重新渲染。
@@ -290,9 +290,10 @@ cd /home/hjy/taa/deploy/guest-build
   cmdline 是 QEMU 实际 `-append` 的字节（末尾换行替换为 NUL）
 - 输入：`out/` 下的 initrd 与 `base/` 下的 OVMF/kernel；任一缺失时 `render` 直接失败，
   不会产出一个装不起来的包（先跑 `build` / `fetch-base`）
-- cmdline 由渲染后的 Kata 配置推导（`kernel_params`、`enable_debug`、
-  `debug_console_enabled`、`default_vcpus`）；`nr_cpus` 和调试参数最终由 Kata 版本决定，
-  所以安装后以 `/proc/<qemu>/cmdline` 里的实际值为准重算（见 §5）
+- cmdline 由渲染后的 Kata 配置（`kernel_params`、`enable_debug`、
+  `debug_console_enabled`、`default_vcpus`）**加上测试 Pod 的 `kernel_params` 注解**
+  推导，因为 Kata 会把该注解追加到配置的参数之后；`nr_cpus` 和调试参数最终由 Kata
+  版本决定，所以安装后以 `/proc/<qemu>/cmdline` 里的实际值为准重算（见 §5）
 - 需要手工指定时可用 `MEASURE_SMP`、`MEASURE_APPEND` 覆盖
 
 包约 165 MB（initrd 占几乎全部）。它既是交付物也是运行期依赖：`install.sh` 从包里
@@ -318,7 +319,7 @@ RUNTIME_HANDLER="${RUNTIME_HANDLER}" \
 1. 校验包内 `SHA256SUMS`，并用 `render.py package-info` 自校验：`ConfigPath` 必须
    指回包内配置，Kata 配置里的 `kernel`/`initrd`/`firmware` 必须就是包内 `bundle/`
    下的三份文件
-2. 使用包内的 Kata 配置 `$REMOTE_PACKAGE_DIR/config/kata-config.toml`
+2. 使用包内的 Kata 配置 `$REMOTE_PACKAGE_DIR/kata-config.toml`
    （它已经在 `render` 时指向同一包内的 `bundle/`），不再往 `/etc` 装第二份
 3. 在 `containerd` 中新增 runtime handler：
    - `kata-qemu-nondcu-csv2-taa-train`，其 `ConfigPath` 指向上面那份包内配置
@@ -334,9 +335,10 @@ install.sh 到此结束，**不再创建测试 Pod**（装包不等于起一台 
    `cc_init_data` 时，先在本机读一条填进 Pod 再 apply —— 不需要手工准备这个注解
 2. 等待 Pod Ready；超时会打印 Pod 状态与 `Events:` 再退出
 3. 校验 QEMU 是否使用了包内的 initrd
-4. 先按当前 `config/kata-config.toml` 在本机重算预期 MEASUREMENT，再从 QEMU 的
-   `/proc/<pid>/cmdline` 取实际 `-append` 重算，两者对照（不一致只告警，并打印
-   实际 cmdline）。包里不存构建期的记录值：唯一可变输入就是这份配置
+4. 先按当前 `kata-config.toml` 加上测试 Pod 的 `kernel_params` 注解在本机重算
+   预期 MEASUREMENT，再从 QEMU 的 `/proc/<pid>/cmdline` 取实际 `-append` 重算，
+   两者对照（不一致只告警，并打印实际 cmdline）。包里不存构建期的记录值：可变
+   输入就是这份配置和 Pod 注解
 
 删除测试 Pod 用 `test/delete-test-pod.sh`；它只删 Pod，RuntimeClass 和 handler 保留
 （那是 runtime 的一部分，所有使用该 handler 的 Pod 都要）。
@@ -386,7 +388,7 @@ TEST_NODE_NAME="${TEST_NODE_NAME}" \
 # 包内 Kata 配置里必须出现新 initrd，且路径落在同一交付包内
 pkg=/root/taa-images/package-train
 sudo grep -nE '^(kernel|initrd|firmware|kernel_params)\s*=' \
-  "$pkg/config/kata-config.toml"
+  "$pkg/kata-config.toml"
 
 # containerd 里必须有 runtime handler
 sudo grep -nF '[plugins."io.containerd.grpc.v1.cri".containerd.runtimes."kata-qemu-nondcu-csv2-taa-train"]' \
@@ -434,7 +436,7 @@ python3 "$pkg/measure.py" digest \
 - `REMOTE_HOST=172.16.10.178`
 - `REMOTE_PACKAGE_DIR=/root/taa-images/package-train`（整包安装位置）
 - `REMOTE_BUNDLE_DIR`：**派生值**，恒为 `$REMOTE_PACKAGE_DIR/bundle`，不要单独设置
-- `REMOTE_KATA_CONFIG`：**派生值**，恒为 `$REMOTE_PACKAGE_DIR/config/kata-config.toml`
+- `REMOTE_KATA_CONFIG`：**派生值**，恒为 `$REMOTE_PACKAGE_DIR/kata-config.toml`
 - `RUNTIME_HANDLER=kata-qemu-nondcu-csv2-taa-train`
 - `DIST_DIR=dist/kata-qemu-nondcu-csv2-taa-train`（`render` 的固定输出目录）
 - `KATA_CONFIG_TEMPLATE=base/configuration-qemu-csv2.toml`（宿主权威模板，`fetch-base` 拉取）

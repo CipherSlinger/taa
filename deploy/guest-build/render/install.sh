@@ -21,7 +21,7 @@
 #
 # Every setting is derived from the package itself -- the runtime handler and
 # its ConfigPath from config/containerd-runtime-handler.toml, the boot assets
-# from config/kata-config.toml. render.py package-info reads both and refuses a
+# from kata-config.toml. render.py package-info reads both and refuses a
 # package whose absolute paths do not name its own files, so a moved or
 # half-assembled directory fails before anything is touched.
 #
