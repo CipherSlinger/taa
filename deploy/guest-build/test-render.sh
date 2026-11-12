@@ -524,6 +524,10 @@ if spec.get("nodeName") != "fixture-node":
 container = spec.get("containers", [{}])[0]
 if container.get("image") != "172.16.10.178:31313/taa-env:v1-train-infer":
     problems.append(f"image: {container.get('image')}")
+# The test Pod is only a keep-alive for the VM the boot checks inspect, so its
+# command must not end on its own.
+if "sleep infinity" not in " ".join(container.get("command") or []):
+    problems.append(f"command: {container.get('command')}")
 annotations = pod.get("metadata", {}).get("annotations", {})
 if annotations.get("io.katacontainers.config.hypervisor.cc_init_data") != "abc+/=":
     problems.append(f"annotations: {annotations}")

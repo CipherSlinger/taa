@@ -761,7 +761,9 @@ def render_k8s(handler, pod_name, node_name, image, annotations_json, out_dir,
     container = {
         "name": "test",
         "image": image,
-        "command": ["sh", "-c", "echo hello from kata csv2 taa guest; sleep 3600"],
+        # Keep the test Pod alive until it is deleted: the boot checks need the VM
+        # running, and a bounded sleep would tear the sandbox down on its own.
+        "command": ["sh", "-c", "echo hello from kata csv2 taa guest; exec sleep infinity"],
     }
     # A numeric uid is not a preference here, it is what lets the Pod start at
     # all under the nydus guest-pull snapshotter: containerd resolves a *named*
