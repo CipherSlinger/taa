@@ -1913,13 +1913,6 @@ TAA 运行在 Kata CSV2 机密 VM 的 initrd 里，自证通过后才放行 kata
   的 ConfigPath 就指向它，安装脚本也从这里读安装所需的全部参数
 - \`config/containerd-runtime-handler.toml\` — 本包 handler 的片段（供审阅，安装脚本
   从这里解析 handler 名、runtime、snapshotter 与 ConfigPath）
-- \`config/zz-taa-runtimes.toml\` — **首次安装时生成**的完整快照：宿主
-  \`/etc/containerd/conf.d/\` 中最后生效的那份 runtimes 文件（排除 TAA 自己的
-  drop-in）加上本包 handler。之后重装复用包内这份，不再从宿主重新采集，这样
-  \`uninstall.sh\` 才能可靠地把本包 handler 摘掉。安装时拷贝到
-  \`/etc/containerd/conf.d/zz-taa-runtimes.toml\`（已存在则覆盖）。containerd 用最后
-  一个定义 runtimes 的 import 整个替换 CRI 插件树，只写本包 handler 会删掉宿主其它
-  runtime，所以该文件必须带全量快照；不要手工编辑
 - \`k8s/runtimeclass.yaml\` — 运行时类：Pod 用 \`runtimeClassName\` 选中本 handler。使用该
   runtime 的每个 Pod 都需要它，由 install.sh 安装
 - \`test/\` — 测试 Pod：\`test-pod.yaml\`、\`create-test-pod.sh\`（创建并等待 Ready，
@@ -1933,6 +1926,16 @@ $(if [[ -n "$TEST_IMAGE_ARCHIVE" ]]; then printf -- '- `%s/` — 测试 Pod 镜�
 - \`config/env.txt\` — **可在宿主机上编辑的部署身份**（见下文）
 - \`SHA256SUMS\` — 不可变文件的校验和（\`config/env.txt\` 与由它渲染的
   \`$PACKAGE_KATA_CONFIG\` 不在其中，这两个文件本来就允许在宿主机上改）
+
+包内**不含**完整的 containerd runtimes 快照：所有 TAA 交付包共用包目录上一级的
+\`zz-taa-runtimes.toml\`（默认 \`/root/taa-images/zz-taa-runtimes.toml\`，可用
+\`TAA_RUNTIMES_FILE\` 覆盖）。**首次安装时生成**：宿主 \`/etc/containerd/conf.d/\`
+中最后生效的那份 runtimes 文件（排除 TAA 自己的 drop-in）加上本包 handler；之后任何
+包安装都读写这同一份，不再从宿主重新采集，这样 \`uninstall.sh\` 摘掉本包 handler 时
+不会丢别的包 handler。安装时把快照拷到
+\`/etc/containerd/conf.d/zz-taa-runtimes.toml\`（已存在则覆盖）。containerd 用最后一个
+定义 runtimes 的 import 整个替换 CRI 插件树，只写本包 handler 会删掉宿主其它
+runtime，所以该文件必须带全量快照；不要手工编辑。
 
 ## 前置条件
 
@@ -1953,12 +1956,12 @@ ssh root@<host> 'cd $REMOTE_PACKAGE_DIR && bash test/create-test-pod.sh'
 
 install.sh 依次完成：校验 \`SHA256SUMS\`、按 \`config/env.txt\` 重渲染 Kata 配置、
 把 runtime handler 写入 TAA 自有 drop-in（首次从宿主最后生效的 runtimes 文件
-采集快照，之后复用包内副本；校验生效配置后重启 containerd）、必要时把测试镜像
-导入 registry、创建 RuntimeClass。\`--dry-run\` 只打印，不落盘。
+采集快照，之后读写包目录上一级的共享快照；校验生效配置后重启 containerd）、必要时
+把测试镜像导入 registry、创建 RuntimeClass。\`--dry-run\` 只打印，不落盘。
 
 卸载用 \`uninstall.sh\`，它是 containerd 这一步的反操作：从
 \`/etc/containerd/conf.d/zz-taa-runtimes.toml\` 中删掉本包 handler（其它 TAA 包
-的 handler 保留），写回包内副本并覆盖安装；若文件里不再有任何 TAA handler，则删除
+的 handler 保留），写回共享快照并覆盖安装；若文件里不再有任何 TAA handler，则删除
 该 drop-in，让 containerd 回到宿主自己的配置，最后重启 containerd。RuntimeClass
 与镜像不由它删除。
 

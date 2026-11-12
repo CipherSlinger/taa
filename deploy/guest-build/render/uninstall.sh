@@ -5,9 +5,10 @@
 # /etc/containerd/conf.d/zz-taa-runtimes.toml is the source of truth: it is the
 # full snapshot every TAA package contributed to, so removing this package's
 # handler from it cannot delete another package's handler. The result is written
-# back to the package copy (config/zz-taa-runtimes.toml) and over the installed
-# file. When no TAA-owned handler remains, the drop-in is removed from
-# /etc/containerd/conf.d so containerd falls back to the host's own file.
+# back to the shared file (../zz-taa-runtimes.toml beside the package
+# directories, /root/taa-images by default) and over the installed file. When no
+# TAA-owned handler remains, the drop-in is removed from /etc/containerd/conf.d
+# so containerd falls back to the host's own file.
 #
 # containerd reads imports only at startup, so the daemon is restarted after a
 # change, exactly as install.sh does. RuntimeClass and the Pod image are not
@@ -22,6 +23,8 @@
 #                        (default /etc/containerd/config.toml)
 #   CONTAINERD_CONF_DIR  directory the drop-in was installed into
 #                        (default /etc/containerd/conf.d)
+#   TAA_RUNTIMES_FILE    shared snapshot this package reads and rewrites
+#                        (default ../zz-taa-runtimes.toml beside the package)
 set -euo pipefail
 
 pkg_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -99,7 +102,9 @@ fi
 eval "$pkg_settings"
 
 dropin_dest="$CONTAINERD_CONF_DIR/$CONTAINERD_DROPIN_NAME"
-package_dropin="$pkg_dir/config/zz-taa-runtimes.toml"
+# The snapshot shared by every TAA package, kept beside the package directories
+# (/root/taa-images). install.sh seeds and rewrites this same file.
+shared_dropin="${TAA_RUNTIMES_FILE:-$(dirname "$pkg_dir")/$CONTAINERD_DROPIN_NAME}"
 echo "runtime handler: $RUNTIME_HANDLER"
 
 if [[ "$(id -u)" -ne 0 ]] && ! sudo -n true 2>/dev/null; then
@@ -120,22 +125,26 @@ if ! grep -qF "$CONTAINERD_CONF_DIR/*.toml" "$CONTAINERD_CONFIG" &&
 fi
 
 if [[ ! -f "$dropin_dest" ]]; then
-  # Nothing is installed on this host. Still make the package copy consistent,
-  # so a later install does not resurrect the handler from a stale snapshot.
-  if [[ ! -f "$package_dropin" ]]; then
-    echo "未安装该 handler，宿主与包内都没有 drop-in，无需操作"
+  # Nothing is installed on this host. Still make the shared snapshot
+  # consistent, so a later install does not resurrect the handler from it.
+  if [[ ! -f "$shared_dropin" ]]; then
+    echo "未安装该 handler，宿主与共享 drop-in 都不存在，无需操作"
     exit 0
   fi
   tmp_remove="$(mktemp /tmp/containerd-remove.taa.XXXXXX.toml)"
   python3 "$pkg_dir/render.py" containerd-remove \
-    --file "$package_dropin" --handler "$RUNTIME_HANDLER" --out "$tmp_remove"
-  run sudo install -o root -g root -m 0644 "$tmp_remove" "$package_dropin"
-  echo "宿主未安装该 drop-in；已从包内副本移除: $package_dropin"
+    --file "$shared_dropin" --handler "$RUNTIME_HANDLER" --out "$tmp_remove"
+  if ! cmp -s "$tmp_remove" "$shared_dropin"; then
+    run sudo install -o root -g root -m 0644 "$tmp_remove" "$shared_dropin"
+    echo "宿主未安装该 drop-in；已从共享 drop-in 移除: $shared_dropin"
+  else
+    echo "宿主未安装该 drop-in；共享 drop-in 中也没有 $RUNTIME_HANDLER，无需操作"
+  fi
   exit 0
 fi
 
 # The installed drop-in is the superset, so remove from it rather than from the
-# package copy: the package copy may predate another package's install.
+# shared snapshot: the shared file may predate another package's install.
 tmp_remove="$(mktemp /tmp/containerd-remove.taa.XXXXXX.toml)"
 if ! python3 "$pkg_dir/render.py" containerd-remove \
   --file "$dropin_dest" --handler "$RUNTIME_HANDLER" --out "$tmp_remove"; then
@@ -163,7 +172,7 @@ else
 fi
 
 if [[ "$dry_run" == "1" ]]; then
-  echo "dry-run: 将写入包内副本 $package_dropin"
+  echo "dry-run: 将写入共享 drop-in $shared_dropin"
   if [[ "$action" == "install" ]]; then
     echo "dry-run: sudo install -o root -g root -m 0644 $tmp_remove $dropin_dest"
   else
@@ -173,8 +182,8 @@ if [[ "$dry_run" == "1" ]]; then
   exit 0
 fi
 
-sudo install -o root -g root -m 0644 "$tmp_remove" "$package_dropin"
-echo "已写入包内副本: $package_dropin"
+sudo install -o root -g root -m 0644 "$tmp_remove" "$shared_dropin"
+echo "已写入共享 drop-in: $shared_dropin"
 
 dropin_backup="$(mktemp /tmp/containerd-dropin.backup.XXXXXX.toml)"
 sudo cp -a "$dropin_dest" "$dropin_backup"

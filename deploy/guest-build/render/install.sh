@@ -9,14 +9,16 @@
 # test/, so an install no longer starts a guest.
 #
 # The handler is never merged into /etc/containerd/config.toml or into another
-# drop-in. The first install seeds `config/zz-taa-runtimes.toml` from the last
-# file under /etc/containerd/conf.d that defines runtimes (ignoring TAA's own
-# drop-in), adds this package's handler and copies it to
-# /etc/containerd/conf.d/, overwriting the previous copy. Later installs reuse
-# the package copy, so the package owns the snapshot and uninstall.sh can take
-# the handler out again. containerd replaces the whole CRI plugin tree with the
-# last imported file that defines it, so the file must carry every handler; one
-# holding only the new handler would silently delete all the others.
+# drop-in. Every TAA package shares one snapshot, ../zz-taa-runtimes.toml beside
+# the package directories (/root/taa-images). The first install seeds it from
+# the last file under /etc/containerd/conf.d that defines runtimes (ignoring
+# TAA's own drop-in), adds this package's handler and copies it to
+# /etc/containerd/conf.d/, overwriting the previous copy. Later installs of any
+# package reuse it, so one package's handler cannot hide another's, and
+# uninstall.sh can take the handler out again. containerd replaces the whole
+# CRI plugin tree with the last imported file that defines it, so the file must
+# carry every handler; one holding only the new handler would silently delete
+# all the others.
 #
 # Every setting is derived from the package itself -- the runtime handler and
 # its ConfigPath from config/containerd-runtime-handler.toml, the boot assets
@@ -38,6 +40,8 @@
 #                        (default /etc/containerd/config.toml)
 #   CONTAINERD_CONF_DIR  directory the drop-in is copied into
 #                        (default /etc/containerd/conf.d)
+#   TAA_RUNTIMES_FILE    shared snapshot this package reads and rewrites
+#                        (default ../zz-taa-runtimes.toml beside the package)
 #   RESTART_KUBELET      1 also restarts kubelet after containerd (default 0)
 set -euo pipefail
 
@@ -217,7 +221,11 @@ grep -nE '^[[:space:]]*(kernel|initrd|firmware|kernel_params)[[:space:]]*=' "$pa
 echo
 echo "== 3. 安装 containerd runtime handler（TAA 自有 drop-in）=="
 dropin_dest="$CONTAINERD_CONF_DIR/$CONTAINERD_DROPIN_NAME"
-package_dropin="$pkg_dir/config/zz-taa-runtimes.toml"
+# One snapshot shared by every TAA package on the host, kept beside the package
+# directories (/root/taa-images) instead of inside one package. A per-package
+# copy went stale as soon as another role installed its own handler, so each
+# script reads and rewrites this one file.
+shared_dropin="${TAA_RUNTIMES_FILE:-$(dirname "$pkg_dir")/$CONTAINERD_DROPIN_NAME}"
 
 # The drop-in only takes effect through an import. Refuse early rather than
 # install a file nothing reads.
@@ -245,13 +253,13 @@ if [[ -f "$dropin_dest" ]]; then
 fi
 # First install: seed from the file that currently wins under conf.d, ignoring
 # TAA's own drop-in (deriving from it would freeze the host at the first
-# install). Reinstall: reuse the package copy, which is the snapshot the
-# package owns and uninstall.sh edits. Either way, carry over handlers other
-# TAA packages installed, because two packages seeded from the same host file
-# would otherwise overwrite each other.
+# install). Reinstall: reuse the shared file, which is the snapshot all TAA
+# packages read and rewrite. Either way, carry over handlers other TAA packages
+# installed, because two packages seeded from the same host file would
+# otherwise overwrite each other.
 base_args=()
-if [[ -f "$package_dropin" ]]; then
-  base_args=(--base "$package_dropin")
+if [[ -f "$shared_dropin" ]]; then
+  base_args=(--base "$shared_dropin")
 fi
 # A drop-in holding only our handler would replace the whole CRI plugin tree and
 # delete every other runtime (containerd merges the plugins map key by key, and
@@ -306,14 +314,14 @@ fi
 echo "预检通过: $RUNTIME_HANDLER -> $REMOTE_KATA_CONFIG（未丢 handler）"
 
 if [[ "$dry_run" == "1" ]]; then
-  echo "dry-run: 将写入 $package_dropin"
+  echo "dry-run: 将写入共享 drop-in $shared_dropin"
   echo "dry-run: sudo install -o root -g root -m 0644 $tmp_dropin $dropin_dest"
   echo "dry-run: sudo systemctl restart containerd"
 else
-  # The package keeps its own copy, so the drop-in can be inspected and the
-  # install is reproducible from the package directory alone.
-  sudo install -o root -g root -m 0644 "$tmp_dropin" "$package_dropin"
-  echo "已写入包内 drop-in: $package_dropin"
+  # Keep the shared snapshot beside the packages, so any role can inspect it
+  # and the next install of any package starts from the same table.
+  sudo install -o root -g root -m 0644 "$tmp_dropin" "$shared_dropin"
+  echo "已写入共享 drop-in: $shared_dropin"
 
   if [[ -f "$dropin_dest" ]] && sudo cmp -s "$tmp_dropin" "$dropin_dest"; then
     echo "drop-in 未变化，跳过重启: $dropin_dest"

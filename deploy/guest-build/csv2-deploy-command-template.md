@@ -245,8 +245,10 @@ cd /home/hjy/taa/deploy/guest-build
 - `bundle/initramfs.img`、`bundle/vmlinuz`、`bundle/OVMF.fd` — QEMU 实际启动的三份文件
 - `config/kata-config.toml` — 改写后的 Kata hypervisor 配置（指向包内 bundle）
 - `config/containerd-runtime-handler.toml` — 本包 handler 的片段（供审阅）
-- `config/zz-taa-runtimes.toml` — **首次安装时生成**：宿主 `conf.d` 中最后生效的
-  runtimes 表（排除 TAA 自己的 drop-in）加本包 handler，之后重装复用包内这份；
+- 完整的 runtimes 快照不在包内：所有 TAA 交付包共用包目录上一级的
+  `zz-taa-runtimes.toml`（默认 `/root/taa-images/zz-taa-runtimes.toml`，可用
+  `TAA_RUNTIMES_FILE` 覆盖）。**首次安装时生成**：宿主 `conf.d` 中最后生效的
+  runtimes 表（排除 TAA 自己的 drop-in）加本包 handler，之后任何包重装都读写这份；
   `install.sh` 把它拷贝到 `/etc/containerd/conf.d/zz-taa-runtimes.toml`（已存在则覆盖），
   `uninstall.sh` 从中摘掉本包 handler
 - `k8s/runtimeclass.yaml` — 运行时类（使用该 runtime 的 Pod 都要它）
@@ -272,14 +274,14 @@ cd /home/hjy/taa/deploy/guest-build
 
 安装不再改写 `/etc/containerd/config.toml`，也不往别人的 `conf.d/*.toml` 里合并：
 `install.sh` 首次从 `/etc/containerd/conf.d/` 中最后生效的 runtimes 文件采集快照
-（排除 `zz-taa-runtimes.toml` 自身），加上本包 handler 后写进包内的
-`config/zz-taa-runtimes.toml`，再覆盖 `/etc/containerd/conf.d/zz-taa-runtimes.toml`；
-重装直接复用包内副本。这个文件必须是「宿主当前 runtimes 表 + 本包 handler」的完整
+（排除 `zz-taa-runtimes.toml` 自身），加上本包 handler 后写进包目录上一级的共享
+`zz-taa-runtimes.toml`，再覆盖 `/etc/containerd/conf.d/zz-taa-runtimes.toml`；
+重装直接复用这份共享快照。这个文件必须是「宿主当前 runtimes 表 + 本包 handler」的完整
 快照，因为 containerd 用最后一个定义 runtimes 的 import 整个替换 CRI 插件树——只写
 本包 handler 会把宿主其它 runtime 一并删掉。安装前后各做一次 `containerd config dump`：
 预检确认不丢任何已有 handler，安装后再按真实配置复核，失败则回滚 drop-in。
 `uninstall.sh` 是这一步的反操作：从安装生效的 drop-in（是包含其它 TAA 包 handler 的
-超集）里删掉本包 handler，写回包内副本并覆盖安装；若不再剩任何 TAA handler，则删除
+超集）里删掉本包 handler，写回共享快照并覆盖安装；若不再剩任何 TAA handler，则删除
 `/etc/containerd/conf.d/zz-taa-runtimes.toml` 并重启 containerd。
 
 `render` 会从**包内**这三份文件算出预期 MEASUREMENT：

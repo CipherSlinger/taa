@@ -149,6 +149,8 @@ for f in config/kata-config.toml config/env.txt config/containerd-runtime-handle
 done
 check "render: never contacted a host" "absent" \
   "$([[ -e "$tmp_dir/fakebin/ssh.called" || -e "$tmp_dir/fakebin/scp.called" ]] && echo called || echo absent)"
+check "render: ships no per-package drop-in (it is shared beside the packages)" "absent" \
+  "$([[ -e "$pkg/config/zz-taa-runtimes.toml" ]] && echo present || echo absent)"
 # The package is the runtime dependency: it carries the exact files QEMU boots,
 # so deploying on another host needs nothing from that host's Kata tree.
 check "bundle: ships the built initrd" "fixture-initrd" "$(cat "$pkg/bundle/initramfs.img")"
@@ -901,12 +903,14 @@ check_contains "install.sh: verifies the installed drop-in in place" \
   '生效配置校验通过' "$(cat "$pkg/install.sh")"
 check_contains "install.sh: owns a TAA drop-in under conf.d" \
   'zz-taa-runtimes.toml' "$(cat "$pkg/install.sh")"
-check_contains "install.sh: keeps the drop-in inside the package" \
+check_contains "install.sh: shares one snapshot beside the packages" \
+  'TAA_RUNTIMES_FILE' "$(cat "$pkg/install.sh")"
+check_absent "install.sh: keeps no per-package drop-in copy" \
   'config/zz-taa-runtimes.toml' "$(cat "$pkg/install.sh")"
 check_contains "install.sh: generates the drop-in as a snapshot" \
   'containerd-dropin' "$(cat "$pkg/install.sh")"
-check_contains "install.sh: reuses the package copy on reinstall" \
-  '--base "$package_dropin"' "$(cat "$pkg/install.sh")"
+check_contains "install.sh: reuses the shared snapshot on reinstall" \
+  '--base "$shared_dropin"' "$(cat "$pkg/install.sh")"
 check_contains "install.sh: refuses to lose an existing handler" \
   '会丢掉已生效的 handler' "$(cat "$pkg/install.sh")"
 check_contains "package: ships uninstall.sh" 'uninstall.sh' "$(cat "$pkg/README.md")"
@@ -914,6 +918,10 @@ check_contains "uninstall.sh: removes the handler from the installed drop-in" \
   'containerd-remove' "$(cat "$pkg/uninstall.sh")"
 check_contains "uninstall.sh: deletes the drop-in when no TAA handler remains" \
   'TAA_HANDLER_RE' "$(cat "$pkg/uninstall.sh")"
+check_contains "uninstall.sh: rewrites the same shared snapshot" \
+  'TAA_RUNTIMES_FILE' "$(cat "$pkg/uninstall.sh")"
+check_absent "uninstall.sh: keeps no per-package drop-in copy" \
+  'config/zz-taa-runtimes.toml' "$(cat "$pkg/uninstall.sh")"
 check_contains "uninstall.sh: verifies the result in place" \
   '生效配置校验通过' "$(cat "$pkg/uninstall.sh")"
 check_absent "install.sh: no longer rewrites the main config" \
