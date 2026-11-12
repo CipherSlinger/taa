@@ -1666,11 +1666,13 @@ render_package() {
 
   # The guest's deployment identity travels on the kernel command line. taa-init
   # parses `taa.<key>=<value>` out of /proc/cmdline and lets those values override
-  # the build-time env file, so changing the platform address, docker id, key or
-  # endpoint is a re-render (`launch`) rather than a rebuild: the initrd's bytes,
-  # and with them its MEASUREMENT, stay as they are. The command line is part of
-  # the CSV2 measurement too, so the identity is still covered by the attested
-  # value -- see the notes in taa-init.sh.
+  # the build-time env file. Kata appends a Pod's `kernel_params` annotation to
+  # the runtime config's own parameters, so the tokens are written into the test
+  # Pod's annotation below: the identity belongs to the Pod that runs, not to
+  # every Pod sharing the runtime. Changing it is an edit of that manifest plus
+  # `test/create-test-pod.sh`, with no rebuild and no package re-render. The
+  # command line is part of the CSV2 measurement, so the identity is still
+  # covered by the attested value -- see the notes in taa-init.sh.
   #
   # Built and validated before the package directory is touched: a bad value must
   # fail the render, not leave a half-written package or destroy the previous one.
@@ -1753,40 +1755,12 @@ render_package() {
   cp -L "$MEASURE_KERNEL" "$out_dir/$PACKAGE_BUNDLE_SUBDIR/vmlinuz"
   cp -L "$MEASURE_OVMF" "$out_dir/$PACKAGE_BUNDLE_SUBDIR/OVMF.fd"
 
-  # The one file an operator is meant to edit on the target host. install.sh
-  # re-renders the Kata config from it, so changing a platform address, docker
-  # id or endpoint is one edit plus a re-run -- no rebuild, no re-upload, and the
-  # initrd's bytes (and therefore its measurement) stay as they are. The format
-  # is the command line itself rather than `NAME=value` env syntax: it is not
-  # sourceable, and what it holds is exactly what the kernel will be given.
-  {
-    cat <<'IDENTITY'
-# TAA 部署身份：每行一个 `taa.<key>=<value>`，原样写进内核命令行。
-# 改完本文件后执行 `sudo bash install.sh`：install.sh 会按它重新渲染
-# config/kata-config.toml。内核命令行只在新建 Pod 时被读入，再执行
-# `sudo bash test/create-test-pod.sh` 重建测试 Pod 才能让新身份生效。
-# key 就是环境变量名的全小写形式：taa.taa_llm_endpoint -> TAA_LLM_ENDPOINT，
-# taa.taasecretkey -> TAASECRETKEY。taa-init 把 key 全部大写后 export。
-# 可用的键如下；值不能含空白字符；删掉一行就是去掉对应参数：
-#   taa.platform_ip  taa.docker_id  taa.platform_public_key  taa.platform_sm2_id
-#   taa.contract_id  taa.contract_type  taa.taa_llm_endpoint  taa.taa_addr
-#   taa.taa_modules
-# 可选 taa.taasecretkey=<120 位十六进制>：平台保存的私钥密文（SM4-GCM 包裹），
-# 不是明文私钥。命令行对宿主机可见，宿主只能把它重放回 TAA，无法解密。
-IDENTITY
-    local param
-    for param in ${kernel_params[@]+"${kernel_params[@]}"}; do
-      printf '%s\n' "$param"
-    done
-  } > "$out_dir/config/env.txt"
-
   local -a memory_args=()
   [[ -n "$KATA_DEFAULT_MEMORY" ]] && memory_args=(--memory-mib "$KATA_DEFAULT_MEMORY")
   python3 "$RENDER_DIR/render.py" kata-config \
     --template "$template" \
     --section "$KATA_HYPERVISOR_SECTION" \
     --bundle-dir "$REMOTE_BUNDLE_DIR" \
-    --param-file "$out_dir/config/env.txt" \
     "${memory_args[@]+"${memory_args[@]}"}" \
     --out "$out_dir/$PACKAGE_KATA_CONFIG"
 
@@ -1802,12 +1776,22 @@ IDENTITY
   [[ -n "$TEST_POD_RUN_AS_USER" ]] && run_as_args=(--run-as-user "$TEST_POD_RUN_AS_USER")
   local -a device_args=()
   [[ -n "$TEST_POD_DEVICE_RESOURCE" ]] && device_args=(--device-resource "$TEST_POD_DEVICE_RESOURCE")
+  # The identity tokens become the Pod's kernel_params annotation, which Kata
+  # appends to the config's own parameters at VM start. Writing them here rather
+  # than into the config is what makes the identity per-Pod: a consumer Pod that
+  # does not carry the annotation runs without it.
+  local -a identity_args=()
+  local param
+  for param in ${kernel_params[@]+"${kernel_params[@]}"}; do
+    identity_args+=(--kernel-param "$param")
+  done
   python3 "$RENDER_DIR/render.py" k8s \
     --handler "$RUNTIME_HANDLER" \
     --pod "$TEST_POD_NAME" \
     --node "$TEST_NODE_NAME" \
     --image "$TEST_IMAGE" \
     --annotations "$TEST_POD_ANNOTATIONS" \
+    "${identity_args[@]+"${identity_args[@]}"}" \
     "${run_as_args[@]+"${run_as_args[@]}"}" \
     "${device_args[@]+"${device_args[@]}"}" \
     --out-dir "$out_dir/k8s" \
@@ -1840,11 +1824,22 @@ IDENTITY
       --config "$out_dir/config/kata-config.toml" \
       --section "$KATA_HYPERVISOR_SECTION" \
       "${smp_args[@]}")"
+    # Kata appends the Pod's kernel_params annotation to the config's parameters,
+    # so the identity tokens are part of the measured -append. The annotation is
+    # read back from the rendered Pod rather than re-derived here, so an
+    # operator-provided kernel_params in TEST_POD_ANNOTATIONS is included in the
+    # same order Kata will use.
+    local pod_kernel_params
+    pod_kernel_params="$(python3 "$RENDER_DIR/render.py" pod-kernel-params \
+      --pod "$out_dir/test/test-pod.yaml")"
+    if [[ -n "$pod_kernel_params" ]]; then
+      measure_cmdline="$measure_cmdline $pod_kernel_params"
+    fi
   fi
   # measure.py takes the command line as a file, but the package does not ship
   # that file: only the resulting digest is quoted. A temporary copy keeps the
   # input byte-exact without leaving behind a `cmdline.txt` that would go stale
-  # the moment install.sh re-renders the config from env.txt.
+  # the moment the test Pod's annotation changes.
   local measure_cmdline_file measure_out
   measure_cmdline_file="$(mktemp /tmp/taa-cmdline.XXXXXX.txt)"
   printf '%s\n' "$measure_cmdline" > "$measure_cmdline_file"
@@ -1931,15 +1926,15 @@ TAA 运行在 Kata CSV2 机密 VM 的 initrd 里，自证通过后才放行 kata
   runtime 的每个 Pod 都需要它，由 install.sh 安装
 - \`test/\` — 测试 Pod：\`test-pod.yaml\`、\`create-test-pod.sh\`（创建并等待 Ready，
   核对 QEMU 用的 initrd 与 MEASUREMENT）、\`delete-test-pod.sh\`（删除测试 Pod）。
+  **部署身份就写在 \`test-pod.yaml\` 的 \`kernel_params\` 注解里**（见下文）。
   CoCo 客户机由 CDH 自己拉镜像，注册表 CA 经 \`cc_init_data\` 注解投递，而这个值逐宿主
   不同，所以包里不带它：创建脚本在宿主机上读一条填进去
 - \`install.sh\` / \`uninstall.sh\` — 安装与卸载脚本（见下文）；\`render.py\` —
   两个脚本共用的 Kata 配置与 containerd drop-in 渲染器；
   \`measure.py\` — test/create-test-pod.sh 用的 MEASUREMENT 计算器
 $(if [[ -n "$TEST_IMAGE_ARCHIVE" ]]; then printf -- '- `%s/` — 测试 Pod 镜像的 `docker save` 归档。CoCo guest 由 CDH 自己从 registry 拉镜像，宿主机 docker 不在那条路径上，所以 install.sh 会先查 registry，缺这个 tag 时导入归档并推送过去\n' "$PACKAGE_IMAGE_SUBDIR"; fi)
-- \`config/env.txt\` — **可在宿主机上编辑的部署身份**（见下文）
-- \`SHA256SUMS\` — 不可变文件的校验和（\`config/env.txt\` 与由它渲染的
-  \`$PACKAGE_KATA_CONFIG\` 不在其中，这两个文件本来就允许在宿主机上改）
+- \`SHA256SUMS\` — 不可变文件的校验和（\`test/test-pod.yaml\` 不在其中：它是运维要改
+  的文件，部署身份就在里面）
 
 包内**不含**完整的 containerd runtimes 快照：所有 TAA 交付包共用包目录上一级的
 \`zz-taa-runtimes.toml\`（默认 \`/root/taa-images/zz-taa-runtimes.toml\`，可用
@@ -1968,10 +1963,11 @@ ssh root@<host> 'cd $REMOTE_PACKAGE_DIR && bash install.sh'
 ssh root@<host> 'cd $REMOTE_PACKAGE_DIR && bash test/create-test-pod.sh'
 \`\`\`
 
-install.sh 依次完成：校验 \`SHA256SUMS\`、按 \`config/env.txt\` 重渲染 Kata 配置、
-把 runtime handler 写入 TAA 自有 drop-in（首次从宿主最后生效的 runtimes 文件
-采集快照，之后读写包目录上一级的共享快照；校验生效配置后重启 containerd）、必要时
-把测试镜像导入 registry、创建 RuntimeClass。\`--dry-run\` 只打印，不落盘。
+install.sh 依次完成：校验 \`SHA256SUMS\`、检查包内 Kata 配置、把 runtime handler
+写入 TAA 自有 drop-in（首次从宿主最后生效的 runtimes 文件采集快照，之后读写包目录
+上一级的共享快照；校验生效配置后重启 containerd）、必要时把测试镜像导入 registry、
+创建 RuntimeClass。它**不改部署身份**：身份在 Pod 的注解里，不随安装变化。
+\`--dry-run\` 只打印，不落盘。
 
 卸载用 \`uninstall.sh\`，它是 containerd 这一步的反操作：从
 \`/etc/containerd/conf.d/zz-taa-runtimes.toml\` 中删掉本包 handler（其它 TAA 包
@@ -1982,28 +1978,34 @@ install.sh 依次完成：校验 \`SHA256SUMS\`、按 \`config/env.txt\` 重渲�
 ConfigPath 指向包内这份配置：这台宿主上该 runtime 的 Kata 配置就是包里的这一份，
 删除或替换目录前先用 \`uninstall.sh\` 把 runtime handler 摘掉。
 
-## 部署身份（在宿主机上改）
+## 部署身份（写在 Pod 注解里）
 
-平台地址、dockerId、平台公钥、LLM 端点等身份，每行一个 \`taa.<key>=<value>\`
-写在 \`config/env.txt\` 里。install.sh 用它重新渲染 \`$PACKAGE_KATA_CONFIG\`
-的 \`kernel_params\`，guest 内的 taa-init 再从 \`/proc/cmdline\` 读回这些值，覆盖
-镜像里烘焙的 \`/etc/default/taa.env\`。
+平台地址、dockerId、平台公钥、LLM 端点等身份，是 \`test-pod.yaml\` 上的一条注解：
+\`io.katacontainers.config.hypervisor.kernel_params\`，值为空格分隔的
+\`taa.<key>=<value>\`。Kata 在创建 VM 时把它**追加**到
+\`$PACKAGE_KATA_CONFIG\` 的 \`kernel_params\` 之后，guest 内的 taa-init 再从
+\`/proc/cmdline\` 读回这些值，覆盖镜像里烘焙的 \`/etc/default/taa.env\`。
 
-所以换一台平台、换一个 dockerId 或者换一个 LLM 端点，只需要在宿主机上：
+所以换一台平台、换一个 dockerId 或者换一个 LLM 端点，只需要在宿主机上编辑这条注解：
 
 \`\`\`bash
-vi $(basename "$out_dir")/config/env.txt
-sudo bash install.sh
+vi $(basename "$out_dir")/test/test-pod.yaml
+sudo bash test/create-test-pod.sh
 \`\`\`
 
-install.sh 会重渲染配置；再执行 \`test/create-test-pod.sh\` 重建测试 Pod，
-新 Pod 才会带上新的命令行。env.txt 里删掉一行，对应的参数就会从命令行上消失。
+\`install.sh\` 不参与身份：注解只在新建 Pod 时被读取，重建 Pod 后生效，不用重装、
+不用重新渲染、不用重传。删掉注解里的一个 token，对应参数就从命令行上消失；
+整条注解为空时 TAA 没有注册身份：Pod 能起来，但平台注册会失败。
+
+**注意：身份是每个 Pod 各自的。** 使用本 runtime 的其它 Pod（由平台或运维创建）
+必须带上同一条注解，否则它不会继承测试 Pod 的身份。\`install.sh\` 结束时会打印
+本包当前的身份注解，可直接复制到消费方 Pod 的 YAML 里。
 
 键名就是环境变量名的全小写形式（\`taa.taa_llm_endpoint\` 对应
 \`TAA_LLM_ENDPOINT\`，\`taa.taasecretkey\` 对应 \`TAASECRETKEY\`）：taa-init 把
-\`taa.\` 之后的部分全部大写后 export，不再维护白名单。渲染侧仍会校验键名以防手误：
-写错键名、重复键、空值或含空白字符的值都会让 install.sh 直接报错退出，不会带上一个
-guest 会静默忽略的参数。可用的键：
+\`taa.\` 之后的部分全部大写后 export，不再维护白名单。渲染侧已经对值做过严格校验
+（空值、含空白字符的值会让 render 直接失败），所以注解里每个 token 都是合法的。
+渲染时写入的键：
 
 \`\`\`
 taa.platform_ip  taa.docker_id  taa.platform_public_key  taa.platform_sm2_id
@@ -2015,19 +2017,19 @@ taa.taa_modules  taa.taasecretkey（可选）
 派生的 SM4 密钥），不是明文私钥；命令行对宿主机可见，但宿主只能把它重放回 TAA，
 无法解密出私钥。
 
-内核命令行本身也在 CSV2 度量范围内，所以改身份改的是 MEASUREMENT：
-\`test/create-test-pod.sh\` 会按当前配置重算预期值，再与 QEMU 实际的 \`-append\` 比对。
-同时它在宿主机的
-\`ps\` 与 QEMU 日志里可见，密钥类内容不要走这条通路。
-
-身份只在新建 Pod 时被 QEMU 读入：\`test/create-test-pod.sh\` 会删掉旧测试 Pod 再重建，
-新身份在重建的 Pod 上生效；其他已经在运行的 Pod 不受影响。
+内核命令行本身也在 CSV2 度量范围内，所以身份也算进 MEASUREMENT：
+\`test/create-test-pod.sh\` 按当前的配置 **加上 Pod 注解** 重算预期值，再与 QEMU
+实际的 \`-append\` 比对。同时它在宿主机的 \`ps\` 与 QEMU 日志里可见，密钥类内容
+不要走这条通路。
 
 ## 使用
 
-创建任意 Pod 时指定：
+创建任意 Pod 时指定 runtime，并带上与测试 Pod 相同的身份注解：
 
 \`\`\`yaml
+metadata:
+  annotations:
+    io.katacontainers.config.hypervisor.kernel_params: "taa.platform_ip=... taa.docker_id=... ..."
 spec:
   runtimeClassName: $RUNTIME_HANDLER
 \`\`\`
@@ -2037,11 +2039,12 @@ spec:
 $measure_section
 EOF
 
-  # The editable identity file and the config rendered from it are excluded:
-  # both are supposed to change on the target host, and install.sh refuses to
-  # run if any *immutable* file differs from its recorded digest.
+  # The test Pod is excluded: its kernel_params annotation is the deployment
+  # identity, the one file an operator is meant to edit on the target host.
+  # Everything else is immutable, including the Kata config -- install.sh no
+  # longer re-renders it and refuses to run if any pinned file differs.
   (cd "$out_dir" && find . -type f ! -name SHA256SUMS \
-    ! -path "./config/env.txt" ! -path "./$PACKAGE_KATA_CONFIG" -print0 |
+    ! -path "./test/test-pod.yaml" -print0 |
     LC_ALL=C sort -z | xargs -0 sha256sum > SHA256SUMS)
 
   echo "交付包: $out_dir"

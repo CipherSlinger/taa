@@ -127,15 +127,16 @@ common_env=(
   TAA_ADDR=0.0.0.0:6001
 )
 
-# The identity tokens render_package appends to kernel_params, in emission
-# order. Kept in one place so the config and cmdline expectations cannot drift.
+# The identity tokens render_package writes into the test Pod's kernel_params
+# annotation, in emission order. Kept in one place so the Pod and cmdline
+# expectations cannot drift.
 identity_params="taa.platform_ip=172.16.10.116:18080 taa.docker_id=fixture-docker-id taa.platform_public_key=04$(printf 'a%.0s' {1..128}) taa.platform_sm2_id=fixture-sm2-id taa.contract_id=fixture-contract-id taa.contract_type=1 taa.taa_llm_endpoint=https://172.16.10.116:8443 taa.taa_addr=0.0.0.0:6001"
 
 # ── 1. render produces a self-contained package, offline ────────────────────
 pkg="$tmp_dir/a/pkg"
 env "${common_env[@]}" DIST_DIR="$pkg" REMOTE_HOST=invalid.invalid "$BUILD" render >/dev/null
 
-for f in config/kata-config.toml config/env.txt config/containerd-runtime-handler.toml \
+for f in config/kata-config.toml config/containerd-runtime-handler.toml \
          k8s/runtimeclass.yaml test/test-pod.yaml \
          test/create-test-pod.sh test/delete-test-pod.sh SHA256SUMS \
          install.sh render.py measure.py README.md \
@@ -164,29 +165,32 @@ check_absent "kata: no active image remains" $'\nimage = ' "$kata"
 check_contains "kata: kernel points at the bundle" "kernel = \"$bundle/vmlinuz\"" "$kata"
 check_contains "kata: initrd points at the bundle" "initrd = \"$bundle/initramfs.img\"" "$kata"
 check_contains "kata: firmware points at the bundle" "firmware = \"$bundle/OVMF.fd\"" "$kata"
-check_contains "kata: rdinit is first, stale init= gone, identity appended" \
-  "kernel_params = \"rdinit=/usr/local/bin/taa-init console=ttyS0 quiet $identity_params\"" "$kata"
+check_contains "kata: rdinit is first and stale init= is gone" \
+  "kernel_params = \"rdinit=/usr/local/bin/taa-init console=ttyS0 quiet\"" "$kata"
 check "kata: rdinit appears exactly once" "1" "$(grep -c 'rdinit=/usr/local/bin/taa-init' "$pkg/config/kata-config.toml")"
 check_contains "kata: other sections are untouched" 'kernel_params = "must not be touched"' "$kata"
 check_contains "kata: other keys in the section survive" 'burst = 10' "$kata"
 
-# Rendering an already-rendered config is the realistic way to duplicate tokens
-# (a package config reused as its own template). The key must be replaced, not
-# appended a second time, and the guest parser must not be left with a stale
-# value in front of the new one.
+# Rendering an already-rendered config is the realistic way to duplicate tokens.
+# --param replaces a token with the same key instead of appending a second one,
+# so a re-render cannot leave two values for the guest to choose between.
 python3 "$RENDER" kata-config --template "$pkg/config/kata-config.toml" \
   --section hypervisor.qemu --bundle-dir "$bundle" \
   --param taa.platform_ip=10.0.0.1 --param taa.taa_addr=0.0.0.0:6001 \
   --out "$tmp_dir/kata-again.toml" >/dev/null
-again="$(cat "$tmp_dir/kata-again.toml")"
+python3 "$RENDER" kata-config --template "$tmp_dir/kata-again.toml" \
+  --section hypervisor.qemu --bundle-dir "$bundle" \
+  --param taa.platform_ip=10.0.0.2 --param taa.taa_addr=0.0.0.0:6001 \
+  --out "$tmp_dir/kata-again2.toml" >/dev/null
+again="$(cat "$tmp_dir/kata-again2.toml")"
 check "kata: a re-render never duplicates a key" "" \
-  "$(grep -o 'taa\.[a-z0-9_]*=' "$tmp_dir/kata-again.toml" | sort | uniq -d)"
-check "kata: a re-render keeps every identity key" "8" \
-  "$(grep -o 'taa\.[a-z0-9_]*=' "$tmp_dir/kata-again.toml" | sort -u | wc -l)"
+  "$(grep -o 'taa\.[a-z0-9_]*=' "$tmp_dir/kata-again2.toml" | sort | uniq -d)"
+check "kata: a re-render keeps every extra key" "2" \
+  "$(grep -o 'taa\.[a-z0-9_]*=' "$tmp_dir/kata-again2.toml" | sort -u | wc -l)"
 check "kata: a re-render does not stack tokens" "1" \
-  "$(grep -o 'taa\.platform_ip=' "$tmp_dir/kata-again.toml" | wc -l)"
-check_contains "kata: a re-render carries the new value" 'taa.platform_ip=10.0.0.1' "$again"
-check_absent "kata: a re-render drops the old value" 'taa.platform_ip=172.16.10.116:18080' "$again"
+  "$(grep -o 'taa\.platform_ip=' "$tmp_dir/kata-again2.toml" | wc -l)"
+check_contains "kata: a re-render carries the new value" 'taa.platform_ip=10.0.0.2' "$again"
+check_absent "kata: a re-render drops the old value" 'taa.platform_ip=10.0.0.1' "$again"
 
 # default_memory is a runtime dependency, not a tuning knob: a CSV2 guest sizes
 # its writable root at about half of it and the CDH unpacks the image there. The
@@ -207,76 +211,50 @@ python3 "$RENDER" kata-config --template "$tmp_dir/kata-no-mem.toml" \
 check "memory: a template without the key still gets the override" "23552" \
   "$(sed -n 's/^default_memory = //p' "$tmp_dir/kata-mem-added.toml")"
 
-# ── 2b. the editable identity file ─────────────────────────────────────────
-# The package ships one file an operator is meant to edit on the target host;
-# install.sh re-renders the Kata config from it. What matters here is that the
-# file round-trips into exactly the command line the build rendered, that edits
-# take effect, and that a bad line fails instead of becoming a token the guest
-# silently drops while the install reports success.
-identity_file="$pkg/config/env.txt"
-check "identity: the package ships config/env.txt" "present" \
-  "$([[ -f "$identity_file" ]] && echo present || echo absent)"
-check "identity: holds exactly the eight tokens" "$identity_params" \
-  "$(grep -vE '^[[:space:]]*(#|$)' "$identity_file" | tr '\n' ' ' | sed 's/ $//')"
+# ── 2b. the deployment identity rides the Pod, not the runtime config ──────
+# Kata appends a Pod's kernel_params annotation to the runtime config's own
+# parameters, so the identity belongs to the Pod that runs and the installed
+# config stays identity-free. What matters here is that the package's test Pod
+# carries exactly the tokens the build rendered, that a consumer-supplied
+# annotation is appended in Kata's order, and that a malformed token is refused
+# instead of silently splitting the command line.
+pod_file="$pkg/test/test-pod.yaml"
+check "identity: the Kata config carries no taa.* token" "0" \
+  "$(grep -o 'taa\.[a-z0-9_]*=' "$pkg/config/kata-config.toml" | wc -l)"
+check "identity: the test Pod carries exactly the eight tokens" "$identity_params" \
+  "$(python3 "$RENDER" pod-kernel-params --pod "$pod_file")"
 
-# Re-rendering from the delivered file must reproduce the delivered config:
-# that is what makes a no-op install a no-op.
-python3 "$RENDER" kata-config --template "$pkg/config/kata-config.toml" \
-  --section hypervisor.qemu --bundle-dir "$bundle" \
-  --param-file "$identity_file" --out "$tmp_dir/kata-from-identity.toml" >/dev/null
-check "identity: re-rendering from the file is byte-identical" "same" \
-  "$(cmp -s "$tmp_dir/kata-from-identity.toml" "$pkg/config/kata-config.toml" && echo same || echo different)"
-
-# Editing a value and deleting a line are the two edits an operator makes. The
-# deleted key must disappear from the command line rather than keep its old
-# value, which is why --param-file replaces the whole identity set.
-edited_identity="$tmp_dir/identity-edited.txt"
-grep -v '^taa\.contract_type=' "$identity_file" |
-  sed 's/^taa.docker_id=.*/taa.docker_id=edited-docker-id/' > "$edited_identity"
-python3 "$RENDER" kata-config --template "$pkg/config/kata-config.toml" \
-  --section hypervisor.qemu --bundle-dir "$bundle" \
-  --param-file "$edited_identity" --out "$tmp_dir/kata-edited.toml" >/dev/null
-edited_cfg="$(cat "$tmp_dir/kata-edited.toml")"
-check_contains "identity: an edited value replaces the old one" 'taa.docker_id=edited-docker-id' "$edited_cfg"
-check_absent "identity: the old value is gone" 'taa.docker_id=fixture-docker-id' "$edited_cfg"
-check_absent "identity: a deleted line removes the parameter" 'taa.contract_type=' "$edited_cfg"
-check "identity: the other keys survive" "7" \
-  "$(grep -o 'taa\.[a-z0-9_]*=' "$tmp_dir/kata-edited.toml" | sort -u | wc -l)"
-
-identity_reject() {
-  local name="$1" body="$2" needle="$3"
-  printf '%s\n' "$body" > "$tmp_dir/identity-bad.txt"
-  rm -f "$tmp_dir/kata-bad-out.toml"
-  local out
-  out="$(python3 "$RENDER" kata-config --template "$pkg/config/kata-config.toml" \
-    --section hypervisor.qemu --bundle-dir "$bundle" \
-    --param-file "$tmp_dir/identity-bad.txt" \
-    --out "$tmp_dir/kata-bad-out.toml" 2>&1 || true)"
-  check_contains "$name" "$needle" "$out"
-  check "  (nothing rendered)" "absent" \
-    "$([[ -e "$tmp_dir/kata-bad-out.toml" ]] && echo present || echo absent)"
-}
-
-identity_reject "identity: an unknown key is refused" 'taa.unknown_key=x' 'unknown identity key'
-identity_reject "identity: env-style names are refused" 'TAA_DOCKER_ID=fixture' 'unknown identity key'
-identity_reject "identity: the legacy short LLM key is refused" \
-  'taa.llm_endpoint=https://10.0.0.1:8443' 'unknown identity key'
+# A Pod may already carry kernel_params of its own (the CDH timeouts, for
+# example); the identity is appended, not substituted.
+python3 "$RENDER" k8s --handler fixture-handler --pod fixture-pod \
+  --image example.invalid/image:tag \
+  --annotations '{"io.katacontainers.config.hypervisor.kernel_params":"agent.cdh_api_timeout=1200"}' \
+  --kernel-param taa.docker_id=fixture-docker-id \
+  --out-dir "$tmp_dir/k8s-merge" --pod-dir "$tmp_dir/k8s-merge" >/dev/null
+check "identity: the annotation is appended to an existing kernel_params" \
+  "agent.cdh_api_timeout=1200 taa.docker_id=fixture-docker-id" \
+  "$(python3 "$RENDER" pod-kernel-params --pod "$tmp_dir/k8s-merge/test-pod.yaml")"
 
 # The recovery key is a deployment identity too: its token is the environment
-# variable in lower case and must reach the rendered command line.
-secret_identity="$tmp_dir/identity-secret.txt"
-cp "$identity_file" "$secret_identity"
-printf 'taa.taasecretkey=%s\n' "$(printf 'ab%.0s' {1..60})" >> "$secret_identity"
-python3 "$RENDER" kata-config --template "$pkg/config/kata-config.toml" \
-  --section hypervisor.qemu --bundle-dir "$bundle" \
-  --param-file "$secret_identity" --out "$tmp_dir/kata-secret.toml" >/dev/null
-check_contains "identity: the recovery key rides the command line" \
-  'taa.taasecretkey=' "$(cat "$tmp_dir/kata-secret.toml")"
-identity_reject "identity: an empty value is refused" 'taa.docker_id=' 'empty value'
-identity_reject "identity: a whitespace value is refused" 'taa.docker_id=two words' 'whitespace'
-identity_reject "identity: a duplicate key is refused" \
-  $'taa.docker_id=a\ntaa.docker_id=b' 'duplicate key'
-identity_reject "identity: a line without = is refused" 'taa.docker_id' "missing '='"
+# variable in lower case and must reach the annotation.
+secret_ident="$tmp_dir/k8s-secret"
+python3 "$RENDER" k8s --handler fixture-handler --pod fixture-pod \
+  --image example.invalid/image:tag \
+  --kernel-param "taa.taasecretkey=$(printf 'ab%.0s' {1..60})" \
+  --out-dir "$secret_ident" --pod-dir "$secret_ident" >/dev/null
+check_contains "identity: the recovery key rides the annotation" \
+  'taa.taasecretkey=' "$(python3 "$RENDER" pod-kernel-params --pod "$secret_ident/test-pod.yaml")"
+
+# A whitespace-bearing value would become two kernel parameters, so the
+# renderer refuses it rather than letting the guest apply half a token.
+out="$(python3 "$RENDER" k8s --handler fixture-handler --pod fixture-pod \
+  --image example.invalid/image:tag \
+  --kernel-param 'taa.docker_id=two words' \
+  --out-dir "$tmp_dir/k8s-bad" --pod-dir "$tmp_dir/k8s-bad" 2>&1 || true)"
+check_contains "identity: a whitespace-bearing token is refused" \
+  'one non-empty token' "$out"
+check "  (nothing rendered)" "absent" \
+  "$([[ -e "$tmp_dir/k8s-bad/test-pod.yaml" ]] && echo present || echo absent)"
 
 # The renderer refuses to publish a config that would boot the wrong initrd:
 # an active `image` in the target section wins over the initrd in Kata.
@@ -559,9 +537,10 @@ import json, sys
 pod = json.load(open(sys.argv[1]))
 spec = pod["spec"]
 assert "nodeName" not in spec, "nodeName should be omitted when unknown"
-assert "annotations" not in pod["metadata"], "annotations should be omitted when empty"
+annotations = pod["metadata"].get("annotations", {})
+assert set(annotations) == {"io.katacontainers.config.hypervisor.kernel_params"}, annotations
 PY
-echo "ok   k8s: unknown node and empty annotations are omitted"
+echo "ok   k8s: unknown node is omitted; the identity annotation is the only one"
 
 # ── 5. package self-description ────────────────────────────────────────────
 # The package carries no parameter sheet: install.sh asks render.py to read the
@@ -693,15 +672,15 @@ env "${common_env[@]}" REMOTE_HOST=invalid.invalid DIST_DIR="$dcu_pkg" \
   RUNTIME_HANDLER= RUNTIME_TYPE= REMOTE_PACKAGE_DIR= TEST_POD_NAME= \
   TAA_MODULES= TEST_POD_DEVICE_RESOURCE= KATA_DEFAULT_MEMORY= \
   "$BUILD" taa-train-dcu render >/dev/null
-dcu_kata="$(cat "$dcu_pkg/config/kata-config.toml")"
+dcu_identity="$(python3 "$RENDER" pod-kernel-params --pod "$dcu_pkg/test/test-pod.yaml")"
 check_contains "dcu: the handler is the DCU one" \
   '"handler": "kata-qemu-dcu-csv2-taa-train"' "$(cat "$dcu_pkg/k8s/runtimeclass.yaml")"
 check_contains "dcu: the runtime type extends the DCU class" \
   'runtime_type = "io.containerd.kata-qemu-hygon-dcu-csv2.v2"' \
   "$(cat "$dcu_pkg/config/containerd-runtime-handler.toml")"
-check_contains "dcu: the guest is told to load hycu" 'taa.taa_modules=hycu' "$dcu_kata"
+check_contains "dcu: the guest is told to load hycu" 'taa.taa_modules=hycu' "$dcu_identity"
 check_contains "dcu: the module rides with the other identity tokens" \
-  "taa.taa_addr=0.0.0.0:6001 taa.taa_modules=hycu" "$dcu_kata"
+  "taa.taa_addr=0.0.0.0:6001 taa.taa_modules=hycu" "$dcu_identity"
 check "dcu: guest RAM matches the other large-image role" "20480" \
   "$(sed -n 's/^default_memory = //p' "$dcu_pkg/config/kata-config.toml")"
 # The card has to be requested and limited; the extended resource is scheduled
@@ -736,7 +715,11 @@ expected_cmdline="tsc=reliable no_timer_check rcupdate.rcu_expedited=1 i8042.dir
 rendered_cmdline="$(python3 "$MEASURE" cmdline \
   --config "$pkg/config/kata-config.toml" \
   --section hypervisor.qemu)"
-check "measure: cmdline follows the rendered config" "$expected_cmdline" "$rendered_cmdline"
+# Kata appends the Pod's kernel_params annotation to the config's parameters,
+# so the measured -append is the config-derived line plus the identity.
+rendered_cmdline="$rendered_cmdline $(python3 "$RENDER" pod-kernel-params --pod "$pkg/test/test-pod.yaml")"
+check "measure: cmdline follows the rendered config and Pod annotation" \
+  "$expected_cmdline" "$rendered_cmdline"
 
 # The package ships no cmdline.txt: the digest is computed here from the same
 # command line the config produces, exactly as render_package does.
@@ -823,24 +806,40 @@ else
   failures=$((failures + 1))
 fi
 
-# The two files an operator is meant to change are excluded from the checksums,
-# so a host-side identity edit must not look like a tampered package. Everything
-# else stays pinned: the edit is narrow on purpose.
+# The test Pod is the one file an operator is meant to change (its kernel_params
+# annotation is the deployment identity), so a host-side identity edit must not
+# look like a tampered package. Everything else stays pinned -- including the
+# Kata config, which install.sh no longer rewrites.
 edited_pkg="$tmp_dir/edited-pkg"
 cp -a "$pkg" "$edited_pkg"
-sed -i 's/^taa\.docker_id=.*/taa.docker_id=host-edited/' "$edited_pkg/config/env.txt"
-python3 "$edited_pkg/render.py" kata-config --template "$edited_pkg/config/kata-config.toml" \
-  --section hypervisor.qemu --bundle-dir "$bundle" \
-  --param-file "$edited_pkg/config/env.txt" \
-  --out "$edited_pkg/config/kata-config.toml" >/dev/null
+python3 - "$edited_pkg/test/test-pod.yaml" <<'PY'
+import json, sys
+path = sys.argv[1]
+pod = json.load(open(path))
+key = "io.katacontainers.config.hypervisor.kernel_params"
+annotations = pod["metadata"]["annotations"]
+annotations[key] = annotations[key].replace("fixture-docker-id", "host-edited")
+open(path, "w").write(json.dumps(pod, indent=2) + "\n")
+PY
 if (cd "$edited_pkg" && sha256sum -c --quiet SHA256SUMS) >/dev/null 2>&1; then
   echo "ok   checksums: a host-side identity edit still verifies"
 else
   echo "FAIL checksums: a host-side identity edit breaks verification" >&2
   failures=$((failures + 1))
 fi
-check_contains "checksums: the edit reached the rendered config" \
-  'taa.docker_id=host-edited' "$(cat "$edited_pkg/config/kata-config.toml")"
+check_contains "checksums: the edit reached the Pod annotation" \
+  'taa.docker_id=host-edited' \
+  "$(python3 "$edited_pkg/render.py" pod-kernel-params --pod "$edited_pkg/test/test-pod.yaml")"
+
+tampered_kata="$tmp_dir/tampered-kata"
+cp -a "$pkg" "$tampered_kata"
+printf '# tampered\n' >> "$tampered_kata/config/kata-config.toml"
+if (cd "$tampered_kata" && sha256sum -c --quiet SHA256SUMS) >/dev/null 2>&1; then
+  echo "FAIL checksums: the Kata config is supposed to be pinned" >&2
+  failures=$((failures + 1))
+else
+  echo "ok   checksums: a modified Kata config is caught"
+fi
 
 tampered_pkg="$tmp_dir/tampered-pkg"
 cp -a "$pkg" "$tampered_pkg"
@@ -887,12 +886,18 @@ check_contains "create script: recomputes MEASUREMENT from the running QEMU" \
   '/proc/$qpid/cmdline' "$(cat "$pkg/test/create-test-pod.sh")"
 check_contains "create script: compares against the expected value" '与实际启动的 VM 一致' \
   "$(cat "$pkg/test/create-test-pod.sh")"
-check_contains "install.sh: re-renders from the editable identity" \
-  '--param-file "$identity_file"' "$(cat "$pkg/install.sh")"
+check_absent "install.sh: no longer re-renders the Kata config" \
+  '--param-file' "$(cat "$pkg/install.sh")"
+check_contains "install.sh: prints the Pod identity annotation for consumers" \
+  'TEST_POD_KERNEL_PARAMS' "$(cat "$pkg/install.sh")"
+check_absent "install.sh: carries no editable identity file" \
+  'config/env.txt' "$(cat "$pkg/install.sh")"
+check_contains "create script: includes the Pod annotation in the expectation" \
+  'pod-kernel-params' "$(cat "$pkg/test/create-test-pod.sh")"
 check_contains "create script: rebuilds the expectation from the current config" \
   '预期 MEASUREMENT (hex)' "$(cat "$pkg/test/create-test-pod.sh")"
 check_absent "install.sh: no longer creates the test Pod" \
-  'test-pod.yaml' "$(cat "$pkg/install.sh")"
+  'PACKAGE_TEST_POD' "$(cat "$pkg/install.sh")"
 check_contains "install.sh: still applies the RuntimeClass" \
   'PACKAGE_RUNTIMECLASS' "$(cat "$pkg/install.sh")"
 check_contains "create script: recreates the Pod so a new command line takes effect" \

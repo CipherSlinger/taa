@@ -16,34 +16,11 @@ from pathlib import Path
 
 RDINIT = "rdinit=/usr/local/bin/taa-init"
 
-# The identity keys taa-init reads back from /proc/cmdline. Kept here so the
-# package's editable identity file cannot grow a key the guest would silently
-# ignore, and so a re-render can drop the whole set before applying the file
-# (deleting a line has to delete the parameter, not leave a stale one behind).
-# Each key is the environment variable taa-init exports from it, in lower case:
-# `taa.taa_llm_endpoint` becomes TAA_LLM_ENDPOINT. The list stays here so a typo
-# in the editable identity file fails the install; taa-init itself accepts any
-# well-formed `taa.<key>` and applies the same case mapping, so a new setting
-# only has to be added here.
-IDENTITY_KEYS = (
-    "platform_ip",
-    "docker_id",
-    "platform_public_key",
-    "platform_sm2_id",
-    "contract_id",
-    "contract_type",
-    "taa_llm_endpoint",
-    "taa_addr",
-    # Kernel modules the guest loads before starting TAA (comma-separated). Only
-    # the DCU roles set it (hycu); everywhere else it is absent, which is what
-    # taa-init treats as "load nothing".
-    "taa_modules",
-    # Wrapped copy of the SM2 private scalar. SM4-GCM under SM3(hardware sealing
-    # key || CONTRACT_ID)[:16], so it is ciphertext, not the key itself: a host
-    # that can read the command line still cannot decrypt it, and re-injecting
-    # it is exactly the recovery path TAA implements.
-    "taasecretkey",
-)
+# Kata appends a Pod's kernel_params annotation to the value in its
+# configuration file. The deployment identity travels this way, so it is a
+# property of the Pod (and of the measured command line) rather than of the
+# runtime config every Pod on the host shares.
+KERNEL_PARAMS_ANNOTATION = "io.katacontainers.config.hypervisor.kernel_params"
 
 
 def toml_string(value):
@@ -90,45 +67,8 @@ def active_key(line, key):
     return not stripped.startswith("#") and re.match(rf"^\s*{re.escape(key)}\s*=", line)
 
 
-def read_identity_file(path):
-    """Parse a `taa.<key>=<value>` file into kernel parameters.
-
-    One token per line; blank lines and `#` comments are ignored. The format is
-    the command line itself rather than `NAME=value` env syntax on purpose: the
-    file is not sourceable, so a stray edit cannot end up exported in a shell,
-    and what it holds is exactly what the kernel will be given.
-
-    Validation is strict -- unknown key, duplicate key, empty or whitespace-
-    bearing value are all fatal. A typo must fail the install, not become a
-    parameter the guest drops on the floor while everything else looks fine.
-    """
-    tokens = []
-    seen = set()
-    for lineno, raw in enumerate(Path(path).read_text().splitlines(), 1):
-        line = raw.strip()
-        if not line or line.startswith("#"):
-            continue
-        key, sep, value = line.partition("=")
-        if not sep:
-            raise SystemExit(f"{path}:{lineno}: missing '=': {raw!r}")
-        if not key.startswith("taa.") or key[len("taa."):] not in IDENTITY_KEYS:
-            raise SystemExit(
-                f"{path}:{lineno}: unknown identity key: {key} "
-                f"(allowed: {', '.join('taa.' + k for k in IDENTITY_KEYS)})"
-            )
-        if not value:
-            raise SystemExit(f"{path}:{lineno}: empty value for {key}")
-        if any(ch.isspace() for ch in value):
-            raise SystemExit(f"{path}:{lineno}: whitespace in the value for {key}")
-        if key in seen:
-            raise SystemExit(f"{path}:{lineno}: duplicate key: {key}")
-        seen.add(key)
-        tokens.append(line)
-    return tokens
-
-
 def render_kata_config(template, section, bundle_dir, out, extra_params=(),
-                       replace_identity=False, memory_mib=None):
+                       memory_mib=None):
     """Point one hypervisor section at the TAA bundle; leave everything else.
 
     memory_mib overrides the section's default_memory. It is not cosmetic: a
@@ -150,21 +90,10 @@ def render_kata_config(template, section, bundle_dir, out, extra_params=(),
         """Drop parameters an extra one replaces, then append the extras.
 
         A re-render must be idempotent: appending blindly would stack one
-        `taa.platform_ip=` per render, and the last one happens to win only by
-        luck (the guest parser would take whichever came last).
-
-        With replace_identity the whole identity set is dropped first, so a key
-        deleted from the editable identity file disappears from the command line
-        instead of surviving with its previous value.
+        `key=` per render, and the last one happens to win only by luck (the
+        guest parser would take whichever came last).
         """
         drop = {p.split("=", 1)[0] for p in extra_params}
-        if replace_identity:
-            # Drop every identity token, not only the keys known here: taa-init
-            # exports any well-formed `taa.<key>`, so a token left behind by an
-            # older render would still take effect and could silently shadow the
-            # edited file.
-            drop |= {p.split("=", 1)[0] for p in params
-                     if p.split("=", 1)[0].startswith("taa.")}
         kept = [p for p in params if p.split("=", 1)[0] not in drop]
         return kept + list(extra_params)
 
@@ -756,7 +685,6 @@ def package_info(pkg_dir):
         "REMOTE_KATA_CONFIG": options["ConfigPath"],
         "REMOTE_BUNDLE_DIR": str(bundle),
         "PACKAGE_KATA_CONFIG": str(kata_config.relative_to(pkg)),
-        "PACKAGE_IDENTITY_FILE": "config/env.txt",
         "PACKAGE_RUNTIMECLASS": str(runtimeclass_file.relative_to(pkg)),
         "PACKAGE_TEST_POD": str(pod_file.relative_to(pkg)),
         "KATA_HYPERVISOR_SECTION": section,
@@ -764,6 +692,11 @@ def package_info(pkg_dir):
         "TEST_NODE_NAME": node_name,
         "TEST_IMAGE": image,
         "TEST_IMAGE_ARCHIVE": image_archive,
+        # The deployment identity a consumer Pod has to copy. install.sh prints
+        # it; an empty value means this render carried no identity.
+        "TEST_POD_KERNEL_PARAMS": (pod.get("metadata", {}).get("annotations") or {}).get(
+            KERNEL_PARAMS_ANNOTATION, ""
+        ),
     }
     return info
 
@@ -782,14 +715,38 @@ def parse_device_resources(specs):
     return resources
 
 
+def pod_kernel_params(path):
+    """Return a Pod manifest's kernel_params annotation, or "" when absent."""
+    try:
+        pod = json.loads(Path(path).read_text())
+    except json.JSONDecodeError as exc:
+        raise SystemExit(f"{path}: not valid JSON ({exc})") from exc
+    annotations = pod.get("metadata", {}).get("annotations") or {}
+    return annotations.get(KERNEL_PARAMS_ANNOTATION, "") if isinstance(annotations, dict) else ""
+
+
 def render_k8s(handler, pod_name, node_name, image, annotations_json, out_dir,
-               run_as_user="", pod_dir="", device_resources=None):
+               run_as_user="", pod_dir="", device_resources=None, kernel_params=()):
     try:
         annotations = json.loads(annotations_json)
     except json.JSONDecodeError as exc:
         raise SystemExit(f"--annotations is not valid JSON: {exc}") from exc
     if not isinstance(annotations, dict):
         raise SystemExit("--annotations must be a JSON object")
+
+    # Kata appends this annotation to the configuration file's kernel_params, so
+    # the value written here is additive: the rdinit= that boots TAA always comes
+    # from the config. Each token is one `taa.<key>=<value>` pair; a value with
+    # whitespace would split into two tokens and must be refused here, not
+    # silently alter the command line.
+    if kernel_params:
+        for token in kernel_params:
+            if not token or any(ch.isspace() for ch in token):
+                raise SystemExit(f"--kernel-param must be one non-empty token: {token!r}")
+        existing = str(annotations.get(KERNEL_PARAMS_ANNOTATION, "")).strip()
+        annotations[KERNEL_PARAMS_ANNOTATION] = " ".join(
+            ([existing] if existing else []) + list(kernel_params)
+        )
 
     metadata = {"name": pod_name}
     if annotations:
@@ -863,12 +820,6 @@ def main(argv=None):
         metavar="KEY=VALUE",
         help="extra kernel parameter, repeatable; replaces an existing one with "
         "the same key so a re-render cannot duplicate tokens",
-    )
-    kata.add_argument(
-        "--param-file",
-        metavar="PATH",
-        help="file of `taa.<key>=<value>` lines; replaces the whole identity set, "
-        "so a removed line also removes the parameter",
     )
     kata.add_argument(
         "--memory-mib",
@@ -992,20 +943,29 @@ def main(argv=None):
         metavar="NAME=COUNT",
         help="extended resource the test container requests and is limited to (repeatable)",
     )
+    k8s.add_argument(
+        "--kernel-param",
+        action="append",
+        default=[],
+        metavar="TOKEN",
+        help="append one kernel parameter to the Pod's kernel_params annotation "
+        "(repeatable); Kata appends the annotation to the config's own params",
+    )
+
+    podk = sub.add_parser(
+        "pod-kernel-params", help="print a Pod manifest's kernel_params annotation"
+    )
+    podk.add_argument("--pod", required=True)
 
     args = parser.parse_args(argv)
 
     if args.command == "kata-config":
-        params = list(args.param)
-        if args.param_file:
-            params += read_identity_file(args.param_file)
         render_kata_config(
             args.template,
             args.section,
             args.bundle_dir,
             args.out,
-            params,
-            replace_identity=bool(args.param_file),
+            list(args.param),
             memory_mib=args.memory_mib,
         )
     elif args.command == "containerd-merge":
@@ -1063,7 +1023,10 @@ def main(argv=None):
             args.run_as_user,
             args.pod_dir,
             parse_device_resources(args.device_resource),
+            args.kernel_param,
         )
+    elif args.command == "pod-kernel-params":
+        print(pod_kernel_params(args.pod))
     return 0
 
 

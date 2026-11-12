@@ -10,7 +10,7 @@
 #      packaged kernel/initrd/OVMF and the config currently on this host.
 #
 # An existing test Pod is deleted first: a Pod spec is immutable, and a Pod
-# created before an env.txt edit still carries the old kernel command line.
+# created before a test-pod.yaml edit still carries the old kernel command line.
 #
 # Usage: sudo bash test/create-test-pod.sh
 #
@@ -73,7 +73,9 @@ trap cleanup EXIT
 # not work: io.containerd.cri.runtime-handler would point the Pod back at the
 # original handler, and an empty hypervisor.kernel_params would override the
 # config's rdinit= so TAA never starts -- both leave the Pod Ready while testing
-# something other than this package.
+# something other than this package. The kernel_params this Pod does carry is
+# its own deployment identity, rendered into the packaged manifest, so it is
+# left exactly as shipped.
 cc_init_annotation="io.katacontainers.config.runtime.cc_init_data"
 pod_manifest="$pkg_dir/$PACKAGE_TEST_POD"
 
@@ -137,10 +139,9 @@ fi
 echo
 echo "== 4. 度量核对 =="
 # The expected MEASUREMENT is recomputed here from the config currently on this
-# host. That is the only input that can differ from the build host: the kernel,
-# initrd and OVMF are the package's own bytes, and the command line follows
-# from the config. A difference from the running VM then means env.txt changed
-# or the host's Kata drifted, not that the package is stale.
+# host plus this Pod's kernel_params annotation, which Kata appends to it. A
+# difference from the running VM then means the manifest's identity annotation
+# changed or the host's Kata drifted, not that the package is stale.
 package_kata_config="$pkg_dir/$PACKAGE_KATA_CONFIG"
 kata_section="$KATA_HYPERVISOR_SECTION"
 expected_hex=""
@@ -150,6 +151,15 @@ smp_args=()
 if expected_cmdline="$(python3 "$pkg_dir/measure.py" cmdline \
     --config "$package_kata_config" --section "$kata_section" \
     ${smp_args[@]+"${smp_args[@]}"} 2>/dev/null)"; then
+  # Kata appends the Pod's kernel_params annotation to the config's parameters,
+  # so the identity is part of the measured -append. Read it from the manifest
+  # actually being applied, not re-derived, so an operator edit is exactly what
+  # is hashed.
+  pod_kernel_params="$(python3 "$pkg_dir/render.py" pod-kernel-params \
+    --pod "$pod_manifest" 2>/dev/null || true)"
+  if [[ -n "$pod_kernel_params" ]]; then
+    expected_cmdline="$expected_cmdline $pod_kernel_params"
+  fi
   tmp_expected="$(mktemp /tmp/taa-expected.XXXXXX.txt)"
   printf '%s\n' "$expected_cmdline" > "$tmp_expected"
   if expected_out="$(python3 "$pkg_dir/measure.py" digest \

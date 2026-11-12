@@ -2,11 +2,10 @@
 # Install the TAA-in-initrd delivery package on a Kata CSV2 host.
 #
 # The package is produced by `build-initrd.sh render` (or by `launch`, which
-# renders the same files first). This script re-renders the Kata config from the
-# editable `config/env.txt`, installs the runtime handler as a TAA-owned
-# containerd drop-in, pushes the Pod image into its registry and creates the
-# RuntimeClass. Creating and deleting the test Pod is a separate step under
-# test/, so an install no longer starts a guest.
+# renders the same files first). This script installs the runtime handler as a
+# TAA-owned containerd drop-in, pushes the Pod image into its registry and
+# creates the RuntimeClass. Creating and deleting the test Pod is a separate
+# step under test/, so an install never starts a guest.
 #
 # The handler is never merged into /etc/containerd/config.toml or into another
 # drop-in. Every TAA package shares one snapshot, ../zz-taa-runtimes.toml beside
@@ -26,12 +25,13 @@
 # package whose absolute paths do not name its own files, so a moved or
 # half-assembled directory fails before anything is touched.
 #
-# To change the deployment identity (platform address, docker id, public key,
-# LLM endpoint, ...) edit config/env.txt and re-run this script, then re-run
-# test/create-test-pod.sh: the identity reaches a guest only through a newly
-# created Pod. No rebuild and no re-upload: the initrd's bytes, and with them
-# its measurement basis, stay as they are; only the measured kernel command
-# line changes.
+# The deployment identity (platform address, docker id, public key, LLM
+# endpoint, ...) is not part of this installation: it lives in the
+# kernel_params annotation of the Pod that runs. To change it, edit
+# test/test-pod.yaml and re-run test/create-test-pod.sh; consumer Pods must
+# carry the same annotation themselves. No reinstall, no rebuild and no
+# re-upload: the initrd's bytes, and with them its measurement basis, stay as
+# they are; only the measured kernel command line changes.
 #
 # Usage: sudo bash install.sh [--dry-run]
 #
@@ -69,12 +69,10 @@ CONTAINERD_CONF_DIR="${CONTAINERD_CONF_DIR:-/etc/containerd/conf.d}"
 # than trusting the name alone.
 CONTAINERD_DROPIN_NAME="zz-taa-runtimes.toml"
 
-tmp_kata_config=""
 tmp_dropin=""
 tmp_stage=""
 dropin_backup=""
 cleanup() {
-  if [[ -n "$tmp_kata_config" ]]; then rm -f "$tmp_kata_config"; fi
   if [[ -n "$tmp_dropin" ]]; then rm -f "$tmp_dropin"; fi
   if [[ -n "$tmp_stage" ]]; then rm -f "$tmp_stage"; fi
   if [[ -n "$dropin_backup" ]]; then sudo rm -f "$dropin_backup" || true; fi
@@ -151,8 +149,6 @@ if [[ -n "$TEST_IMAGE_ARCHIVE" ]]; then
     fi
   done
 fi
-kata_section="$KATA_HYPERVISOR_SECTION"
-identity_file="$pkg_dir/$PACKAGE_IDENTITY_FILE"
 echo "runtime handler: $RUNTIME_HANDLER (ConfigPath $REMOTE_KATA_CONFIG)"
 
 if [[ "$(id -u)" -ne 0 ]] && ! sudo -n true 2>/dev/null; then
@@ -181,34 +177,11 @@ if [[ -n "$TEST_NODE_NAME" ]]; then
 fi
 
 echo
-echo "== 2. Kata 配置（按 config/env.txt 重新渲染）=="
+echo "== 2. Kata 配置 =="
 package_kata_config="$pkg_dir/$PACKAGE_KATA_CONFIG"
 if [[ ! -f "$package_kata_config" ]]; then
   echo "error: 包内 Kata 配置缺失: $package_kata_config" >&2
   exit 1
-fi
-
-if [[ -f "$identity_file" ]]; then
-  echo "部署身份 (config/env.txt):"
-  grep -vE '^[[:space:]]*(#|$)' "$identity_file" | sed 's/^/  /'
-  tmp_kata_config="$(mktemp /tmp/kata-config.taa.XXXXXX.toml)"
-  if ! python3 "$pkg_dir/render.py" kata-config \
-    --template "$package_kata_config" \
-    --section "$kata_section" \
-    --bundle-dir "$REMOTE_BUNDLE_DIR" \
-    --param-file "$identity_file" \
-    --out "$tmp_kata_config"; then
-    echo "error: 按 config/env.txt 渲染 Kata 配置失败，未改动宿主配置" >&2
-    exit 1
-  fi
-  if cmp -s "$tmp_kata_config" "$package_kata_config"; then
-    echo "与交付时一致，Kata 配置无需更新"
-  else
-    echo "身份已修改，更新 $PACKAGE_KATA_CONFIG"
-    run sudo install -o root -g root -m 0644 "$tmp_kata_config" "$package_kata_config"
-  fi
-else
-  echo "warning: 包内没有 config/env.txt，沿用交付时的 Kata 配置" >&2
 fi
 
 # The handler's ConfigPath points at the packaged copy (package_info verified
@@ -481,6 +454,11 @@ echo "  sudo bash $pkg_dir/test/create-test-pod.sh   # 创建、等待 Ready，�
 echo "  sudo bash $pkg_dir/test/delete-test-pod.sh   # 删除测试 Pod"
 echo
 echo "使用方创建 Pod 时指定 runtimeClassName: $RUNTIME_HANDLER"
+if [[ -n "${TEST_POD_KERNEL_PARAMS:-}" ]]; then
+  echo "并且必须带上与测试 Pod 相同的身份注解（部署身份是按 Pod 生效的）："
+  printf '  io.katacontainers.config.hypervisor.kernel_params: "%s"\n' \
+    "$TEST_POD_KERNEL_PARAMS"
+fi
 echo
 echo "注意: runtime handler 的 ConfigPath 指向本交付包: $REMOTE_KATA_CONFIG"
 echo "      删除或替换该目录前先移除 handler，否则下次拉起该 runtime 的 Pod 会失败。"
