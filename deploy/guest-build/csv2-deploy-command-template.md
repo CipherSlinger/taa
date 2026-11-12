@@ -254,7 +254,6 @@ cd /home/hjy/taa/deploy/guest-build
   及其创建/删除脚本
 - `install.sh`、`uninstall.sh`、`render.py`、`measure.py` — 包内自带的安装/卸载器、
   合并器与度量计算器
-- `cmdline.txt` — 计算预期度量所用的 QEMU `-append` 原文
 - `SHA256SUMS` — 包内文件校验和（含 `bundle/` 三份）
 - `README.md` — 包内使用说明，含预期 MEASUREMENT
 

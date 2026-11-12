@@ -138,7 +138,7 @@ env "${common_env[@]}" DIST_DIR="$pkg" REMOTE_HOST=invalid.invalid "$BUILD" rend
 for f in config/kata-config.toml config/env.txt config/containerd-runtime-handler.toml \
          k8s/runtimeclass.yaml test/test-pod.yaml \
          test/create-test-pod.sh test/delete-test-pod.sh SHA256SUMS \
-         install.sh render.py measure.py cmdline.txt README.md \
+         install.sh render.py measure.py README.md \
          bundle/initramfs.img bundle/vmlinuz bundle/OVMF.fd; do
   if [[ -f "$pkg/$f" ]]; then
     echo "ok   render: produced $f"
@@ -718,16 +718,25 @@ check_absent "dcu: the CPU test Pod requests no card" 'hygon.cn/k100_ai' \
 # ── 5c. expected MEASUREMENT ───────────────────────────────────────────────
 MEASURE="$SCRIPT_DIR/render/measure.py"
 expected_cmdline="tsc=reliable no_timer_check rcupdate.rcu_expedited=1 i8042.direct=1 i8042.dumbkbd=1 i8042.nopnp=1 i8042.noaux=1 noreplace-smp reboot=k cryptomgr.notests net.ifnames=0 pci=lastbus=0 console=hvc0 console=hvc1 debug panic=1 nr_cpus=3 selinux=0 scsi_mod.scan=none agent.log=debug agent.debug_console agent.debug_console_vport=1026 rdinit=/usr/local/bin/taa-init console=ttyS0 quiet $identity_params"
-check "measure: cmdline follows the rendered config" "$expected_cmdline" "$(cat "$pkg/cmdline.txt")"
+rendered_cmdline="$(python3 "$MEASURE" cmdline \
+  --config "$pkg/config/kata-config.toml" \
+  --section hypervisor.qemu)"
+check "measure: cmdline follows the rendered config" "$expected_cmdline" "$rendered_cmdline"
 
+# The package ships no cmdline.txt: the digest is computed here from the same
+# command line the config produces, exactly as render_package does.
+cmdline_file="$tmp_dir/measure-cmdline.txt"
+printf '%s\n' "$rendered_cmdline" > "$cmdline_file"
 measure_hex="$(python3 "$MEASURE" digest \
   --ovmf "$tmp_dir/fixture-ovmf.fd" \
   --kernel "$tmp_dir/fixture-vmlinuz" \
   --initrd "$tmp_dir/fixture-initrd.img" \
-  --cmdline "$pkg/cmdline.txt" | sed -n 's/^hex=//p')"
+  --cmdline "$cmdline_file" | sed -n 's/^hex=//p')"
 check "measure: a 64-hex digest is produced" "1" "$(grep -cE '^[0-9a-f]{64}$' <<<"$measure_hex")"
 check_contains "README: shows the expected hex" "$measure_hex" "$(cat "$pkg/README.md")"
-check_contains "README: points at cmdline.txt" 'cmdline.txt' "$(cat "$pkg/README.md")"
+check_absent "README: no cmdline.txt reference" 'cmdline.txt' "$(cat "$pkg/README.md")"
+check "package: ships no cmdline.txt" "absent" \
+  "$([[ -e "$pkg/cmdline.txt" ]] && echo present || echo absent)"
 
 # The pure-Python SM3 must agree with an independent implementation when one
 # is available (OpenSSL 3 ships sm3).

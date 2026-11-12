@@ -1827,17 +1827,23 @@ IDENTITY
       --section "$KATA_HYPERVISOR_SECTION" \
       "${smp_args[@]}")"
   fi
-  printf '%s\n' "$measure_cmdline" > "$out_dir/cmdline.txt"
-
-  local measure_out
+  # measure.py takes the command line as a file, but the package does not ship
+  # that file: only the resulting digest is quoted. A temporary copy keeps the
+  # input byte-exact without leaving behind a `cmdline.txt` that would go stale
+  # the moment install.sh re-renders the config from env.txt.
+  local measure_cmdline_file measure_out
+  measure_cmdline_file="$(mktemp /tmp/taa-cmdline.XXXXXX.txt)"
+  printf '%s\n' "$measure_cmdline" > "$measure_cmdline_file"
   if ! measure_out="$(python3 "$RENDER_DIR/measure.py" digest \
     --ovmf "$out_dir/$PACKAGE_BUNDLE_SUBDIR/OVMF.fd" \
     --kernel "$out_dir/$PACKAGE_BUNDLE_SUBDIR/vmlinuz" \
     --initrd "$out_dir/$PACKAGE_BUNDLE_SUBDIR/initramfs.img" \
-    --cmdline "$out_dir/cmdline.txt")"; then
+    --cmdline "$measure_cmdline_file")"; then
+    rm -f "$measure_cmdline_file"
     echo "error: 计算预期 MEASUREMENT 失败" >&2
     exit 1
   fi
+  rm -f "$measure_cmdline_file"
   measure_hex="$(sed -n 's/^hex=//p' <<<"$measure_out")"
   measure_b64="$(sed -n 's/^base64=//p' <<<"$measure_out")"
   measure_smp="$(sed -n 's/.*nr_cpus=\([0-9][0-9]*\).*/\1/p' <<<"$measure_cmdline")"
@@ -1861,7 +1867,6 @@ CSV2 的启动度量是 \`SM3(OVMF || 哈希表)\`：哈希表里按 cmdline、i
 三项各放一个 SHA256，cmdline 是 QEMU 实际 \`-append\` 的字节（末尾换行替换为 NUL）。
 
 - smp（\`nr_cpus=\`）：\`$measure_smp\`
-- cmdline 原文：\`cmdline.txt\`
 - OVMF SHA256：\`$ovmf_sha\`
 - kernel SHA256：\`$kernel_sha\`
 - initrd SHA256：\`$initrd_sha\`
@@ -1928,7 +1933,6 @@ $(if [[ -n "$TEST_IMAGE_ARCHIVE" ]]; then printf -- '- `%s/` — 测试 Pod 镜�
 - \`config/env.txt\` — **可在宿主机上编辑的部署身份**（见下文）
 - \`SHA256SUMS\` — 不可变文件的校验和（\`config/env.txt\` 与由它渲染的
   \`$PACKAGE_KATA_CONFIG\` 不在其中，这两个文件本来就允许在宿主机上改）
-$([[ -f "$out_dir/cmdline.txt" ]] && echo '- `cmdline.txt` — 计算预期度量所用的 QEMU `-append` 原文')
 
 ## 前置条件
 
