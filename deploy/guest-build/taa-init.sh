@@ -45,21 +45,22 @@ log() { echo "taa-init: $*" >"$CONSOLE" 2>/dev/null || true; }
 # the launcher renders the tokens into the Kata config's kernel_params, QEMU puts
 # them on -append, and they are read from here.
 #
-# Only the names below are honoured. The command line is host-provided input, so
-# exporting arbitrary names from it would let the host set anything at all.
+# The key is the environment variable's own name in lower case, so no table is
+# needed here: `taa.platform_ip` becomes PLATFORM_IP, `taa.taa_llm_endpoint`
+# becomes TAA_LLM_ENDPOINT and `taa.taasecretkey` becomes TAASECRETKEY. A
+# setting TAA starts reading therefore needs no change to this script.
+#
+# Every well-formed name is exported; there is no allow-list. The command line
+# is host-provided input, so this does hand the host the wrapper's and TAA's
+# environment -- but the host already chooses the kernel, the initrd and the
+# boot parameters, so a shorter list only hid that fact while making each new
+# setting a code change here. Names must match [a-z][a-z0-9_]*; anything else
+# (empty key, upper case, punctuation) is skipped rather than exported.
 cmdline_env_name() {
   case "$1" in
-    platform_ip)         echo PLATFORM_IP ;;
-    docker_id)           echo DOCKER_ID ;;
-    platform_public_key) echo PLATFORM_PUBLIC_KEY ;;
-    platform_sm2_id)     echo PLATFORM_SM2_ID ;;
-    contract_id)         echo CONTRACT_ID ;;
-    contract_type)       echo CONTRACT_TYPE ;;
-    llm_endpoint)        echo TAA_LLM_ENDPOINT ;;
-    addr)                echo TAA_ADDR ;;
-    modules)             echo TAA_MODULES ;;
-    *) return 1 ;;
+    [!a-z]*|*[!a-z0-9_]*) return 1 ;;
   esac
+  printf '%s' "$1" | sed 'y/abcdefghijklmnopqrstuvwxyz/ABCDEFGHIJKLMNOPQRSTUVWXYZ/'
 }
 
 # Values override the build-time /etc/default/taa.env: the image may be older than
@@ -105,7 +106,7 @@ resolve_csv_minor() {
   return 0
 }
 
-# Load the modules named by taa.modules=..., comma-separated.
+# Load the modules named by taa.taa_modules=..., comma-separated.
 #
 # Nothing else loads them here: the base initrd has no udev and no
 # systemd-modules-load, and a DCU guest's driver (hycu) is an out-of-tree module
@@ -120,7 +121,7 @@ resolve_csv_minor() {
 load_kernel_modules() {
   [ -n "${TAA_MODULES:-}" ] || return 0
   if [ ! -x "$KMOD_BIN" ]; then
-    log "WARNING: taa.modules=$TAA_MODULES but $KMOD_BIN is absent; not loading them"
+    log "WARNING: taa.taa_modules=$TAA_MODULES but $KMOD_BIN is absent; not loading them"
     return 0
   fi
   local release name saved_ifs

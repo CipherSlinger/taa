@@ -20,6 +20,11 @@ RDINIT = "rdinit=/usr/local/bin/taa-init"
 # package's editable identity file cannot grow a key the guest would silently
 # ignore, and so a re-render can drop the whole set before applying the file
 # (deleting a line has to delete the parameter, not leave a stale one behind).
+# Each key is the environment variable taa-init exports from it, in lower case:
+# `taa.taa_llm_endpoint` becomes TAA_LLM_ENDPOINT. The list stays here so a typo
+# in the editable identity file fails the install; taa-init itself accepts any
+# well-formed `taa.<key>` and applies the same case mapping, so a new setting
+# only has to be added here.
 IDENTITY_KEYS = (
     "platform_ip",
     "docker_id",
@@ -27,12 +32,17 @@ IDENTITY_KEYS = (
     "platform_sm2_id",
     "contract_id",
     "contract_type",
-    "llm_endpoint",
-    "addr",
+    "taa_llm_endpoint",
+    "taa_addr",
     # Kernel modules the guest loads before starting TAA (comma-separated). Only
     # the DCU roles set it (hycu); everywhere else it is absent, which is what
     # taa-init treats as "load nothing".
-    "modules",
+    "taa_modules",
+    # Wrapped copy of the SM2 private scalar. SM4-GCM under SM3(hardware sealing
+    # key || CONTRACT_ID)[:16], so it is ciphertext, not the key itself: a host
+    # that can read the command line still cannot decrypt it, and re-injecting
+    # it is exactly the recovery path TAA implements.
+    "taasecretkey",
 )
 
 
@@ -149,7 +159,12 @@ def render_kata_config(template, section, bundle_dir, out, extra_params=(),
         """
         drop = {p.split("=", 1)[0] for p in extra_params}
         if replace_identity:
-            drop |= {"taa." + key for key in IDENTITY_KEYS}
+            # Drop every identity token, not only the keys known here: taa-init
+            # exports any well-formed `taa.<key>`, so a token left behind by an
+            # older render would still take effect and could silently shadow the
+            # edited file.
+            drop |= {p.split("=", 1)[0] for p in params
+                     if p.split("=", 1)[0].startswith("taa.")}
         kept = [p for p in params if p.split("=", 1)[0] not in drop]
         return kept + list(extra_params)
 

@@ -178,7 +178,7 @@ role_test_image() {
 # Kernel modules the guest must load before anything can use the device. The
 # DCU kernel builds hycu out of tree and the base initrd carries neither the
 # module tree nor kmod, so the package ships both and taa-init loads them from
-# this list, which it receives as taa.modules= on the kernel command line.
+# this list, which it receives as taa.taa_modules= on the kernel command line.
 role_kernel_modules() {
   case "$TAA_ROLE" in
     taa-train-dcu|taa-infer-dcu) echo hycu ;;
@@ -352,10 +352,16 @@ TAA_PLATFORM_KEY_FILE="${TAA_PLATFORM_KEY_FILE:-$ROOT_DIR/.local/platform-mock/p
 TAA_PLATFORM_PUBLIC_KEY="${TAA_PLATFORM_PUBLIC_KEY:-${PLATFORM_PUBLIC_KEY:-}}"
 # Optional envelope identity overrides and the LLM endpoint. Empty means the
 # protocol default (PLATFORM_SM2_ID), the config file (CONTRACT_ID) or the
-# endpoint in the config file (TAA_LLM_ENDPOINT). TAASECRETKEY is deliberately
-# not carried: it is secret material, not deployment identity.
+# endpoint in the config file (TAA_LLM_ENDPOINT).
+#
+# TAASECRETKEY is carried as well, but it is not a plaintext secret: it is the
+# SM4-GCM ciphertext of the private scalar under SM3(csv hardware sealing key ||
+# CONTRACT_ID)[:16]. A host that reads the command line cannot decrypt it; it
+# can only re-inject the wrapped form, which is precisely the recovery TAA
+# implements. The raw private key still never appears here.
 TAA_PLATFORM_SM2_ID="${TAA_PLATFORM_SM2_ID:-}"
 TAA_CONTRACT_ID="${TAA_CONTRACT_ID:-}"
+TAA_SECRET_KEY="${TAASECRETKEY:-}"
 # The role sets this, not the operator: it is the one value that makes the guest
 # behave as the package's role. Letting an inherited TAA_CONTRACT_TYPE win would
 # produce a package whose directory and handler say "infer" while the guest
@@ -367,8 +373,8 @@ fi
 TAA_CONTRACT_TYPE="$(role_contract_type)"
 TAA_LLM_ENDPOINT="${TAA_LLM_ENDPOINT:-}"
 # Kernel modules the guest wrapper loads at boot (comma-separated). It travels as
-# taa.modules= on the kernel command line, like the rest of the identity, so an
-# operator can change it without rebuilding the measured initrd.
+# taa.taa_modules= on the kernel command line, like the rest of the identity, so
+# an operator can change it without rebuilding the measured initrd.
 TAA_MODULES="${TAA_MODULES:-$(role_kernel_modules)}"
 
 # Read the platform public key from a key file. The platform-mock persists
@@ -1690,12 +1696,16 @@ render_package() {
   add_kernel_param platform_sm2_id "$TAA_PLATFORM_SM2_ID"
   add_kernel_param contract_id "$TAA_CONTRACT_ID"
   add_kernel_param contract_type "$TAA_CONTRACT_TYPE"
-  add_kernel_param llm_endpoint "$TAA_LLM_ENDPOINT"
-  add_kernel_param addr "$TAA_ADDR"
+  add_kernel_param taa_llm_endpoint "$TAA_LLM_ENDPOINT"
+  add_kernel_param taa_addr "$TAA_ADDR"
   # Not a TAA setting: taa-init consumes it before starting TAA. It rides the
   # same identity channel so the module list is part of the measured command
   # line and can be changed without rebuilding the initrd.
-  add_kernel_param modules "$TAA_MODULES"
+  add_kernel_param taa_modules "$TAA_MODULES"
+  # Optional key recovery: the wrapped private scalar, never the raw key. The
+  # token is the environment variable's own name in lower case, as every token
+  # now is; taa-init upper-cases it back to TAASECRETKEY before starting TAA.
+  add_kernel_param taasecretkey "$TAA_SECRET_KEY"
 
   # The package carries the three files QEMU boots. Shipping them is what lets
   # the same package be deployed on a host whose Kata installation lives
@@ -1755,10 +1765,14 @@ render_package() {
 # 改完本文件后执行 `sudo bash install.sh`：install.sh 会按它重新渲染
 # config/kata-config.toml。内核命令行只在新建 Pod 时被读入，再执行
 # `sudo bash test/create-test-pod.sh` 重建测试 Pod 才能让新身份生效。
-# 只允许下列 9 个键；值不能含空白字符；删掉一行就是去掉对应参数。
+# key 就是环境变量名的全小写形式：taa.taa_llm_endpoint -> TAA_LLM_ENDPOINT，
+# taa.taasecretkey -> TAASECRETKEY。taa-init 把 key 全部大写后 export。
+# 可用的键如下；值不能含空白字符；删掉一行就是去掉对应参数：
 #   taa.platform_ip  taa.docker_id  taa.platform_public_key  taa.platform_sm2_id
-#   taa.contract_id  taa.contract_type  taa.llm_endpoint  taa.addr  taa.modules
-# 不要在这里放密钥：内核命令行在宿主机的 `ps` 与日志里可见。
+#   taa.contract_id  taa.contract_type  taa.taa_llm_endpoint  taa.taa_addr
+#   taa.taa_modules
+# 可选 taa.taasecretkey=<120 位十六进制>：平台保存的私钥密文（SM4-GCM 包裹），
+# 不是明文私钥。命令行对宿主机可见，宿主只能把它重放回 TAA，无法解密。
 IDENTITY
     local param
     for param in ${kernel_params[@]+"${kernel_params[@]}"}; do
@@ -1985,13 +1999,21 @@ sudo bash install.sh
 install.sh 会重渲染配置；再执行 \`test/create-test-pod.sh\` 重建测试 Pod，
 新 Pod 才会带上新的命令行。env.txt 里删掉一行，对应的参数就会从命令行上消失。
 
-只允许这 8 个键，写错键名、重复键、空值或含空白字符的值都会让 install.sh
-直接报错退出，不会带上一个 guest 会静默忽略的参数：
+键名就是环境变量名的全小写形式（\`taa.taa_llm_endpoint\` 对应
+\`TAA_LLM_ENDPOINT\`，\`taa.taasecretkey\` 对应 \`TAASECRETKEY\`）：taa-init 把
+\`taa.\` 之后的部分全部大写后 export，不再维护白名单。渲染侧仍会校验键名以防手误：
+写错键名、重复键、空值或含空白字符的值都会让 install.sh 直接报错退出，不会带上一个
+guest 会静默忽略的参数。可用的键：
 
 \`\`\`
 taa.platform_ip  taa.docker_id  taa.platform_public_key  taa.platform_sm2_id
-taa.contract_id  taa.contract_type  taa.llm_endpoint  taa.addr
+taa.contract_id  taa.contract_type  taa.taa_llm_endpoint  taa.taa_addr
+taa.taa_modules  taa.taasecretkey（可选）
 \`\`\`
+
+\`taa.taasecretkey\` 是平台保存的私钥密文（SM4-GCM 包裹，密钥是 CSV 硬件密封密钥
+派生的 SM4 密钥），不是明文私钥；命令行对宿主机可见，但宿主只能把它重放回 TAA，
+无法解密出私钥。
 
 内核命令行本身也在 CSV2 度量范围内，所以改身份改的是 MEASUREMENT：
 \`test/create-test-pod.sh\` 会按当前配置重算预期值，再与 QEMU 实际的 \`-append\` 比对。

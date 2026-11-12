@@ -567,7 +567,7 @@ runtime handler 为 `kata-qemu-dcu-csv2-taa-*`。`hycu`/`hycu-sched` 是该内�
 只读挂载该镜像，把 `usr/lib/modules/6.6.0-hycu-confidential-csv+`（约 122 MiB）、
 同 release 的 firmware 与 `usr/bin/kmod` 取到 `deploy/guest-build/base/dcu-payload/`。
 initrd 里没有 udev / systemd-modules-load，`taa-init` 按内核命令行上的
-`taa.modules=hycu` 显式 `modprobe`；这是唯一能在容器运行时查找设备之前加载驱动的时机。
+`taa.taa_modules=hycu` 显式 `modprobe`；这是唯一能在容器运行时查找设备之前加载驱动的时机。
 注意该包只管 guest 侧：TEE VBIOS、卡绑 vfio-pci、宿主 IOMMU、`cc_init_data` 注解和
 DTK-tee 镜像仍需宿主侧就绪。
 

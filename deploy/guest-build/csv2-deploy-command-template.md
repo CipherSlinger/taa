@@ -23,7 +23,7 @@
 > | `taa-infer-dcu` | 2 | `kata-qemu-dcu-csv2-taa-infer` | `/root/taa-images/package-infer-dcu` | `172.16.10.178:31313/vllm:ubuntu-dtk` |
 >
 > 两个 `-dcu` 角色面向 DCU 全机密运行时：用 DCU 内核与 `configuration-qemu-hygon-dcu-csv2.toml`，
-> 内核命令行带 `taa.modules=hycu`，测试 Pod 申请 `hygon.cn/k100_ai`。驱动是树外模块，宿主机上
+> 内核命令行带 `taa.taa_modules=hycu`，测试 Pod 申请 `hygon.cn/k100_ai`。驱动是树外模块，宿主机上
 > 没有文件，**首次构建前必须先用该角色跑一次 `fetch-base`**，把模块、固件和 kmod 从 DCU guest
 > 镜像取到 `deploy/guest-build/base/dcu-payload/`。
 

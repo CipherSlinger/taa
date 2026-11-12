@@ -81,13 +81,14 @@ check "does not match a name that merely contains csv-guest" "" \
 
 echo "== apply_cmdline_identity =="
 
-# The kernel command line is host-provided input read by PID 1, so these tests
-# are mostly about what must NOT happen: unknown keys ignored, no arbitrary name
-# exported, and a missing /proc/cmdline not taking the boot down.
+# The kernel command line is host-provided input read by PID 1. Every key whose
+# name is a well-formed lower-case environment name is exported upper-cased;
+# malformed names are skipped, and a missing /proc/cmdline must not take the boot
+# down.
 
 cmdline="$WORK_DIR/cmdline"
 cat >"$cmdline" <<'EOF'
-BOOT_IMAGE=/vmlinuz rdinit=/usr/local/bin/taa-init console=hvc0 taa.platform_ip=10.1.2.3:18080 taa.docker_id=fixture-docker-id taa.platform_public_key=04ab taa.llm_endpoint=https://10.1.2.3:8443
+BOOT_IMAGE=/vmlinuz rdinit=/usr/local/bin/taa-init console=hvc0 taa.platform_ip=10.1.2.3:18080 taa.docker_id=fixture-docker-id taa.platform_public_key=04ab taa.taa_llm_endpoint=https://10.1.2.3:8443
 EOF
 
 got="$(
@@ -109,30 +110,34 @@ got="$(
 )"
 check "overrides the baked env file" '10.1.2.3:18080|fixture-docker-id' "$got"
 
-# Anything not on the allow-list stays out of the environment, including names
-# that would let the host turn a token into a privileged setting (PATH) or into
-# secret material (TAASECRETKEY is never carried at all).
-leak_cmdline="$WORK_DIR/cmdline-leak"
-cat >"$leak_cmdline" <<'EOF'
-taa.path=/tmp/evil taa.TAASECRETKEY=secret taa.unknown_key=x taa.=empty
+# There is no allow-list: the key is the environment variable's name in lower
+# case, so TAASECRETKEY arrives as taa.taasecretkey and needs no table here.
+generic_cmdline="$WORK_DIR/cmdline-generic"
+cat >"$generic_cmdline" <<'EOF'
+taa.taasecretkey=deadbeef taa.unknown_key=x taa.=empty
 EOF
 got="$(
-  export CMDLINE_FILE="$leak_cmdline"
+  export CMDLINE_FILE="$generic_cmdline"
   apply_cmdline_identity >/dev/null 2>&1
-  for name in TAASECRETKEY UNKNOWN_KEY; do
-    if declare -p "$name" >/dev/null 2>&1; then printf '%s ' "$name"; fi
-  done
-  printf 'PATH=%s' "$PATH"
+  printf '%s|%s|' "${TAASECRETKEY:-<unset>}" "${UNKNOWN_KEY:-<unset>}"
+  env | grep -c '^taa\.' || true
 )"
-check "refuses keys outside the allow-list" "PATH=$PATH" "$got"
+check "exports every well-formed taa.<key>, upper-cased" \
+  'deadbeef|x|0' "$got"
 
-# A non-taa token must not be re-exported under its own name.
+# A malformed key must not become an export: upper case (the key is the lower-
+# case form), a leading digit, and an empty key are all skipped.
+bad_cmdline="$WORK_DIR/cmdline-bad-keys"
+cat >"$bad_cmdline" <<'EOF'
+taa.TAASECRETKEY=upper taa.9bad=x taa.=empty taa.bad-key=x
+EOF
 got="$(
-  export CMDLINE_FILE="$leak_cmdline"
+  export CMDLINE_FILE="$bad_cmdline"
   apply_cmdline_identity >/dev/null 2>&1
-  declare -p taa.unknown_key >/dev/null 2>&1 && echo exported || echo absent
+  printf '%s|%s|' "${TAASECRETKEY:-<unset>}" "${BAD_KEY:-<unset>}"
+  env | grep -c '^taa\.' || true
 )"
-check "does not export the raw token name" "absent" "$got"
+check "skips malformed keys" '<unset>|<unset>|0' "$got"
 
 # Duplicate keys are prevented at render time, but a hand-edited config could
 # still carry two: the later one has to win, as it would for the kernel.
@@ -153,17 +158,17 @@ rc=$?
 set -e
 check "missing CMDLINE_FILE still returns 0" "0" "$rc"
 
-# taa.modules is the one identity key that is not a TAA setting: it names the
-# drivers taa-init has to load before anything looks for the device.
+# taa.taa_modules is not a TAA setting: it names the drivers taa-init has to
+# load before anything looks for the device.
 modules_cmdline="$WORK_DIR/cmdline-modules"
-printf 'taa.modules=hycu,hycu-sched\n' >"$modules_cmdline"
+printf 'taa.taa_modules=hycu,hycu-sched\n' >"$modules_cmdline"
 got="$(
   unset TAA_MODULES
   export CMDLINE_FILE="$modules_cmdline"
   apply_cmdline_identity >/dev/null 2>&1
   printf '%s' "${TAA_MODULES:-<unset>}"
 )"
-check "maps taa.modules onto TAA_MODULES" "hycu,hycu-sched" "$got"
+check "maps taa.taa_modules onto TAA_MODULES" "hycu,hycu-sched" "$got"
 
 echo "== load_kernel_modules =="
 

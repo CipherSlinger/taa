@@ -129,7 +129,7 @@ common_env=(
 
 # The identity tokens render_package appends to kernel_params, in emission
 # order. Kept in one place so the config and cmdline expectations cannot drift.
-identity_params="taa.platform_ip=172.16.10.116:18080 taa.docker_id=fixture-docker-id taa.platform_public_key=04$(printf 'a%.0s' {1..128}) taa.platform_sm2_id=fixture-sm2-id taa.contract_id=fixture-contract-id taa.contract_type=1 taa.llm_endpoint=https://172.16.10.116:8443 taa.addr=0.0.0.0:6001"
+identity_params="taa.platform_ip=172.16.10.116:18080 taa.docker_id=fixture-docker-id taa.platform_public_key=04$(printf 'a%.0s' {1..128}) taa.platform_sm2_id=fixture-sm2-id taa.contract_id=fixture-contract-id taa.contract_type=1 taa.taa_llm_endpoint=https://172.16.10.116:8443 taa.taa_addr=0.0.0.0:6001"
 
 # ── 1. render produces a self-contained package, offline ────────────────────
 pkg="$tmp_dir/a/pkg"
@@ -176,7 +176,7 @@ check_contains "kata: other keys in the section survive" 'burst = 10' "$kata"
 # value in front of the new one.
 python3 "$RENDER" kata-config --template "$pkg/config/kata-config.toml" \
   --section hypervisor.qemu --bundle-dir "$bundle" \
-  --param taa.platform_ip=10.0.0.1 --param taa.addr=0.0.0.0:6001 \
+  --param taa.platform_ip=10.0.0.1 --param taa.taa_addr=0.0.0.0:6001 \
   --out "$tmp_dir/kata-again.toml" >/dev/null
 again="$(cat "$tmp_dir/kata-again.toml")"
 check "kata: a re-render never duplicates a key" "" \
@@ -259,6 +259,19 @@ identity_reject() {
 
 identity_reject "identity: an unknown key is refused" 'taa.unknown_key=x' 'unknown identity key'
 identity_reject "identity: env-style names are refused" 'TAA_DOCKER_ID=fixture' 'unknown identity key'
+identity_reject "identity: the legacy short LLM key is refused" \
+  'taa.llm_endpoint=https://10.0.0.1:8443' 'unknown identity key'
+
+# The recovery key is a deployment identity too: its token is the environment
+# variable in lower case and must reach the rendered command line.
+secret_identity="$tmp_dir/identity-secret.txt"
+cp "$identity_file" "$secret_identity"
+printf 'taa.taasecretkey=%s\n' "$(printf 'ab%.0s' {1..60})" >> "$secret_identity"
+python3 "$RENDER" kata-config --template "$pkg/config/kata-config.toml" \
+  --section hypervisor.qemu --bundle-dir "$bundle" \
+  --param-file "$secret_identity" --out "$tmp_dir/kata-secret.toml" >/dev/null
+check_contains "identity: the recovery key rides the command line" \
+  'taa.taasecretkey=' "$(cat "$tmp_dir/kata-secret.toml")"
 identity_reject "identity: an empty value is refused" 'taa.docker_id=' 'empty value'
 identity_reject "identity: a whitespace value is refused" 'taa.docker_id=two words' 'whitespace'
 identity_reject "identity: a duplicate key is refused" \
@@ -686,9 +699,9 @@ check_contains "dcu: the handler is the DCU one" \
 check_contains "dcu: the runtime type extends the DCU class" \
   'runtime_type = "io.containerd.kata-qemu-hygon-dcu-csv2.v2"' \
   "$(cat "$dcu_pkg/config/containerd-runtime-handler.toml")"
-check_contains "dcu: the guest is told to load hycu" 'taa.modules=hycu' "$dcu_kata"
+check_contains "dcu: the guest is told to load hycu" 'taa.taa_modules=hycu' "$dcu_kata"
 check_contains "dcu: the module rides with the other identity tokens" \
-  "taa.addr=0.0.0.0:6001 taa.modules=hycu" "$dcu_kata"
+  "taa.taa_addr=0.0.0.0:6001 taa.taa_modules=hycu" "$dcu_kata"
 check "dcu: guest RAM matches the other large-image role" "20480" \
   "$(sed -n 's/^default_memory = //p' "$dcu_pkg/config/kata-config.toml")"
 # The card has to be requested and limited; the extended resource is scheduled
@@ -712,7 +725,7 @@ echo "ok   dcu: the test Pod requests and is limited to the card"
 # The CPU package must not gain either of them: its initrd ships no kmod, and
 # an extended resource it never uses would keep the Pod Pending on nodes
 # without a DCU.
-check_absent "dcu: the CPU package names no module" 'taa.modules=' \
+check_absent "dcu: the CPU package names no module" 'taa.taa_modules=' \
   "$(cat "$pkg/config/kata-config.toml")"
 check_absent "dcu: the CPU test Pod requests no card" 'hygon.cn/k100_ai' \
   "$(cat "$pkg/test/test-pod.yaml")"
