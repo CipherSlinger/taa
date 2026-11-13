@@ -46,6 +46,7 @@ func init() {
 		"static/js/tree.js",
 		"static/js/logs.js",
 		"static/js/app.js",
+		"static/js/llm-console.js",
 	}
 	for _, f := range jsFiles {
 		content, readErr := staticFS.ReadFile(f)
@@ -132,6 +133,22 @@ func NewServer(cfg Config) *Server {
 	mux.HandleFunc("/api/llm/attestation", llmAttestationHandler(llmPoller))
 	mux.HandleFunc("/api/llm/reset", llmResetHandler(llmState, llmLogStore))
 	mux.HandleFunc("/api/llm/logs/clear", llmLogsClearHandler(llmState, llmLogStore))
+
+	// The TEE-LLM console is a separate, session-gated surface. It reuses the
+	// poller's observations rather than calling the instance on its own for
+	// status, so the tab and the existing panel cannot show different states.
+	console := newLLMConsole(cfg, llmPoller, llmState)
+	mux.HandleFunc("/api/llm/console/login", console.handleLogin)
+	mux.HandleFunc("/api/llm/console/logout", console.handleLogout)
+	mux.HandleFunc("/api/llm/console/session", console.handleSession)
+	mux.HandleFunc("/api/llm/console/overview", console.requireSession(console.handleOverview))
+	mux.HandleFunc("/api/llm/console/generate", console.requireSession(console.handleGenerate))
+	mux.HandleFunc("/api/llm/console/history", console.requireSession(console.handleHistory))
+	mux.HandleFunc("/api/llm/console/history/clear", console.requireSession(console.handleHistoryClear))
+	mux.HandleFunc("/api/llm/console/attestation", console.requireSession(console.handleAttestation))
+	mux.HandleFunc("/api/llm/console/health", console.requireSession(console.handleHealth))
+	mux.HandleFunc("/api/llm/console/settings", console.requireSession(console.handleSettings))
+
 	mux.HandleFunc("/api/instances", instancesHandler(mgr))
 	mux.HandleFunc("/api/instances/delete", instancesDeleteHandler(mgr))
 	mux.HandleFunc("/api/dashboard/status", dashboardStatusHandler(mgr))

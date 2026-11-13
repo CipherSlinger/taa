@@ -27,6 +27,8 @@ func main() {
 	flag.BoolVar(&cfg.AllowEmptyAttestation, "allow-empty-attestation", false, "skip attestation check")
 	flag.StringVar(&cfg.SM2ID, "sm2-id", cfg.SM2ID, "SM2 signature identity, must match TAA's PLATFORM_SM2_ID (empty = protocol default)")
 	flag.StringVar(&cfg.PlatformKeyFile, "platform-key-file", cfg.PlatformKeyFile, "platform SM2 key file (default: <state-dir>/platform-key.json)")
+	flag.StringVar(&cfg.ConsoleUser, "console-user", cfg.ConsoleUser, "TEE-LLM console username")
+	flag.StringVar(&cfg.ConsolePassword, "console-password", cfg.ConsolePassword, "TEE-LLM console password")
 	flag.Parse()
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()

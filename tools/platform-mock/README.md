@@ -71,6 +71,8 @@ list.
 | `-allow-empty-attestation` | `false` | When set to `true`, permits node registration without a valid Hygon CSV attestation report (useful for simulated non-TEE environments). |
 | `-sm2-id` | `""` = `1234567812345678` (or `$PLATFORM_SM2_ID`) | SM2 signature identity (`ID_A`). Must be byte-identical to the `PLATFORM_SM2_ID` TAA was started with, or signatures will not verify. The effective value is logged at startup. |
 | `-platform-key-file` | `<state-dir>/platform-key.json` (or `$PLATFORM_KEY_FILE`) | Where the platform SM2 key pair (and the last registered TAA public key) is persisted. Generated on first use; a restart reuses the same pair. |
+| `-console-user` | `admin` (or `$CONSOLE_USER`) | Login name for the embedded TEE-LLM console. |
+| `-console-password` | `teellm@2026` (or `$CONSOLE_PASSWORD`) | Login password for the embedded TEE-LLM console. |
 
 ## SM2 Envelope
 
@@ -107,6 +109,16 @@ The platform mock provides an embedded single-page Web console accessible by ope
   attestation and `verifiedPass=false` ⇒ `fhe`, otherwise `tee`) and the selector labels
   each entry with it. An unattested TEE instance registers the same way as FHE and is shown
   as FHE, because that is all the platform was told.
+- **TEE-LLM Console tab**: the page has two tabs — `平台模拟` (everything above) and
+  `TEE-LLM 控制台`, a login-gated operations console for the inference gateway. The console
+  signs in with `-console-user` / `-console-password` (defaults `admin` / `teellm@2026`) and
+  keeps an HttpOnly, SameSite=Strict session cookie for 8 hours (sliding); five failed attempts
+  lock that source IP for 60 seconds. It shows the instance overview, a prompt workbench that
+  calls the gateway over TEE-TLS (`POST /v1/llm/generate`), the CSV attestation plus the TLS
+  handshake evidence (measurement, public-key binding, certificate subject, elapsed time),
+  the polled gateway logs, and connection settings. The console endpoints live under
+  `/api/llm/console/*` and require the session; `TEELLM_TLS_ENDPOINT` (or the settings page)
+  selects the secure listener when it is not derivable from `-llm-target`.
 - **TEE-LLM Instance**: the mock polls the instance's plaintext `/v1/llm/*` routes, so the console
   gives it a dedicated card (TEE mode only): the address it polls — the host address
   `http://<host>:16001` by default (`--llm-target` / `LLM_TARGET`), which is the host port the

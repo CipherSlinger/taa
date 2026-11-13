@@ -13,6 +13,10 @@ const (
 	defaultTAAPort   = "6001"
 	defaultLLMPod    = "taa-teellm"
 	defaultLLMPort   = "6001"
+	// Console credentials have a documented default so a freshly started mock is
+	// usable without configuration; CONSOLE_USER / CONSOLE_PASSWORD override it.
+	defaultConsoleUser     = "admin"
+	defaultConsolePassword = "teellm@2026"
 )
 
 // Config carries the runtime configuration for the platform mock service.
@@ -65,6 +69,17 @@ type Config struct {
 	// PlatformKeyFile overrides where the platform SM2 key pair is persisted.
 	// Empty means <StateDir>/platform-key.json.
 	PlatformKeyFile string
+	// ConsoleUser and ConsolePassword are the single account that may sign in
+	// to the TEE-LLM console tab. They are plain configuration rather than a
+	// stored credential record: the mock has one operator account and no user
+	// database to keep.
+	ConsoleUser     string
+	ConsolePassword string
+	// ConsoleTLSHost is the host:port of the TEE-LLM TEE-TLS listener used by
+	// the console. Empty means "derive it from LLMTarget/pod discovery and
+	// replace the port with 18443", which is right for the standard deployment
+	// where both listeners live in one pod. TEELLM_TLS_ENDPOINT overrides it.
+	ConsoleTLSHost string
 }
 
 func (c Config) withDefaults() Config {
@@ -88,6 +103,12 @@ func (c Config) withDefaults() Config {
 	}
 	if c.LLMPollSeconds <= 0 {
 		c.LLMPollSeconds = defaultLLMPollSeconds
+	}
+	if c.ConsoleUser == "" {
+		c.ConsoleUser = defaultConsoleUser
+	}
+	if c.ConsolePassword == "" {
+		c.ConsolePassword = defaultConsolePassword
 	}
 	return c
 }
@@ -118,7 +139,8 @@ func envIntOrDefault(key string, fallback int) int {
 // DefaultConfig returns the default Config for the platform mock service,
 // resolving values from environment variables where applicable (STATE_DIR,
 // UPLOAD_DIR, TAA_POD, TAA_NS, TAA_PORT, LLM_POD, LLM_NS, LLM_PORT,
-// LLM_TARGET, LLM_POLL_SECONDS, PLATFORM_SM2_ID, PLATFORM_KEY_FILE).
+// LLM_TARGET, LLM_POLL_SECONDS, PLATFORM_SM2_ID, PLATFORM_KEY_FILE,
+// CONSOLE_USER, CONSOLE_PASSWORD, TEELLM_TLS_ENDPOINT).
 // PLATFORM_SM2_ID is deliberately the same variable TAA reads, so one exported
 // value configures both ends.
 func DefaultConfig() Config {
@@ -135,5 +157,8 @@ func DefaultConfig() Config {
 		LLMPollSeconds:  envIntOrDefault("LLM_POLL_SECONDS", defaultLLMPollSeconds),
 		SM2ID:           os.Getenv("PLATFORM_SM2_ID"),
 		PlatformKeyFile: envOrDefault("PLATFORM_KEY_FILE", ""),
+		ConsoleUser:     envOrDefault("CONSOLE_USER", defaultConsoleUser),
+		ConsolePassword: envOrDefault("CONSOLE_PASSWORD", defaultConsolePassword),
+		ConsoleTLSHost:  envOrDefault("TEELLM_TLS_ENDPOINT", ""),
 	}.withDefaults()
 }
