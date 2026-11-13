@@ -1384,9 +1384,13 @@
     if (stageText != null) setText('auditUploadStage', stageText);
   }
 
-  function showUploadProgress(visible) {
+  function showUploadProgress(visible, running) {
     const el = $('auditUploadProgress');
-    if (el) el.style.display = visible ? '' : 'none';
+    if (!el) return;
+    el.style.display = visible ? '' : 'none';
+    // Running mode turns the determinate transfer bar into an indeterminate
+    // stripe: once the archive is accepted the percentage stops meaning anything.
+    el.classList.toggle('is-running', !!running);
   }
 
   // showChosen paints the selected-file strip for either a local File or a file
@@ -1791,7 +1795,13 @@
             renderJobsTable();
             fillFindingsJobSelect();
             found = jobs.find((job) => job.requestId === requestId) || null;
-            if (found) renderStepper(found);
+            if (found) {
+              renderStepper(found);
+              if (String(found.status || '') === 'pending') {
+                showUploadProgress(true, true);
+                setUploadProgress(1, stepLabel(found.stage));
+              }
+            }
           }
         } catch (err) {
           if (err.unauthorized) {

@@ -2534,6 +2534,31 @@
   transition: width 0.28s ease;
 }
 
+/* Once the archive is accepted the transfer is done; the same strip becomes an
+   indeterminate "audit running" indicator and the percentage disappears. */
+.audit-upload.is-running .audit-upload-percent {
+  display: none;
+}
+
+.audit-upload.is-running .audit-upload-bar {
+  width: 100% !important;
+  background: repeating-linear-gradient(
+    115deg,
+    var(--aud-progress-from) 0 10px,
+    var(--aud-progress-to) 10px 20px
+  );
+  animation: aud-upload-stripes 0.9s linear infinite;
+}
+
+@keyframes aud-upload-stripes {
+  from {
+    background-position: 0 0;
+  }
+  to {
+    background-position: 22px 0;
+  }
+}
+
 /* Vertical audit rail: the six local-audit steps, each with its own dot on a
    connector line. The server owns the state: pending, active, done, skipped,
    error. Only the active row is emphasised, so the eye lands on the step that
