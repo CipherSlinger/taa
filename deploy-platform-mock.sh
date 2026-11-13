@@ -46,6 +46,12 @@ LLM_PORT=""
 LLM_HOST_PORT="${PLATFORM_MOCK_LLM_HOST_PORT:-16001}"
 SM2_ID="${PLATFORM_SM2_ID:-}"
 PLATFORM_KEY_FILE="${PLATFORM_KEY_FILE:-}"
+# TEE-LLM console account and secure listener. Empty means the binary's own
+# defaults: admin / teellm@2026, and a TLS endpoint derived from the LLM target
+# host on port 18443.
+CONSOLE_USER="${CONSOLE_USER:-}"
+CONSOLE_PASSWORD="${CONSOLE_PASSWORD:-}"
+TEE_TLS_ENDPOINT="${TEELLM_TLS_ENDPOINT:-}"
 READY_TIMEOUT="${PLATFORM_READY_TIMEOUT:-${READY_TIMEOUT:-60}}"
 READY_INTERVAL="${PLATFORM_READY_INTERVAL:-${READY_INTERVAL:-2}}"
 
@@ -117,6 +123,10 @@ Common options:
                              switches the mock back to kubectl discovery
   --sm2-id ID                SM2 ID_A passed to the mock
   --platform-key-file PATH   Platform SM2 key file passed to the mock
+  --console-user NAME        TEE-LLM console login (default admin)
+  --console-password PASS    TEE-LLM console password (default teellm@2026)
+  --tee-tls-endpoint H:P     TEE-LLM TEE-TLS listener used by the console
+                             (default <llm-target host>:18443)
   --allow-empty-attestation  Skip attestation validation (non-TEE testing)
   --reuse                    On start, reuse an instance already answering
   --reset-register           POST /api/register/reset once the instance is ready
@@ -179,6 +189,9 @@ parse_args() {
       --taa-port) need_value "$@"; TAA_PORT="$2"; shift 2 ;;
       --sm2-id) need_value "$@"; SM2_ID="$2"; shift 2 ;;
       --platform-key-file) need_value "$@"; PLATFORM_KEY_FILE="$2"; shift 2 ;;
+      --console-user) need_value "$@"; CONSOLE_USER="$2"; shift 2 ;;
+      --console-password) need_value "$@"; CONSOLE_PASSWORD="$2"; shift 2 ;;
+      --tee-tls-endpoint) need_value "$@"; TEE_TLS_ENDPOINT="$2"; shift 2 ;;
       --allow-empty-attestation) ALLOW_EMPTY_ATTESTATION=1; shift ;;
       --reuse) REUSE_IF_RUNNING=1; shift ;;
       --reset-register) RESET_REGISTER=1; shift ;;
@@ -333,6 +346,13 @@ build_mock_args() {
   [ "$ALLOW_EMPTY_ATTESTATION" = "1" ] && MOCK_ARGS+=(-allow-empty-attestation)
   [ -n "$SM2_ID" ] && MOCK_ARGS+=(-sm2-id "$SM2_ID")
   [ -n "$PLATFORM_KEY_FILE" ] && MOCK_ARGS+=(-platform-key-file "$PLATFORM_KEY_FILE")
+
+  # The console reads these from the environment, and passing them this way
+  # keeps the password out of the process arguments on the remote host.
+  REMOTE_ENV_PREFIX=""
+  [ -n "$CONSOLE_USER" ] && REMOTE_ENV_PREFIX+="CONSOLE_USER=$(shell_quote "$CONSOLE_USER") "
+  [ -n "$CONSOLE_PASSWORD" ] && REMOTE_ENV_PREFIX+="CONSOLE_PASSWORD=$(shell_quote "$CONSOLE_PASSWORD") "
+  [ -n "$TEE_TLS_ENDPOINT" ] && REMOTE_ENV_PREFIX+="TEELLM_TLS_ENDPOINT=$(shell_quote "$TEE_TLS_ENDPOINT") "
   return 0
 }
 
@@ -368,15 +388,16 @@ start_remote() {
   else
     log "TEE-LLM target: kubectl discovery from the Pod name (--llm-pod/--llm-ns/--llm-port)"
   fi
+  log "console: user ${CONSOLE_USER:-admin}; TEE-TLS endpoint ${TEE_TLS_ENDPOINT:-(derived from the LLM target host on port 18443)}"
   if is_dry_run; then
-    log "would start $REMOTE_BINARY on $REMOTE_TARGET with ${MOCK_ARGS[*]} (log $LOG_FILE)"
+    log "would start ${REMOTE_ENV_PREFIX}$REMOTE_BINARY on $REMOTE_TARGET with ${MOCK_ARGS[*]} (log $LOG_FILE)"
     return 0
   fi
   remote_sh "mkdir -p $(shell_quote "$REMOTE_DIR")" || die "could not create $REMOTE_DIR on $REMOTE_TARGET"
   stop_remote
   upload_remote
   log "starting platform-mock on $REMOTE_TARGET ($ADDR)"
-  remote_sh "nohup $(shell_quote "$REMOTE_BINARY") $(shell_quote "${MOCK_ARGS[@]}") > $(shell_quote "$LOG_FILE") 2>&1 < /dev/null & echo \$! > $(shell_quote "$PID_FILE")" \
+  remote_sh "nohup ${REMOTE_ENV_PREFIX}$(shell_quote "$REMOTE_BINARY") $(shell_quote "${MOCK_ARGS[@]}") > $(shell_quote "$LOG_FILE") 2>&1 < /dev/null & echo \$! > $(shell_quote "$PID_FILE")" \
     || die "failed to start $REMOTE_BINARY on $REMOTE_TARGET"
   if ! wait_ready; then
     remote_sh "tail -n 40 $(shell_quote "$LOG_FILE")" >&2 || true

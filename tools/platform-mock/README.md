@@ -54,8 +54,11 @@ runs on the remote host.
 Useful options: `--state-dir` / `--upload-dir` (omitted when empty, which keeps the binary's
 own defaults), `--reuse` (start only if nothing already answers), `--reset-register` (POST
 `/api/register/reset` after the instance is ready), `--skip-build`, `--dry-run`, and
-`--ready-timeout` / `--ready-interval`. Run `./deploy-platform-mock.sh --help` for the full
-list.
+`--ready-timeout` / `--ready-interval`. For the TEE-LLM console, `--console-user` /
+`--console-password` set the login (default `admin` / `teellm@2026`) and
+`--tee-tls-endpoint HOST:PORT` overrides the secure listener (default `<llm-target host>:18443`);
+they are passed to the remote process through the environment, so the password does not show
+up in its command line. Run `./deploy-platform-mock.sh --help` for the full list.
 
 ## Command-Line Flags
 
