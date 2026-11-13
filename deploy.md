@@ -571,6 +571,17 @@ initrd 里没有 udev / systemd-modules-load，`taa-init` 按内核命令行上�
 注意该包只管 guest 侧：TEE VBIOS、卡绑 vfio-pci、宿主 IOMMU、`cc_init_data` 注解和
 DTK-tee 镜像仍需宿主侧就绪。
 
+DCU 角色另外带 `usr/share/oci/hooks/prestart/guest-hycu-cdi-generator.sh`。原因：宿主机
+把 `cdi.k8s.io/hycu` 注解翻译成沙箱冷插的 vfio 设备后，shim 还会给容器发一个
+`hygon.cn/hycu=0` 注解，guest 内的 kata-agent 只从 `/var/run/cdi/hygon.cn-hycu.json`
+解析这个名字；官方 DCU 镜像自带的生成器在本 initrd 里没有，于是 Pod 卡在
+`failed to inject devices after CDI timeout of 100 seconds`（卡本身正常）。DCU 模板的
+`guest_hook_path` 指向该目录，agent 在建容器时按 `prestart/` 自动执行它。生成器是纯
+`/sys` 扫描（基座没有 `lspci`/`libpci`）：厂商号 `1d94` 认卡，PCI class 限定
+display/co-processor，再用 `/sys/class/drm` 的 readlink 把 BDF 与 `cardN`/`renderDN` 配对。
+设备节点和 `/opt/hyhal` 绑定挂载只在 guest 路径存在时才写入（缺节点的 CDI spec 会让注入
+以另一个错误失败）；脚本恒退出 0，不写 spec 时仍由 agent 自己的超时报错。
+
 **基座自带**
 
 - kata-agent：`usr/sbin/init`（19 MB Rust 二进制，`/init -> /sbin/init` 即 `rdinit`/`init` 入口）；
@@ -595,8 +606,9 @@ DTK-tee 镜像仍需宿主侧就绪。
 
 `usr/local/bin/taa`（必须静态链接 —— 基座 glibc 2.35，动态链接会随打包机漂移）、
 `usr/local/bin/taa-init`、`etc/taa/taa-config.json`、
-`etc/default/taa.env`；选中 semgrep 时整棵 `semgrep-payload/rootfs`（4242 文件，
-**自带 `python3.12`**，不依赖基座）。
+`etc/default/taa.env`；DCU 角色另加
+`usr/share/oci/hooks/prestart/guest-hycu-cdi-generator.sh`；选中 semgrep 时整棵
+`semgrep-payload/rootfs`（4242 文件，**自带 `python3.12`**，不依赖基座）。
 
 **模型执行环境（`runtime.execution.mode`）**
 

@@ -1349,6 +1349,19 @@ build_initrd() {
   # and run the weaker engine anyway -- the config should say what runs.
   stage_taa_config "$stage"
 
+  # The guest kata-agent runs every executable under the runtime config's
+  # `guest_hook_path` (/usr/share/oci/hooks) in prestart/, which is how the
+  # official DCU image supplies its CDI spec generator. Without a generator the
+  # agent cannot resolve the shim's `hygon.cn/hycu=0` annotation and container
+  # creation dies in `failed to inject devices after CDI timeout of 100
+  # seconds`. Only the DCU roles need it, so it is gated on the payload role.
+  if role_wants_dcu_payload; then
+    echo "注入 hycu CDI generator"
+    install -d -m 0755 "$stage/usr/share/oci/hooks/prestart"
+    install -m 0755 "$SCRIPT_DIR/guest-hycu-cdi-generator.sh" \
+      "$stage/usr/share/oci/hooks/prestart/guest-hycu-cdi-generator.sh"
+  fi
+
   # The `python`/`python3` names are not added here: the semgrep payload ships
   # them next to its interpreter (see build-semgrep-payload.sh), so they exist
   # exactly in the images that carry Python. Adding them unconditionally would
