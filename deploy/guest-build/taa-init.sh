@@ -31,10 +31,14 @@ CSV_SYSDEV_FILE="${CSV_SYSDEV_FILE:-/sys/class/misc/csv-guest/dev}"
 CMDLINE_FILE="${CMDLINE_FILE:-/proc/cmdline}"
 CSV_DEV=/dev/csv-guest
 CSV_MAJOR=10
-# kmod is a multicall binary: this one path provides modprobe and depmod. It is
-# shipped in the DCU payload; every other role's initrd has no module tool at all
-# and an empty module list, so this path is never reached there.
-KMOD_BIN=/usr/bin/kmod
+# kmod is a multicall binary: it selects its applet from argv[0], not from a
+# subcommand (`kmod modprobe foo` is rejected with "invalid command 'modprobe'",
+# measured 2026-11-13). The package ships these two dispatcher symlinks beside
+# the binary and this script calls them by their own names. Every other role's
+# initrd has no module tool at all and an empty module list, so neither path is
+# reached there.
+MODPROBE_BIN=/usr/sbin/modprobe
+DEPMOD_BIN=/usr/sbin/depmod
 MODULES_DIR=/lib/modules
 
 log() { echo "taa-init: $*" >"$CONSOLE" 2>/dev/null || true; }
@@ -110,9 +114,9 @@ resolve_csv_minor() {
 #
 # Nothing else loads them here: the base initrd has no udev and no
 # systemd-modules-load, and a DCU guest's driver (hycu) is an out-of-tree module
-# that the kernel does not build in. The kmod binary and the module tree arrive
-# in the package's DCU payload; for every other role the list is empty and this
-# is a no-op.
+# that the kernel does not build in. The module tree and the kmod applet links
+# arrive in the package's DCU payload; for every other role the list is empty and
+# this is a no-op.
 #
 # Failures are logged, never acted on. This is PID 1 -- exiting would panic the
 # VM -- and TAA has to start even if the device never appears: the task that
@@ -120,8 +124,8 @@ resolve_csv_minor() {
 # useful than a dead guest.
 load_kernel_modules() {
   [ -n "${TAA_MODULES:-}" ] || return 0
-  if [ ! -x "$KMOD_BIN" ]; then
-    log "WARNING: taa.taa_modules=$TAA_MODULES but $KMOD_BIN is absent; not loading them"
+  if [ ! -x "$MODPROBE_BIN" ]; then
+    log "WARNING: taa.taa_modules=$TAA_MODULES but $MODPROBE_BIN is absent; not loading them"
     return 0
   fi
   local release name saved_ifs
@@ -130,14 +134,18 @@ load_kernel_modules() {
     # The payload normally ships modules.dep; regenerating it writes only into
     # the initrd's ramfs and is cheap compared with a module the kernel cannot
     # resolve at boot.
-    "$KMOD_BIN" depmod -b / "$release" >/dev/null 2>&1 ||
-      log "WARNING: depmod $release failed"
+    if [ -x "$DEPMOD_BIN" ]; then
+      "$DEPMOD_BIN" -b / "$release" >/dev/null 2>&1 ||
+        log "WARNING: depmod $release failed"
+    else
+      log "WARNING: $DEPMOD_BIN is absent; $MODULES_DIR/$release/modules.dep stays missing"
+    fi
   fi
   saved_ifs="$IFS"
   IFS=,
   for name in $TAA_MODULES; do
     [ -n "$name" ] || continue
-    if "$KMOD_BIN" modprobe "$name" >/dev/null 2>&1; then
+    if "$MODPROBE_BIN" "$name" >/dev/null 2>&1; then
       log "module loaded: $name"
     else
       log "WARNING: modprobe $name failed; the device it drives will be unusable"

@@ -172,28 +172,37 @@ check "maps taa.taa_modules onto TAA_MODULES" "hycu,hycu-sched" "$got"
 
 echo "== load_kernel_modules =="
 
-# A stub kmod records the argv it was called with; the real one only lives
-# inside the DCU payload and cannot be run here.
-stub_kmod="$WORK_DIR/kmod"
+# kmod selects its applet from argv[0], so the package ships /usr/sbin/modprobe
+# and /usr/sbin/depmod as symlinks to it. The stubs are named the same way and
+# record the name they were invoked under: that name is what the real binary
+# dispatches on, and `kmod modprobe ...` -- which this fixture would catch as a
+# literal "kmod" argv[0] -- is rejected outright.
+stub_dir="$WORK_DIR/kmod-applets"
+mkdir -p "$stub_dir"
 kmod_log="$WORK_DIR/kmod.log"
-cat >"$stub_kmod" <<'EOF'
+cat >"$stub_dir/stub" <<'EOF'
 #!/bin/sh
-printf '%s\n' "$*" >>"${KMOD_LOG:?}"
+printf '%s %s\n' "${0##*/}" "$*" >>"${KMOD_LOG:?}"
 exit "${KMOD_STUB_RC:-0}"
 EOF
-chmod +x "$stub_kmod"
+chmod +x "$stub_dir/stub"
+ln -sf stub "$stub_dir/modprobe"
+ln -sf stub "$stub_dir/depmod"
+stub_modprobe="$stub_dir/modprobe"
+stub_depmod="$stub_dir/depmod"
 
 release="$(uname -r)"
 modules_dir="$WORK_DIR/modules"
 mkdir -p "$modules_dir/$release"
 : >"$modules_dir/$release/modules.dep"
 
-# Empty list: the function must not touch kmod at all. That is what every
-# non-DCU role relies on, since their initrd ships no kmod binary.
+# Empty list: the function must not touch modprobe at all. That is what every
+# non-DCU role relies on, since their initrd ships no module tool.
 rm -f "$kmod_log"
 set +e
 ( unset TAA_MODULES
-  KMOD_BIN="$stub_kmod" MODULES_DIR="$modules_dir" load_kernel_modules ) >/dev/null 2>&1
+  MODPROBE_BIN="$stub_modprobe" DEPMOD_BIN="$stub_depmod" MODULES_DIR="$modules_dir" \
+    load_kernel_modules ) >/dev/null 2>&1
 rc=$?
 set -e
 check "an empty module list is a no-op" "absent" \
@@ -204,8 +213,8 @@ check "an empty module list still returns 0" "0" "$rc"
 # commas must not become an empty module name.
 got="$(
   export KMOD_LOG="$kmod_log"
-  KMOD_BIN="$stub_kmod" MODULES_DIR="$modules_dir" TAA_MODULES=hycu,,hycu-sched \
-    load_kernel_modules >/dev/null 2>&1
+  MODPROBE_BIN="$stub_modprobe" DEPMOD_BIN="$stub_depmod" MODULES_DIR="$modules_dir" \
+    TAA_MODULES=hycu,,hycu-sched load_kernel_modules >/dev/null 2>&1
   cat "$kmod_log"
 )"
 check "loads each named module in order" 'modprobe hycu
@@ -214,8 +223,8 @@ modprobe hycu-sched' "$got"
 # modules.dep is shipped, so the normal path must not pay for a depmod.
 rm -f "$kmod_log"
 ( export KMOD_LOG="$kmod_log"
-  KMOD_BIN="$stub_kmod" MODULES_DIR="$modules_dir" TAA_MODULES=hycu \
-    load_kernel_modules ) >/dev/null 2>&1
+  MODPROBE_BIN="$stub_modprobe" DEPMOD_BIN="$stub_depmod" MODULES_DIR="$modules_dir" \
+    TAA_MODULES=hycu load_kernel_modules ) >/dev/null 2>&1
 check "does not re-run depmod when modules.dep is present" "1" "$(wc -l <"$kmod_log")"
 
 # Without it the kernel cannot resolve dependencies, so depmod runs first; it
@@ -224,29 +233,38 @@ empty_modules="$WORK_DIR/modules-empty"
 mkdir -p "$empty_modules"
 rm -f "$kmod_log"
 ( export KMOD_LOG="$kmod_log"
-  KMOD_BIN="$stub_kmod" MODULES_DIR="$empty_modules" TAA_MODULES=hycu \
-    load_kernel_modules ) >/dev/null 2>&1
+  MODPROBE_BIN="$stub_modprobe" DEPMOD_BIN="$stub_depmod" MODULES_DIR="$empty_modules" \
+    TAA_MODULES=hycu load_kernel_modules ) >/dev/null 2>&1
 check "runs depmod before loading when modules.dep is missing" "depmod -b / $release" \
   "$(head -1 "$kmod_log")"
+
+# depmod is only a repair step for a missing modules.dep: without it the load
+# still has to be attempted, because the module may resolve anyway.
+rm -f "$kmod_log"
+( export KMOD_LOG="$kmod_log"
+  MODPROBE_BIN="$stub_modprobe" DEPMOD_BIN="$WORK_DIR/no-such-depmod" \
+    MODULES_DIR="$empty_modules" TAA_MODULES=hycu \
+    load_kernel_modules ) >/dev/null 2>&1
+check "a missing depmod still loads the module" "modprobe hycu" "$(cat "$kmod_log")"
 
 # PID 1 must not exit: a module that fails to load is logged, and the boot goes
 # on. The task that needs the card fails later with an error naming it.
 set +e
 ( export KMOD_LOG="$kmod_log"; export KMOD_STUB_RC=1
-  KMOD_BIN="$stub_kmod" MODULES_DIR="$modules_dir" TAA_MODULES=hycu,hycu-sched \
-    load_kernel_modules ) >/dev/null 2>&1
+  MODPROBE_BIN="$stub_modprobe" DEPMOD_BIN="$stub_depmod" MODULES_DIR="$modules_dir" \
+    TAA_MODULES=hycu,hycu-sched load_kernel_modules ) >/dev/null 2>&1
 rc=$?
 set -e
 check "a failed modprobe is not fatal" "0" "$rc"
 
-# A role whose initrd has no kmod (or a payload fetched without it) must warn
-# and continue rather than abort.
+# A role whose package lacks the applet links (or a payload fetched without
+# kmod) must warn and continue rather than abort.
 set +e
-( KMOD_BIN="$WORK_DIR/no-such-kmod" MODULES_DIR="$modules_dir" TAA_MODULES=hycu \
+( MODPROBE_BIN="$WORK_DIR/no-such-modprobe" MODULES_DIR="$modules_dir" TAA_MODULES=hycu \
   load_kernel_modules ) >/dev/null 2>&1
 rc=$?
 set -e
-check "a missing kmod is not fatal" "0" "$rc"
+check "a missing modprobe is not fatal" "0" "$rc"
 
 echo "== TAA restart supervision =="
 

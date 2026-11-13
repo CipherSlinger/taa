@@ -209,6 +209,24 @@ role_device_resource() {
   esac
 }
 
+# CDI annotation the test Pod needs for the card to be attached at sandbox
+# creation. Requesting the resource only makes the device plugin hand the Pod a
+# /dev/vfio/N; the patched containerd translates this annotation into the
+# sandbox's cold-plug device list, and only then does the shim attach the vfio
+# device to the guest. Without it the Pod schedules and boots, but the guest has
+# no PCI device at all (measured 2026-11-13: hy-smi reports /dev/dri empty).
+#
+# It cannot live in kata-config.toml: `cold_plug_vfio` there only selects the
+# root-port shape, the shim takes no device list from the config, and a static
+# BDF would break kubelet's device accounting. The k8s annotation is the only
+# place the device is named.
+role_test_pod_annotations() {
+  case "$TAA_ROLE" in
+    taa-train-dcu|taa-infer-dcu) echo '{"cdi.k8s.io/hycu": "hygon.cn/k100_ai=h0"}' ;;
+    *) echo '{}' ;;
+  esac
+}
+
 # The guest kernel and Kata template the role boots. The DCU runtime uses its
 # own kernel (a different release with the hycu patches) and its own shipped
 # config, so both the fetch and the render follow the role instead of taking a
@@ -526,15 +544,18 @@ TEST_POD_DEVICE_RESOURCE="${TEST_POD_DEVICE_RESOURCE:-$(role_device_resource)}"
 # the registry, not just the host's docker daemon. Empty means "expect the
 # registry to already hold the image".
 TEST_IMAGE_ARCHIVE="${TEST_IMAGE_ARCHIVE:-}"
-# Extra annotations for the rendered test Pod, as a JSON object.
+# Extra annotations for the rendered test Pod, as a JSON object. The default
+# follows the role: a DCU Pod has to name its vfio device, everything else takes
+# no annotation from the package.
 #
 # The one a CoCo guest needs (io.katacontainers.config.runtime.cc_init_data) is
 # deliberately not defaulted here: it embeds the CA of the registry on the
 # target host, so it is per-host, and it is ~2 KiB of base64 that would bloat
 # every render. test/create-test-pod.sh reads it from the host at apply time
 # instead, so the operator never passes it. Set this only for annotations that
-# genuinely belong to the package.
-TEST_POD_ANNOTATIONS="${TEST_POD_ANNOTATIONS:-{\}}"
+# genuinely belong to the package -- setting it replaces the role default, so a
+# DCU package rendered that way has to repeat the cdi.k8s.io/hycu entry.
+TEST_POD_ANNOTATIONS="${TEST_POD_ANNOTATIONS:-$(role_test_pod_annotations)}"
 # Render-time only: the cached base Kata config is compared against the host's
 # copy before it is used as a template. install.sh no longer repeats this check;
 # the package carries the whole rendered config, so a different host Kata is a
@@ -878,13 +899,23 @@ stage_semgrep_payload() {
 }
 
 # Copy the DCU driver tree into the staging tree. The payload mirrors the guest
-# rootfs (usr/lib/modules, usr/lib/firmware, usr/bin/kmod), so this is one copy.
+# rootfs (usr/lib/modules, usr/lib/firmware, usr/bin/kmod), so this is one copy
+# plus the two kmod applet links the guest image has and the payload does not.
 stage_dcu_payload() {
   local stage_dir="$1"
   echo "注入 DCU 驱动载荷"
 
   local payload_root="$DCU_PAYLOAD_DIR/rootfs"
   cp -a "$payload_root/." "$stage_dir/"
+
+  # The image has these as symlinks to ../bin/kmod, and they are not decoration:
+  # kmod chooses its applet from argv[0], so `modprobe` and `depmod` only work
+  # under those names (`kmod modprobe x` exits 1 with "invalid command").
+  # fetch-base streams only usr/bin/kmod, so recreate the two links the guest
+  # image carries; taa-init calls them by name.
+  mkdir -p "$stage_dir/usr/sbin"
+  ln -sfn ../bin/kmod "$stage_dir/usr/sbin/modprobe"
+  ln -sfn ../bin/kmod "$stage_dir/usr/sbin/depmod"
 
   local payload_files payload_mib
   read -r payload_files payload_mib < <(
@@ -1062,10 +1093,11 @@ dcu_payload_fingerprint() {
 
 # Everything a cached seed depends on. Bump the format line when the seed layout
 # itself changes, so an old cache cannot be mistaken for one built this way.
-# (format=3 added the DCU payload and the combined semgrep-dcu seed.)
+# (format=3 added the DCU payload and the combined semgrep-dcu seed; format=4
+# added the /usr/sbin/{modprobe,depmod} applet links the DCU staging tree needs.)
 seed_fingerprint() {
   local kind="$1"
-  printf 'format=3\n'
+  printf 'format=4\n'
   printf 'base=%s\n' "$(sha256sum "$BASE_INITRD" | awk '{print $1}')"
   case "$kind" in
     semgrep|semgrep-dcu) printf 'semgrep_payload=%s\n' "$(semgrep_payload_fingerprint)" ;;

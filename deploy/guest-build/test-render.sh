@@ -730,7 +730,7 @@ echo "ok   role: the analysis Pod carries runAsUser=0"
 dcu_pkg="$tmp_dir/role/pkg-train-dcu"
 env "${common_env[@]}" REMOTE_HOST=invalid.invalid DIST_DIR="$dcu_pkg" \
   RUNTIME_HANDLER= RUNTIME_TYPE= REMOTE_PACKAGE_DIR= TEST_POD_NAME= \
-  TAA_MODULES= TEST_POD_DEVICE_RESOURCE= KATA_DEFAULT_MEMORY= \
+  TAA_MODULES= TEST_POD_DEVICE_RESOURCE= TEST_POD_ANNOTATIONS= KATA_DEFAULT_MEMORY= \
   "$BUILD" taa-train-dcu render >/dev/null
 dcu_identity="$(python3 "$RENDER" pod-kernel-params --pod "$dcu_pkg/test/test-pod.yaml")"
 check_contains "dcu: the handler is the DCU one" \
@@ -761,12 +761,19 @@ if problems:
     sys.exit(1)
 PY
 echo "ok   dcu: the test Pod requests and is limited to the card"
+# Requesting the resource only hands the Pod a /dev/vfio/N. The CDI annotation
+# is what the patched containerd turns into the sandbox's cold-plug device, and
+# without it the guest boots with no PCI device at all.
+check_contains "dcu: the test Pod names its vfio device for cold-plug" \
+  '"cdi.k8s.io/hycu": "hygon.cn/k100_ai=h0"' "$(cat "$dcu_pkg/test/test-pod.yaml")"
 # The CPU package must not gain either of them: its initrd ships no kmod, and
 # an extended resource it never uses would keep the Pod Pending on nodes
 # without a DCU.
 check_absent "dcu: the CPU package names no module" 'taa.taa_modules=' \
   "$(cat "$pkg/kata-config.toml")"
 check_absent "dcu: the CPU test Pod requests no card" 'hygon.cn/k100_ai' \
+  "$(cat "$pkg/test/test-pod.yaml")"
+check_absent "dcu: the CPU test Pod carries no cold-plug annotation" 'cdi.k8s.io/hycu' \
   "$(cat "$pkg/test/test-pod.yaml")"
 
 # ── 5c. expected MEASUREMENT ───────────────────────────────────────────────
