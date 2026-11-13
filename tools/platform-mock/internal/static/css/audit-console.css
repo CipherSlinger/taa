@@ -2787,6 +2787,17 @@
   }
 }
 
+/* Finding counts take the colour of the worst level they contain. */
+.audit-count-high {
+  color: var(--aud-high);
+  font-weight: 700;
+}
+
+.audit-count-medium {
+  color: var(--aud-medium);
+  font-weight: 700;
+}
+
 /* Two inline actions in the jobs table: open and delete. */
 .audit-row-actions {
   display: flex;

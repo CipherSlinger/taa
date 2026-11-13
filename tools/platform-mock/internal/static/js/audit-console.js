@@ -1035,6 +1035,21 @@
       : '—');
   }
 
+  // findingsCountCell shows the total hit count. The raw "high / medium / low"
+  // triple read as three unrelated numbers; the split now lives in the tooltip
+  // and the number takes the colour of the worst level present.
+  function findingsCountCell(job) {
+    const high = toNumber(job.high);
+    const medium = toNumber(job.medium);
+    const low = toNumber(job.low);
+    const total = toNumber(job.findings) || high + medium + low;
+    const cell = makeCell(total + ' 条', { nowrap: true });
+    cell.title = '高危 ' + high + ' · 中危 ' + medium + ' · 低危 ' + low;
+    if (high > 0) cell.classList.add('audit-count-high');
+    else if (medium > 0) cell.classList.add('audit-count-medium');
+    return cell;
+  }
+
   function renderJobsTable() {
     const tbody = $('auditJobsRows');
     if (!tbody) return;
@@ -1109,7 +1124,7 @@
         tr.appendChild(makeCell('—', { nowrap: true }));
       } else {
         tr.appendChild(makeCell(badge(riskLabel(job.riskLevel), riskTone(job.riskLevel))));
-        tr.appendChild(makeCell(toNumber(job.high) + ' / ' + toNumber(job.medium) + ' / ' + toNumber(job.low), { mono: true }));
+        tr.appendChild(findingsCountCell(job));
         tr.appendChild(makeCell(String(toNumber(job.files))));
         tr.appendChild(makeCell(fmtDuration(job.durationMs), { nowrap: true }));
       }
@@ -1374,6 +1389,15 @@
     const status = $('auditRunStatus');
     if (status) status.dataset.tone = tone;
     setText('auditRunStatusText', label);
+
+    // The file row only knows a name for the archive picked in this tab. A job
+    // opened from the list has no name in its summary, so show its file count
+    // instead of a bare dash.
+    const fileRow = $('auditRunFile');
+    if (fileRow && job && (!fileRow.textContent.trim() || fileRow.textContent.trim() === '—')) {
+      const count = toNumber(job.files);
+      setText('auditRunFile', count > 0 ? count + ' 个文件' : '—');
+    }
   }
 
   function setUploadProgress(fraction, stageText) {
