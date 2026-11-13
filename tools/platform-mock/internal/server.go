@@ -162,10 +162,12 @@ func NewServer(cfg Config) *Server {
 	// once for both tabs.
 	auditJobs := globalAuditJobs
 	localAudits := newLocalAuditRunner(auditJobs, cfg, console)
-	auditConsole := newAuditConsole(auditJobs)
+	auditConsole := newAuditConsole(auditJobs, localAudits.files)
 	mux.HandleFunc("/api/audit/console/overview", console.requireSession(auditConsole.handleOverview))
 	mux.HandleFunc("/api/audit/console/jobs", console.requireSession(auditConsole.handleJobs))
 	mux.HandleFunc("/api/audit/console/jobs/", console.requireSession(auditConsole.handleJobDetail))
+	mux.HandleFunc("/api/audit/console/files", console.requireSession(auditConsole.handleFiles))
+	mux.HandleFunc("/api/audit/console/files/", console.requireSession(auditConsole.handleFileDetail))
 	mux.HandleFunc("/api/audit/console/prompt", console.requireSession(auditPromptHandler(localAudits)))
 	// Submission stores the plaintext archive and starts the audit. The job store
 	// is the same one reportAuditHandler writes to, so both shapes of verdict land

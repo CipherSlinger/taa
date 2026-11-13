@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"taa/internal/codeaudit"
 )
 
 // auditTestClock returns a clock that advances one minute per call, so the
@@ -264,7 +266,7 @@ func TestAuditJobOverviewRecentLimit(t *testing.T) {
 func auditTestHandlers(t *testing.T) (*consoleTestRig, *auditConsole) {
 	t.Helper()
 	rig := newConsoleTestRig(t, "")
-	return rig, newAuditConsole(newAuditJobStore())
+	return rig, newAuditConsole(newAuditJobStore(), newAuditFileStore(t.TempDir()))
 }
 
 func TestAuditConsoleRequiresSession(t *testing.T) {
@@ -451,8 +453,8 @@ func TestAuditPromptHandlerReadWrite(t *testing.T) {
 		return body
 	}
 
-	if got := get()["prompt"]; got != "" {
-		t.Fatalf("initial prompt = %v, want empty", got)
+	if got := get()["prompt"]; got != codeaudit.DefaultFindingPrompt() {
+		t.Fatalf("initial prompt = %v, want the built-in default", got)
 	}
 
 	rec := httptest.NewRecorder()
@@ -464,12 +466,18 @@ func TestAuditPromptHandlerReadWrite(t *testing.T) {
 	if got := get()["prompt"]; got != "focus" {
 		t.Fatalf("prompt after PUT = %v, want the trimmed text", got)
 	}
+	if get()["custom"] != true {
+		t.Fatal("a saved override is not reported as custom")
+	}
 
 	// An empty body clears the override.
 	clear := httptest.NewRecorder()
 	handler(clear, httptest.NewRequest(http.MethodPut, "/api/audit/console/prompt", strings.NewReader(`{"prompt":""}`)))
-	if got := get()["prompt"]; got != "" {
-		t.Fatalf("prompt after clear = %v, want empty", got)
+	if got := get()["prompt"]; got != codeaudit.DefaultFindingPrompt() {
+		t.Fatalf("prompt after clear = %v, want the built-in default", got)
+	}
+	if get()["custom"] != false {
+		t.Fatal("a cleared override is still reported as custom")
 	}
 }
 

@@ -1,6 +1,7 @@
 package mock
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -71,12 +72,18 @@ func auditSubmitHandler(runner *localAuditRunner, uploadDir string) http.Handler
 			}
 		}()
 
-		file, header, err := r.FormFile("file")
-		if err != nil {
-			writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": "缺少待审计文件: " + err.Error()})
+		// A submission either carries the bytes (`file`) or names an entry in the
+		// file area (`fileId`). The latter is what a drag from the file list sends,
+		// so repeating a run does not upload the archive again.
+		fileID := strings.TrimSpace(r.FormValue("fileId"))
+		file, header, fileErr := r.FormFile("file")
+		if fileErr == nil {
+			defer file.Close()
+		}
+		if fileErr != nil && fileID == "" {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": "缺少待审计文件，请上传归档或从文件区域选择"})
 			return
 		}
-		defer file.Close()
 
 		requestID := strings.TrimSpace(r.FormValue("requestId"))
 		if requestID == "" {
@@ -95,30 +102,85 @@ func auditSubmitHandler(runner *localAuditRunner, uploadDir string) http.Handler
 		// The runner owns the directory from here on and removes it when the
 		// audit settles. Every path that fails before start cleans it explicitly.
 		archivePath := filepath.Join(workDir, "package")
-		size, err := copyToFile(archivePath, file)
-		if err != nil {
-			_ = os.RemoveAll(workDir)
-			writeJSON(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": "保存上传文件失败: " + err.Error()})
-			return
-		}
+		originalName := ""
+		size := int64(0)
+		savedID := fileID
 
-		isArchive, err := resource.IsArchiveFile(archivePath)
-		if err != nil {
-			_ = os.RemoveAll(workDir)
-			writeJSON(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": "读取上传文件失败: " + err.Error()})
-			return
-		}
-		if !isArchive {
-			_ = os.RemoveAll(workDir)
-			writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": "待审计文件必须是 zip、gzip 或 tar 归档"})
-			return
+		if fileErr == nil {
+			originalName = header.Filename
+			size, err = copyToFile(archivePath, file)
+			if err != nil {
+				_ = os.RemoveAll(workDir)
+				writeJSON(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": "保存上传文件失败: " + err.Error()})
+				return
+			}
+			isArchive, err := resource.IsArchiveFile(archivePath)
+			if err != nil {
+				_ = os.RemoveAll(workDir)
+				writeJSON(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": "读取上传文件失败: " + err.Error()})
+				return
+			}
+			if !isArchive {
+				_ = os.RemoveAll(workDir)
+				writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": "待审计文件必须是 zip、gzip 或 tar 归档"})
+				return
+			}
+			// The accepted upload is kept in the file area so it can be dragged
+			// back into the launcher later. The staged copy above is what the
+			// audit uses and what the temp-directory cleanup removes.
+			if runner.files == nil {
+				_ = os.RemoveAll(workDir)
+				writeJSON(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": "文件区域不可用"})
+				return
+			}
+			entry, saveErr := runner.files.saveFromFile(archivePath, originalName)
+			if saveErr != nil {
+				_ = os.RemoveAll(workDir)
+				writeJSON(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": "保存文件到文件区域失败: " + saveErr.Error()})
+				return
+			}
+			savedID = entry.ID
+		} else {
+			if runner.files == nil {
+				_ = os.RemoveAll(workDir)
+				writeJSON(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": "文件区域不可用"})
+				return
+			}
+			entry, srcPath, ok := runner.files.path(fileID)
+			if !ok {
+				_ = os.RemoveAll(workDir)
+				writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": errAuditFileNotFound.Error()})
+				return
+			}
+			originalName = entry.Name
+			size, err = copyAuditFileTo(archivePath, srcPath)
+			if err != nil {
+				_ = os.RemoveAll(workDir)
+				if errors.Is(err, errAuditFileNotFound) {
+					writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": errAuditFileNotFound.Error()})
+					return
+				}
+				writeJSON(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": "读取文件区域失败: " + err.Error()})
+				return
+			}
+			isArchive, err := resource.IsArchiveFile(archivePath)
+			if err != nil {
+				_ = os.RemoveAll(workDir)
+				writeJSON(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": "读取待审计文件失败: " + err.Error()})
+				return
+			}
+			if !isArchive {
+				_ = os.RemoveAll(workDir)
+				writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": "待审计文件必须是 zip、gzip 或 tar 归档"})
+				return
+			}
 		}
 
 		runner.jobs.begin(localAuditInstanceKey, requestID, taskID)
 		summary, _ := runner.jobs.summaryForRequest(localAuditInstanceKey, requestID)
 
-		log.Printf("local audit accepted: requestId=%s taskId=%s file=%s size=%d",
-			requestID, taskID, header.Filename, size)
+		log.Printf("local audit accepted: requestId=%s taskId=%s file=%s size=%d fileId=%s",
+			requestID, taskID, originalName, size, savedID)
 
 		started = true
 		runner.start(workDir, archivePath, requestID, taskID)
@@ -130,7 +192,8 @@ func auditSubmitHandler(runner *localAuditRunner, uploadDir string) http.Handler
 			"taskId":       taskID,
 			"at":           summary.At,
 			"filename":     filepath.Base(archivePath),
-			"originalName": header.Filename,
+			"originalName": originalName,
+			"fileId":       savedID,
 			"size":         size,
 			"stage":        summary.Stage,
 			"stages":       summary.Stages,

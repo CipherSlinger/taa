@@ -37,14 +37,15 @@ type auditJobsResponse struct {
 // concern: the routes wrap each handler in the existing console's
 // requireSession, so there is exactly one session store for both tabs.
 type auditConsole struct {
-	jobs *auditJobStore
+	jobs  *auditJobStore
+	files *auditFileStore
 }
 
-func newAuditConsole(jobs *auditJobStore) *auditConsole {
+func newAuditConsole(jobs *auditJobStore, files *auditFileStore) *auditConsole {
 	if jobs == nil {
 		jobs = globalAuditJobs
 	}
-	return &auditConsole{jobs: jobs}
+	return &auditConsole{jobs: jobs, files: files}
 }
 
 // instance always resolves to the local engine: this workbench has no target
@@ -119,10 +120,58 @@ func (a *auditConsole) handleJobDetail(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"job": job.detail()})
 }
 
-// auditPromptResponse is the editable audit prompt. An empty prompt means the
-// built-in rubric only; the console shows the field as empty in that case.
+// auditFilesResponse is the file area: every archive the workbench has
+// accepted, newest first. A submission names one of these by `fileId` to run
+// again without uploading the bytes.
+type auditFilesResponse struct {
+	Files []auditFileEntry `json:"files"`
+}
+
+func (a *auditConsole) handleFiles(w http.ResponseWriter, r *http.Request) {
+	if !consoleRequireMethod(w, r, http.MethodGet) {
+		return
+	}
+	files := []auditFileEntry{}
+	if a.files != nil {
+		files = a.files.list()
+	}
+	writeJSON(w, http.StatusOK, auditFilesResponse{Files: files})
+}
+
+// handleFileDetail deletes one saved archive. Removing it only affects future
+// submissions: a run in flight already copied the archive into its own work
+// directory.
+func (a *auditConsole) handleFileDetail(w http.ResponseWriter, r *http.Request) {
+	fileID := strings.TrimSpace(strings.TrimPrefix(r.URL.Path, "/api/audit/console/files/"))
+	if fileID == "" {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "文件不存在"})
+		return
+	}
+	if !consoleRequireMethod(w, r, http.MethodDelete) {
+		return
+	}
+	if a.files == nil || !a.files.delete(fileID) {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "文件不存在"})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "deleted": fileID})
+}
+
+// auditPromptResponse is the editable audit prompt: the instruction text the
+// workbench sends to TEE-LLM ahead of each finding's evidence. Prompt is always
+// the effective text (the override, or the built-in default when unset), so the
+// editor can show exactly what the next audit would send; Custom says whether
+// that text is an override.
 type auditPromptResponse struct {
 	Prompt string `json:"prompt"`
+	Custom bool   `json:"custom"`
+}
+
+func currentAuditPrompt(runner *localAuditRunner) auditPromptResponse {
+	return auditPromptResponse{
+		Prompt: runner.effectivePromptText(),
+		Custom: runner.promptText() != "",
+	}
 }
 
 // auditPromptHandler reads and writes the operator's prompt. It is not
@@ -133,7 +182,7 @@ func auditPromptHandler(runner *localAuditRunner) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
 		case http.MethodGet:
-			writeJSON(w, http.StatusOK, auditPromptResponse{Prompt: runner.promptText()})
+			writeJSON(w, http.StatusOK, currentAuditPrompt(runner))
 		case http.MethodPut, http.MethodPost:
 			var body auditPromptResponse
 			if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&body); err != nil {
@@ -141,7 +190,12 @@ func auditPromptHandler(runner *localAuditRunner) http.HandlerFunc {
 				return
 			}
 			runner.setPrompt(body.Prompt)
-			writeJSON(w, http.StatusOK, map[string]any{"ok": true, "prompt": runner.promptText()})
+			response := currentAuditPrompt(runner)
+			writeJSON(w, http.StatusOK, map[string]any{
+				"ok":     true,
+				"prompt": response.Prompt,
+				"custom": response.Custom,
+			})
 		default:
 			w.Header().Set("Allow", http.MethodGet+", "+http.MethodPut)
 			writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "仅支持 GET 或 PUT 方法"})

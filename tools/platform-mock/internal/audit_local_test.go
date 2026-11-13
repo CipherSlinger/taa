@@ -6,9 +6,11 @@ import (
 	"context"
 	"encoding/json"
 	"mime/multipart"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -137,18 +139,15 @@ func TestLocalAuditSubmitRunsThePipeline(t *testing.T) {
 		}
 	}
 
-	// The working directory is removed once the audit settles.
+	// The working directory is removed once the audit settles; the file area
+	// that keeps the accepted archive is expected to stay.
 	deadline := time.Now().Add(5 * time.Second)
 	for {
-		entries, err := os.ReadDir(uploadDir)
-		if err != nil {
-			t.Fatalf("read upload dir: %v", err)
-		}
-		if len(entries) == 0 {
+		if auditTempDirs(t, uploadDir) == 0 {
 			break
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("upload dir still has %d entries after the audit", len(entries))
+			t.Fatalf("upload dir still has %d audit temp dirs after the audit", auditTempDirs(t, uploadDir))
 		}
 		time.Sleep(5 * time.Millisecond)
 	}
@@ -200,12 +199,8 @@ func TestLocalAuditBusyReturnsConflict(t *testing.T) {
 	}
 	waitLocalAudit(t, jobs, "req-three", auditJobStatusDone)
 
-	entries, err := os.ReadDir(uploadDir)
-	if err != nil {
-		t.Fatalf("read upload dir: %v", err)
-	}
-	if len(entries) != 0 {
-		t.Fatalf("upload dir = %d entries, want none", len(entries))
+	if dirs := auditTempDirs(t, uploadDir); dirs != 0 {
+		t.Fatalf("upload dir = %d audit temp dirs, want none", dirs)
 	}
 }
 
@@ -222,12 +217,8 @@ func TestLocalAuditRejectsNonArchive(t *testing.T) {
 	if len(jobs.list(localAuditInstanceKey)) != 0 {
 		t.Fatal("a rejected submission registered a job")
 	}
-	entries, err := os.ReadDir(uploadDir)
-	if err != nil {
-		t.Fatalf("read upload dir: %v", err)
-	}
-	if len(entries) != 0 {
-		t.Fatalf("upload dir = %d entries, want none", len(entries))
+	if dirs := auditTempDirs(t, uploadDir); dirs != 0 {
+		t.Fatalf("upload dir = %d audit temp dirs, want none", dirs)
 	}
 }
 
@@ -286,7 +277,7 @@ func TestLocalAuditUsesTheConfiguredPrompt(t *testing.T) {
 
 	gotPrompt := make(chan string, 1)
 	runner.auditFn = func(ctx context.Context, dir string, engine codeaudit.StaticEngine, cfg codeaudit.AuditConfig, client codeaudit.LLMClient) (*codeaudit.AuditReport, error) {
-		gotPrompt <- cfg.LLM.CustomPrompt
+		gotPrompt <- cfg.LLM.PromptOverride
 		return &codeaudit.AuditReport{Conclusion: codeaudit.AuditConclusion{Passed: true}}, nil
 	}
 
@@ -342,4 +333,159 @@ func localAuditZip(t *testing.T) []byte {
 func toString(v any) string {
 	s, _ := v.(string)
 	return s
+}
+
+// TestLocalAuditFilesSaveAndReuse covers the file area's contract: an accepted
+// upload is kept, and a later submission can name it by id instead of sending
+// the bytes again.
+func TestLocalAuditFilesSaveAndReuse(t *testing.T) {
+	runner, jobs, _, handler := localAuditRig(t)
+
+	rec := submitLocalMultipart(t, handler, "pkg.zip", localAuditZip(t), map[string]string{
+		"requestId": "req-first",
+	})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("first status = %d: %s", rec.Code, rec.Body.String())
+	}
+	fileID := toString(decodeLocalSubmit(t, rec)["fileId"])
+	if fileID == "" {
+		t.Fatalf("first response has no fileId: %s", rec.Body.String())
+	}
+	waitLocalAudit(t, jobs, "req-first", auditJobStatusDone)
+
+	files := runner.files.list()
+	if len(files) != 1 || files[0].ID != fileID || files[0].Name != "pkg.zip" || files[0].Size <= 0 {
+		t.Fatalf("file area = %+v", files)
+	}
+
+	rec = submitLocalMultipart(t, handler, "", nil, map[string]string{
+		"requestId": "req-second",
+		"fileId":    fileID,
+	})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("reuse status = %d: %s", rec.Code, rec.Body.String())
+	}
+	body := decodeLocalSubmit(t, rec)
+	if body["fileId"] != fileID || body["originalName"] != "pkg.zip" {
+		t.Fatalf("reuse body = %v", body)
+	}
+	waitLocalAudit(t, jobs, "req-second", auditJobStatusDone)
+}
+
+func TestLocalAuditRejectsUnknownFileID(t *testing.T) {
+	_, _, _, handler := localAuditRig(t)
+	rec := submitLocalMultipart(t, handler, "", nil, map[string]string{"fileId": "0123456789abcdef"})
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400: %s", rec.Code, rec.Body.String())
+	}
+	if got := toString(decodeLocalSubmit(t, rec)["error"]); got != errAuditFileNotFound.Error() {
+		t.Fatalf("error = %q", got)
+	}
+}
+
+func TestAuditFileStorePersistsAcrossRestart(t *testing.T) {
+	dir := t.TempDir()
+	src := filepath.Join(t.TempDir(), "sample.zip")
+	if err := os.WriteFile(src, []byte("not a real archive"), 0o644); err != nil {
+		t.Fatalf("write source: %v", err)
+	}
+
+	store := newAuditFileStore(dir)
+	entry, err := store.saveFromFile(src, "sample.zip")
+	if err != nil {
+		t.Fatalf("save: %v", err)
+	}
+
+	reloaded := newAuditFileStore(dir)
+	files := reloaded.list()
+	if len(files) != 1 || files[0].ID != entry.ID || files[0].Name != "sample.zip" {
+		t.Fatalf("reloaded file area = %+v", files)
+	}
+	if _, path, ok := reloaded.path(entry.ID); !ok || path != filepath.Join(dir, entry.ID+".bin") {
+		t.Fatalf("path = %q ok=%v", path, ok)
+	}
+
+	if !reloaded.delete(entry.ID) {
+		t.Fatal("delete returned false")
+	}
+	if len(newAuditFileStore(dir).list()) != 0 {
+		t.Fatal("deleted entry survived a reload")
+	}
+}
+
+// auditTempDirs counts the per-submission work directories. The file area
+// directory shares the upload root and is expected to persist, so the tests
+// that used to assert an empty root count this way instead.
+func auditTempDirs(t *testing.T, uploadDir string) int {
+	t.Helper()
+	entries, err := os.ReadDir(uploadDir)
+	if err != nil {
+		t.Fatalf("read upload dir: %v", err)
+	}
+	count := 0
+	for _, entry := range entries {
+		if strings.HasPrefix(entry.Name(), "local-audit-") {
+			count++
+		}
+	}
+	return count
+}
+
+// TestAuditPromptEndpointShowsTheEffectivePrompt pins what the settings editor
+// displays: the effective prompt (built-in default or override), plus whether
+// it is an override. Saving the default text back clears the override.
+func TestAuditPromptEndpointShowsTheEffectivePrompt(t *testing.T) {
+	runner, _, _, _ := localAuditRig(t)
+	handler := auditPromptHandler(runner)
+
+	decode := func(rec *httptest.ResponseRecorder) map[string]any {
+		t.Helper()
+		var body map[string]any
+		if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+			t.Fatalf("decode %q: %v", rec.Body.String(), err)
+		}
+		return body
+	}
+
+	rec := httptest.NewRecorder()
+	handler(rec, httptest.NewRequest(http.MethodGet, "/api/audit/console/prompt", nil))
+	body := decode(rec)
+	if got := toString(body["prompt"]); got != codeaudit.DefaultFindingPrompt() {
+		t.Fatalf("default prompt mismatch:\n%s", got)
+	}
+	if body["custom"] != false {
+		t.Fatalf("custom = %v, want false", body["custom"])
+	}
+
+	rec = httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPut, "/api/audit/console/prompt", strings.NewReader(`{"prompt":"只看外发行为"}`))
+	handler(rec, req)
+	body = decode(rec)
+	if body["custom"] != true || body["prompt"] != "只看外发行为" {
+		t.Fatalf("custom save = %v", body)
+	}
+
+	defaultJSON, _ := json.Marshal(map[string]string{"prompt": codeaudit.DefaultFindingPrompt()})
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodPut, "/api/audit/console/prompt", strings.NewReader(string(defaultJSON)))
+	handler(rec, req)
+	body = decode(rec)
+	if body["custom"] != false || toString(body["prompt"]) != codeaudit.DefaultFindingPrompt() {
+		t.Fatalf("saving the default did not clear the override: %v", body)
+	}
+}
+
+func TestGatewayReachable(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	addr := ln.Addr().String()
+	if !gatewayReachable(addr, time.Second) {
+		t.Fatal("a listening gateway was reported unreachable")
+	}
+	ln.Close()
+	if gatewayReachable(addr, 200*time.Millisecond) {
+		t.Fatal("a closed port was reported reachable")
+	}
 }

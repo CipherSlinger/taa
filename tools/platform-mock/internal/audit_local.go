@@ -5,10 +5,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/CipherSlinger/teetls"
 
@@ -33,6 +35,9 @@ type localAuditRunner struct {
 	binary   codeaudit.BinaryConfig
 	console  *llmConsole
 	workRoot string
+	// files keeps the archives the workbench has been given, so a run can be
+	// repeated from the file area without uploading the bytes again.
+	files *auditFileStore
 
 	mu     sync.Mutex
 	busy   bool
@@ -60,8 +65,21 @@ func newLocalAuditRunner(jobs *auditJobStore, cfg Config, console *llmConsole) *
 		binary:   codeaudit.DefaultBinaryConfig(),
 		console:  console,
 		workRoot: root,
+		files:    newAuditFileStore(filepath.Join(root, "audit-files")),
 		auditFn:  codeaudit.GenerateAuditReport,
 	}
+}
+
+// gatewayReachable dials the TEE-TLS listener without performing the handshake.
+// It answers the only question that matters before a long request: is anything
+// listening?
+func gatewayReachable(endpoint string, timeout time.Duration) bool {
+	conn, err := net.DialTimeout("tcp", endpoint, timeout)
+	if err != nil {
+		return false
+	}
+	_ = conn.Close()
+	return true
 }
 
 // acquire takes the single-runner slot. The caller that receives true owns the
@@ -83,17 +101,32 @@ func (r *localAuditRunner) release() {
 	r.mu.Unlock()
 }
 
-// promptText returns the operator's audit prompt. Empty means the built-in
-// rubric only.
+// promptText returns the operator's override. Empty means the built-in
+// instruction text is used.
 func (r *localAuditRunner) promptText() string {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return r.prompt
 }
 
+// effectivePromptText is what the prompt editor shows: the override when one is
+// set, otherwise the built-in instruction text that the next audit would send.
+func (r *localAuditRunner) effectivePromptText() string {
+	if text := r.promptText(); text != "" {
+		return text
+	}
+	return codeaudit.DefaultFindingPrompt()
+}
+
 func (r *localAuditRunner) setPrompt(text string) {
+	text = strings.TrimSpace(text)
+	// Saving the default text back is the same as clearing the override, and
+	// keeps an unchanged textarea from becoming a pointless custom prompt.
+	if text == strings.TrimSpace(codeaudit.DefaultFindingPrompt()) {
+		text = ""
+	}
 	r.mu.Lock()
-	r.prompt = strings.TrimSpace(text)
+	r.prompt = text
 	r.mu.Unlock()
 }
 
@@ -114,12 +147,21 @@ func (r *localAuditRunner) stop() {
 // useful with no TEE-LLM deployment, and the user chose "connect if reachable,
 // otherwise skip". FailClosed is therefore always false here, unlike TAA.
 func (r *localAuditRunner) llmConfig() (codeaudit.LLMConfig, codeaudit.LLMClient) {
-	cfg := codeaudit.LLMConfig{Enabled: false, CustomPrompt: r.promptText()}
+	cfg := codeaudit.LLMConfig{Enabled: false, PromptOverride: r.promptText()}
 	if r.console == nil {
 		return cfg, nil
 	}
 	endpoint := r.console.teeTLSEndpoint()
 	if endpoint == "" {
+		return cfg, nil
+	}
+	// A configured-but-unreachable gateway must not hold the single audit slot:
+	// the request carries no deadline (a CPU verdict can take minutes), so a
+	// dropped SYN would otherwise sit in the AI step until the OS gives up.
+	// This is only a reachability probe; a reachable gateway still gets the
+	// long-running request TAA uses.
+	if !gatewayReachable(endpoint, 2*time.Second) {
+		log.Printf("local audit: LLM gateway %s unreachable, AI step will be skipped", endpoint)
 		return cfg, nil
 	}
 	settings := r.console.settingsSnapshot()
@@ -139,7 +181,7 @@ func (r *localAuditRunner) llmConfig() (codeaudit.LLMConfig, codeaudit.LLMClient
 		FailClosed:              false,
 		CircuitBreakerThreshold: 3,
 		CooldownSec:             30,
-		CustomPrompt:            r.promptText(),
+		PromptOverride:          r.promptText(),
 		TEETLS: &teetls.Config{
 			Mode:            teetls.AttestationMode(settings.Mode),
 			SkipChainVerify: settings.SkipChainVerify,
@@ -148,7 +190,7 @@ func (r *localAuditRunner) llmConfig() (codeaudit.LLMConfig, codeaudit.LLMClient
 	client, err := codeaudit.NewInferenceClient(cfg)
 	if err != nil {
 		log.Printf("local audit: LLM gateway unavailable, AI step will be skipped: %v", err)
-		return codeaudit.LLMConfig{Enabled: false, CustomPrompt: r.promptText()}, nil
+		return codeaudit.LLMConfig{Enabled: false, PromptOverride: r.promptText()}, nil
 	}
 	return cfg, client
 }
