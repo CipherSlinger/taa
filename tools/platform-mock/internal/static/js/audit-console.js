@@ -1740,6 +1740,7 @@
 
     state.submitBusy = true;
     if (btn) btn.disabled = true;
+    setText('auditSubmitLabel', '正在提交…');
 
     const requestId = state.requestId || genRequestId();
     state.requestId = requestId;
@@ -1778,6 +1779,9 @@
       }
 
       setUploadProgress(1, '已接收，正在本机执行审计…');
+      // The button stays disabled until the run settles, so its label should
+      // say what is actually happening instead of offering a second start.
+      setText('auditSubmitLabel', '审计执行中…');
 
       const pending = optimisticPendingJob(data, picked);
       state.jobs = [pending].concat(state.jobs.filter((job) => job.requestId !== pending.requestId));
@@ -1803,6 +1807,7 @@
       toast({ type: 'error', title: '审计任务提交失败', message: reason });
     } finally {
       state.submitBusy = false;
+      setText('auditSubmitLabel', '上传并启动审计');
       if (btn) btn.disabled = false;
     }
   }
