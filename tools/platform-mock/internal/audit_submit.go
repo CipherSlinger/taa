@@ -21,9 +21,10 @@ const (
 	// download only; a minute would hide an unreachable instance behind a
 	// stalled browser tab.
 	auditSubmitTimeout = 30 * time.Second
-	// auditSubmitUploadLimit mirrors /api/upload: the same payload reaches the
-	// same directory, so a limit that differs would only move the rejection.
-	auditSubmitUploadLimit = 128 << 20
+	// auditSubmitMemoryLimit is the multipart in-memory threshold: parts larger
+	// than this are spooled to a temp file instead of being held in RAM. It is
+	// not a size cap — a submission is accepted at any size.
+	auditSubmitMemoryLimit = 32 << 20
 	// auditSubmitDefaultRuntimeConfig is the "trigger the audit, run nothing"
 	// convention already used by the console: TAA stages the package, audits
 	// it, and a training run of `true` exits immediately if one is ever
@@ -146,7 +147,7 @@ func auditSubmitHandler(mgr *instanceManager, jobs *auditJobStore, uploadDir, ad
 			return
 		}
 
-		if err := r.ParseMultipartForm(auditSubmitUploadLimit); err != nil {
+		if err := r.ParseMultipartForm(auditSubmitMemoryLimit); err != nil {
 			writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": "解析 multipart/form-data 失败: " + err.Error()})
 			return
 		}

@@ -1055,7 +1055,7 @@
 
               <!-- Drop zone doubles as the click target; the inner button is the explicit affordance. -->
               <div id="auditFileDrop" class="audit-drop" role="button" tabindex="0" aria-label="拖拽文件到此处，或点击选择要审计的归档文件">
-                <input type="file" id="auditFileInput" hidden accept=".zip,.tar,.tar.gz,.tgz,.gz,.enc,.sm4">
+                <input type="file" id="auditFileInput" hidden accept=".zip,.tar,.tar.gz,.tgz,.gz">
                 <span class="audit-drop-icon" aria-hidden="true">
                   <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
                     <path d="M12 16V4"></path>
@@ -1064,7 +1064,7 @@
                   </svg>
                 </span>
                 <p class="audit-drop-title">拖拽文件到此处，或点击选择</p>
-                <p class="audit-drop-sub">支持 .zip / .tar / .tar.gz / .tgz / .gz / .enc / .sm4 代码与模型归档，单包不超过 128 MB。</p>
+                <p class="audit-drop-sub">支持 .zip / .tar / .tar.gz / .tgz / .gz 代码与模型归档，文件大小不限。</p>
                 <button type="button" id="auditFilePickBtn" class="audit-btn audit-btn-ghost audit-btn-sm audit-drop-pick">选择文件</button>
               </div>
 
@@ -1091,22 +1091,10 @@
                   <span class="audit-file-sub">
                     <span id="auditFileSize" class="audit-file-size">—</span>
                     <span class="audit-file-dot" aria-hidden="true">·</span>
-                    <span id="auditFileTypeText" class="audit-file-type">将使用 SM2 密文信封下发（.zip / .tar.gz / .enc）</span>
+                    <span id="auditFileTypeText" class="audit-file-type">平台将自动加密后下发</span>
                   </span>
                 </span>
                 <button type="button" id="auditFileClearBtn" class="audit-file-clear">移除</button>
-              </div>
-
-              <div class="audit-launch-controls">
-                <div class="audit-field">
-                  <label for="auditEncryptMode">下发方式</label>
-                  <select id="auditEncryptMode" class="audit-select">
-                    <option value="urlkey" selected>密文信封（推荐）</option>
-                    <option value="envelope">密文信封（内嵌包裹）</option>
-                    <option value="none">明文直接下发</option>
-                  </select>
-                  <p class="audit-help">密文信封用当前实例的 SM2 公钥包裹 SM4 数据密钥，密钥随下载 URL 下发，明文只在 TAA 机密域内出现。</p>
-                </div>
               </div>
 
               <div class="audit-form-actions">

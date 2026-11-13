@@ -23,10 +23,6 @@
   const GENERATE_TIMEOUT_MS = 130000;           // server allows a ~120s cold model load
   const ATTEST_TIMEOUT_MS = 120000;             // report fetch plus a handshake
   const SESSION_TICK_MS = 60000;                // remaining-session display refresh
-  // A 128MB package over a slow link, plus the envelope and the importModel
-  // round trip.
-  const UPLOAD_TIMEOUT_MS = 240000;
-  const MAX_UPLOAD_BYTES = 128 * 1024 * 1024;   // matches the mock's multipart ceiling
   // The audit needs a runnable command even though it never trains; `true`
   // is the same trigger-only config the console has always sent.
   const DEFAULT_RUNTIME_CONFIG = '{"commands":["true"],"env":""}';
@@ -1354,9 +1350,9 @@
 
   function fileKind(file) {
     const name = String((file && file.name) || '').toLowerCase();
-    if (/\.enc$/.test(name)) return '加密信封';
     if (/\.(tar|tar\.gz|tgz|tar\.bz2|tbz2|tar\.xz)$/.test(name)) return '归档包';
     if (/\.zip$/.test(name)) return 'ZIP 包';
+    if (/\.gz$/.test(name)) return 'GZIP 包';
     return '文件';
   }
 
@@ -1428,7 +1424,7 @@
       if (drop) drop.classList.remove('has-file');
       setText('auditFileName', '');
       setText('auditFileSize', '');
-      setText('auditFileTypeText', '支持 .zip / .tar.gz / .enc 模型与代码包');
+      setText('auditFileTypeText', '平台将自动加密后下发');
       return;
     }
 
@@ -1468,7 +1464,8 @@
 
       xhr.open('POST', auditUrl('/api/audit/console/submit'), true);
       xhr.withCredentials = true;
-      xhr.timeout = UPLOAD_TIMEOUT_MS;
+      // No client-side deadline: the package size is not capped, and a fixed
+      // timeout would only turn a large upload over a slow link into a failure.
 
       if (xhr.upload) {
         xhr.upload.addEventListener('progress', (ev) => {
@@ -1543,10 +1540,6 @@
       setHint('auditSubmitHint', false, '文件为空，请重新选择。');
       return;
     }
-    if (file.size > MAX_UPLOAD_BYTES) {
-      setHint('auditSubmitHint', false, '文件超过 ' + humanSize(MAX_UPLOAD_BYTES) + ' 上限，请拆分后重试。');
-      return;
-    }
     if (!state.dockerId) {
       setHint('auditSubmitHint', false, '请先在顶部选择一个已注册的 TAA 实例。');
       return;
@@ -1555,7 +1548,6 @@
     state.submitBusy = true;
     if (btn) btn.disabled = true;
 
-    const encryptMode = (($('auditEncryptMode') || {}).value || 'urlkey');
     const requestId = state.requestId || genRequestId();
     state.requestId = requestId;
 
@@ -1567,7 +1559,6 @@
     try {
       const form = new FormData();
       form.append('file', file, file.name);
-      form.append('encryptMode', encryptMode);
       form.append('requestId', requestId);
       form.append('taskId', state.taskId || '');
       form.append('runtimeConfig', DEFAULT_RUNTIME_CONFIG);
@@ -1660,7 +1651,7 @@
           // the job has settled.
           showUploadProgress(false);
           const verdict = verdictOf(found);
-          setHint('auditSubmitHint', found.status === 'failed', '审计结束：' + verdict.label
+          setHint('auditSubmitHint', found.status !== 'failed', '审计结束：' + verdict.label
             + (found.status === 'failed' && found.error ? '（' + found.error + '）' : ''));
           resolve();
           return;

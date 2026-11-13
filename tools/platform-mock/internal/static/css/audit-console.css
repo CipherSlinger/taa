@@ -2139,10 +2139,6 @@
   box-shadow: 0 0 0 3px var(--aud-accent-ring);
 }
 
-.audit-launch-controls {
-  margin-top: 14px;
-}
-
 .audit-upload {
   margin-top: 14px;
   padding: 12px 14px;
