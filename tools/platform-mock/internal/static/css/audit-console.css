@@ -1000,28 +1000,35 @@
   color: var(--aud-text-2);
 }
 
+/* A 2x2 tile grid keeps the four claims scannable and gives the brand column
+   visual weight without stacking the page taller than the sign-in card. */
 .audit-brand-points {
   list-style: none;
-  margin: 34px 0 0;
+  margin: 32px 0 0;
   padding: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 18px;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  max-width: 512px;
 }
 
 .audit-brand-point {
   display: flex;
   align-items: flex-start;
-  gap: 13px;
+  gap: 11px;
+  padding: 12px 13px 13px;
+  border: 1px solid var(--aud-border);
+  border-radius: 13px;
+  background: var(--aud-surface-2);
 }
 
 .audit-brand-point-icon {
   flex: none;
   display: grid;
   place-items: center;
-  width: 40px;
-  height: 40px;
-  border-radius: 12px;
+  width: 32px;
+  height: 32px;
+  border-radius: 10px;
   background: var(--aud-accent-soft);
   color: var(--aud-accent);
   border: 1px solid var(--aud-accent-soft);
@@ -1030,22 +1037,24 @@
 .audit-brand-point-text {
   display: flex;
   flex-direction: column;
-  gap: 3px;
-  font-size: 12.5px;
-  line-height: 1.6;
+  gap: 2px;
+  font-size: 11.5px;
+  line-height: 1.55;
   color: var(--aud-muted);
   min-width: 0;
 }
 
 .audit-brand-point-text strong {
-  font-size: 13.5px;
+  font-size: 13px;
   font-weight: 700;
   color: var(--aud-text);
+  letter-spacing: 0.01em;
 }
 
 .audit-brand-version {
-  margin: 36px 0 0;
-  padding-top: 18px;
+  margin: 26px 0 0;
+  padding-top: 15px;
+  max-width: 512px;
   border-top: 1px solid var(--aud-border);
   font-size: 11.5px;
   letter-spacing: 0.04em;
