@@ -1402,6 +1402,7 @@
     if (meta) meta.style.display = '';
     if (clearBtn) clearBtn.style.display = '';
     if (drop) drop.classList.add('has-file');
+    setText('auditDropTitle', '拖拽其他归档到此，或点击更换');
     setHint('auditSubmitHint', true, '已选择 ' + picked.name + '，点击「上传并启动审计」开始。');
   }
 
@@ -1412,6 +1413,7 @@
     if (meta) meta.style.display = 'none';
     if (clearBtn) clearBtn.style.display = 'none';
     if (drop) drop.classList.remove('has-file');
+    setText('auditDropTitle', '拖拽文件到此处，或点击选择');
     setText('auditFileName', '');
     setText('auditFileSize', '');
     setText('auditFileTypeText', '在本机解压后审计');
