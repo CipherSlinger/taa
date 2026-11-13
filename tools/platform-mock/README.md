@@ -44,7 +44,7 @@ runs on the remote host.
 
 ```bash
 # Builds linux/static, uploads over SSH and starts it detached
-./deploy-platform-mock.sh start --host 172.16.10.178 --user root --password '...' \
+./deploy-platform-mock.sh start --host 172.16.10.178 --user root --remote-password '...' \
   --remote-dir /root/taa --taa-target http://127.0.0.1:6001 --allow-empty-attestation
 ./deploy-platform-mock.sh status --host 172.16.10.178
 ./deploy-platform-mock.sh restart --host 172.16.10.178

@@ -201,7 +201,7 @@ parse_args() {
       --dry-run) DRY_RUN=1; shift ;;
       --host) need_value "$@"; REMOTE_HOST="$2"; shift 2 ;;
       --user) need_value "$@"; REMOTE_USER="$2"; shift 2 ;;
-      --remote-password) need_value "$@"; REMOTE_PASSWORD="$2"; shift 2 ;;
+      --remote-password|--password) need_value "$@"; REMOTE_PASSWORD="$2"; shift 2 ;;
       --remote-dir) need_value "$@"; REMOTE_DIR="$2"; shift 2 ;;
       --remote-binary) need_value "$@"; REMOTE_BINARY="$2"; shift 2 ;;
       --ssh-port) need_value "$@"; REMOTE_SSH_PORT="$2"; shift 2 ;;
