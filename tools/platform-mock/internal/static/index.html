@@ -1040,52 +1040,149 @@
           <div class="audit-view-head">
             <div>
               <h2 class="audit-view-title">审计任务</h2>
-              <p class="audit-view-desc">通过 resourceUrl 下发待审计模型或代码包；TAA 完成导入后异步执行审计，结论自动回流。</p>
+              <p class="audit-view-desc">选择一个代码或模型归档，平台会用当前实例的 TAA 注册公钥封装密文信封并下发；TAA 在机密域内解密、解压后异步执行静态扫描与 AI 语义判定，结论自动回流到本控制台。</p>
             </div>
           </div>
 
-          <div class="audit-card">
-            <div class="audit-card-head">
-              <div>
-                <h3 class="audit-card-title">发起代码审计</h3>
-                <p class="audit-card-desc">运行配置决定审计任务在 TAA 侧的执行方式，留空时使用默认值。</p>
+          <div class="audit-launch-grid">
+            <div class="audit-card audit-launch-main">
+              <div class="audit-card-head">
+                <div>
+                  <h3 class="audit-card-title">发起代码审计</h3>
+                  <p class="audit-card-desc">请求标识、任务标识与运行配置由平台自动生成，无需手工填写。</p>
+                </div>
+              </div>
+
+              <!-- Drop zone doubles as the click target; the inner button is the explicit affordance. -->
+              <div id="auditFileDrop" class="audit-drop" role="button" tabindex="0" aria-label="拖拽文件到此处，或点击选择要审计的归档文件">
+                <input type="file" id="auditFileInput" hidden accept=".zip,.tar,.tar.gz,.tgz,.gz,.enc,.sm4">
+                <span class="audit-drop-icon" aria-hidden="true">
+                  <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M12 16V4"></path>
+                    <path d="m7 9 5-5 5 5"></path>
+                    <path d="M4 15v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3"></path>
+                  </svg>
+                </span>
+                <p class="audit-drop-title">拖拽文件到此处，或点击选择</p>
+                <p class="audit-drop-sub">支持 .zip / .tar / .tar.gz / .tgz / .gz / .enc / .sm4 代码与模型归档，单包不超过 128 MB。</p>
+                <button type="button" id="auditFilePickBtn" class="audit-btn audit-btn-ghost audit-btn-sm audit-drop-pick">选择文件</button>
+              </div>
+
+              <!-- Selected-file summary; hidden until the picker or a drop supplies a file. -->
+              <div id="auditFileMeta" class="audit-file-meta" style="display: none;">
+                <span class="audit-file-icon" aria-hidden="true">
+                  <!-- One icon per archive family; the console script tags the row with data-kind. -->
+                  <svg class="audit-file-icon-zip" width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M14 2H7a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V7z"></path>
+                    <path d="M14 2v5h5"></path>
+                    <path d="M10 9h1M10 12h1M10 15h1"></path>
+                  </svg>
+                  <svg class="audit-file-icon-tar" width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M21 8v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h5l2 2h7a2 2 0 0 1 2 2z"></path>
+                    <path d="M8 13h8M8 17h5"></path>
+                  </svg>
+                  <svg class="audit-file-icon-file" width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M14 2H7a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V7z"></path>
+                    <path d="M14 2v5h5"></path>
+                  </svg>
+                </span>
+                <span class="audit-file-text">
+                  <span id="auditFileName" class="audit-file-name">—</span>
+                  <span class="audit-file-sub">
+                    <span id="auditFileSize" class="audit-file-size">—</span>
+                    <span class="audit-file-dot" aria-hidden="true">·</span>
+                    <span id="auditFileTypeText" class="audit-file-type">将使用 SM2 密文信封下发（.zip / .tar.gz / .enc）</span>
+                  </span>
+                </span>
+                <button type="button" id="auditFileClearBtn" class="audit-file-clear">移除</button>
+              </div>
+
+              <div class="audit-launch-controls">
+                <div class="audit-field">
+                  <label for="auditEncryptMode">下发方式</label>
+                  <select id="auditEncryptMode" class="audit-select">
+                    <option value="urlkey" selected>密文信封（推荐）</option>
+                    <option value="envelope">密文信封（内嵌包裹）</option>
+                    <option value="none">明文直接下发</option>
+                  </select>
+                  <p class="audit-help">密文信封用当前实例的 SM2 公钥包裹 SM4 数据密钥，密钥随下载 URL 下发，明文只在 TAA 机密域内出现。</p>
+                </div>
+              </div>
+
+              <div class="audit-form-actions">
+                <button type="button" id="auditSubmitBtn" class="audit-btn audit-btn-primary" onclick="auditSubmitAudit()">
+                  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <path d="M22 2 11 13"></path>
+                    <path d="M22 2 15 22l-4-9-9-4 20-7z"></path>
+                  </svg>
+                  上传并启动审计
+                </button>
+                <p id="auditSubmitHint" class="audit-hint">文件在平台侧完成加密后才下发，审计由 TAA 异步执行，结论自动回流。</p>
+              </div>
+
+              <div id="auditUploadProgress" class="audit-upload" style="display: none;">
+                <div class="audit-upload-head">
+                  <span id="auditUploadStage" class="audit-upload-stage">准备上传</span>
+                  <span id="auditUploadPercent" class="audit-upload-percent">0%</span>
+                </div>
+                <div class="audit-upload-track" role="progressbar" aria-label="上传进度" aria-valuemin="0" aria-valuemax="100">
+                  <div id="auditUploadBar" class="audit-upload-bar"></div>
+                </div>
+              </div>
+
+              <!-- Three-stage pipeline strip; each step carries data-state="idle|active|done|failed". -->
+              <div id="auditFlowSteps" class="audit-flow" role="group" aria-label="审计流程">
+                <div class="audit-flow-step" role="listitem" data-state="idle">
+                  <span class="audit-flow-step-num audit-flow-step-dot" aria-hidden="true">1</span>
+                  <span class="audit-flow-step-body">
+                    <span class="audit-flow-step-title audit-flow-step-label">上传并加密</span>
+                    <span class="audit-flow-step-desc">平台封装 SM2 信封后下发</span>
+                  </span>
+                </div>
+                <div class="audit-flow-step" role="listitem" data-state="idle">
+                  <span class="audit-flow-step-num audit-flow-step-dot" aria-hidden="true">2</span>
+                  <span class="audit-flow-step-body">
+                    <span class="audit-flow-step-title audit-flow-step-label">TAA 机密域审计</span>
+                    <span class="audit-flow-step-desc">解密解压后静态扫描与 AI 判定</span>
+                  </span>
+                </div>
+                <div class="audit-flow-step" role="listitem" data-state="idle">
+                  <span class="audit-flow-step-num audit-flow-step-dot" aria-hidden="true">3</span>
+                  <span class="audit-flow-step-body">
+                    <span class="audit-flow-step-title audit-flow-step-label">结论回流</span>
+                    <span class="audit-flow-step-desc">reportAudit 回报并落库</span>
+                  </span>
+                </div>
               </div>
             </div>
 
-            <div class="audit-form-grid">
-              <div class="audit-field">
-                <label for="auditResourceUrl">resourceUrl</label>
-                <input id="auditResourceUrl" type="text" value="http://example.com/model.tar.gz" spellcheck="false" autocomplete="off">
-                <p class="audit-help">待审计包的下载地址，支持密文信封或明文归档。</p>
+            <aside class="audit-card audit-launch-side">
+              <div class="audit-card-head">
+                <div>
+                  <h3 class="audit-card-title">本次审计</h3>
+                  <p class="audit-card-desc">下列信息由平台在提交时自动生成。</p>
+                </div>
               </div>
-              <div class="audit-field">
-                <label for="auditRequestId">requestId</label>
-                <input id="auditRequestId" type="text" placeholder="留空自动生成" spellcheck="false" autocomplete="off">
-                <p class="audit-help">同一次下发请求的唯一标识。</p>
-              </div>
-              <div class="audit-field">
-                <label for="auditTaskId">taskId</label>
-                <input id="auditTaskId" type="text" placeholder="留空自动生成" spellcheck="false" autocomplete="off">
-                <p class="audit-help">审计任务所属的任务标识。</p>
-              </div>
-            </div>
-
-            <div class="audit-field">
-              <label for="auditRuntimeConfig">runtimeConfig</label>
-              <textarea id="auditRuntimeConfig" class="audit-textarea audit-textarea-mono" rows="3" spellcheck="false">{"commands":["true"],"env":""}</textarea>
-              <p class="audit-help">JSON 格式，包含 commands 与 env；示例命令仅用于触发导入后的审计流程。</p>
-            </div>
-
-            <div class="audit-form-actions">
-              <button type="button" id="auditSubmitBtn" class="audit-btn audit-btn-primary" onclick="auditSubmitAudit()">
-                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                  <path d="M22 2 11 13"></path>
-                  <path d="M22 2 15 22l-4-9-9-4 20-7z"></path>
-                </svg>
-                下发并启动审计
-              </button>
-              <span id="auditSubmitHint" class="audit-hint">提交后由 TAA 异步执行审计，结果自动回流到本控制台。</span>
-            </div>
+              <dl class="audit-meta-list">
+                <div class="audit-meta-row">
+                  <dt>加密方式</dt>
+                  <dd>密文信封（SM2 + SM4-GCM）</dd>
+                </div>
+                <div class="audit-meta-row">
+                  <dt>任务标识</dt>
+                  <dd><span id="auditTaskIdPreview" class="audit-meta-mono">提交时自动生成</span></dd>
+                </div>
+                <div class="audit-meta-row">
+                  <dt>目标实例</dt>
+                  <dd>当前选中的 TAA 实例</dd>
+                </div>
+                <div class="audit-meta-row">
+                  <dt>预计流程</dt>
+                  <dd>上传加密 → 机密域审计 → 结论回流</dd>
+                </div>
+              </dl>
+              <p class="audit-meta-note">任务标识、请求标识与运行配置无需人工填写：平台为每次下发自动生成并在审计完成后归档，避免人工填写造成的重复与错配。</p>
+            </aside>
           </div>
 
           <div class="audit-card">
@@ -1098,6 +1195,7 @@
                 <label class="audit-inline-label" for="auditJobsFilter">筛选</label>
                 <select id="auditJobsFilter" class="audit-select audit-select-sm">
                   <option value="all">全部任务</option>
+                  <option value="pending">进行中</option>
                   <option value="passed">仅通过</option>
                   <option value="failed">仅未通过</option>
                 </select>
@@ -1109,9 +1207,9 @@
                 <thead>
                   <tr>
                     <th scope="col">时间</th>
-                    <th scope="col">任务 ID</th>
-                    <th scope="col">requestId</th>
+                    <th scope="col">任务标识</th>
                     <th scope="col">结论</th>
+                    <th scope="col">状态</th>
                     <th scope="col">风险</th>
                     <th scope="col">发现</th>
                     <th scope="col">文件</th>
@@ -1120,7 +1218,7 @@
                   </tr>
                 </thead>
                 <tbody id="auditJobsRows">
-                  <tr class="audit-table-empty"><td colspan="9">暂无审计任务。上方下发一次代码审计后，任务会显示在这里。</td></tr>
+                  <tr class="audit-table-empty"><td colspan="9">暂无审计任务。上传一个代码归档并下发后，任务会显示在这里。</td></tr>
                 </tbody>
               </table>
             </div>

@@ -3,9 +3,11 @@ package mock
 import (
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
+	"mime/multipart"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -281,6 +283,199 @@ func sanitizeUploadFilename(name string) string {
 	return cleaned
 }
 
+// storedUpload is the result of storing one multipart upload: the list-record
+// shape every upload response shares, plus the data key envelope that only the
+// immediate response needs (the sidecar holds the durable copy).
+type storedUpload struct {
+	uploadedFileRecord
+	DataKeyCipher string
+}
+
+// uploadFailure carries the HTTP status and the exact operator-facing message
+// for a storage failure. The upload endpoint and the audit submit endpoint both
+// reuse the storage step but answer in their own body shape, so the step reports
+// the cause instead of writing a response.
+type uploadFailure struct {
+	status  int
+	message string
+}
+
+func (e *uploadFailure) Error() string { return e.message }
+
+func uploadFail(status int, message string) error {
+	return &uploadFailure{status: status, message: message}
+}
+
+// uploadFailureStatus splits a storeUploadedPayload error into the status and
+// the message a caller writes. Any other error maps to 500 with its own text,
+// so a failure the storage step did not classify still says what happened.
+func uploadFailureStatus(err error) (int, string) {
+	var failure *uploadFailure
+	if errors.As(err, &failure) {
+		return failure.status, failure.message
+	}
+	return http.StatusInternalServerError, err.Error()
+}
+
+// storeUploadedPayload is the shared "multipart file in, addressable upload
+// out" step: it encrypts when asked (SM2+SM4-GCM in either envelope layout),
+// writes the payload and its sidecar under uploadDir, and builds the absolute
+// URL TAA will download from.
+//
+// encryptMode is already resolved by the caller (none / envelope / urlkey);
+// registeredPublicKey is the selected instance's registered TAA key, and
+// fallbackPublicKey is the caller's own fallback for an instance that has not
+// registered yet. Both endpoints therefore encrypt to exactly the key the
+// instance is known by.
+func storeUploadedPayload(uploadDir, addr string, file multipart.File, header *multipart.FileHeader, encryptMode, registeredPublicKey, fallbackPublicKey string) (storedUpload, error) {
+	// Create upload directory if not exists
+	if err := os.MkdirAll(uploadDir, 0o755); err != nil {
+		return storedUpload{}, uploadFail(http.StatusInternalServerError, "创建上传目录失败: "+err.Error())
+	}
+
+	originalName := sanitizeUploadFilename(header.Filename)
+	shouldEncrypt := encryptMode != "none"
+
+	var (
+		fileSize      int64
+		filename      string
+		filePath      string
+		dataKeyCipher string
+	)
+
+	if shouldEncrypt {
+		// The selected instance's registered key wins: the form's publicKey
+		// comes from the page's last registration snapshot, which can be
+		// stale when the console is pointed at another instance. The fallback
+		// is only for an instance that has not registered its key yet.
+		pubKeyPEM := strings.TrimSpace(registeredPublicKey)
+		if pubKeyPEM == "" {
+			pubKeyPEM = strings.TrimSpace(fallbackPublicKey)
+		}
+		if pubKeyPEM == "" {
+			return storedUpload{}, uploadFail(http.StatusBadRequest, "开启加密但尚未获取到 TAA 注册公钥，请等待 TAA 完成注册")
+		}
+
+		pubKey, err := crypto.ParseSM2PublicKeyPEM([]byte(pubKeyPEM))
+		if err != nil {
+			return storedUpload{}, uploadFail(http.StatusBadRequest, "解析 SM2 公钥失败: "+err.Error())
+		}
+
+		fileBytes, err := io.ReadAll(file)
+		if err != nil {
+			return storedUpload{}, uploadFail(http.StatusInternalServerError, "读取上传文件内容失败: "+err.Error())
+		}
+
+		if encryptMode == "urlkey" {
+			// New protocol: the file holds nothing but ciphertext, and the SM2 key
+			// envelope is hex-encoded onto the download URL.
+			env, err := crypto.SealSM2(pubKey, fileBytes)
+			if err != nil {
+				return storedUpload{}, uploadFail(http.StatusInternalServerError, "SM2+SM4-GCM 加密失败: "+err.Error())
+			}
+
+			// The platform's frontend prefixes the body with a one-byte format
+			// version -- [version][nonce][ciphertext][tag] -- so the mock mirrors
+			// it instead of writing the bare layout: local runs then deliver
+			// exactly what the platform delivers. (TAA reads both; the GCM tag
+			// decides which one a body is.)
+			body := make([]byte, 0, len(env.Ciphertext)+1)
+			body = append(body, crypto.SM4FileVersion)
+			body = append(body, env.Ciphertext...)
+
+			if !strings.HasSuffix(strings.ToLower(originalName), ".sm4") {
+				originalName += ".sm4"
+			}
+
+			filename = fmt.Sprintf("%d_%s", time.Now().UnixNano(), originalName)
+			filePath = filepath.Join(uploadDir, filename)
+
+			if err := os.WriteFile(filePath, body, 0o644); err != nil {
+				return storedUpload{}, uploadFail(http.StatusInternalServerError, "保存加密文件失败: "+err.Error())
+			}
+			// Deliver the 112-byte C1C3C2 form (no uncompressed point prefix);
+			// TAA accepts either layout.
+			dataKeyCipher = hex.EncodeToString(env.WrappedKey[1:])
+			fileSize = int64(len(body))
+		} else {
+			cipherBytes, err := crypto.SealSM2SM4GCM(pubKey, fileBytes)
+			if err != nil {
+				return storedUpload{}, uploadFail(http.StatusInternalServerError, "SM2+SM4-GCM 加密失败: "+err.Error())
+			}
+
+			if !strings.HasSuffix(strings.ToLower(originalName), ".enc") {
+				originalName += ".enc"
+			}
+
+			filename = fmt.Sprintf("%d_%s", time.Now().UnixNano(), originalName)
+			filePath = filepath.Join(uploadDir, filename)
+
+			if err := os.WriteFile(filePath, cipherBytes, 0o644); err != nil {
+				return storedUpload{}, uploadFail(http.StatusInternalServerError, "保存加密文件失败: "+err.Error())
+			}
+			fileSize = int64(len(cipherBytes))
+		}
+	} else {
+		filename = fmt.Sprintf("%d_%s", time.Now().UnixNano(), originalName)
+		filePath = filepath.Join(uploadDir, filename)
+
+		// Create destination file
+		dst, err := os.Create(filePath)
+		if err != nil {
+			return storedUpload{}, uploadFail(http.StatusInternalServerError, "创建文件失败: "+err.Error())
+		}
+		defer dst.Close()
+
+		// Copy uploaded file to destination
+		if _, err := io.Copy(dst, file); err != nil {
+			return storedUpload{}, uploadFail(http.StatusInternalServerError, "保存文件失败: "+err.Error())
+		}
+		fileSize = header.Size
+	}
+
+	// Generate URL for the uploaded file
+	// Use the server's actual IP address instead of 0.0.0.0
+	fileURL := fmt.Sprintf("http://%s/files/%s", platformIP(addr), filename)
+	if dataKeyCipher != "" {
+		fileURL += "?" + dataKeyCipherQueryParam + "=" + dataKeyCipher
+	}
+
+	// Persist what the URL carried. The listing is the console's source for
+	// every later import, so an envelope that lives only in this one response
+	// is an envelope the operator can never use again.
+	if shouldEncrypt {
+		if err := writeUploadMeta(uploadDir, filename, uploadMeta{DataKeyCipher: dataKeyCipher, Encrypted: true}); err != nil {
+			// A file whose envelope cannot be re-offered is worse than no
+			// file: the operator would import it and get an opaque decrypt
+			// failure. Drop the payload and report the real cause.
+			_ = os.Remove(filePath)
+			return storedUpload{}, uploadFail(http.StatusInternalServerError, "保存上传元数据失败: "+err.Error())
+		}
+	}
+
+	return storedUpload{
+		uploadedFileRecord: uploadedFileRecord{
+			Filename:     filename,
+			OriginalName: originalName,
+			Size:         fileSize,
+			URL:          fileURL,
+			UploadedAt:   time.Now().UTC(),
+			Encrypted:    shouldEncrypt,
+		},
+		DataKeyCipher: dataKeyCipher,
+	}, nil
+}
+
+// removeStoredUpload deletes a payload and its sidecar after a later step of
+// the same request failed, so a rejected submission leaves no orphan behind.
+func removeStoredUpload(uploadDir string, upload storedUpload) {
+	if upload.Filename == "" {
+		return
+	}
+	_ = os.Remove(filepath.Join(uploadDir, upload.Filename))
+	removeUploadMeta(uploadDir, upload.Filename)
+}
+
 func uploadHandler(addr, uploadDir string, mgr *instanceManager) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		setCORS(w)
@@ -313,14 +508,6 @@ func uploadHandler(addr, uploadDir string, mgr *instanceManager) http.HandlerFun
 		}
 		defer file.Close()
 
-		// Create upload directory if not exists
-		if err := os.MkdirAll(uploadDir, 0o755); err != nil {
-			writeEnvelope(w, http.StatusInternalServerError, "创建上传目录失败: "+err.Error(), nil, http.StatusInternalServerError)
-			return
-		}
-
-		originalName := sanitizeUploadFilename(header.Filename)
-
 		// encryptMode is none / envelope (whole-file envelope, the legacy format) /
 		// urlkey (envelope in the URL, the new protocol). The legacy encrypt=true
 		// field maps to envelope for backward compatibility.
@@ -333,147 +520,28 @@ func uploadHandler(addr, uploadDir string, mgr *instanceManager) http.HandlerFun
 				encryptMode = "none"
 			}
 		}
-		shouldEncrypt := encryptMode != "none"
 
-		var (
-			fileSize      int64
-			filename      string
-			filePath      string
-			dataKeyCipher string
-		)
-
-		if shouldEncrypt {
-			// The selected instance's registered key wins: the form's publicKey
-			// comes from the page's last registration snapshot, which can be
-			// stale when the console is pointed at another instance. The form
-			// value is only a fallback for an instance that has not registered
-			// its key yet.
-			pubKeyPEM := strings.TrimSpace(b.register.get().TaaPublicKey)
-			if pubKeyPEM == "" {
-				pubKeyPEM = strings.TrimSpace(r.FormValue("publicKey"))
-			}
-			if pubKeyPEM == "" {
-				writeEnvelope(w, http.StatusBadRequest, "开启加密但尚未获取到 TAA 注册公钥，请等待 TAA 完成注册", nil, http.StatusBadRequest)
-				return
-			}
-
-			pubKey, err := crypto.ParseSM2PublicKeyPEM([]byte(pubKeyPEM))
-			if err != nil {
-				writeEnvelope(w, http.StatusBadRequest, "解析 SM2 公钥失败: "+err.Error(), nil, http.StatusBadRequest)
-				return
-			}
-
-			fileBytes, err := io.ReadAll(file)
-			if err != nil {
-				writeEnvelope(w, http.StatusInternalServerError, "读取上传文件内容失败: "+err.Error(), nil, http.StatusInternalServerError)
-				return
-			}
-
-			if encryptMode == "urlkey" {
-				// New protocol: the file holds nothing but ciphertext, and the SM2 key
-				// envelope is hex-encoded onto the download URL.
-				env, err := crypto.SealSM2(pubKey, fileBytes)
-				if err != nil {
-					writeEnvelope(w, http.StatusInternalServerError, "SM2+SM4-GCM 加密失败: "+err.Error(), nil, http.StatusInternalServerError)
-					return
-				}
-
-				// The platform's frontend prefixes the body with a one-byte format
-				// version -- [version][nonce][ciphertext][tag] -- so the mock mirrors
-				// it instead of writing the bare layout: local runs then deliver
-				// exactly what the platform delivers. (TAA reads both; the GCM tag
-				// decides which one a body is.)
-				body := make([]byte, 0, len(env.Ciphertext)+1)
-				body = append(body, crypto.SM4FileVersion)
-				body = append(body, env.Ciphertext...)
-
-				if !strings.HasSuffix(strings.ToLower(originalName), ".sm4") {
-					originalName += ".sm4"
-				}
-
-				filename = fmt.Sprintf("%d_%s", time.Now().UnixNano(), originalName)
-				filePath = filepath.Join(uploadDir, filename)
-
-				if err := os.WriteFile(filePath, body, 0o644); err != nil {
-					writeEnvelope(w, http.StatusInternalServerError, "保存加密文件失败: "+err.Error(), nil, http.StatusInternalServerError)
-					return
-				}
-				// Deliver the 112-byte C1C3C2 form (no uncompressed point prefix);
-				// TAA accepts either layout.
-				dataKeyCipher = hex.EncodeToString(env.WrappedKey[1:])
-				fileSize = int64(len(body))
-			} else {
-				cipherBytes, err := crypto.SealSM2SM4GCM(pubKey, fileBytes)
-				if err != nil {
-					writeEnvelope(w, http.StatusInternalServerError, "SM2+SM4-GCM 加密失败: "+err.Error(), nil, http.StatusInternalServerError)
-					return
-				}
-
-				if !strings.HasSuffix(strings.ToLower(originalName), ".enc") {
-					originalName += ".enc"
-				}
-
-				filename = fmt.Sprintf("%d_%s", time.Now().UnixNano(), originalName)
-				filePath = filepath.Join(uploadDir, filename)
-
-				if err := os.WriteFile(filePath, cipherBytes, 0o644); err != nil {
-					writeEnvelope(w, http.StatusInternalServerError, "保存加密文件失败: "+err.Error(), nil, http.StatusInternalServerError)
-					return
-				}
-				fileSize = int64(len(cipherBytes))
-			}
-		} else {
-			filename = fmt.Sprintf("%d_%s", time.Now().UnixNano(), originalName)
-			filePath = filepath.Join(uploadDir, filename)
-
-			// Create destination file
-			dst, err := os.Create(filePath)
-			if err != nil {
-				writeEnvelope(w, http.StatusInternalServerError, "创建文件失败: "+err.Error(), nil, http.StatusInternalServerError)
-				return
-			}
-			defer dst.Close()
-
-			// Copy uploaded file to destination
-			if _, err := io.Copy(dst, file); err != nil {
-				writeEnvelope(w, http.StatusInternalServerError, "保存文件失败: "+err.Error(), nil, http.StatusInternalServerError)
-				return
-			}
-			fileSize = header.Size
+		// The storage step is shared with the audit submit endpoint. The
+		// selected instance's registered key wins; the form's publicKey is only
+		// a fallback for an instance that has not registered yet.
+		uploaded, err := storeUploadedPayload(uploadDir, addr, file, header, encryptMode,
+			b.register.get().TaaPublicKey, r.FormValue("publicKey"))
+		if err != nil {
+			status, message := uploadFailureStatus(err)
+			writeEnvelope(w, status, message, nil, status)
+			return
 		}
 
-		// Generate URL for the uploaded file
-		// Use the server's actual IP address instead of 0.0.0.0
-		host := platformIP(addr)
-		fileURL := fmt.Sprintf("http://%s/files/%s", host, filename)
-		if dataKeyCipher != "" {
-			fileURL += "?" + dataKeyCipherQueryParam + "=" + dataKeyCipher
-		}
-
-		// Persist what the URL carried. The listing is the console's source for
-		// every later import, so an envelope that lives only in this one response
-		// is an envelope the operator can never use again.
-		if shouldEncrypt {
-			if err := writeUploadMeta(uploadDir, filename, uploadMeta{DataKeyCipher: dataKeyCipher, Encrypted: true}); err != nil {
-				// A file whose envelope cannot be re-offered is worse than no
-				// file: the operator would import it and get an opaque decrypt
-				// failure. Drop the payload and report the real cause.
-				_ = os.Remove(filePath)
-				writeEnvelope(w, http.StatusInternalServerError, "保存上传元数据失败: "+err.Error(), nil, http.StatusInternalServerError)
-				return
-			}
-		}
-
-		log.Printf("file uploaded: %s → %s (mode=%s)", originalName, fileURL, encryptMode)
+		log.Printf("file uploaded: %s → %s (mode=%s)", uploaded.OriginalName, uploaded.URL, encryptMode)
 
 		writeEnvelope(w, http.StatusOK, "文件上传成功", map[string]any{
-			"filename":      filename,
-			"originalName":  originalName,
-			"size":          fileSize,
-			"url":           fileURL,
-			"encrypted":     shouldEncrypt,
-			"dataKeyCipher": dataKeyCipher,
-			"uploadedAt":    time.Now().UTC(),
+			"filename":      uploaded.Filename,
+			"originalName":  uploaded.OriginalName,
+			"size":          uploaded.Size,
+			"url":           uploaded.URL,
+			"encrypted":     uploaded.Encrypted,
+			"dataKeyCipher": uploaded.DataKeyCipher,
+			"uploadedAt":    uploaded.UploadedAt,
 		}, 0)
 	}
 }

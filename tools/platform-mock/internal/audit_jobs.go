@@ -48,14 +48,41 @@ type auditReport struct {
 	DurationMS  int64             `json:"duration_ms"`
 }
 
+// Audit job statuses. A row starts as pending when the platform submits it,
+// becomes done once reportAudit carries the verdict, and becomes failed when a
+// submission never produced one (see abandon).
+const (
+	auditJobStatusPending = "pending"
+	auditJobStatusDone    = "done"
+	auditJobStatusFailed  = "failed"
+)
+
+// auditJobStatusOf normalizes a stored status. Records written before the
+// status field existed carry the zero value, and a zero value is a completed
+// verdict: those rows only ever came from reportAudit.
+func auditJobStatusOf(raw string) string {
+	switch raw {
+	case auditJobStatusPending, auditJobStatusDone, auditJobStatusFailed:
+		return raw
+	}
+	return auditJobStatusDone
+}
+
 // auditJobSummary is the list row shape shared by the overview's recent list,
 // the jobs endpoint and the detail header.
 type auditJobSummary struct {
-	ID            string `json:"id"`
-	DockerID      string `json:"dockerId"`
-	RequestID     string `json:"requestId"`
-	TaskID        string `json:"taskId"`
-	At            string `json:"at"`
+	ID        string `json:"id"`
+	DockerID  string `json:"dockerId"`
+	RequestID string `json:"requestId"`
+	TaskID    string `json:"taskId"`
+	At        string `json:"at"`
+	// Status is pending while the verdict has not arrived, done once
+	// reportAudit recorded it, and failed for a submission that never produced
+	// one. An empty value is treated as done.
+	Status string `json:"status"`
+	// Error explains a failed row. It is omitted everywhere else so completed
+	// and in-flight rows keep their previous JSON shape.
+	Error         string `json:"error,omitempty"`
 	Code          int    `json:"code"`
 	Passed        bool   `json:"passed"`
 	RiskLevel     string `json:"riskLevel"`
@@ -100,8 +127,12 @@ type auditJobDetail struct {
 }
 
 // auditOverviewSummary is the aggregate the overview cards are built from.
+// Every counter except Pending is computed from done jobs only: a pending
+// submission has no verdict yet, so counting it would make the pass rate
+// depend on how many audits happen to be in flight.
 type auditOverviewSummary struct {
 	Jobs           int     `json:"jobs"`
+	Pending        int     `json:"pending"`
 	Passed         int     `json:"passed"`
 	Failed         int     `json:"failed"`
 	LLMUnavailable int     `json:"llmUnavailable"`
@@ -181,6 +212,9 @@ func countFindings(rep auditReport) int {
 // requestId when present; a requestId collision replaces the previous job while
 // keeping the id it was first published under, and an id already held by a
 // different requestId gets a -2, -3... suffix.
+//
+// A pending row written by begin carries the same requestId, so this replacement
+// is also what promotes it to done: the row never flickers between two entries.
 func (s *auditJobStore) record(dockerID, requestID, taskID string, code int, raw string) {
 	rep, parseErr := parseAuditReport(raw)
 	if parseErr != nil {
@@ -190,6 +224,7 @@ func (s *auditJobStore) record(dockerID, requestID, taskID string, code int, raw
 		DockerID:      dockerID,
 		RequestID:     requestID,
 		TaskID:        taskID,
+		Status:        auditJobStatusDone,
 		Code:          code,
 		Passed:        code == 0,
 		RiskLevel:     rep.Conclusion.RiskLevel,
@@ -205,7 +240,11 @@ func (s *auditJobStore) record(dockerID, requestID, taskID string, code int, raw
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	summary.At = s.now().Format(time.RFC3339)
+	// One timestamp per record: the clock is a test seam that advances on every
+	// call, so asking twice would date a single report two steps apart from its
+	// own id.
+	now := s.now()
+	summary.At = now.Format(time.RFC3339)
 	jobs := s.byInstance[dockerID]
 
 	// Same requestId means the same audit reported twice: replace the record in
@@ -222,17 +261,7 @@ func (s *auditJobStore) record(dockerID, requestID, taskID string, code int, raw
 	}
 
 	if id == "" {
-		base := requestID
-		if base == "" {
-			base = taskID
-		}
-		if base == "" {
-			base = "job-" + strconv.FormatInt(s.now().UnixNano(), 10)
-		}
-		id = base
-		for suffix := 2; auditIDTaken(jobs, id); suffix++ {
-			id = fmt.Sprintf("%s-%d", base, suffix)
-		}
+		id = nextAuditJobID(jobs, requestID, taskID, now)
 	}
 
 	job := &auditJob{
@@ -261,6 +290,94 @@ func auditIDTaken(jobs []*auditJob, id string) bool {
 	return false
 }
 
+// nextAuditJobID derives the id a new row is published under, using the same
+// rule for begin and record: requestId first, then taskId, then a clock-based
+// fallback, with -2, -3... appended when that id is already held.
+func nextAuditJobID(jobs []*auditJob, requestID, taskID string, now time.Time) string {
+	base := requestID
+	if base == "" {
+		base = taskID
+	}
+	if base == "" {
+		base = "job-" + strconv.FormatInt(now.UnixNano(), 10)
+	}
+	id := base
+	for suffix := 2; auditIDTaken(jobs, id); suffix++ {
+		id = fmt.Sprintf("%s-%d", base, suffix)
+	}
+	return id
+}
+
+// begin records a submission that TAA has accepted but whose verdict has not
+// arrived. It is replaced in place by record() when reportAudit names the same
+// requestId, so the row never flickers between two entries.
+//
+// The call is idempotent: a repeated submission for a requestId that already
+// has a row changes nothing. A done row wins over a new pending one, because a
+// real verdict is worth more than the knowledge that a request was sent.
+func (s *auditJobStore) begin(dockerID, requestID, taskID string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	jobs := s.byInstance[dockerID]
+	if requestID != "" {
+		for _, existing := range jobs {
+			if existing.RequestID == requestID {
+				return
+			}
+		}
+	}
+
+	now := s.now()
+	job := &auditJob{auditJobSummary: auditJobSummary{
+		ID:        nextAuditJobID(jobs, requestID, taskID, now),
+		DockerID:  dockerID,
+		RequestID: requestID,
+		TaskID:    taskID,
+		At:        now.Format(time.RFC3339),
+		Status:    auditJobStatusPending,
+	}}
+
+	jobs = append([]*auditJob{job}, jobs...)
+	if len(jobs) > auditJobRingCapacity {
+		jobs = jobs[:auditJobRingCapacity]
+	}
+	s.byInstance[dockerID] = jobs
+}
+
+// abandon marks a pending submission that never produced a verdict. The row is
+// kept (with the reason) so an operator can tell "TAA never answered" from
+// "the request was never sent".
+func (s *auditJobStore) abandon(dockerID, requestID, reason string) bool {
+	if requestID == "" {
+		return false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	jobs := s.byInstance[dockerID]
+	for i, job := range jobs {
+		if job.RequestID != requestID {
+			continue
+		}
+		// A verdict that already arrived is never rewritten by a late failure:
+		// only the pending state can be abandoned.
+		if auditJobStatusOf(job.Status) != auditJobStatusPending {
+			return false
+		}
+		// Published auditJob pointers are read without the lock, so the
+		// transition builds a replacement and swaps the slot instead of
+		// mutating a row a reader may be holding. The position is kept: the
+		// row's submission order still decides where it sits in the list.
+		abandoned := *job
+		abandoned.Status = auditJobStatusFailed
+		abandoned.Error = reason
+		jobs[i] = &abandoned
+		return true
+	}
+	return false
+}
+
 // list returns the instance's jobs newest first. The returned summaries are
 // copies, so a caller can render them without holding the store lock.
 func (s *auditJobStore) list(dockerID string) []auditJobSummary {
@@ -283,6 +400,23 @@ func (s *auditJobStore) recent(dockerID string, limit int) []auditJobSummary {
 	return jobs
 }
 
+// summaryForRequest returns the row published for one requestId. The submit
+// endpoint uses it to report the id and timestamp the row actually has, rather
+// than recomputing an id that a collision may have suffixed.
+func (s *auditJobStore) summaryForRequest(dockerID, requestID string) (auditJobSummary, bool) {
+	if requestID == "" {
+		return auditJobSummary{}, false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, job := range s.byInstance[dockerID] {
+		if job.RequestID == requestID {
+			return job.auditJobSummary, true
+		}
+	}
+	return auditJobSummary{}, false
+}
+
 // get returns one job. Records are immutable once published (a replacement
 // builds a new auditJob), so the pointer may be read after the lock is released.
 func (s *auditJobStore) get(dockerID, id string) (*auditJob, bool) {
@@ -299,12 +433,23 @@ func (s *auditJobStore) get(dockerID, id string) (*auditJob, bool) {
 // overview aggregates the instance's jobs. passed comes from code 0; a job that
 // was not passed and was not an LLM outage is counted as failed, so the three
 // buckets always add up to Jobs.
+//
+// Only done jobs participate. A pending submission has no verdict, and an
+// abandoned one produced no TAA answer at all, so folding either into the
+// buckets would report a pass rate over rows that never had a conclusion.
+// Pending is reported separately; abandoned rows are visible in the list.
 func (s *auditJobStore) overview(dockerID string) auditOverviewSummary {
 	jobs := s.list(dockerID)
 	var summary auditOverviewSummary
-	summary.Jobs = len(jobs)
 	var durationTotal int64
 	for _, job := range jobs {
+		if auditJobStatusOf(job.Status) != auditJobStatusDone {
+			if auditJobStatusOf(job.Status) == auditJobStatusPending {
+				summary.Pending++
+			}
+			continue
+		}
+		summary.Jobs++
 		if job.Passed {
 			summary.Passed++
 		} else if job.Code == 2 {
@@ -316,11 +461,13 @@ func (s *auditJobStore) overview(dockerID string) auditOverviewSummary {
 		summary.Medium += job.Medium
 		summary.Low += job.Low
 		durationTotal += job.DurationMS
+		if summary.LastAt == "" {
+			summary.LastAt = job.At
+		}
 	}
 	if summary.Jobs > 0 {
 		summary.PassRate = float64(summary.Passed) / float64(summary.Jobs)
 		summary.AvgDurationMs = durationTotal / int64(summary.Jobs)
-		summary.LastAt = jobs[0].At
 	}
 	return summary
 }

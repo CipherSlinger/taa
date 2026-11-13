@@ -17,13 +17,19 @@
   const DOCKER_KEY = 'pm.audit.dockerId';       // localStorage: last selected instance
   const TAB_KEY = 'pm.audit.tab';               // sessionStorage: last active tab
   const POLL_MS = 5000;                         // overview + gateway status cadence
-  const SUBMIT_POLL_MS = 2000;                  // post-submit job discovery cadence
-  const SUBMIT_POLL_WINDOW_MS = 10000;          // how long to chase a submitted requestId
+  const SUBMIT_POLL_MS = 3000;                  // post-submit job discovery cadence
+  const SUBMIT_POLL_WINDOW_MS = 300000;         // a TEE-side audit, LLM adjudication included
   const REQUEST_TIMEOUT_MS = 15000;
   const GENERATE_TIMEOUT_MS = 130000;           // server allows a ~120s cold model load
   const ATTEST_TIMEOUT_MS = 120000;             // report fetch plus a handshake
   const SESSION_TICK_MS = 60000;                // remaining-session display refresh
-  const DEFAULT_TASK_TIMEOUT_MS = 120000;
+  // A 128MB package over a slow link, plus the envelope and the importModel
+  // round trip.
+  const UPLOAD_TIMEOUT_MS = 240000;
+  const MAX_UPLOAD_BYTES = 128 * 1024 * 1024;   // matches the mock's multipart ceiling
+  // The audit needs a runnable command even though it never trains; `true`
+  // is the same trigger-only config the console has always sent.
+  const DEFAULT_RUNTIME_CONFIG = '{"commands":["true"],"env":""}';
 
   const VIEWS = ['overview', 'jobs', 'findings', 'engine', 'settings'];
   const VIEW_IDS = {
@@ -76,6 +82,10 @@
     // Jobs and findings
     jobs: [],
     jobsTotal: 0,
+    file: null,
+    taskId: '',
+    requestId: '',
+    submitBusy: false,
     selectedJobId: '',
     currentJob: null,
     findings: [],
@@ -347,8 +357,20 @@
     return text.length > 8 ? text.slice(0, 8) + '…' : (text || '—');
   }
 
+  // statusOf is the lifecycle axis, separate from the verdict: a job the console
+  // just dispatched is pending until TAA's reportAudit callback turns it into
+  // done (or failed, when the dispatch did not survive).
+  function statusOf(job) {
+    const status = String((job && job.status) || 'done').toLowerCase();
+    if (status === 'pending') return { key: 'pending', label: '审计中', tone: 'info' };
+    if (status === 'failed') return { key: 'failed', label: '未完成', tone: 'bad' };
+    return { key: 'done', label: '已完成', tone: 'ok' };
+  }
+
   function verdictOf(job) {
     if (!job) return { label: '—', tone: 'muted' };
+    if (statusOf(job).key === 'pending') return { label: '待定', tone: 'muted' };
+    if (statusOf(job).key === 'failed') return { label: '—', tone: 'muted' };
     if (toNumber(job.code) === 2) return { label: 'AI 不可用', tone: 'warn' };
     return job.passed ? { label: '通过', tone: 'ok' } : { label: '未通过', tone: 'bad' };
   }
@@ -955,14 +977,6 @@
     setText('auditEndpointValue', address || '—');
   }
 
-  function syncPlatformInstance() {
-    // postToTAA appends dockerId itself when the mock proxies, reading this
-    // shared binding. Set it right before the synchronous URL build.
-    try {
-      if (typeof currentInstanceDockerId !== 'undefined') currentInstanceDockerId = state.dockerId;
-    } catch (_) {}
-  }
-
   async function onInstanceChanged() {
     const sel = $('auditInstanceSelect');
     state.dockerId = sel ? sel.value : '';
@@ -1007,13 +1021,16 @@
     const passed = toNumber(summary.passed);
     const failed = toNumber(summary.failed);
     const unavailable = toNumber(summary.llmUnavailable);
+    const pending = toNumber(summary.pending);
     const high = toNumber(summary.high);
     const medium = toNumber(summary.medium);
     const low = toNumber(summary.low);
 
     const passRate = Number(summary.passRate);
     setKpi('auditKpiJobs', String(jobs),
-      '通过 ' + passed + ' · 未通过 ' + failed + (unavailable ? ' · AI 不可用 ' + unavailable : ''));
+      '通过 ' + passed + ' · 未通过 ' + failed
+        + (unavailable ? ' · AI 不可用 ' + unavailable : '')
+        + (pending ? ' · 进行中 ' + pending : ''));
     setKpi('auditKpiPassRate',
       Number.isFinite(passRate) ? (Math.max(0, Math.min(1, passRate)) * 100).toFixed(1) + '%' : '—',
       jobs > 0 ? '通过 ' + passed + ' / 共 ' + jobs : '暂无任务',
@@ -1042,7 +1059,8 @@
     if (warn) {
       const parts = [];
       if (inst.online === false) parts.push('当前实例不可达，以下数据取自最近一次记录。');
-      if (jobs === 0) parts.push('尚无审计任务。可在「审计任务」页发起一次，或等待 TAA 上报。');
+      if (jobs === 0 && pending === 0) parts.push('尚无审计任务。可在「审计任务」页发起一次，或等待 TAA 上报。');
+      if (pending > 0) parts.push('有 ' + pending + ' 个任务正在 TEE 内审计，结论到达后自动归档。');
       if (unavailable > 0) parts.push('有 ' + unavailable + ' 次任务因 AI 语义判定不可用而未完成，结论只含静态扫描部分。');
       warn.textContent = parts.join(' ');
       warn.style.display = parts.length ? '' : 'none';
@@ -1106,7 +1124,7 @@
     tbody.replaceChildren();
 
     if (!recent.length) {
-      emptyRow(tbody, 8, '暂无审计任务。可在「审计任务」页发起一次，或等待 TAA 上报。');
+      emptyRow(tbody, 6, '暂无审计记录，可在「审计任务」中发起一次代码审计。');
       return;
     }
 
@@ -1115,23 +1133,16 @@
       const tr = document.createElement('tr');
 
       tr.appendChild(makeCell(fmtTime(job.at), { nowrap: true }));
-      tr.appendChild(makeCell(job.requestId || '—', { mono: true }));
-      tr.appendChild(makeCell(job.taskId || '—', { mono: true }));
+      tr.appendChild(idCell(job));
       tr.appendChild(makeCell(badge(verdict.label, verdict.tone)));
       tr.appendChild(makeCell(badge(riskLabel(job.riskLevel), riskTone(job.riskLevel))));
-      tr.appendChild(makeCell(String(toNumber(job.findings))));
+      tr.appendChild(makeCell(toNumber(job.high) + ' / ' + toNumber(job.medium) + ' / ' + toNumber(job.low), { mono: true }));
       tr.appendChild(makeCell(fmtDuration(job.durationMs), { nowrap: true }));
 
-      const action = document.createElement('button');
-      action.type = 'button';
-      action.className = 'secondary';
-      action.textContent = '查看';
-      action.addEventListener('click', (ev) => {
-        ev.stopPropagation();
-        auditLoadJob(job.id);
-      });
-      tr.appendChild(makeCell(action, { title: false }));
-
+      if (statusOf(job).key !== 'pending') {
+        tr.style.cursor = 'pointer';
+        tr.addEventListener('click', () => auditLoadJob(job.id));
+      }
       tbody.appendChild(tr);
     });
   }
@@ -1176,8 +1187,14 @@
   function filteredJobs() {
     const filterEl = $('auditJobsFilter');
     const filter = filterEl ? filterEl.value : 'all';
-    if (filter === 'passed') return state.jobs.filter((job) => !!job.passed);
-    if (filter === 'failed') return state.jobs.filter((job) => !job.passed);
+    if (filter === 'pending') return state.jobs.filter((job) => statusOf(job).key === 'pending');
+    if (filter === 'passed') {
+      return state.jobs.filter((job) => statusOf(job).key === 'done' && !!job.passed);
+    }
+    if (filter === 'failed') {
+      return state.jobs.filter((job) => statusOf(job).key === 'failed'
+        || (statusOf(job).key === 'done' && !job.passed));
+    }
     return state.jobs.slice();
   }
 
@@ -1193,33 +1210,67 @@
     if (!rows.length) {
       const text = state.jobs.length
         ? '当前筛选条件下没有任务。'
-        : '暂无审计任务。填写上方表单发起一次，或等待 TAA 上报。';
-      emptyRow(tbody, 10, text);
+        : '暂无审计任务。在上方选择文件并下发一次，或等待 TAA 上报。';
+      emptyRow(tbody, 9, text);
       return;
     }
 
     rows.forEach((job) => {
+      const status = statusOf(job);
       const verdict = verdictOf(job);
+      const pending = status.key === 'pending';
       const tr = document.createElement('tr');
+      if (pending) tr.classList.add('audit-row-pending');
+      tr.dataset.jobId = job.id || '';
 
       tr.appendChild(makeCell(fmtTime(job.at), { nowrap: true }));
-      tr.appendChild(makeCell(job.requestId || '—', { mono: true }));
-      tr.appendChild(makeCell(job.taskId || '—', { mono: true }));
+      tr.appendChild(idCell(job));
       tr.appendChild(makeCell(badge(verdict.label, verdict.tone)));
-      tr.appendChild(makeCell(badge(riskLabel(job.riskLevel), riskTone(job.riskLevel))));
-      tr.appendChild(makeCell(toNumber(job.high) + ' / ' + toNumber(job.medium) + ' / ' + toNumber(job.low), { mono: true }));
-      tr.appendChild(makeCell(fmtDuration(job.durationMs), { nowrap: true }));
-      tr.appendChild(makeCell(String(toNumber(job.files))));
-      tr.appendChild(makeCell(String(toNumber(job.findings))));
+      tr.appendChild(makeCell(badge(status.label, status.tone)));
+
+      if (pending) {
+        const dots = document.createElement('span');
+        dots.className = 'audit-pending-dots';
+        dots.textContent = '扫描中';
+        tr.appendChild(makeCell(dots));
+        tr.appendChild(makeCell('—', { title: false }));
+        tr.appendChild(makeCell(String(toNumber(job.files) || 1)));
+        tr.appendChild(makeCell('进行中', { nowrap: true }));
+      } else if (status.key === 'failed') {
+        tr.appendChild(makeCell('—', { title: false }));
+        tr.appendChild(makeCell('—', { title: false }));
+        tr.appendChild(makeCell(String(toNumber(job.files))));
+        tr.appendChild(makeCell('—', { nowrap: true }));
+      } else {
+        tr.appendChild(makeCell(badge(riskLabel(job.riskLevel), riskTone(job.riskLevel))));
+        tr.appendChild(makeCell(toNumber(job.high) + ' / ' + toNumber(job.medium) + ' / ' + toNumber(job.low), { mono: true }));
+        tr.appendChild(makeCell(String(toNumber(job.files))));
+        tr.appendChild(makeCell(fmtDuration(job.durationMs), { nowrap: true }));
+      }
 
       const action = document.createElement('button');
       action.type = 'button';
       action.className = 'secondary';
-      action.textContent = '查看';
-      action.addEventListener('click', (ev) => {
-        ev.stopPropagation();
-        auditLoadJob(job.id);
-      });
+      if (pending) {
+        action.textContent = '等待';
+        action.disabled = true;
+      } else if (status.key === 'failed') {
+        action.textContent = '详情';
+        action.addEventListener('click', (ev) => {
+          ev.stopPropagation();
+          toast({
+            type: 'error',
+            title: '任务未完成',
+            message: job.error || 'TAA 未返回审计结论，请检查实例连通性后重新下发。',
+          });
+        });
+      } else {
+        action.textContent = '查看';
+        action.addEventListener('click', (ev) => {
+          ev.stopPropagation();
+          auditLoadJob(job.id);
+        });
+      }
       tr.appendChild(makeCell(action, { title: false }));
 
       tbody.appendChild(tr);
@@ -1230,23 +1281,27 @@
     const sel = $('auditFindingsJobSelect');
     if (!sel) return;
 
-    const signature = state.jobs
+    // Only a completed job has findings to explore; a pending one has no report
+    // yet and a failed one never produced any.
+    const completed = state.jobs.filter((job) => statusOf(job).key === 'done');
+    const signature = completed
       .map((job) => (job.id || '') + '|' + (job.at || '') + '|' + (job.passed ? '1' : '0'))
       .join(',');
     if (sel.dataset.sig !== signature) {
       sel.dataset.sig = signature;
       sel.replaceChildren();
-      if (!state.jobs.length) {
+      if (!completed.length) {
         const opt = document.createElement('option');
         opt.value = '';
-        opt.textContent = '（暂无审计任务）';
+        opt.textContent = '（暂无已完成的审计任务）';
         sel.appendChild(opt);
       } else {
-        state.jobs.forEach((job) => {
+        completed.forEach((job) => {
           const verdict = verdictOf(job);
           const opt = document.createElement('option');
           opt.value = job.id || '';
-          opt.textContent = fmtTime(job.at) + ' · ' + (job.requestId || job.id || '—') + ' · ' + verdict.label;
+          opt.textContent = fmtTime(job.at) + ' · ' + shortID(job.requestId || job.id || '—') + ' · ' + verdict.label;
+          opt.title = job.requestId || job.id || '';
           sel.appendChild(opt);
         });
       }
@@ -1265,83 +1320,6 @@
     el.style.color = ok ? 'var(--ok, #059669)' : 'var(--bad, #dc2626)';
   }
 
-  function buildImportBodyFallback(resourceUrl, requestId, publicKey, taskId, runtimeConfig) {
-    const body = { resourceUrl: resourceUrl };
-    if (requestId) body.requestId = requestId;
-    if (taskId) body.taskId = taskId;
-    if (publicKey) body.publicKey = publicKey;
-    if (runtimeConfig) body.runtimeConfig = runtimeConfig;
-    return body;
-  }
-
-  function callBuildImportBody(resourceUrl, requestId, publicKey, taskId, runtimeConfig) {
-    if (typeof buildImportBody === 'function') {
-      return buildImportBody(resourceUrl, requestId, publicKey, taskId, runtimeConfig);
-    }
-    return buildImportBodyFallback(resourceUrl, requestId, publicKey, taskId, runtimeConfig);
-  }
-
-  async function callPostToTAA(path, body, timeoutMs) {
-    if (typeof postToTAA === 'function') return postToTAA(path, body, timeoutMs);
-
-    const base = typeof getTaaAddr === 'function'
-      ? getTaaAddr()
-      : ('http://' + (location.hostname || '127.0.0.1') + ':6001');
-    let url = base + path;
-    if (base.endsWith('/taa')) {
-      if (typeof withDockerId === 'function') url = withDockerId(url);
-      else if (state.dockerId) url += (url.indexOf('?') === -1 ? '?' : '&') + 'dockerId=' + encodeURIComponent(state.dockerId);
-    }
-
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), timeoutMs || REQUEST_TIMEOUT_MS);
-    try {
-      const resp = await fetch(url, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
-        signal: controller.signal,
-      });
-      const text = await resp.text();
-      let data;
-      try { data = JSON.parse(text); } catch (_) { data = text; }
-      return { ok: resp.ok, status: resp.status, data: data };
-    } finally {
-      clearTimeout(timer);
-    }
-  }
-
-  async function resolvePublicKey() {
-    const cached = state.publicKeys[state.dockerId];
-    if (cached) return cached;
-
-    try {
-      const res = await requestJSON(auditUrl('/api/dashboard/status'), { timeoutMs: 10000 });
-      if (res.ok) {
-        const data = unwrap(res.data) || {};
-        const reg = data.register || {};
-        const key = String(reg.taaPublicKey || '').trim();
-        if (key) {
-          state.publicKeys[state.dockerId] = key;
-          return key;
-        }
-      }
-    } catch (err) {
-      if (err.unauthorized) throw err;
-    }
-
-    // Last resort: the platform tab may already hold the registration payload.
-    try {
-      if (typeof lastRegisterData !== 'undefined' && lastRegisterData) {
-        const sameInstance = !lastRegisterData.dockerId || lastRegisterData.dockerId === state.dockerId;
-        const key = sameInstance ? String(lastRegisterData.taaPublicKey || '').trim() : '';
-        if (key) return key;
-      }
-    } catch (_) {}
-
-    return '';
-  }
-
   function genRequestId() {
     if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
       return 'audit-' + crypto.randomUUID();
@@ -1349,80 +1327,299 @@
     return 'audit-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 8);
   }
 
-  function submitJobHint(message) {
-    const hint = $('auditSubmitHint');
-    if (hint) hint.textContent = message || '';
+  // shortID keeps a long request id readable in a table cell or a select
+  // option. The full value stays in the element's title and the detail header.
+  function shortID(id) {
+    const text = String(id == null ? '' : id);
+    return text.length > 26 ? text.slice(0, 24) + '…' : text;
+  }
+
+  // idCell is the request-id cell shared by both job tables: the visible text
+  // is shortened, the full id stays in the tooltip.
+  function idCell(job) {
+    const full = String(job.requestId || job.id || '');
+    const td = makeCell(shortID(full) || '—', { mono: true, title: false });
+    if (full) td.title = full;
+    return td;
+  }
+
+  function humanSize(bytes) {
+    const n = Number(bytes);
+    if (!Number.isFinite(n) || n <= 0) return '—';
+    if (n < 1024) return n + ' B';
+    if (n < 1024 * 1024) return (n / 1024).toFixed(1) + ' KB';
+    if (n < 1024 * 1024 * 1024) return (n / (1024 * 1024)).toFixed(1) + ' MB';
+    return (n / (1024 * 1024 * 1024)).toFixed(2) + ' GB';
+  }
+
+  function fileKind(file) {
+    const name = String((file && file.name) || '').toLowerCase();
+    if (/\.enc$/.test(name)) return '加密信封';
+    if (/\.(tar|tar\.gz|tgz|tar\.bz2|tbz2|tar\.xz)$/.test(name)) return '归档包';
+    if (/\.zip$/.test(name)) return 'ZIP 包';
+    return '文件';
+  }
+
+  // ── Audit submission ──
+  //
+  // One request carries the whole pipeline the production platform runs: the
+  // browser posts the package to the mock, the mock wraps it in the same SM2
+  // key envelope and SM4 ciphertext the platform would use, and dispatches
+  // /v1/taa/importModel through the sealed proxy. TAA then audits inside the
+  // confidential VM and reports back asynchronously, so the returned job is
+  // recorded as `pending` and this view polls until the verdict arrives.
+  // The strip has three stages, matching what actually happens: the browser
+  // uploads and the mock seals the envelope; TAA decrypts and audits inside the
+  // confidential VM; the verdict comes back through reportAudit. The markup
+  // owns the labels, this only moves the state.
+  const FLOW_STEPS = ['upload', 'audit', 'report'];
+
+  function flowStepOf(key) {
+    const index = FLOW_STEPS.indexOf(key);
+    return index < 0 ? 0 : index;
+  }
+
+  // renderFlow paints the strip: the given stage is active, earlier ones are
+  // done, later ones idle. mode 'done' marks every stage done; 'error' paints
+  // the current stage red and leaves the rest idle.
+  function renderFlow(activeKey, mode) {
+    const host = $('auditFlowSteps');
+    if (!host) return;
+    const steps = host.querySelectorAll('.audit-flow-step');
+    if (!steps.length) return;
+
+    const active = flowStepOf(activeKey);
+    steps.forEach((item, index) => {
+      let state = 'idle';
+      if (mode === 'done') state = 'done';
+      else if (mode === 'error') state = index === active ? 'failed' : (index < active ? 'done' : 'idle');
+      else if (mode === 'running') state = index < active ? 'done' : (index === active ? 'active' : 'idle');
+
+      item.dataset.state = state;
+      item.classList.toggle('is-active', state === 'active');
+      item.classList.toggle('is-done', state === 'done');
+      item.classList.toggle('is-error', state === 'failed');
+    });
+  }
+
+  function setUploadProgress(fraction, stageText) {
+    const pct = Math.max(0, Math.min(100, Math.round((Number(fraction) || 0) * 100)));
+    const bar = $('auditUploadBar');
+    if (bar) bar.style.width = pct + '%';
+    setText('auditUploadPercent', pct + '%');
+    if (stageText != null) setText('auditUploadStage', stageText);
+  }
+
+  function showUploadProgress(visible) {
+    const el = $('auditUploadProgress');
+    if (el) el.style.display = visible ? '' : 'none';
+  }
+
+  function setChosenFile(file) {
+    state.file = file || null;
+
+    const meta = $('auditFileMeta');
+    const clearBtn = $('auditFileClearBtn');
+    const drop = $('auditFileDrop');
+
+    if (!file) {
+      if (meta) meta.style.display = 'none';
+      if (clearBtn) clearBtn.style.display = 'none';
+      if (drop) drop.classList.remove('has-file');
+      setText('auditFileName', '');
+      setText('auditFileSize', '');
+      setText('auditFileTypeText', '支持 .zip / .tar.gz / .enc 模型与代码包');
+      return;
+    }
+
+    setText('auditFileName', file.name);
+    setText('auditFileSize', humanSize(file.size));
+    setText('auditFileTypeText', fileKind(file));
+    if (meta) meta.style.display = '';
+    if (clearBtn) clearBtn.style.display = '';
+    if (drop) drop.classList.add('has-file');
+    setHint('auditSubmitHint', true, '已选择 ' + file.name + '，点击「上传并启动审计」下发。');
+  }
+
+  function clearChosenFile() {
+    const input = $('auditFileInput');
+    if (input) input.value = '';
+    setChosenFile(null);
+    setHint('auditSubmitHint', true, '');
+  }
+
+  function rotateTaskId() {
+    const now = new Date();
+    const stamp = now.toISOString().slice(0, 19).replace(/[-:T]/g, '');
+    state.taskId = 'audit-' + stamp;
+    state.requestId = genRequestId();
+    setText('auditTaskIdPreview', state.taskId);
+  }
+
+  function uploadAuditPackage(formData, onProgress) {
+    return new Promise((resolve, reject) => {
+      let xhr;
+      try {
+        xhr = new XMLHttpRequest();
+      } catch (err) {
+        reject(new Error('浏览器不支持文件上传'));
+        return;
+      }
+
+      xhr.open('POST', auditUrl('/api/audit/console/submit'), true);
+      xhr.withCredentials = true;
+      xhr.timeout = UPLOAD_TIMEOUT_MS;
+
+      if (xhr.upload) {
+        xhr.upload.addEventListener('progress', (ev) => {
+          if (ev.lengthComputable && ev.total > 0) onProgress(ev.loaded / ev.total);
+        });
+      }
+
+      xhr.onload = () => {
+        let data = null;
+        try { data = JSON.parse(xhr.responseText); } catch (_) { data = null; }
+        resolve({ status: xhr.status, ok: xhr.status >= 200 && xhr.status < 300, data: data });
+      };
+      xhr.onerror = () => reject(new Error('无法连接服务器'));
+      xhr.ontimeout = () => {
+        const err = new Error('上传超时');
+        err.timeout = true;
+        reject(err);
+      };
+      xhr.onabort = () => reject(new Error('上传已取消'));
+      xhr.send(formData);
+    });
+  }
+
+  function optimisticPendingJob(data, file) {
+    return {
+      id: data.jobId || state.requestId,
+      dockerId: state.dockerId,
+      requestId: data.requestId || state.requestId,
+      taskId: data.taskId || state.taskId,
+      at: data.at || new Date().toISOString(),
+      status: 'pending',
+      code: 0,
+      passed: false,
+      riskLevel: '',
+      high: 0,
+      medium: 0,
+      low: 0,
+      durationMs: 0,
+      files: 0,
+      findings: 0,
+      originalName: data.originalName || (file && file.name) || '',
+      size: data.size || (file && file.size) || 0,
+    };
+  }
+
+  // friendlySubmitError rewrites the backend's transport error ("下发失败: Post
+  // ... connect: connection refused") into something an operator can act on.
+  // Anything it does not recognise passes through unchanged.
+  function friendlySubmitError(message) {
+    const text = String(message || '');
+    if (/connection refused|no route to host|network is unreachable/i.test(text)) {
+      return '无法连接所选 TAA 实例，请确认实例已启动且网络可达后重试。';
+    }
+    if (/i\/o timeout|context deadline exceeded|timed out/i.test(text)) {
+      return '目标 TAA 实例响应超时，请稍后重试。';
+    }
+    return text;
   }
 
   async function auditSubmitAudit() {
     if (!state.user) return;
+    if (state.submitBusy) return;
 
-    const url = (($('auditResourceUrl') || {}).value || '').trim();
-    const requestId = (($('auditRequestId') || {}).value || '').trim();
-    const taskId = (($('auditTaskId') || {}).value || '').trim();
-    const rcRaw = (($('auditRuntimeConfig') || {}).value || '').trim();
     const btn = $('auditSubmitBtn');
+    const file = state.file;
 
-    if (!/^https?:\/\//i.test(url)) {
-      setHint('auditSubmitHint', false, '资源地址必须是 http(s) URL。');
+    if (!file) {
+      setHint('auditSubmitHint', false, '请先选择待审计的模型包或代码包。');
       return;
     }
-    if (!requestId) {
-      setHint('auditSubmitHint', false, 'requestId 不能为空。');
+    if (file.size <= 0) {
+      setHint('auditSubmitHint', false, '文件为空，请重新选择。');
       return;
     }
-    if (!taskId) {
-      setHint('auditSubmitHint', false, 'taskId 不能为空。');
+    if (file.size > MAX_UPLOAD_BYTES) {
+      setHint('auditSubmitHint', false, '文件超过 ' + humanSize(MAX_UPLOAD_BYTES) + ' 上限，请拆分后重试。');
       return;
     }
-    if (!rcRaw) {
-      setHint('auditSubmitHint', false, 'runtimeConfig 不能为空，至少包含 {"commands":["true"]}。');
-      return;
-    }
-    let parsedConfig;
-    try {
-      parsedConfig = JSON.parse(rcRaw);
-    } catch (err) {
-      setHint('auditSubmitHint', false, 'runtimeConfig 不是合法 JSON：' + err.message);
-      return;
-    }
-    if (!parsedConfig || !Array.isArray(parsedConfig.commands)) {
-      setHint('auditSubmitHint', false, 'runtimeConfig 必须包含 commands 数组。');
+    if (!state.dockerId) {
+      setHint('auditSubmitHint', false, '请先在顶部选择一个已注册的 TAA 实例。');
       return;
     }
 
+    state.submitBusy = true;
     if (btn) btn.disabled = true;
-    setHint('auditSubmitHint', true, '正在提交审计任务…');
+
+    const encryptMode = (($('auditEncryptMode') || {}).value || 'urlkey');
+    const requestId = state.requestId || genRequestId();
+    state.requestId = requestId;
+
+    showUploadProgress(true);
+    setUploadProgress(0, '正在上传文件…');
+    renderFlow('upload', 'running');
+    setHint('auditSubmitHint', true, '正在加密并下发审计任务…');
 
     try {
-      const publicKey = await resolvePublicKey();
-      if (!publicKey) {
-        setHint('auditSubmitHint', false, '未获取到当前实例的 TAA 公钥，请先完成实例注册。');
+      const form = new FormData();
+      form.append('file', file, file.name);
+      form.append('encryptMode', encryptMode);
+      form.append('requestId', requestId);
+      form.append('taskId', state.taskId || '');
+      form.append('runtimeConfig', DEFAULT_RUNTIME_CONFIG);
+
+      const res = await uploadAuditPackage(form, (fraction) => {
+        // The upload owns the first 80% of the bar; the remaining fifth is the
+        // server-side envelope plus the importModel round trip.
+        setUploadProgress(fraction * 0.8, '正在上传 ' + Math.round(fraction * 100) + '%…');
+      });
+
+      if (res.status === 401) {
+        dropToLogin('会话已过期，请重新登录');
         return;
       }
 
-      syncPlatformInstance();
-      const body = callBuildImportBody(url, requestId, publicKey, taskId, rcRaw);
-      const result = await callPostToTAA('/v1/taa/importModel', body, DEFAULT_TASK_TIMEOUT_MS);
-      const data = result && result.data;
-      const ok = !!result && (result.ok === true || result.status === 200)
-        && (!data || typeof data !== 'object' || data.error === 0 || data.error === undefined);
-
-      if (!ok) {
-        const message = data && typeof data === 'object'
-          ? (data.msg || data.error || ('HTTP ' + (result ? result.status : '?')))
-          : ('HTTP ' + (result ? result.status : '?'));
-        setHint('auditSubmitHint', false, '提交失败：' + message);
-        return;
+      const data = unwrap(res.data) || {};
+      if (!res.ok || data.ok === false) {
+        const message = data.error || data.msg || ('HTTP ' + res.status);
+        throw new Error(message);
       }
 
-      setHint('auditSubmitHint', true, '已提交，审计完成后自动出现在任务列表。');
-      await waitForSubmittedJob(requestId);
+      setUploadProgress(0.88, '已封装 SM2/SM4 信封，TAA 正在接收…');
+      renderFlow('report', 'running');
+
+      const pending = optimisticPendingJob(data, file);
+      state.jobs = [pending].concat(state.jobs.filter((job) => job.requestId !== pending.requestId));
+      renderJobsTable();
+      fillFindingsJobSelect();
+
+      setUploadProgress(1, '已下发，等待 TEE 内审计结论…');
+
+      const dispatchedTaskId = data.taskId || state.taskId;
+      rotateTaskId();
+      clearChosenFile();
+      setHint('auditSubmitHint', true, '已下发审计任务 ' + dispatchedTaskId + '，等待结论回流。');
+
+      await waitForSubmittedJob(pending.requestId);
     } catch (err) {
-      if (!err.unauthorized) {
-        setHint('auditSubmitHint', false, '提交失败：' + (err.timeout ? '请求超时' : err.message));
-      }
+      if (err.unauthorized) return;
+      // The failed requestId is spent: the backend keeps the abandoned row, so
+      // a retry must carry a fresh one or it would be deduplicated against it.
+      rotateTaskId();
+      const reason = err.timeout ? '请求超时，请稍后重试。' : friendlySubmitError(err.message);
+      showUploadProgress(false);
+      renderFlow('upload', 'error');
+      setHint('auditSubmitHint', false, '提交失败：' + reason);
+      toast({ type: 'error', title: '审计任务下发失败', message: reason });
+      // The backend records the abandoned attempt as a failed job; pull it in
+      // so the operator sees the reason in the table, not only in the hint.
+      await refreshJobs(true);
     } finally {
+      state.submitBusy = false;
       if (btn) btn.disabled = false;
     }
   }
@@ -1457,15 +1654,21 @@
           }
         }
 
-        if (found) {
-          setHint('auditSubmitHint', true, '审计完成，已加载任务 ' + shortId(found.id) + '。');
-          auditLoadJob(found.id);
+        if (found && String(found.status || '') !== 'pending') {
+          renderFlow('report', found.status === 'failed' ? 'error' : 'done');
+          // The strip carries the outcome; the transfer bar has no meaning once
+          // the job has settled.
+          showUploadProgress(false);
+          const verdict = verdictOf(found);
+          setHint('auditSubmitHint', found.status === 'failed', '审计结束：' + verdict.label
+            + (found.status === 'failed' && found.error ? '（' + found.error + '）' : ''));
           resolve();
           return;
         }
 
         if (Date.now() - started >= SUBMIT_POLL_WINDOW_MS) {
-          setHint('auditSubmitHint', true, '已提交，10 秒内尚未收到审计结果，可稍后在任务列表查看。');
+          showUploadProgress(false);
+          setHint('auditSubmitHint', true, '已下发，审计仍在执行，稍后可在任务列表查看结果。');
           resolve();
           return;
         }
@@ -2487,6 +2690,77 @@
     const filter = $('auditJobsFilter');
     if (filter) filter.addEventListener('change', renderJobsTable);
     bindIfNoInline('auditSubmitBtn', auditSubmitAudit);
+
+    const input = $('auditFileInput');
+    const drop = $('auditFileDrop');
+    const pick = $('auditFilePickBtn');
+    const clear = $('auditFileClearBtn');
+
+    if (input && input.dataset.auditBound !== '1') {
+      input.dataset.auditBound = '1';
+      input.addEventListener('change', () => {
+        const file = input.files && input.files[0];
+        if (file) setChosenFile(file);
+      });
+    }
+
+    if (pick && pick.dataset.auditBound !== '1') {
+      pick.dataset.auditBound = '1';
+      pick.addEventListener('click', (ev) => {
+        ev.preventDefault();
+        ev.stopPropagation();
+        if (input) input.click();
+      });
+    }
+
+    if (clear && clear.dataset.auditBound !== '1') {
+      clear.dataset.auditBound = '1';
+      clear.addEventListener('click', (ev) => {
+        ev.preventDefault();
+        ev.stopPropagation();
+        clearChosenFile();
+      });
+    }
+
+    if (drop && drop.dataset.auditBound !== '1') {
+      drop.dataset.auditBound = '1';
+      drop.addEventListener('click', (ev) => {
+        // Clicks on the buttons inside the zone are handled above; anywhere
+        // else in the zone means "open the picker".
+        if (ev.target.closest('button')) return;
+        if (input) input.click();
+      });
+
+      ['dragenter', 'dragover'].forEach((name) => {
+        drop.addEventListener(name, (ev) => {
+          ev.preventDefault();
+          ev.stopPropagation();
+          drop.classList.add('is-dragover');
+        });
+      });
+      ['dragleave', 'drop'].forEach((name) => {
+        drop.addEventListener(name, (ev) => {
+          ev.preventDefault();
+          ev.stopPropagation();
+          drop.classList.remove('is-dragover');
+        });
+      });
+      drop.addEventListener('drop', (ev) => {
+        const file = ev.dataTransfer && ev.dataTransfer.files && ev.dataTransfer.files[0];
+        if (!file) return;
+        if (input) {
+          try {
+            const dt = new DataTransfer();
+            dt.items.add(file);
+            input.files = dt.files;
+          } catch (_) {}
+        }
+        setChosenFile(file);
+      });
+    }
+
+    if (!state.taskId) rotateTaskId();
+    renderFlow('upload', 'idle');
   }
 
   function wireFindings() {

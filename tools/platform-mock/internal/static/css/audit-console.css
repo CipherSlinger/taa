@@ -52,6 +52,22 @@
   --aud-warn: #c2740a;
   --aud-warn-soft: rgba(217, 119, 6, 0.12);
 
+  /* Upload drop zone, progress bar and flow strip. */
+  --aud-drop-bg: #f7faff;
+  --aud-drop-bg-hover: rgba(37, 99, 235, 0.06);
+  --aud-drop-border: #c9d8ee;
+  --aud-drop-icon-bg: #e8f0ff;
+  --aud-drop-icon-fg: #2563eb;
+  --aud-file-icon-bg: rgba(37, 99, 235, 0.10);
+  --aud-progress-track: #e5edf9;
+  --aud-progress-from: #3b82f6;
+  --aud-progress-to: #1d4ed8;
+  --aud-flow-line: #d9e4f3;
+  --aud-flow-idle-fg: #9fadc2;
+  --aud-flow-step-bg: #f6f9ff;
+  --aud-meta-bg: #f7faff;
+  --aud-on-accent: #ffffff;
+
   --aud-code-bg: #0e1728;
   --aud-code-text: #d7e5fb;
 
@@ -121,6 +137,22 @@
 
     --aud-warn: #fbbf24;
     --aud-warn-soft: rgba(251, 191, 36, 0.14);
+
+    /* Upload drop zone, progress bar and flow strip. */
+    --aud-drop-bg: rgba(15, 25, 42, 0.66);
+    --aud-drop-bg-hover: rgba(75, 141, 248, 0.12);
+    --aud-drop-border: #2a3c58;
+    --aud-drop-icon-bg: rgba(75, 141, 248, 0.16);
+    --aud-drop-icon-fg: #6aa2ff;
+    --aud-file-icon-bg: rgba(75, 141, 248, 0.16);
+    --aud-progress-track: #182640;
+    --aud-progress-from: #4b8df8;
+    --aud-progress-to: #2f6fd0;
+    --aud-flow-line: #24344e;
+    --aud-flow-idle-fg: #5b6b85;
+    --aud-flow-step-bg: #101a2c;
+    --aud-meta-bg: #0f1929;
+    --aud-on-accent: #06101f;
 
     --aud-code-bg: #050a13;
     --aud-code-text: #cfe0ff;
@@ -1917,6 +1949,599 @@
   margin-top: 16px;
 }
 
+/* Upload launch panel: drop zone on the left, generated-metadata card on the right. */
+.audit-launch-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.7fr) minmax(0, 1fr);
+  gap: 16px;
+  align-items: start;
+}
+
+.audit-launch-main,
+.audit-launch-side {
+  min-width: 0;
+}
+
+.audit-drop {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 34px 22px 30px;
+  border: 1.5px dashed var(--aud-drop-border);
+  border-radius: 14px;
+  background: var(--aud-drop-bg);
+  color: var(--aud-text);
+  text-align: center;
+  cursor: pointer;
+  transition: border-color 0.16s ease, background-color 0.16s ease, box-shadow 0.16s ease;
+}
+
+.audit-drop:hover {
+  border-color: var(--aud-accent);
+  background: var(--aud-drop-bg-hover);
+}
+
+.audit-drop:focus-visible {
+  outline: none;
+  border-color: var(--aud-accent);
+  box-shadow: 0 0 0 3px var(--aud-accent-ring);
+}
+
+.audit-drop.is-dragover {
+  border-color: var(--aud-accent);
+  border-style: solid;
+  background: var(--aud-drop-bg-hover);
+  box-shadow: 0 0 0 4px var(--aud-accent-ring), var(--aud-shadow-soft);
+}
+
+.audit-drop-icon {
+  display: inline-grid;
+  place-items: center;
+  width: 48px;
+  height: 48px;
+  margin-bottom: 2px;
+  border-radius: 14px;
+  background: var(--aud-drop-icon-bg);
+  color: var(--aud-drop-icon-fg);
+  transition: transform 0.16s ease;
+}
+
+.audit-drop.is-dragover .audit-drop-icon {
+  transform: translateY(-2px) scale(1.04);
+}
+
+.audit-drop-title {
+  margin: 0;
+  font-size: 14.5px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  color: var(--aud-text);
+}
+
+.audit-drop-sub {
+  margin: 0;
+  max-width: 460px;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--aud-muted);
+}
+
+.audit-drop-pick {
+  margin-top: 6px;
+}
+
+.audit-file-meta {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 12px;
+  padding: 12px 14px;
+  border: 1px solid var(--aud-border);
+  border-radius: 12px;
+  background: var(--aud-surface-2);
+  min-width: 0;
+}
+
+.audit-drop.has-file {
+  border-color: var(--aud-accent);
+  border-style: solid;
+}
+
+.audit-file-icon {
+  display: inline-grid;
+  place-items: center;
+  flex: none;
+  width: 36px;
+  height: 36px;
+  border-radius: 10px;
+  background: var(--aud-file-icon-bg);
+  color: var(--aud-accent);
+}
+
+/* Archive-family icons: the row defaults to the generic file, and the console
+   script may tag the container with data-kind="zip" or "tar". */
+.audit-file-icon svg {
+  display: none;
+}
+
+.audit-file-icon .audit-file-icon-file {
+  display: block;
+}
+
+.audit-file-meta[data-kind="zip"] .audit-file-icon-zip,
+.audit-file-meta[data-kind="tar"] .audit-file-icon-tar {
+  display: block;
+}
+
+.audit-file-meta[data-kind="zip"] .audit-file-icon-file,
+.audit-file-meta[data-kind="tar"] .audit-file-icon-file {
+  display: none;
+}
+
+.audit-file-text {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.audit-file-name {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--aud-text);
+  overflow-wrap: anywhere;
+}
+
+.audit-file-sub {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  font-size: 11.5px;
+  color: var(--aud-muted);
+}
+
+.audit-file-size,
+.audit-file-type {
+  overflow-wrap: anywhere;
+}
+
+.audit-file-dot {
+  color: var(--aud-border-strong);
+}
+
+.audit-file-clear {
+  flex: none;
+  padding: 5px 11px;
+  border: 1px solid var(--aud-border-strong);
+  border-radius: 8px;
+  background: transparent;
+  color: var(--aud-text-2);
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 650;
+  cursor: pointer;
+  transition: color 0.16s ease, border-color 0.16s ease, background-color 0.16s ease;
+}
+
+.audit-file-clear:hover {
+  color: var(--aud-critical);
+  border-color: var(--aud-critical);
+  background: var(--aud-critical-soft);
+}
+
+.audit-file-clear:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px var(--aud-accent-ring);
+}
+
+.audit-launch-controls {
+  margin-top: 14px;
+}
+
+.audit-upload {
+  margin-top: 14px;
+  padding: 12px 14px;
+  border: 1px solid var(--aud-border);
+  border-radius: 12px;
+  background: var(--aud-surface-2);
+}
+
+.audit-upload-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+
+.audit-upload-stage {
+  font-size: 12.5px;
+  font-weight: 650;
+  color: var(--aud-text-2);
+}
+
+.audit-upload-percent {
+  font-family: var(--aud-font-mono);
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--aud-accent);
+}
+
+.audit-upload-track {
+  height: 7px;
+  border-radius: 999px;
+  background: var(--aud-progress-track);
+  overflow: hidden;
+}
+
+.audit-upload-bar {
+  width: 0;
+  height: 100%;
+  border-radius: 999px;
+  background: linear-gradient(90deg, var(--aud-progress-from), var(--aud-progress-to));
+  transition: width 0.28s ease;
+}
+
+/* Three-stage flow strip: idle → active (breathing) → done / failed.
+   The console script may rebuild the steps, so the layout tolerates both the
+   static markup and its own dot + label pairs. */
+.audit-flow {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: stretch;
+  gap: 12px;
+  margin: 18px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.audit-flow-step {
+  position: relative;
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  flex: 1 1 170px;
+  padding: 12px 13px;
+  border: 1px solid var(--aud-border);
+  border-radius: 12px;
+  background: var(--aud-flow-step-bg);
+  min-width: 0;
+  transition: border-color 0.18s ease, background-color 0.18s ease, box-shadow 0.18s ease;
+}
+
+/* Connector rail: runs from this step's dot, across the gap and the next
+   card's left padding, into the next dot. Its colour follows the step state:
+   idle grey, active accent, done green, failed red. */
+.audit-flow-step::after {
+  content: "";
+  position: absolute;
+  top: 22px;
+  left: 100%;
+  width: calc(12px + 13px);
+  height: 1.5px;
+  border-radius: 999px;
+  background: var(--aud-flow-line);
+  transition: background-color 0.2s ease;
+}
+
+.audit-flow-step:last-child::after {
+  display: none;
+}
+
+.audit-flow-step[data-state="active"]::after,
+.audit-flow-step.is-active::after {
+  background: linear-gradient(90deg, var(--aud-accent), var(--aud-flow-line));
+}
+
+.audit-flow-step[data-state="done"]::after,
+.audit-flow-step.is-done::after {
+  background: var(--aud-ok);
+}
+
+.audit-flow-step[data-state="failed"]::after,
+.audit-flow-step.is-error::after {
+  background: var(--aud-critical);
+}
+
+.audit-flow-step-num,
+.audit-flow-step-dot {
+  display: inline-grid;
+  place-items: center;
+  flex: none;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  border: 1.5px solid var(--aud-flow-line);
+  background: var(--aud-surface);
+  color: var(--aud-flow-idle-fg);
+  font-family: var(--aud-font-mono);
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.audit-flow-step-body {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+
+.audit-flow-step-title {
+  font-size: 12.5px;
+  font-weight: 700;
+  color: var(--aud-muted);
+}
+
+.audit-flow-step-label {
+  font-size: 12.5px;
+  font-weight: 700;
+  color: var(--aud-muted);
+  overflow-wrap: anywhere;
+}
+
+/* When the console script rebuilds the strip it emits dot + label only, so the
+   bare label centres itself against the dot. */
+.audit-flow-step > .audit-flow-step-label {
+  align-self: center;
+  min-width: 0;
+}
+
+.audit-flow-step-desc {
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--aud-muted);
+}
+
+.audit-flow-step[data-state="active"],
+.audit-flow-step.is-active {
+  border-color: var(--aud-accent);
+  background: var(--aud-accent-soft);
+}
+
+.audit-flow-step[data-state="active"] .audit-flow-step-num,
+.audit-flow-step.is-active .audit-flow-step-dot {
+  border-color: var(--aud-accent);
+  background: var(--aud-accent);
+  color: var(--aud-on-accent);
+  animation: aud-flow-breathe 1.8s ease-in-out infinite;
+}
+
+.audit-flow-step[data-state="active"] .audit-flow-step-title,
+.audit-flow-step.is-active .audit-flow-step-label {
+  color: var(--aud-text);
+}
+
+.audit-flow-step[data-state="done"],
+.audit-flow-step.is-done {
+  border-color: var(--aud-ok-soft);
+  background: var(--aud-ok-soft);
+}
+
+.audit-flow-step[data-state="done"] .audit-flow-step-num,
+.audit-flow-step.is-done .audit-flow-step-dot {
+  border-color: var(--aud-ok);
+  background: var(--aud-ok);
+  color: var(--aud-on-accent);
+}
+
+.audit-flow-step[data-state="done"] .audit-flow-step-title,
+.audit-flow-step.is-done .audit-flow-step-label {
+  color: var(--aud-ok);
+}
+
+.audit-flow-step[data-state="failed"],
+.audit-flow-step.is-error {
+  border-color: var(--aud-critical-soft);
+  background: var(--aud-critical-soft);
+}
+
+.audit-flow-step[data-state="failed"] .audit-flow-step-num,
+.audit-flow-step.is-error .audit-flow-step-dot {
+  border-color: var(--aud-critical);
+  background: var(--aud-critical);
+  color: var(--aud-on-accent);
+}
+
+.audit-flow-step[data-state="failed"] .audit-flow-step-title,
+.audit-flow-step.is-error .audit-flow-step-label {
+  color: var(--aud-critical);
+}
+
+@keyframes aud-flow-breathe {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 var(--aud-accent-ring);
+  }
+  50% {
+    box-shadow: 0 0 0 5px var(--aud-accent-ring);
+  }
+}
+
+/* Right-hand card: label/value pairs, values in mono. */
+.audit-meta-list {
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.audit-meta-row {
+  display: grid;
+  grid-template-columns: 78px minmax(0, 1fr);
+  gap: 12px;
+  align-items: baseline;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--aud-border);
+}
+
+.audit-meta-row:last-child {
+  border-bottom: 0;
+}
+
+.audit-meta-row dt {
+  margin: 0;
+  font-size: 12px;
+  font-weight: 650;
+  color: var(--aud-muted);
+  white-space: nowrap;
+}
+
+.audit-meta-row dd {
+  margin: 0;
+  min-width: 0;
+  font-size: 12.5px;
+  color: var(--aud-text-2);
+  overflow-wrap: anywhere;
+}
+
+.audit-meta-mono {
+  display: inline-block;
+  padding: 3px 8px;
+  border-radius: 7px;
+  border: 1px solid var(--aud-border);
+  background: var(--aud-surface-2);
+  color: var(--aud-text);
+  font-family: var(--aud-font-mono);
+  font-size: 11.5px;
+  overflow-wrap: anywhere;
+  word-break: break-all;
+}
+
+.audit-meta-note {
+  margin: 12px 0 0;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: var(--aud-meta-bg);
+  border: 1px solid var(--aud-border);
+  font-size: 11.5px;
+  line-height: 1.6;
+  color: var(--aud-muted);
+}
+
+/* Job status pills rendered by the console script. */
+.audit-status-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 9px;
+  border-radius: 999px;
+  border: 1px solid transparent;
+  font-size: 11.5px;
+  font-weight: 700;
+  line-height: 1.5;
+  white-space: nowrap;
+}
+
+.audit-status-pill::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  flex: none;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.audit-status-pending {
+  color: var(--aud-low);
+  background: var(--aud-low-soft);
+  border-color: var(--aud-accent-ring);
+}
+
+.audit-status-pending::before {
+  animation: aud-status-pulse 1.6s ease-in-out infinite;
+}
+
+.audit-status-done {
+  color: var(--aud-ok);
+  background: var(--aud-ok-soft);
+}
+
+.audit-status-done.is-failed {
+  color: var(--aud-critical);
+  background: var(--aud-critical-soft);
+}
+
+.audit-status-failed {
+  color: var(--aud-warn);
+  background: var(--aud-warn-soft);
+}
+
+.audit-status-note {
+  display: block;
+  margin-top: 4px;
+  max-width: 220px;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--aud-muted);
+  overflow-wrap: anywhere;
+}
+
+/* The console script renders the status column through the shared .status-pill
+   helper, which paints its tones inline. These rules only restate the jobs-table
+   semantics: pending pulses, and a task that never finished is orange rather
+   than red (red is reserved for a completed audit that failed). */
+#auditJobsRows .status-pill.running::before {
+  content: "";
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  margin-right: 6px;
+  border-radius: 50%;
+  background: currentColor;
+  animation: aud-status-pulse 1.6s ease-in-out infinite;
+}
+
+#auditJobsRows td:nth-child(4) .status-pill.bad {
+  color: var(--aud-warn) !important;
+  background: var(--aud-warn-soft) !important;
+  border-color: var(--aud-warn) !important;
+}
+
+@keyframes aud-status-pulse {
+  0%,
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.35;
+    transform: scale(0.82);
+  }
+}
+
+/* Pending rows get a subtle accent bar and quiet placeholder text while the
+   audit runs inside the confidential VM. */
+.audit-row-pending td {
+  color: var(--aud-muted);
+}
+
+.audit-row-pending td:first-child {
+  box-shadow: inset 3px 0 0 var(--aud-low);
+}
+
+.audit-pending-dots {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 12px;
+  color: var(--aud-muted);
+}
+
+.audit-pending-dots::before {
+  content: "";
+  flex: none;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--aud-low);
+  animation: aud-status-pulse 1.6s ease-in-out infinite;
+}
+
 /* ─────────────────────────── findings ─────────────────────────── */
 
 .audit-findings-summary {
@@ -2499,6 +3124,11 @@
 }
 
 @media (max-width: 900px) {
+  /* Upload panel stacks above the generated-metadata card. */
+  .audit-launch-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
   .audit-login-shell {
     grid-template-columns: minmax(0, 1fr);
     justify-items: center;
@@ -2612,6 +3242,44 @@
 }
 
 @media (max-width: 640px) {
+  /* Flow strip turns vertical; connectors become short vertical ticks. */
+  .audit-flow {
+    flex-direction: column;
+    gap: 14px;
+  }
+
+  .audit-flow-step {
+    flex: 0 0 auto;
+  }
+
+  .audit-flow-step::after {
+    top: auto;
+    bottom: -14px;
+    left: 24px;
+    right: auto;
+    width: 1.5px;
+    height: 14px;
+    background: var(--aud-flow-line);
+  }
+
+  .audit-flow-step[data-state="active"]::after,
+  .audit-flow-step.is-active::after {
+    background: linear-gradient(180deg, var(--aud-accent), var(--aud-flow-line));
+  }
+
+  .audit-drop {
+    padding: 26px 16px 24px;
+  }
+
+  .audit-file-meta {
+    flex-wrap: wrap;
+  }
+
+  .audit-meta-row {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 3px;
+  }
+
   .llc-tabbar-inner {
     gap: 10px;
   }
@@ -2723,7 +3391,15 @@
   }
 
   .audit-spinner,
-  .audit-live-dot {
+  .audit-live-dot,
+  .audit-status-pending::before,
+  .audit-pending-dots::before,
+  #auditJobsRows .status-pill.running::before,
+  .audit-drop-icon,
+  .audit-flow-step[data-state="active"] .audit-flow-step-num,
+  .audit-flow-step.is-active .audit-flow-step-dot,
+  .audit-upload-bar {
     animation: none;
+    transition: none;
   }
 }

@@ -163,6 +163,10 @@ func NewServer(cfg Config) *Server {
 	mux.HandleFunc("/api/audit/console/overview", console.requireSession(auditConsole.handleOverview))
 	mux.HandleFunc("/api/audit/console/jobs", console.requireSession(auditConsole.handleJobs))
 	mux.HandleFunc("/api/audit/console/jobs/", console.requireSession(auditConsole.handleJobDetail))
+	// Submission runs the upload → encrypt → importModel chain server-side; the
+	// job store is the same one reportAuditHandler writes to, so a pending row
+	// here is the row a verdict later replaces.
+	mux.HandleFunc("/api/audit/console/submit", console.requireSession(auditSubmitHandler(mgr, auditJobs, uploadDir, cfg.Addr)))
 
 	mux.HandleFunc("/api/instances", instancesHandler(mgr))
 	mux.HandleFunc("/api/instances/delete", instancesDeleteHandler(mgr))
