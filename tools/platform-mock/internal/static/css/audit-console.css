@@ -1263,6 +1263,16 @@
   text-align: center;
 }
 
+.audit-login-hint code {
+  padding: 1px 5px;
+  border-radius: 5px;
+  background: var(--aud-surface-2);
+  border: 1px solid var(--aud-border);
+  font-family: var(--aud-font-mono);
+  font-size: 10.5px;
+  white-space: nowrap;
+}
+
 .audit-login-footer {
   margin: 16px 0 0;
   padding-top: 14px;
@@ -3748,6 +3758,14 @@
 
   .audit-login-card {
     padding: 30px 22px 24px;
+    /* Put the form first so a phone user does not scroll past the
+       marketing block before reaching it. */
+    order: -1;
+  }
+
+  /* The four feature rows make the page long without helping sign-in. */
+  .audit-brand-points {
+    display: none;
   }
 
   .audit-brand-title {
@@ -3816,6 +3834,95 @@
      state and action columns carry the whole story on a phone. */
   .audit-jobs-table {
     min-width: 0;
+  }
+
+  /* The job picker carries a whole line of text; let it take the card width
+     instead of overflowing it. */
+  #auditViewFindings .audit-card-tools {
+    width: 100%;
+  }
+
+  #auditViewFindings .audit-select-wide {
+    width: 100%;
+    min-width: 0;
+    max-width: 100%;
+  }
+
+  /* Findings become stacked cards: severity, rule and action on top, then the
+     location, the description and finally the AI verdict and risk prose. */
+  .audit-findings-table {
+    display: block;
+    min-width: 0;
+  }
+
+  .audit-findings-table thead {
+    display: none;
+  }
+
+  .audit-findings-table tbody,
+  .audit-findings-table tr {
+    display: block;
+  }
+
+  .audit-findings-table tr:not(.audit-empty-row) {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    gap: 5px 8px;
+    padding: 12px 14px;
+    border-bottom: 1px solid var(--aud-border);
+  }
+
+  .audit-findings-table tr:not(.audit-empty-row):last-child {
+    border-bottom: 0;
+  }
+
+  .audit-findings-table tbody tr:not(.audit-empty-row) td {
+    padding: 0;
+    border: 0;
+    background: transparent;
+  }
+
+  .audit-findings-table td.audit-col-sev {
+    grid-column: 1;
+    grid-row: 1;
+  }
+
+  .audit-findings-table td.audit-col-rule {
+    grid-column: 2;
+    grid-row: 1;
+    align-self: center;
+  }
+
+  .audit-findings-table td.audit-col-action {
+    grid-column: 3;
+    grid-row: 1;
+  }
+
+  .audit-findings-table td.audit-col-file {
+    grid-column: 1 / -1;
+    grid-row: 2;
+  }
+
+  .audit-findings-table td.audit-col-desc {
+    grid-column: 1 / -1;
+    grid-row: 3;
+  }
+
+  .audit-findings-table td:nth-child(5) {
+    grid-column: 1;
+    grid-row: 4;
+    align-self: center;
+  }
+
+  .audit-findings-table td.audit-col-risk {
+    grid-column: 2 / -1;
+    grid-row: 4;
+  }
+
+  .audit-findings-table tr.audit-empty-row,
+  .audit-findings-table tr.audit-empty-row td {
+    display: block;
+    grid-column: 1 / -1;
   }
 
   .audit-jobs-table tr:not(.audit-empty-row) td:nth-child(2) {
