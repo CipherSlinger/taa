@@ -1110,7 +1110,7 @@
               </div>
             </div>
             <div class="audit-table-wrap">
-              <table class="audit-table">
+              <table class="audit-table audit-jobs-table">
                 <thead>
                   <tr>
                     <th scope="col">时间</th>
@@ -1200,7 +1200,16 @@
             </div>
 
             <div class="audit-table-wrap">
-              <table class="audit-table">
+              <table class="audit-table audit-findings-table">
+                <colgroup>
+                  <col style="width:86px">
+                  <col style="width:106px">
+                  <col style="width:210px">
+                  <col>
+                  <col style="width:96px">
+                  <col style="width:280px">
+                  <col style="width:76px">
+                </colgroup>
                 <thead>
                   <tr>
                     <th scope="col">严重级别</th>
@@ -1209,7 +1218,7 @@
                     <th scope="col">描述</th>
                     <th scope="col">AI 判定</th>
                     <th scope="col">AI 风险</th>
-                    <th scope="col">操作</th>
+                    <th scope="col" class="audit-col-action">操作</th>
                   </tr>
                 </thead>
                 <tbody id="auditFindingsRows">
@@ -1220,6 +1229,7 @@
           </div>
 
           <!-- Detail drawer: slides in from the right, full width on narrow screens. -->
+          <div id="auditFindingBackdrop" class="audit-drawer-backdrop" hidden></div>
           <aside id="auditFindingDetail" class="audit-drawer" role="dialog" aria-modal="true" aria-labelledby="auditFindingDetailTitle" aria-hidden="true">
             <div class="audit-drawer-head">
               <h3 id="auditFindingDetailTitle" class="audit-drawer-title">发现详情</h3>
@@ -1266,6 +1276,7 @@
                   </tbody>
                 </table>
               </div>
+              <p class="audit-help">发起一次审计后，这里显示最近一次扫描的统计与结论投影。</p>
             </div>
 
             <div class="audit-card">
@@ -1315,7 +1326,15 @@
                       </tr>
                     </thead>
                     <tbody id="engineAttestFields">
-                      <tr class="audit-table-empty"><td colspan="2">尚未获取，请点击“获取证明报告”。</td></tr>
+                      <tr class="audit-empty-row"><td colspan="2">
+                        <div class="audit-empty-cell">
+                          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                            <path d="M12 3 4 6v6c0 5 3.5 7.5 8 9 4.5-1.5 8-4 8-9V6l-8-3z"></path>
+                            <path d="m9 12 2 2 4-4"></path>
+                          </svg>
+                          <span>尚未获取，点击「获取证明报告」后显示字段。</span>
+                        </div>
+                      </td></tr>
                     </tbody>
                   </table>
                 </div>
@@ -1331,7 +1350,15 @@
                       </tr>
                     </thead>
                     <tbody id="engineHandshakeFields">
-                      <tr class="audit-table-empty"><td colspan="2">尚未握手，请点击“校验 TEE-TLS 握手”。</td></tr>
+                      <tr class="audit-empty-row"><td colspan="2">
+                        <div class="audit-empty-cell">
+                          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                            <rect x="5" y="11" width="14" height="10" rx="2"></rect>
+                            <path d="M8 11V7a4 4 0 0 1 8 0v4"></path>
+                          </svg>
+                          <span>尚未握手，点击「校验 TEE-TLS 握手」后显示字段。</span>
+                        </div>
+                      </td></tr>
                     </tbody>
                   </table>
                 </div>
@@ -1404,7 +1431,7 @@
               <div class="audit-card-head">
                 <div>
                   <h3 class="audit-card-title">实例连接</h3>
-                  <p class="audit-card-desc">控制台访问 TAA 与安全模块所用的端点，来自平台侧配置。</p>
+                  <p class="audit-card-desc">控制台访问端点与执行方式；端点来自平台侧配置，控制台只读。</p>
                 </div>
               </div>
               <dl class="audit-field-list">
@@ -1415,6 +1442,14 @@
                 <div class="audit-field-row">
                   <dt>AI 语义判定端点</dt>
                   <dd><code id="auditLLMEndpointValue">—</code></dd>
+                </div>
+                <div class="audit-field-row">
+                  <dt>审计执行位置</dt>
+                  <dd>控制台进程内</dd>
+                </div>
+                <div class="audit-field-row">
+                  <dt>任务留存</dt>
+                  <dd>最近 200 条（重启清空）</dd>
                 </div>
               </dl>
               <p class="audit-help">端点由平台侧配置，控制台只读。</p>
@@ -1450,31 +1485,42 @@
                 <input id="auditTLSTimeout" class="audit-input-compact" type="number" readonly>
                 <p class="audit-help">超时由部署参数决定，需在服务端调整；冷加载模型时请预留足够时间。</p>
               </div>
+
+              <div class="audit-card-actions">
+                <p id="auditSettingsHint" class="audit-hint">TLS 设置保存后立即作用于后续握手；若严格模式握手失败，可先切回 permissive 再排查信任锚。</p>
+                <button type="button" id="auditSaveSettingsBtn" class="audit-btn audit-btn-primary audit-btn-sm">保存 TLS 设置</button>
+              </div>
             </div>
 
             <div class="audit-card audit-card-wide">
               <div class="audit-card-head">
                 <div>
                   <h3 class="audit-card-title">代码审计提示词</h3>
-                  <p class="audit-card-desc">这是每次代码审计实际下发给 TEE-LLM 的判定提示词；下方会自动追加命中代码与回答格式。修改后保存，下一次审计生效。</p>
+                  <p class="audit-card-desc">这是每次代码审计实际下发给 TEE-LLM 的判定提示词；命中代码、触发规则与回答格式会自动追加在后面。修改后保存，下一次审计生效。</p>
                 </div>
+                <div class="audit-card-tools">
+                  <span id="auditPromptBadge" class="audit-prompt-badge" data-state="default">内置默认</span>
+                </div>
+              </div>
+              <div class="audit-prompt-appendix" aria-label="自动追加的下发内容">
+                <span class="audit-prompt-appendix-label">自动追加</span>
+                <span class="audit-prompt-chip">命中代码</span>
+                <span class="audit-prompt-chip">触发规则</span>
+                <span class="audit-prompt-chip">判定提醒</span>
+                <span class="audit-prompt-chip">JSON 回答格式</span>
               </div>
               <div class="audit-field">
                 <label for="auditPromptInput">判定提示词</label>
-                <textarea id="auditPromptInput" class="audit-textarea" rows="12" placeholder="加载内置判定提示词…"></textarea>
+                <textarea id="auditPromptInput" class="audit-textarea audit-prompt-input" rows="14" placeholder="加载内置判定提示词…"></textarea>
               </div>
-              <div class="audit-btn-row">
+              <div class="audit-btn-row audit-prompt-actions">
                 <button type="button" id="auditPromptSaveBtn" class="audit-btn audit-btn-primary audit-btn-sm">保存提示词</button>
                 <button type="button" id="auditPromptResetBtn" class="audit-btn audit-btn-ghost audit-btn-sm">恢复默认</button>
                 <span id="auditPromptMeta" class="audit-muted-sm">尚未加载</span>
+                <span id="auditPromptCount" class="audit-muted-sm audit-prompt-count">0 字</span>
               </div>
               <p class="audit-help">提示词保存在控制台进程内存中，服务重启后回到内置默认值。</p>
             </div>
-          </div>
-
-          <div class="audit-settings-actions">
-            <p id="auditSettingsHint" class="audit-hint">TLS 设置保存后立即作用于后续握手；若严格模式握手失败，可先切回 permissive 再排查信任锚。</p>
-            <button type="button" id="auditSaveSettingsBtn" class="audit-btn audit-btn-primary">保存 TLS 设置</button>
           </div>
         </section>
 

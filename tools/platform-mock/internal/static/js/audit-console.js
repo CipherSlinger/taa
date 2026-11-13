@@ -217,12 +217,38 @@
   function emptyRow(tbody, colspan, text) {
     if (!tbody) return;
     const tr = document.createElement('tr');
+    tr.className = 'audit-empty-row';
     const td = document.createElement('td');
     td.colSpan = colspan;
-    td.textContent = text;
-    td.style.padding = '18px 12px';
-    td.style.textAlign = 'center';
-    td.style.color = 'var(--muted, #6b7280)';
+
+    const box = document.createElement('div');
+    box.className = 'audit-empty-cell';
+
+    const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    svg.setAttribute('viewBox', '0 0 24 24');
+    svg.setAttribute('width', '22');
+    svg.setAttribute('height', '22');
+    svg.setAttribute('fill', 'none');
+    svg.setAttribute('stroke', 'currentColor');
+    svg.setAttribute('stroke-width', '1.6');
+    svg.setAttribute('stroke-linecap', 'round');
+    svg.setAttribute('stroke-linejoin', 'round');
+    svg.setAttribute('aria-hidden', 'true');
+    const circle = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+    circle.setAttribute('cx', '12');
+    circle.setAttribute('cy', '12');
+    circle.setAttribute('r', '8');
+    const dash = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+    dash.setAttribute('d', 'M9 12h6');
+    svg.appendChild(circle);
+    svg.appendChild(dash);
+
+    const label = document.createElement('span');
+    label.textContent = text;
+
+    box.appendChild(svg);
+    box.appendChild(label);
+    td.appendChild(box);
     tr.appendChild(td);
     tbody.appendChild(tr);
   }
@@ -1859,6 +1885,17 @@
     return out;
   }
 
+  // displayPath strips the console's own extraction root so a finding shows the
+  // path inside the archive. The full path stays available via the cell title.
+  function displayPath(value) {
+    const text = String(value == null ? '' : value);
+    const match = text.match(/^(?:.*\/)?local-audit-[^/]*\/src\/(.+)$/);
+    if (match) return match[1];
+    const marker = '/src/';
+    const idx = text.indexOf(marker);
+    return idx >= 0 ? text.slice(idx + marker.length) : text;
+  }
+
   function conclusionOf(job) {
     if (!job) return { summary: '', recommendation: '' };
     let summary = job.summaryText || '';
@@ -1884,6 +1921,7 @@
     }
 
     const verdict = verdictOf(job);
+    const status = statusOf(job);
     paintPill('auditFindingsVerdict', verdict.label + ' · ' + riskLabel(job.riskLevel), verdict.tone);
 
     const host = $('auditFindingsSummary');
@@ -1891,12 +1929,39 @@
     const conclusion = conclusionOf(job);
     host.replaceChildren();
 
+    if (status.key === 'done') {
+      const stats = document.createElement('div');
+      stats.className = 'audit-findings-stats';
+      [
+        ['发现', job.findings, ''],
+        ['高危', job.high, 'is-high'],
+        ['中危', job.medium, 'is-medium'],
+        ['低危', job.low, 'is-low'],
+      ].forEach(([label, value, tone]) => {
+        const item = document.createElement('span');
+        item.className = 'audit-findings-stat' + (tone ? ' ' + tone : '');
+        const num = document.createElement('b');
+        num.textContent = String(toNumber(value));
+        item.appendChild(num);
+        item.appendChild(document.createTextNode(label));
+        stats.appendChild(item);
+      });
+      host.appendChild(stats);
+    }
+
     const summary = document.createElement('div');
     summary.className = 'audit-findings-summary-text';
-    summary.textContent = conclusion.summary || '该任务没有返回结论摘要。';
+    if (status.key === 'pending') {
+      summary.textContent = '审计仍在进行中（当前步骤：' + stepLabel(job.stage)
+        + '），完成后这里会显示结论摘要与逐条发现。';
+    } else if (status.key === 'failed') {
+      summary.textContent = '本次审计未完成：' + (job.error || '未返回原因');
+    } else {
+      summary.textContent = conclusion.summary || '该任务没有返回结论摘要。';
+    }
     host.appendChild(summary);
 
-    if (conclusion.recommendation) {
+    if (status.key === 'done' && conclusion.recommendation) {
       const rec = document.createElement('div');
       rec.className = 'audit-findings-recommendation';
       rec.textContent = '建议：' + conclusion.recommendation;
@@ -1912,7 +1977,7 @@
       'requestId ' + (job.requestId || '—'),
       'taskId ' + (job.taskId || '—'),
       '上报 ' + fmtTime(job.at),
-      '耗时 ' + fmtDuration(job.durationMs),
+      status.key === 'pending' ? '当前步骤 ' + stepLabel(job.stage) : '耗时 ' + fmtDuration(job.durationMs),
       '文件 ' + toNumber(job.files),
     ].join(' · ');
     host.appendChild(meta);
@@ -1979,15 +2044,42 @@
       const tr = document.createElement('tr');
       tr.style.cursor = 'pointer';
 
-      tr.appendChild(makeCell(badge(riskLabel(finding.severity), severityTone(finding.severity))));
-      tr.appendChild(makeCell(finding.rule_id || finding.engine_rule_id || '—', { mono: true }));
-      tr.appendChild(makeCell(
-        (finding.file || finding.file_path || '未知文件') + ':' + (finding.line == null ? '?' : finding.line),
-        { mono: true },
-      ));
-      tr.appendChild(makeCell(finding.description || '—'));
+      const sevCell = makeCell(badge(riskLabel(finding.severity), severityTone(finding.severity)));
+      sevCell.classList.add('audit-col-sev');
+      tr.appendChild(sevCell);
+
+      const ruleCell = makeCell(finding.rule_id || finding.engine_rule_id || '—', { mono: true });
+      ruleCell.classList.add('audit-col-rule');
+      tr.appendChild(ruleCell);
+
+      const fullPath = String(finding.file || finding.file_path || '未知文件')
+        + ':' + (finding.line == null ? '?' : finding.line);
+      const fileCell = makeCell(displayPath(finding.file || finding.file_path || '未知文件')
+        + ':' + (finding.line == null ? '?' : finding.line), { mono: true });
+      fileCell.classList.add('audit-col-file');
+      fileCell.title = fullPath;
+      tr.appendChild(fileCell);
+
+      const descCell = makeCell(finding.description || '—');
+      descCell.classList.add('audit-col-desc');
+      tr.appendChild(descCell);
+
       tr.appendChild(makeCell(badge(aiVerdictLabel(finding.llm_verdict), aiVerdictTone(finding.llm_verdict))));
-      tr.appendChild(makeCell(badge(riskLabel(finding.llm_risk), riskTone(finding.llm_risk))));
+
+      // llm_risk carries the model's free-form risk sentence, not a level, so
+      // it is shown as clamped prose instead of a pill.
+      const riskCell = document.createElement('td');
+      riskCell.classList.add('audit-col-risk');
+      if (finding.llm_risk) {
+        const riskText = document.createElement('div');
+        riskText.className = 'audit-risk-text';
+        riskText.textContent = String(finding.llm_risk);
+        riskCell.title = String(finding.llm_risk);
+        riskCell.appendChild(riskText);
+      } else {
+        riskCell.textContent = '—';
+      }
+      tr.appendChild(riskCell);
 
       const action = document.createElement('button');
       action.type = 'button';
@@ -1997,7 +2089,9 @@
         ev.stopPropagation();
         openFindingDetail(finding);
       });
-      tr.appendChild(makeCell(action, { title: false }));
+      const actionCell = makeCell(action, { title: false });
+      actionCell.classList.add('audit-col-action');
+      tr.appendChild(actionCell);
 
       tr.addEventListener('click', () => openFindingDetail(finding));
       tbody.appendChild(tr);
@@ -2012,9 +2106,15 @@
     const title = $('auditFindingDetailTitle');
     if (title) {
       title.textContent = (finding.rule_id || finding.engine_rule_id || '未命名规则')
+        + ' · ' + displayPath(finding.file || finding.file_path || '未知文件')
+        + ':' + (finding.line == null ? '?' : finding.line);
+      title.title = (finding.rule_id || finding.engine_rule_id || '未命名规则')
         + ' · ' + (finding.file || finding.file_path || '未知文件')
         + ':' + (finding.line == null ? '?' : finding.line);
     }
+
+    const backdrop = $('auditFindingBackdrop');
+    if (backdrop) backdrop.hidden = false;
 
     const body = $('auditFindingDetailBody');
     if (body) {
@@ -2033,6 +2133,8 @@
     panel.hidden = true;
     panel.classList.remove('open');
     panel.setAttribute('aria-hidden', 'true');
+    const backdrop = $('auditFindingBackdrop');
+    if (backdrop) backdrop.hidden = true;
   }
 
   function detailSection(titleText) {
@@ -2057,10 +2159,11 @@
       ['规则', finding.rule_id || finding.engine_rule_id || '—', { mono: true }],
       ['规则族', finding.rule_family || '—'],
       ['类别', finding.category || '—'],
-      ['文件', finding.file_path || finding.file || '—', { mono: true }],
+      ['文件', displayPath(finding.file_path || finding.file || '—'), { mono: true }],
       ['行号', finding.line == null ? '—' : String(finding.line), { mono: true }],
       ['AI 判定', badge(aiVerdictLabel(finding.llm_verdict), aiVerdictTone(finding.llm_verdict))],
-      ['AI 风险', badge(riskLabel(finding.llm_risk), riskTone(finding.llm_risk))],
+      // llm_risk is prose, not a level, so keep it as wrapping text.
+      ['AI 风险', finding.llm_risk ? String(finding.llm_risk) : '—'],
       ['跨文件', finding.is_cross_file ? '是' : '否'],
       ['微服务', finding.is_microservice ? '是' : '否'],
     ]);
@@ -2591,6 +2694,7 @@
       const data = unwrap(res.data) || {};
       const input = $('auditPromptInput');
       if (input && document.activeElement !== input) input.value = data.prompt || '';
+      renderPromptState(!!data.custom);
       setPromptMeta(data.custom
         ? '已加载自定义提示词（下次审计生效）'
         : '当前为内置默认提示词，可直接修改后保存', 'muted');
@@ -2607,6 +2711,24 @@
     el.style.color = tone === 'bad' ? 'var(--bad, #dc2626)'
       : tone === 'ok' ? 'var(--ok, #059669)'
         : '';
+  }
+
+  // renderPromptState paints the badge and the live character count whenever
+  // the textarea changes or a new effective prompt is loaded.
+  function renderPromptState(custom) {
+    const badge = $('auditPromptBadge');
+    if (badge) {
+      badge.dataset.state = custom ? 'custom' : 'default';
+      badge.textContent = custom ? '自定义生效中' : '内置默认';
+    }
+    updatePromptCount();
+  }
+
+  function updatePromptCount() {
+    const input = $('auditPromptInput');
+    const el = $('auditPromptCount');
+    if (!input || !el) return;
+    el.textContent = input.value.length + ' 字';
   }
 
   // putAuditPrompt writes one prompt value. An empty value restores the
@@ -2630,6 +2752,7 @@
         throw new Error(data.error || data.msg || ('HTTP ' + res.status));
       }
       if (input) input.value = data.prompt || '';
+      renderPromptState(!!data.custom);
       setPromptMeta(data.custom ? '已保存 · 下次审计生效' : '已恢复内置默认提示词', 'ok');
       if (announce) {
         toast({
@@ -2968,6 +3091,7 @@
 
     bindIfNoInline('auditExportBtn', exportFindings);
     bindIfNoInline('auditFindingDetailClose', closeFindingDetail);
+    bindIfNoInline('auditFindingBackdrop', closeFindingDetail);
 
     const panel = $('auditFindingDetail');
     if (panel) {
@@ -3018,6 +3142,9 @@
     bindIfNoInline('auditSaveSettingsBtn', saveSettings);
     bindIfNoInline('auditPromptSaveBtn', saveAuditPrompt);
     bindIfNoInline('auditPromptResetBtn', clearAuditPrompt);
+
+    const promptInput = $('auditPromptInput');
+    if (promptInput) promptInput.addEventListener('input', updatePromptCount);
   }
 
   function wireTopbar() {

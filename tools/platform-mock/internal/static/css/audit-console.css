@@ -292,8 +292,21 @@
 }
 
 .audit-app {
-  background: var(--aud-bg);
+  /* A faint accent wash behind the workbench gives the light theme depth
+     without competing with the cards. */
+  background:
+    radial-gradient(1200px 520px at 18% -8%, var(--aud-accent-soft) 0%, transparent 58%),
+    radial-gradient(900px 420px at 92% 0%, rgba(29, 78, 216, 0.05) 0%, transparent 55%),
+    var(--aud-bg);
   min-height: calc(100dvh - var(--aud-tabbar-h));
+}
+
+@media (prefers-color-scheme: dark) {
+  .audit-app {
+    background:
+      radial-gradient(1100px 520px at 18% -8%, rgba(75, 141, 248, 0.10) 0%, transparent 60%),
+      var(--aud-bg);
+  }
 }
 
 /* ─────────────────────────── primitives ─────────────────────────── */
@@ -1616,14 +1629,43 @@
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 16px;
-  align-items: start;
+  align-items: stretch;
+}
+
+/* The two engine cards show the same kind of field table and one of them has
+   an action row, so stretching both to the taller one and pinning the actions
+   to the bottom keeps their baselines aligned. */
+.audit-engine-grid > .audit-card {
+  display: flex;
+  flex-direction: column;
+}
+
+.audit-engine-grid > .audit-card > .audit-table-wrap {
+  flex: 1 1 auto;
+}
+
+.audit-engine-grid > .audit-card > .audit-btn-row,
+.audit-engine-grid > .audit-card > .audit-help {
+  margin-top: auto;
+  padding-top: 14px;
 }
 
 .audit-settings-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 16px;
-  align-items: start;
+  align-items: stretch;
+}
+
+/* The read-only endpoint card is shorter than the TLS card next to it; stretch
+   both and pin the footnote to the bottom so the pair reads as one row. */
+.audit-settings-grid > .audit-card {
+  display: flex;
+  flex-direction: column;
+}
+
+.audit-settings-grid > .audit-card > .audit-help:last-child {
+  margin-top: auto;
 }
 
 .audit-settings-grid > .audit-card-wide {
@@ -1939,6 +1981,70 @@
 
 .audit-table .audit-cell-nowrap {
   white-space: nowrap;
+}
+
+/* Findings table: fixed column widths keep rule ids, paths and chips from
+   being squeezed into vertical stacks by long temp-directory paths. */
+.audit-findings-table {
+  table-layout: fixed;
+  min-width: 1020px;
+}
+
+.audit-findings-table th,
+.audit-findings-table td {
+  padding: 10px 12px;
+}
+
+.audit-findings-table td.audit-col-rule,
+.audit-findings-table td.audit-col-file {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.audit-findings-table td.audit-col-desc {
+  line-height: 1.55;
+}
+
+.audit-findings-table td.audit-col-action,
+.audit-findings-table th.audit-col-action {
+  text-align: right;
+  white-space: nowrap;
+}
+
+.audit-risk-text {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+  color: var(--aud-text-2);
+  line-height: 1.55;
+}
+
+/* Generic empty state used by both table bodies. */
+.audit-empty-cell {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 0;
+  color: var(--aud-muted);
+}
+
+.audit-empty-cell svg {
+  opacity: 0.5;
+}
+
+.audit-empty-cell span {
+  max-width: 44ch;
+  font-size: 12.5px;
+  line-height: 1.6;
+}
+
+.audit-table tbody tr.audit-empty-row td {
+  padding: 30px 16px;
+  background: transparent;
+  border-bottom: 0;
 }
 
 /* row action used by JS-built rows */
@@ -2897,6 +3003,25 @@
 
 /* Detail drawer. The closed state is translated off-canvas; several class
    hooks are accepted so the client can toggle whichever one it prefers. */
+.audit-drawer-backdrop {
+  position: fixed;
+  inset: var(--aud-tabbar-h) 0 0 0;
+  z-index: 78;
+  background: rgba(11, 22, 44, 0.30);
+  -webkit-backdrop-filter: blur(1.5px);
+  backdrop-filter: blur(1.5px);
+}
+
+.audit-drawer-backdrop[hidden] {
+  display: none;
+}
+
+@media (prefers-color-scheme: dark) {
+  .audit-drawer-backdrop {
+    background: rgba(0, 0, 0, 0.55);
+  }
+}
+
 .audit-drawer {
   position: fixed;
   top: var(--aud-tabbar-h);
@@ -3182,22 +3307,82 @@
   overflow-wrap: anywhere;
 }
 
-.audit-settings-actions {
+/* Save action belongs to the card it configures, not to the page footer. */
+.audit-card-actions {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 16px;
+  gap: 14px;
   flex-wrap: wrap;
-  margin-top: 16px;
-  padding: 16px 20px;
-  background: var(--aud-surface);
-  border: 1px solid var(--aud-border);
-  border-radius: var(--aud-radius);
-  box-shadow: var(--aud-shadow-soft);
+  margin-top: 18px;
+  padding-top: 14px;
+  border-top: 1px dashed var(--aud-border);
 }
 
-.audit-settings-actions .audit-hint {
-  flex: 1 1 320px;
+.audit-card-actions .audit-hint {
+  flex: 1 1 260px;
+  margin: 0;
+}
+
+/* Prompt editor: status badge, appended-sections legend and a comfortable
+   writing area for a long Chinese rubric. */
+.audit-prompt-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 3px 9px;
+  border-radius: 999px;
+  border: 1px solid var(--aud-border);
+  background: var(--aud-surface-2);
+  color: var(--aud-muted);
+  font-size: 11px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.audit-prompt-badge[data-state="custom"] {
+  border-color: var(--aud-accent-ring);
+  background: var(--aud-accent-soft);
+  color: var(--aud-accent);
+}
+
+.audit-prompt-appendix {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin: -4px 0 14px;
+}
+
+.audit-prompt-appendix-label {
+  font-size: 11px;
+  font-weight: 650;
+  color: var(--aud-muted);
+}
+
+.audit-prompt-chip {
+  padding: 2px 8px;
+  border: 1px solid var(--aud-border);
+  border-radius: 999px;
+  background: var(--aud-surface-2);
+  color: var(--aud-text-2);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.audit-prompt-input {
+  min-height: 330px;
+  line-height: 1.68;
+  font-size: 12.8px;
+  resize: vertical;
+}
+
+.audit-prompt-actions {
+  align-items: center;
+}
+
+.audit-prompt-count {
+  margin-left: auto;
+  font-variant-numeric: tabular-nums;
 }
 
 /* ──────────────────────── renderer hooks ──────────────────────── */
@@ -3225,6 +3410,8 @@
   min-width: 0;
   margin-left: auto;
   text-align: right;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 .audit-table td.audit-field-label {
@@ -3235,6 +3422,36 @@
 .audit-table td.audit-field-value {
   color: var(--aud-text-2);
 }
+
+.audit-findings-stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.audit-findings-stat {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+  padding: 4px 11px;
+  border: 1px solid var(--aud-border);
+  border-radius: 999px;
+  background: var(--aud-surface-2);
+  font-size: 11.5px;
+  color: var(--aud-muted);
+}
+
+.audit-findings-stat b {
+  font-size: 13px;
+  font-weight: 750;
+  color: var(--aud-text);
+  font-variant-numeric: tabular-nums;
+}
+
+.audit-findings-stat.is-high b { color: var(--aud-high); }
+.audit-findings-stat.is-medium b { color: var(--aud-medium); }
+.audit-findings-stat.is-low b { color: var(--aud-low); }
 
 .audit-findings-summary-text {
   font-size: 13px;
@@ -3490,7 +3707,7 @@
     display: none;
   }
 
-  .audit-settings-actions {
+  .audit-card-actions {
     flex-direction: column;
     align-items: stretch;
   }
@@ -3593,6 +3810,34 @@
 
   .audit-toolbar {
     gap: 8px;
+  }
+
+  /* Keep the job list readable without a long horizontal scroll: the identity,
+     state and action columns carry the whole story on a phone. */
+  .audit-jobs-table {
+    min-width: 0;
+  }
+
+  .audit-jobs-table tr:not(.audit-empty-row) td:nth-child(2) {
+    max-width: 0;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .audit-jobs-table th:nth-child(1),
+  .audit-jobs-table tr:not(.audit-empty-row) td:nth-child(1),
+  .audit-jobs-table th:nth-child(3),
+  .audit-jobs-table tr:not(.audit-empty-row) td:nth-child(3),
+  .audit-jobs-table th:nth-child(5),
+  .audit-jobs-table tr:not(.audit-empty-row) td:nth-child(5),
+  .audit-jobs-table th:nth-child(6),
+  .audit-jobs-table tr:not(.audit-empty-row) td:nth-child(6),
+  .audit-jobs-table th:nth-child(7),
+  .audit-jobs-table tr:not(.audit-empty-row) td:nth-child(7),
+  .audit-jobs-table th:nth-child(8),
+  .audit-jobs-table tr:not(.audit-empty-row) td:nth-child(8) {
+    display: none;
   }
 }
 
