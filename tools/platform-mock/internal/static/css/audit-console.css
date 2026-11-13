@@ -505,9 +505,11 @@
   border-radius: 9px;
 }
 
+/* The job picker only needs to be wide enough for the compact option text;
+   anything longer is reachable in the detail header. */
 .audit-select-wide {
   min-width: 240px;
-  max-width: 100%;
+  max-width: 380px;
 }
 
 .audit-input-compact {
@@ -3603,6 +3605,7 @@
   font-size: 10.5px;
   line-height: 1.6;
   color: var(--aud-muted);
+  white-space: nowrap;
   cursor: help;
 }
 

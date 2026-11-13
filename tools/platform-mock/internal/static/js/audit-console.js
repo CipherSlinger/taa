@@ -1267,7 +1267,8 @@
           const verdict = verdictOf(job);
           const opt = document.createElement('option');
           opt.value = job.id || '';
-          opt.textContent = fmtTime(job.at) + ' · ' + shortID(job.requestId || job.id || '—') + ' · ' + verdict.label;
+          opt.textContent = shortTime(job.at) + ' · ' + verdict.label
+            + ' · ' + shortID(job.requestId || job.id || '—');
           opt.title = job.requestId || job.id || '';
           sel.appendChild(opt);
         });
@@ -1296,6 +1297,15 @@
 
   // shortID keeps a long request id readable in a table cell or a select
   // option. The full value stays in the element's title and the detail header.
+  // shortTime drops the year and seconds. The job picker is a narrow control
+  // and only needs enough of the timestamp to tell two runs apart; the detail
+  // header still shows the full time.
+  function shortTime(at) {
+    const text = fmtTime(at);
+    if (!/^\d{4}\//.test(text)) return text;
+    return text.replace(/^\d{4}\//, '').replace(/(:\d{2})$/, '');
+  }
+
   function shortID(id) {
     const text = String(id == null ? '' : id);
     return text.length > 26 ? text.slice(0, 24) + '…' : text;
@@ -2148,8 +2158,8 @@
     const aiCount = rows.filter((f) => String(f.llm_verdict || '').trim()).length;
 
     setText('auditFindingStats',
-      '命中 ' + rows.length + ' 条 / 高 ' + high + ' 中 ' + medium + ' 低 ' + low
-      + ' / AI 判定 ' + aiCount + ' 条');
+      '命中 ' + rows.length + ' 条 · 高危 ' + high + ' · 中危 ' + medium + ' · 低危 ' + low
+      + ' · AI 判定 ' + aiCount + ' 条');
 
     if (!rows.length) {
       const text = state.findings.length
