@@ -55,7 +55,7 @@ func VerifyReport(ctx context.Context, report *Report, cfg LLMConfig, client LLM
 			ctxAfter = f.CPGEvidence
 		}
 
-		prompt := BuildFindingPrompt(*f, ctxAfter)
+		prompt := withCustomPrompt(cfg.CustomPrompt, BuildFindingPrompt(*f, ctxAfter))
 
 		req := &llmclient.GenerateRequest{
 			ProtocolVersion: llmclient.CurrentProtocolVersion,
@@ -324,6 +324,16 @@ const binaryFileAnalysisPromptTemplate = `你是二进制代码安全审计专�
 ## 请严格按以下 JSON 格式输出，不要包含其他内容:
 {"risk_level":"HIGH/MEDIUM/LOW","summary":"一句话安全结论(中文)","chained":false,"exfiltration":false}`
 
+// Audit phases reported through AuditConfig.OnStage. The receive and extract
+// phases happen before an audit starts and belong to the caller, so they are
+// not listed here.
+const (
+	StageStatic   = "static"
+	StageBinary   = "binary"
+	StageAI       = "ai"
+	StageConclude = "conclude"
+)
+
 // AuditConfig is the configuration of one audit run: the two things an audit can
 // be told to do differently.
 //
@@ -337,6 +347,18 @@ type AuditConfig struct {
 	// Binary configures the binary channel. Enabled false leaves the audit
 	// byte-identical to the one produced before the channel existed.
 	Binary BinaryConfig
+	// OnStage, when non-nil, is called at the boundary of each phase. It is
+	// observational only: a nil hook changes nothing, and the hook cannot
+	// alter the audit's outcome. It runs synchronously inside the audit, so
+	// an implementation must not block or panic.
+	OnStage func(stage string)
+}
+
+// stage reports a phase boundary to the optional observer.
+func (c AuditConfig) stage(name string) {
+	if c.OnStage != nil {
+		c.OnStage(name)
+	}
 }
 
 // GenerateAuditReport is the high-level entry point that performs a full
@@ -357,6 +379,7 @@ func GenerateAuditReport(ctx context.Context, dir string, engine StaticEngine, c
 	}
 
 	// Phase 1: Static scan with line counts.
+	cfg.stage(StageStatic)
 	scanReport, lineCounts, err := engine.ScanDirectoryWithLinesContext(ctx, dir)
 	if err != nil {
 		return nil, fmt.Errorf("static scan: %w", err)
@@ -373,6 +396,7 @@ func GenerateAuditReport(ctx context.Context, dir string, engine StaticEngine, c
 	// error - the caller turns any error into a refusal that skips the report
 	// (internal/controller/import_processing.go:709-714), which is the outcome
 	// this channel exists to make accurate rather than to make easy.
+	cfg.stage(StageBinary)
 	binaryRes := runBinaryChannel(ctx, dir, cfg.Binary)
 
 	// The binary pass reports a cancellation as a withheld (errored) pass, which
@@ -389,6 +413,8 @@ func GenerateAuditReport(ctx context.Context, dir string, engine StaticEngine, c
 	if binaryRes != nil {
 		MergeBinaryFindings(scanReport, binaryRes)
 	}
+
+	cfg.stage(StageAI)
 
 	// Whether the LLM has anything to do here, and whether it can actually do it,
 	// are decided once and reused by all three places below. Written out longhand,
@@ -438,7 +464,7 @@ func GenerateAuditReport(ctx context.Context, dir string, engine StaticEngine, c
 		fr := BuildFileReport(filePath, findings)
 
 		if llmActive {
-			summary := analyzeFileWithLLM(ctx, client, filePath, findings, lineCounts, binaryEvidence)
+			summary := analyzeFileWithLLM(ctx, client, filePath, findings, lineCounts, binaryEvidence, llmCfg.CustomPrompt)
 			fr.RiskLevel = summary.RiskLevel
 			fr.Summary = summary.Summary
 			fr.Chained = summary.Chained
@@ -449,6 +475,7 @@ func GenerateAuditReport(ctx context.Context, dir string, engine StaticEngine, c
 	}
 
 	// Phase 4: Assemble the full audit report (Go-side aggregation).
+	cfg.stage(StageConclude)
 	audit := AssembleAuditReport(dir, scanReport, fileReports, lineCounts, llmCfg, time.Since(startTime))
 	return audit, nil
 }
@@ -506,7 +533,7 @@ func runBinaryChannel(ctx context.Context, dir string, binCfg BinaryConfig) *Bin
 // binary channel introduces; the file-level prompt is exercised by the mock
 // rather than by the deployed pipeline. This function does not change that, and
 // its tests do not claim otherwise.
-func analyzeFileWithLLM(ctx context.Context, client LLMClient, filePath string, findings []Finding, lineCounts map[string]int, binaryEvidence map[string]*EvidenceSet) FileSummary {
+func analyzeFileWithLLM(ctx context.Context, client LLMClient, filePath string, findings []Finding, lineCounts map[string]int, binaryEvidence map[string]*EvidenceSet, customPrompt string) FileSummary {
 	fa, ok := client.(FileAnalyzer)
 	if !ok {
 		// Synthesize a FileSummary from findings when client does not implement FileAnalyzer.
@@ -514,7 +541,7 @@ func analyzeFileWithLLM(ctx context.Context, client LLMClient, filePath string, 
 	}
 
 	if ev := binaryEvidence[filePath]; ev != nil {
-		return analyzeBinaryFileWithLLM(ctx, fa, ev, findings)
+		return analyzeBinaryFileWithLLM(ctx, fa, ev, findings, customPrompt)
 	}
 
 	maxLines := 80
@@ -525,11 +552,11 @@ func analyzeFileWithLLM(ctx context.Context, client LLMClient, filePath string, 
 	}
 	summary := BuildFindingsSummary(findings)
 
-	prompt := fmt.Sprintf(fileAnalysisPromptTemplate,
+	prompt := withCustomPrompt(customPrompt, fmt.Sprintf(fileAnalysisPromptTemplate,
 		filepath.Base(filePath), lineCount,
 		len(findings), summary,
 		code,
-	)
+	))
 
 	result, err := fa.AnalyzeFile(ctx, prompt)
 	if err != nil {
@@ -558,12 +585,12 @@ func analyzeFileWithLLM(ctx context.Context, client LLMClient, filePath string, 
 const binaryFilePromptMaxLines = 120
 
 // analyzeBinaryFileWithLLM asks the model about a file the binary channel read.
-func analyzeBinaryFileWithLLM(ctx context.Context, fa FileAnalyzer, ev *EvidenceSet, findings []Finding) FileSummary {
-	prompt := fmt.Sprintf(binaryFileAnalysisPromptTemplate,
+func analyzeBinaryFileWithLLM(ctx context.Context, fa FileAnalyzer, ev *EvidenceSet, findings []Finding, customPrompt string) FileSummary {
+	prompt := withCustomPrompt(customPrompt, fmt.Sprintf(binaryFileAnalysisPromptTemplate,
 		filepath.Base(ev.File), ev.Kind, ev.Size, len(ev.Lines),
 		len(findings), BuildFindingsSummary(findings),
 		ev.RenderExcerpt(binaryFilePromptMaxLines),
-	)
+	))
 
 	result, err := fa.AnalyzeFile(ctx, prompt)
 	if err != nil {

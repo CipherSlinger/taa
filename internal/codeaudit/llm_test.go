@@ -77,9 +77,14 @@ type mockLLMClient struct {
 	// filePrompts records the text of every file-level prompt, so a test can
 	// assert what the model was shown rather than only what it answered.
 	filePrompts []string
+	// prompts records the finding-level prompts for the same reason.
+	prompts []string
 }
 
-func (m *mockLLMClient) Generate(_ context.Context, _ *llmclient.GenerateRequest) (*llmclient.GenerateResponse, error) {
+func (m *mockLLMClient) Generate(_ context.Context, req *llmclient.GenerateRequest) (*llmclient.GenerateResponse, error) {
+	if req != nil {
+		m.prompts = append(m.prompts, req.Prompt)
+	}
 	decision := LLMDecision{Verdict: VerdictUncertain, Reason: "no more mock decisions"}
 	if m.callCount < len(m.decisions) {
 		decision = m.decisions[m.callCount]

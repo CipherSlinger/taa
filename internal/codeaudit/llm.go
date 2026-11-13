@@ -51,6 +51,14 @@ type LLMConfig struct {
 	// draw blocks the import.
 	Temperature *float32
 
+	// CustomPrompt, when non-empty, is placed ahead of the built-in rubric of
+	// every AI prompt: the finding-level prompt, the source file prompt and the
+	// binary file prompt. It names the operator's own criteria and is meant for
+	// the mock workbench's prompt editor, where the effect of a wording change is
+	// being measured. Empty leaves every prompt byte-identical to the built-in
+	// text, which is what production runs.
+	CustomPrompt string
+
 	// TEE-TLS configuration
 	TEETLS *teetls.Config
 	// AttestationMeasurement is the measurement digest expected in the

@@ -1,6 +1,9 @@
 package codeaudit
 
-import "fmt"
+import (
+	"fmt"
+	"strings"
+)
 
 // findingAnalysisPromptTemplate is the audit rubric handed to the model for one
 // finding. It was moved here verbatim from the inference service: the wording,
@@ -49,6 +52,18 @@ const findingAnalysisPromptTemplate = `你是一个代码安全审计专家。�
 请严格按以下 JSON 格式回答，不要包含其他内容:
 {"verdict": "...", "reason": "...", "risk": "..."}
 `
+
+// withCustomPrompt puts an operator-supplied instruction ahead of the built-in
+// rubric. It is a prefix rather than a replacement so the model still gets the
+// JSON contract and the benign-use rules the parser and the measured verdicts
+// depend on; an empty custom text returns the prompt untouched.
+func withCustomPrompt(custom, prompt string) string {
+	custom = strings.TrimSpace(custom)
+	if custom == "" {
+		return prompt
+	}
+	return "## 本次审计的附加要求（优先遵循）\n" + custom + "\n\n" + prompt
+}
 
 // BuildFindingPrompt renders the audit prompt for one finding. contextAfter is
 // passed explicitly because the caller may replace the source context with CPG
