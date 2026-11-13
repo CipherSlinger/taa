@@ -741,7 +741,7 @@ check_contains "dcu: the runtime type extends the DCU class" \
 check_contains "dcu: the guest is told to load hycu" 'taa.taa_modules=hycu' "$dcu_identity"
 check_contains "dcu: the module rides with the other identity tokens" \
   "taa.taa_addr=0.0.0.0:6001 taa.taa_modules=hycu" "$dcu_identity"
-check "dcu: guest RAM matches the other large-image role" "20480" \
+check "dcu: guest RAM leaves room for the ~25 GiB DTK unpack" "61440" \
   "$(sed -n 's/^default_memory = //p' "$dcu_pkg/kata-config.toml")"
 # The card has to be requested and limited; the extended resource is scheduled
 # from requests, and a request without the matching limit is rejected.

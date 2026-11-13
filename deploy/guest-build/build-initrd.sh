@@ -169,9 +169,13 @@ role_test_image() {
     taa-train|taa-infer) echo 172.16.10.178:31313/taa-env:v1-train-infer ;;
     taa-analysis) echo 172.16.10.178:31313/jupyter-nologin-full:v2.2 ;;
     # The DCU roles pull a DTK image: the guest runs the Hygon driver and the
-    # container needs the matching runtime stack. This is the image the verified
-    # DCU test Pod on the same host uses, so it is known to start there.
-    taa-train-dcu|taa-infer-dcu) echo 172.16.10.178:31313/vllm:ubuntu-dtk ;;
+    # container needs the matching runtime stack. This is the verified base
+    # image plus the /opt/hyhal links its baked LD_LIBRARY_PATH expects: DTK
+    # 26.04 keeps the runtime under /opt/dtk/.hyhal, and only /etc/bash.bashrc
+    # sources the env script that adds it, which a non-interactive model command
+    # (TAA runs /bin/sh -c) never does. Without the links torch fails to load
+    # librocm_smi64.so.2 and the task dies before the first epoch.
+    taa-train-dcu|taa-infer-dcu) echo 172.16.10.178:31313/vllm:ubuntu-dtk-hyhal ;;
   esac
 }
 
@@ -249,9 +253,11 @@ role_default_memory() {
   case "$TAA_ROLE" in
     taa-train|taa-infer) echo 10240 ;;
     taa-analysis) echo 20480 ;;
-    # A DCU guest runs the DTK image, which unpacks to roughly the same size as
-    # the analysis image above (~6.9 GiB), so it needs the same tmpfs headroom.
-    taa-train-dcu|taa-infer-dcu) echo 20480 ;;
+    # A DCU guest runs the DTK image (vllm:ubuntu-dtk, 25.6 GB): it unpacks to
+    # ~25 GiB, so the tmpfs needs roughly 30 GiB and the guest RAM twice that.
+    # The analysis image is less than a third of that size and is no reference.
+    taa-train-dcu) echo 61440 ;;
+    taa-infer-dcu) echo 61440 ;;
   esac
 }
 
