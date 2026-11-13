@@ -3566,6 +3566,35 @@
 .audit-findings-stat.is-medium b { color: var(--aud-medium); }
 .audit-findings-stat.is-low b { color: var(--aud-low); }
 
+.audit-findings-stats-label {
+  align-self: center;
+  margin-right: 2px;
+  font-size: 11.5px;
+  font-weight: 650;
+  letter-spacing: 0.02em;
+  color: var(--aud-muted);
+}
+
+/* Final level plus the rule's original judgement for downgraded findings. */
+/* Stacked, not inline: the level column is narrow, so a side-by-side tag would
+   spill over the rule id. */
+.audit-sev {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+}
+
+.audit-sev-tag {
+  padding: 1px 7px;
+  border: 1px dashed var(--aud-border-strong);
+  border-radius: 999px;
+  font-size: 10.5px;
+  line-height: 1.6;
+  color: var(--aud-muted);
+  cursor: help;
+}
+
 .audit-findings-summary-text {
   font-size: 13px;
   line-height: 1.7;

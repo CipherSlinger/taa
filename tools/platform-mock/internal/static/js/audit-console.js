@@ -1992,6 +1992,12 @@
     if (status.key === 'done') {
       const stats = document.createElement('div');
       stats.className = 'audit-findings-stats';
+      // These counts are the conclusion's final statistics, not raw rule hits;
+      // say so, because a downgraded HIGH finding shows up as 低危 here.
+      const statsLabel = document.createElement('span');
+      statsLabel.className = 'audit-findings-stats-label';
+      statsLabel.textContent = '结论分级';
+      stats.appendChild(statsLabel);
       [
         ['发现', job.findings, ''],
         ['高危', job.high, 'is-high'],
@@ -2043,13 +2049,42 @@
     host.appendChild(meta);
   }
 
+  // effectiveSeverity is the level the audit finally reports. A finding the
+  // adjudicator downgraded carries a downgrade_reason and counts as a low-risk
+  // hint in the conclusion statistics, while severity keeps the static rule's
+  // original judgement. Counting the raw field here would contradict the
+  // summary chips on the same screen.
+  function effectiveSeverity(finding) {
+    if (String(finding.downgrade_reason || '').trim()) return 'LOW';
+    return String(finding.severity || '');
+  }
+
+  // severityCell pairs the final level with the rule's original judgement for a
+  // downgraded finding, so a "LOW" pill next to a CMD_001 row reads as a
+  // deliberate call rather than a bug.
+  function severityCell(finding) {
+    const wrap = document.createElement('span');
+    wrap.className = 'audit-sev';
+    const level = effectiveSeverity(finding);
+    wrap.appendChild(badge(riskLabel(level), severityTone(level)));
+    const reason = String(finding.downgrade_reason || '').trim();
+    if (reason) {
+      const tag = document.createElement('span');
+      tag.className = 'audit-sev-tag';
+      tag.textContent = '原 ' + riskLabel(finding.severity);
+      tag.title = 'AI 复核后降级为低危提示项。' + reason;
+      wrap.appendChild(tag);
+    }
+    return wrap;
+  }
+
   function currentFilteredFindings() {
     const severity = state.severity;
     const verdict = state.verdict;
     const keyword = state.search.trim().toLowerCase();
 
     return state.findings.filter((finding) => {
-      if (severity !== 'all' && String(finding.severity || '').toLowerCase() !== severity) return false;
+      if (severity !== 'all' && effectiveSeverity(finding).toLowerCase() !== severity) return false;
 
       if (verdict !== 'all') {
         const ai = String(finding.llm_verdict || '').toUpperCase();
@@ -2083,9 +2118,9 @@
     }
 
     const rows = currentFilteredFindings();
-    const high = rows.filter((f) => String(f.severity || '').toUpperCase() === 'HIGH').length;
-    const medium = rows.filter((f) => String(f.severity || '').toUpperCase() === 'MEDIUM').length;
-    const low = rows.filter((f) => String(f.severity || '').toUpperCase() === 'LOW').length;
+    const high = rows.filter((f) => effectiveSeverity(f).toUpperCase() === 'HIGH').length;
+    const medium = rows.filter((f) => effectiveSeverity(f).toUpperCase() === 'MEDIUM').length;
+    const low = rows.filter((f) => effectiveSeverity(f).toUpperCase() === 'LOW').length;
     const aiCount = rows.filter((f) => String(f.llm_verdict || '').trim()).length;
 
     setText('auditFindingStats',
@@ -2104,7 +2139,7 @@
       const tr = document.createElement('tr');
       tr.style.cursor = 'pointer';
 
-      const sevCell = makeCell(badge(riskLabel(finding.severity), severityTone(finding.severity)));
+      const sevCell = makeCell(severityCell(finding));
       sevCell.classList.add('audit-col-sev');
       tr.appendChild(sevCell);
 
@@ -2215,7 +2250,7 @@
 
     const meta = detailSection('命中信息');
     fillFieldList(meta, [
-      ['严重级别', badge(riskLabel(finding.severity), severityTone(finding.severity))],
+      ['结论分级', severityCell(finding)],
       ['规则', finding.rule_id || finding.engine_rule_id || '—', { mono: true }],
       ['规则族', finding.rule_family || '—'],
       ['类别', finding.category || '—'],
@@ -2228,6 +2263,16 @@
       ['微服务', finding.is_microservice ? '是' : '否'],
     ]);
     wrap.appendChild(meta);
+
+    const downgradeReason = String(finding.downgrade_reason || '').trim();
+    if (downgradeReason) {
+      const section = detailSection('降级说明');
+      const text = document.createElement('div');
+      text.textContent = '规则原判 ' + riskLabel(finding.severity)
+        + '，AI 复核后按低危提示项上报：' + downgradeReason;
+      section.appendChild(text);
+      wrap.appendChild(section);
+    }
 
     const description = detailSection('描述');
     const desc = document.createElement('div');
