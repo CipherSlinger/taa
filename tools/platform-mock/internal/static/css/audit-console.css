@@ -1463,6 +1463,26 @@
   box-shadow: var(--aud-shadow-soft);
 }
 
+/* A quiet section label and a footer caption keep the rail from reading as a
+   bare list of four buttons. */
+.audit-nav-label {
+  padding: 4px 12px 6px;
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  color: var(--aud-muted);
+  text-transform: uppercase;
+}
+
+.audit-nav-foot {
+  margin: 6px 0 0;
+  padding: 10px 12px 2px;
+  border-top: 1px solid var(--aud-border);
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--aud-muted);
+}
+
 .audit-nav-item {
   display: flex;
   align-items: center;
@@ -3806,6 +3826,12 @@
     flex: none;
     white-space: nowrap;
     padding: 9px 12px;
+  }
+
+  /* The horizontal rail has no room for the caption block. */
+  .audit-nav-label,
+  .audit-nav-foot {
+    display: none;
   }
 
   .audit-content {
