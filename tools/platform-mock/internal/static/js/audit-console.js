@@ -2283,24 +2283,50 @@
     return section;
   }
 
+  // buildDetailGrid lays short facts out two per row, halving the drawer's
+  // height compared with ten full-width rows. A row marked wide spans both
+  // columns and puts its value under the label, so prose reads left to right.
+  function buildDetailGrid(rows) {
+    const dl = document.createElement('dl');
+    dl.className = 'audit-detail-grid';
+    rows.forEach((row) => {
+      const cell = document.createElement('div');
+      cell.className = 'audit-detail-cell';
+      const label = document.createElement('dt');
+      label.textContent = row[0];
+      const value = document.createElement('dd');
+      const opts = row[2] || {};
+      if (row[1] instanceof Node) value.appendChild(row[1]);
+      else value.textContent = row[1] == null || row[1] === '' ? '—' : String(row[1]);
+      if (opts.mono) {
+        value.classList.add('audit-mono');
+        value.style.fontFamily = MONO_FONT;
+      }
+      if (opts.wide) cell.classList.add('is-wide');
+      cell.append(label, value);
+      dl.appendChild(cell);
+    });
+    return dl;
+  }
+
   function buildFindingDetailBody(finding) {
     const wrap = document.createElement('div');
     wrap.className = 'audit-finding-detail-body';
 
     const meta = detailSection('命中信息');
-    fillFieldList(meta, [
+    meta.appendChild(buildDetailGrid([
       ['结论分级', severityCell(finding)],
-      ['规则', finding.rule_id || finding.engine_rule_id || '—', { mono: true }],
-      ['规则族', finding.rule_family || '—'],
-      ['类别', finding.category || '—'],
-      ['文件', displayPath(finding.file_path || finding.file || '—'), { mono: true }],
-      ['行号', finding.line == null ? '—' : String(finding.line), { mono: true }],
       ['AI 判定', badge(aiVerdictLabel(finding.llm_verdict), aiVerdictTone(finding.llm_verdict))],
-      // llm_risk is prose, not a level, so keep it as wrapping text.
-      ['AI 风险', finding.llm_risk ? String(finding.llm_risk) : '—'],
+      ['规则', finding.rule_id || finding.engine_rule_id || '—', { mono: true }],
+      ['类别', finding.category || '—'],
+      ['规则族', finding.rule_family || '—'],
+      ['位置', displayPath(finding.file_path || finding.file || '—')
+        + ':' + (finding.line == null ? '?' : finding.line), { mono: true }],
       ['跨文件', finding.is_cross_file ? '是' : '否'],
       ['微服务', finding.is_microservice ? '是' : '否'],
-    ]);
+      // llm_risk is prose, not a level, so it gets a full-width row.
+      ['AI 风险', finding.llm_risk ? String(finding.llm_risk) : '—', { wide: true }],
+    ]));
     wrap.appendChild(meta);
 
     const downgradeReason = String(finding.downgrade_reason || '').trim();
