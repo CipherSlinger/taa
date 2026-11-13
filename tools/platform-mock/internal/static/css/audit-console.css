@@ -1650,14 +1650,32 @@
   flex-direction: column;
 }
 
+/* Keep the table at its natural height: stretching the bordered wrapper left
+   an empty framed box below the shorter card's rows. The pinned footer already
+   absorbs the height difference. */
 .audit-engine-grid > .audit-card > .audit-table-wrap {
-  flex: 1 1 auto;
+  flex: 0 0 auto;
 }
 
 .audit-engine-grid > .audit-card > .audit-btn-row,
 .audit-engine-grid > .audit-card > .audit-help {
   margin-top: auto;
   padding-top: 14px;
+}
+
+/* The self-test and gateway-log pair shares a row: stretch both cards and let
+   the reply area take the leftover height. */
+.audit-engine-lower {
+  align-items: stretch;
+}
+
+.audit-engine-lower > .audit-card {
+  display: flex;
+  flex-direction: column;
+}
+
+.audit-engine-lower > .audit-card > .audit-reply {
+  flex: 1 1 auto;
 }
 
 .audit-settings-grid {
@@ -2917,6 +2935,12 @@
   overflow-wrap: anywhere;
 }
 
+/* The empty summary uses the same icon block as the tables, with roomier
+   vertical padding because the card is taller than a table row. */
+.audit-findings-summary .audit-empty-cell {
+  padding: 20px 0;
+}
+
 .audit-toolbar {
   display: flex;
   align-items: center;
@@ -3691,8 +3715,9 @@
   }
 
   /* Keep the job table legible: scroll it horizontally instead of crushing the
-     task-id column into four lines. */
-  .audit-table {
+     task-id column into four lines. Field tables (engine, settings) must not
+     inherit this width — their value column would sit off-screen. */
+  .audit-jobs-table {
     min-width: 860px;
   }
 
@@ -3730,6 +3755,12 @@
   .audit-card-actions {
     flex-direction: column;
     align-items: stretch;
+  }
+
+  /* The hint's 260px flex basis is a width in the row layout; once the actions
+     stack it would become a 260px-tall gap above the button. */
+  .audit-card-actions .audit-hint {
+    flex: 0 0 auto;
   }
 }
 

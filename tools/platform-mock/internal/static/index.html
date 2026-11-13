@@ -1366,7 +1366,7 @@
             </div>
           </div>
 
-          <div class="audit-grid-2">
+          <div class="audit-grid-2 audit-engine-lower">
             <div class="audit-card">
               <div class="audit-card-head">
                 <div>
@@ -1444,12 +1444,24 @@
                   <dd><code id="auditLLMEndpointValue">—</code></dd>
                 </div>
                 <div class="audit-field-row">
+                  <dt>当前账号</dt>
+                  <dd id="auditSettingsUser">—</dd>
+                </div>
+                <div class="audit-field-row">
                   <dt>审计执行位置</dt>
                   <dd>控制台进程内</dd>
                 </div>
                 <div class="audit-field-row">
+                  <dt>执行方式</dt>
+                  <dd>单任务串行，提交时互斥</dd>
+                </div>
+                <div class="audit-field-row">
                   <dt>任务留存</dt>
                   <dd>最近 200 条（重启清空）</dd>
+                </div>
+                <div class="audit-field-row">
+                  <dt>文件区域</dt>
+                  <dd>本机持久保存（重启保留）</dd>
                 </div>
               </dl>
               <p class="audit-help">端点由平台侧配置，控制台只读。</p>

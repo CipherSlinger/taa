@@ -214,13 +214,9 @@
     return td;
   }
 
-  function emptyRow(tbody, colspan, text) {
-    if (!tbody) return;
-    const tr = document.createElement('tr');
-    tr.className = 'audit-empty-row';
-    const td = document.createElement('td');
-    td.colSpan = colspan;
-
+  // emptyStateBox is the icon + caption block shared by table empty rows and
+  // the findings summary placeholder.
+  function emptyStateBox(text, kind) {
     const box = document.createElement('div');
     box.className = 'audit-empty-cell';
 
@@ -234,21 +230,41 @@
     svg.setAttribute('stroke-linecap', 'round');
     svg.setAttribute('stroke-linejoin', 'round');
     svg.setAttribute('aria-hidden', 'true');
-    const circle = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
-    circle.setAttribute('cx', '12');
-    circle.setAttribute('cy', '12');
-    circle.setAttribute('r', '8');
-    const dash = document.createElementNS('http://www.w3.org/2000/svg', 'path');
-    dash.setAttribute('d', 'M9 12h6');
-    svg.appendChild(circle);
-    svg.appendChild(dash);
+    if (kind === 'search') {
+      const lens = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+      lens.setAttribute('cx', '11');
+      lens.setAttribute('cy', '11');
+      lens.setAttribute('r', '7');
+      const handle = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+      handle.setAttribute('d', 'm20 20-3.6-3.6');
+      svg.appendChild(lens);
+      svg.appendChild(handle);
+    } else {
+      const circle = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+      circle.setAttribute('cx', '12');
+      circle.setAttribute('cy', '12');
+      circle.setAttribute('r', '8');
+      const dash = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+      dash.setAttribute('d', 'M9 12h6');
+      svg.appendChild(circle);
+      svg.appendChild(dash);
+    }
 
     const label = document.createElement('span');
     label.textContent = text;
 
     box.appendChild(svg);
     box.appendChild(label);
-    td.appendChild(box);
+    return box;
+  }
+
+  function emptyRow(tbody, colspan, text) {
+    if (!tbody) return;
+    const tr = document.createElement('tr');
+    tr.className = 'audit-empty-row';
+    const td = document.createElement('td');
+    td.colSpan = colspan;
+    td.appendChild(emptyStateBox(text));
     tr.appendChild(td);
     tbody.appendChild(tr);
   }
@@ -588,7 +604,7 @@
     paintPill('engineStaticStatus', '暂无任务', 'muted');
     paintPill('engineLLMStatus', '未连接', 'muted');
     setText('auditLatestSummary', '暂无审计结论。');
-    setText('auditFindingsSummary', '尚未选择审计任务。');
+    renderFindingsHeader(null);
     setText('auditJobsCount', '共 0 条，显示 0 条');
     setText('auditFindingStats', '命中 0 条');
     setText('engineLogCount', '0 条日志');
@@ -644,6 +660,7 @@
     stopLoginCountdown();
     setText('auditUserName', state.user.name || '—');
     setText('auditUserRole', state.user.role || '');
+    setText('auditSettingsUser', [state.user.name, state.user.role].filter(Boolean).join(' · ') || '—');
     showAppView(true);
     showLoginError('');
     setCapsWarning(false);
@@ -1944,7 +1961,10 @@
   function renderFindingsHeader(job) {
     if (!job) {
       paintPill('auditFindingsVerdict', '—', 'muted');
-      setText('auditFindingsSummary', '尚未选择审计任务。');
+      const emptyHost = $('auditFindingsSummary');
+      if (emptyHost) {
+        emptyHost.replaceChildren(emptyStateBox('尚未选择审计任务。选择上方的任务后，这里显示结论摘要与逐条发现。', 'search'));
+      }
       return;
     }
 
