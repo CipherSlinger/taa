@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"math"
 	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 )
@@ -262,11 +264,7 @@ func TestAuditJobOverviewRecentLimit(t *testing.T) {
 func auditTestHandlers(t *testing.T) (*consoleTestRig, *auditConsole) {
 	t.Helper()
 	rig := newConsoleTestRig(t, "")
-	mgr := testManagerWith(t, "d1", func(b *instanceStores) {
-		b.register.set(registerState{Received: true, Accepted: true, ReceivedAt: "2026-11-13T09:00:00Z", VerifiedPass: true})
-		b.setTarget("http://192.0.2.9:6001")
-	})
-	return rig, newAuditConsole(mgr, newAuditJobStore())
+	return rig, newAuditConsole(newAuditJobStore())
 }
 
 func TestAuditConsoleRequiresSession(t *testing.T) {
@@ -308,7 +306,7 @@ func TestAuditConsoleRejectsWrongMethod(t *testing.T) {
 
 func TestAuditConsoleOverviewInstance(t *testing.T) {
 	rig, audit := auditTestHandlers(t)
-	audit.jobs.record("d1", "req1", "task1", 0, buildAuditTestReport(t, true, "HIGH", auditTestStats(1, 0, 0), 100, []int{1}))
+	audit.jobs.record(localAuditInstanceKey, "req1", "task1", 0, buildAuditTestReport(t, true, "HIGH", auditTestStats(1, 0, 0), 100, []int{1}))
 	cookie := rig.loginCookie(t)
 
 	rec := rig.call(rig.console.requireSession(audit.handleOverview), http.MethodGet, "/api/audit/console/overview?dockerId=d1", "", cookie)
@@ -319,10 +317,10 @@ func TestAuditConsoleOverviewInstance(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	if resp.Instance.DockerID != "d1" || resp.Instance.Kind != instanceKindTEE {
+	if resp.Instance.DockerID != localAuditInstanceKey || resp.Instance.Kind != "local" {
 		t.Fatalf("instance = %+v", resp.Instance)
 	}
-	if resp.Instance.Address != "http://192.0.2.9:6001" || !resp.Instance.Online {
+	if resp.Instance.Address != "进程内" || !resp.Instance.Online {
 		t.Fatalf("instance address/online = %+v", resp.Instance)
 	}
 	if resp.Summary.Jobs != 1 || len(resp.Recent) != 1 {
@@ -350,7 +348,7 @@ func TestAuditConsoleJobDetailNotFound(t *testing.T) {
 func TestAuditConsoleJobDetailPassesRawReport(t *testing.T) {
 	rig, audit := auditTestHandlers(t)
 	raw := buildAuditTestReport(t, true, "MEDIUM", auditTestStats(0, 2, 0), 77, []int{2})
-	audit.jobs.record("d1", "req1", "task1", 0, raw)
+	audit.jobs.record(localAuditInstanceKey, "req1", "task1", 0, raw)
 	cookie := rig.loginCookie(t)
 
 	rec := rig.call(rig.console.requireSession(audit.handleJobDetail), http.MethodGet, "/api/audit/console/jobs/req1?dockerId=d1", "", cookie)
@@ -375,7 +373,7 @@ func TestAuditConsoleJobsLimit(t *testing.T) {
 	rig, audit := auditTestHandlers(t)
 	// More than the ring capacity, so the stored total itself is the cap.
 	for i := 0; i < auditJobRingCapacity+5; i++ {
-		audit.jobs.record("d1", fmt.Sprintf("req-%03d", i), "", 0, `{}`)
+		audit.jobs.record(localAuditInstanceKey, fmt.Sprintf("req-%03d", i), "", 0, `{}`)
 	}
 	cookie := rig.loginCookie(t)
 
@@ -404,6 +402,74 @@ func TestAuditConsoleJobsLimit(t *testing.T) {
 		if resp.Total != auditJobRingCapacity {
 			t.Fatalf("%q total = %d, want %d", tc.query, resp.Total, auditJobRingCapacity)
 		}
+	}
+}
+
+func TestAuditConsoleDeletesOneJob(t *testing.T) {
+	rig, audit := auditTestHandlers(t)
+	audit.jobs.record(localAuditInstanceKey, "req1", "task1", 0, `{}`)
+	audit.jobs.record(localAuditInstanceKey, "req2", "task2", 0, `{}`)
+	cookie := rig.loginCookie(t)
+
+	rec := rig.call(rig.console.requireSession(audit.handleJobDetail), http.MethodDelete, "/api/audit/console/jobs/req1", "", cookie)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body %s", rec.Code, rec.Body.String())
+	}
+	var body map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if body["ok"] != true || body["deleted"] != "req1" {
+		t.Fatalf("body = %v", body)
+	}
+
+	jobs := audit.jobs.list(localAuditInstanceKey)
+	if len(jobs) != 1 || jobs[0].ID != "req2" {
+		t.Fatalf("jobs = %+v, want only req2", jobs)
+	}
+
+	again := rig.call(rig.console.requireSession(audit.handleJobDetail), http.MethodDelete, "/api/audit/console/jobs/req1", "", cookie)
+	if again.Code != http.StatusNotFound {
+		t.Fatalf("second delete status = %d, want 404", again.Code)
+	}
+}
+
+func TestAuditPromptHandlerReadWrite(t *testing.T) {
+	runner := newLocalAuditRunner(newAuditJobStore(), Config{UploadDir: t.TempDir()}, nil)
+	handler := auditPromptHandler(runner)
+
+	get := func() map[string]any {
+		rec := httptest.NewRecorder()
+		handler(rec, httptest.NewRequest(http.MethodGet, "/api/audit/console/prompt", nil))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("GET status = %d: %s", rec.Code, rec.Body.String())
+		}
+		var body map[string]any
+		if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		return body
+	}
+
+	if got := get()["prompt"]; got != "" {
+		t.Fatalf("initial prompt = %v, want empty", got)
+	}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPut, "/api/audit/console/prompt", strings.NewReader(`{"prompt":"  focus  "}`))
+	handler(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("PUT status = %d: %s", rec.Code, rec.Body.String())
+	}
+	if got := get()["prompt"]; got != "focus" {
+		t.Fatalf("prompt after PUT = %v, want the trimmed text", got)
+	}
+
+	// An empty body clears the override.
+	clear := httptest.NewRecorder()
+	handler(clear, httptest.NewRequest(http.MethodPut, "/api/audit/console/prompt", strings.NewReader(`{"prompt":""}`)))
+	if got := get()["prompt"]; got != "" {
+		t.Fatalf("prompt after clear = %v, want empty", got)
 	}
 }
 

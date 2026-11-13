@@ -60,10 +60,11 @@ func init() {
 
 // Server is the platform mock HTTP server.
 type Server struct {
-	cfg        Config
-	httpServer *http.Server
-	llmPoller  *llmPoller
-	auditJobs  *auditJobStore
+	cfg         Config
+	httpServer  *http.Server
+	llmPoller   *llmPoller
+	auditJobs   *auditJobStore
+	localAudits *localAuditRunner
 }
 
 // NewServer builds a Server from cfg: it prepares the state/upload directories,
@@ -156,17 +157,20 @@ func NewServer(cfg Config) *Server {
 	mux.HandleFunc("/api/llm/console/health", console.requireSession(console.handleHealth))
 	mux.HandleFunc("/api/llm/console/settings", console.requireSession(console.handleSettings))
 
-	// The audit workbench reads the jobs reportAuditHandler records. Its session
-	// gate is the console's, so an operator signs in once for both tabs.
+	// The audit workbench runs the audit pipeline in this process and reads the
+	// jobs it writes. Its session gate is the console's, so an operator signs in
+	// once for both tabs.
 	auditJobs := globalAuditJobs
-	auditConsole := newAuditConsole(mgr, auditJobs)
+	localAudits := newLocalAuditRunner(auditJobs, cfg, console)
+	auditConsole := newAuditConsole(auditJobs)
 	mux.HandleFunc("/api/audit/console/overview", console.requireSession(auditConsole.handleOverview))
 	mux.HandleFunc("/api/audit/console/jobs", console.requireSession(auditConsole.handleJobs))
 	mux.HandleFunc("/api/audit/console/jobs/", console.requireSession(auditConsole.handleJobDetail))
-	// Submission runs the upload → encrypt → importModel chain server-side; the
-	// job store is the same one reportAuditHandler writes to, so a pending row
-	// here is the row a verdict later replaces.
-	mux.HandleFunc("/api/audit/console/submit", console.requireSession(auditSubmitHandler(mgr, auditJobs, uploadDir, cfg.Addr)))
+	mux.HandleFunc("/api/audit/console/prompt", console.requireSession(auditPromptHandler(localAudits)))
+	// Submission stores the plaintext archive and starts the audit. The job store
+	// is the same one reportAuditHandler writes to, so both shapes of verdict land
+	// in one list.
+	mux.HandleFunc("/api/audit/console/submit", console.requireSession(auditSubmitHandler(localAudits, uploadDir)))
 
 	mux.HandleFunc("/api/instances", instancesHandler(mgr))
 	mux.HandleFunc("/api/instances/delete", instancesDeleteHandler(mgr))
@@ -216,8 +220,9 @@ func NewServer(cfg Config) *Server {
 			Handler:           mux,
 			ReadHeaderTimeout: 5 * time.Second,
 		},
-		llmPoller: llmPoller,
-		auditJobs: auditJobs,
+		llmPoller:   llmPoller,
+		auditJobs:   auditJobs,
+		localAudits: localAudits,
 	}
 }
 
@@ -245,6 +250,9 @@ func (s *Server) Start(ctx context.Context) error {
 
 	select {
 	case <-ctx.Done():
+		// A local audit can be midway through a slow LLM adjudication; cancelling
+		// it lets the request context unblock and the working directory clean up.
+		s.localAudits.stop()
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		if err := s.httpServer.Shutdown(shutdownCtx); err != nil {

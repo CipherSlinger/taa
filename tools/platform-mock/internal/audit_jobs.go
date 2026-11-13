@@ -57,6 +57,47 @@ const (
 	auditJobStatusFailed  = "failed"
 )
 
+// Per-step states of a locally executed audit. The steps run in the order of
+// localAuditStepKeys; a step that the run does not need (the AI adjudicator with
+// no gateway, for instance) ends as skipped rather than done.
+const (
+	auditStepPending = "pending"
+	auditStepActive  = "active"
+	auditStepDone    = "done"
+	auditStepSkipped = "skipped"
+	auditStepError   = "error"
+)
+
+// localAuditStepKeys is the step order the workbench's vertical flow renders.
+// receive and extract happen in the mock; the rest are reported by codeaudit
+// through AuditConfig.OnStage.
+var localAuditStepKeys = []string{"receive", "extract", "static", "binary", "ai", "conclude"}
+
+func newPendingAuditStages() map[string]string {
+	stages := make(map[string]string, len(localAuditStepKeys))
+	for _, key := range localAuditStepKeys {
+		stages[key] = auditStepPending
+	}
+	return stages
+}
+
+func newLocalAuditStages() map[string]string {
+	stages := newPendingAuditStages()
+	stages[localAuditStepKeys[0]] = auditStepActive
+	return stages
+}
+
+func cloneAuditStages(stages map[string]string) map[string]string {
+	if stages == nil {
+		return nil
+	}
+	out := make(map[string]string, len(stages))
+	for key, state := range stages {
+		out[key] = state
+	}
+	return out
+}
+
 // auditJobStatusOf normalizes a stored status. Records written before the
 // status field existed carry the zero value, and a zero value is a completed
 // verdict: those rows only ever came from reportAudit.
@@ -93,6 +134,13 @@ type auditJobSummary struct {
 	Files         int    `json:"files"`
 	Findings      int    `json:"findings"`
 	PromptPreview string `json:"promptPreview"`
+	// Stage is the step a local audit is currently on, or "done" once it
+	// settled. Rows written by the reportAudit callback leave it empty.
+	Stage string `json:"stage,omitempty"`
+	// Stages carries the state of every step of a local audit so the console's
+	// flow diagram has one authoritative answer. It is omitted for jobs that
+	// came from a TAA callback.
+	Stages map[string]string `json:"stages,omitempty"`
 }
 
 // auditJob keeps the parsed report fields the list does not carry. The raw
@@ -250,10 +298,12 @@ func (s *auditJobStore) record(dockerID, requestID, taskID string, code int, raw
 	// Same requestId means the same audit reported twice: replace the record in
 	// place but keep the identifier the console may already be showing.
 	id := ""
+	var inheritedStages map[string]string
 	if requestID != "" {
 		for i, existing := range jobs {
 			if existing.RequestID == requestID {
 				id = existing.ID
+				inheritedStages = existing.Stages
 				jobs = append(jobs[:i], jobs[i+1:]...)
 				break
 			}
@@ -273,6 +323,15 @@ func (s *auditJobStore) record(dockerID, requestID, taskID string, code int, raw
 		Raw:             raw,
 	}
 	job.ID = id
+	// A locally executed audit began with a step map; the verdict settles it.
+	// Rows that only ever existed as a reportAudit callback have no map, and
+	// keeping it nil keeps their JSON shape unchanged.
+	if inheritedStages != nil {
+		stages := cloneAuditStages(inheritedStages)
+		stages["conclude"] = auditStepDone
+		job.Stages = stages
+		job.Stage = "done"
+	}
 
 	jobs = append([]*auditJob{job}, jobs...)
 	if len(jobs) > auditJobRingCapacity {
@@ -336,6 +395,8 @@ func (s *auditJobStore) begin(dockerID, requestID, taskID string) {
 		TaskID:    taskID,
 		At:        now.Format(time.RFC3339),
 		Status:    auditJobStatusPending,
+		Stage:     localAuditStepKeys[0],
+		Stages:    newLocalAuditStages(),
 	}}
 
 	jobs = append([]*auditJob{job}, jobs...)
@@ -373,6 +434,101 @@ func (s *auditJobStore) abandon(dockerID, requestID, reason string) bool {
 		abandoned.Status = auditJobStatusFailed
 		abandoned.Error = reason
 		jobs[i] = &abandoned
+		return true
+	}
+	return false
+}
+
+// setStage moves one step of a pending local audit to state. Only the pending
+// status is eligible: once a verdict landed or a failure was recorded, the row
+// is final and a late stage transition must not rewrite it.
+//
+// Like abandon, it builds a replacement row and swaps the slot, because
+// published *auditJob pointers are read without the lock. It deliberately does
+// not touch the clock: a stage change is progress inside one submission, not a
+// new submission, and the row's At must keep naming when it was received.
+func (s *auditJobStore) setStage(dockerID, requestID, step, state string) bool {
+	if requestID == "" || step == "" {
+		return false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	jobs := s.byInstance[dockerID]
+	for i, job := range jobs {
+		if job.RequestID != requestID {
+			continue
+		}
+		if auditJobStatusOf(job.Status) != auditJobStatusPending {
+			return false
+		}
+		updated := *job
+		updated.Stages = cloneAuditStages(job.Stages)
+		if updated.Stages == nil {
+			updated.Stages = newPendingAuditStages()
+		}
+		updated.Stages[step] = state
+		updated.Stage = step
+		jobs[i] = &updated
+		return true
+	}
+	return false
+}
+
+// failAt turns a pending local audit into a failed row at step. Steps that
+// already completed keep their state; the failing step alone becomes error.
+//
+// The caller must not follow a failure with record(): that would replace the
+// row with a done verdict and lose both the failing step and the reason.
+func (s *auditJobStore) failAt(dockerID, requestID, step, reason string) bool {
+	if requestID == "" {
+		return false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	jobs := s.byInstance[dockerID]
+	for i, job := range jobs {
+		if job.RequestID != requestID {
+			continue
+		}
+		if auditJobStatusOf(job.Status) != auditJobStatusPending {
+			return false
+		}
+		failed := *job
+		failed.Status = auditJobStatusFailed
+		failed.Error = reason
+		failed.Stages = cloneAuditStages(job.Stages)
+		if failed.Stages == nil {
+			failed.Stages = newPendingAuditStages()
+		}
+		if step != "" {
+			failed.Stages[step] = auditStepError
+			failed.Stage = step
+		}
+		jobs[i] = &failed
+		return true
+	}
+	return false
+}
+
+// delete removes one job from the instance's ring. Removing a row a reader is
+// holding is safe: published pointers are immutable, so the reader keeps a
+// consistent copy and simply stops seeing it in later lists.
+func (s *auditJobStore) delete(dockerID, id string) bool {
+	if id == "" {
+		return false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	jobs := s.byInstance[dockerID]
+	for i, job := range jobs {
+		if job.ID != id {
+			continue
+		}
+		jobs = append(jobs[:i], jobs[i+1:]...)
+		s.byInstance[dockerID] = jobs
 		return true
 	}
 	return false
