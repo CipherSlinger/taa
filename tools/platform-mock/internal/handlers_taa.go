@@ -531,6 +531,10 @@ func reportAuditHandler(mgr *instanceManager) http.HandlerFunc {
 		}
 
 		log.Printf("reportAudit accepted: dockerId=%s taskId=%s code=%d", state.DockerID, state.TaskID, state.Code)
+		// Mirror the accepted verdict into the workbench store. This is a
+		// process-local view only; the response and the persisted report state
+		// above are unchanged.
+		globalAuditJobs.record(state.DockerID, state.RequestID, state.TaskID, state.Code, state.Report)
 		writeEnvelope(w, http.StatusOK, "success", map[string]any{
 			"received": true,
 		}, 0)

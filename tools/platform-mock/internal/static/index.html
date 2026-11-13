@@ -7,12 +7,12 @@
   <link rel="stylesheet" href="/static/css/variables.css">
   <link rel="stylesheet" href="/static/css/layout.css">
   <link rel="stylesheet" href="/static/css/components.css">
-  <link rel="stylesheet" href="/static/css/llm-console.css">
+  <link rel="stylesheet" href="/static/css/audit-console.css">
 </head>
 <body data-mode="tee">
 <!-- Top-level mode switch: the simulator keeps its original content untouched
-     inside #tabPanelPlatform; the TEE-LLM console is a self-contained app in
-     #tabPanelLLM with its own login gate, so the two never share state. -->
+     inside #tabPanelPlatform; the audit workbench is a self-contained app in
+     #tabPanelAudit with its own login gate, so the two never share state. -->
 <nav id="tabBar" class="llc-tabbar" aria-label="控制台页签">
   <div class="llc-tabbar-inner">
     <span class="llc-tabbar-brand">
@@ -23,7 +23,7 @@
       TAA 平台模拟器
     </span>
     <div class="llc-tabs" role="tablist" aria-label="控制台视图切换">
-      <button type="button" class="tab-btn active" data-tab="platform" role="tab" aria-selected="true" aria-controls="tabPanelPlatform" onclick="llmTabSwitch('platform')">
+      <button type="button" class="tab-btn active" data-tab="platform" role="tab" aria-selected="true" aria-controls="tabPanelPlatform" onclick="auditTabSwitch('platform')">
         <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
           <path d="M12 2 3 7l9 5 9-5-9-5z"></path>
           <path d="m3 12 9 5 9-5"></path>
@@ -31,12 +31,13 @@
         </svg>
         <span>平台模拟</span>
       </button>
-      <button type="button" class="tab-btn" data-tab="llm" role="tab" aria-selected="false" aria-controls="tabPanelLLM" onclick="llmTabSwitch('llm')">
+      <button type="button" class="tab-btn" data-tab="audit" role="tab" aria-selected="false" aria-controls="tabPanelAudit" onclick="auditTabSwitch('audit')">
         <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-          <path d="M12 2 4 5.5V11c0 5 3.4 8.9 8 11 4.6-2.1 8-6 8-11V5.5L12 2z"></path>
-          <path d="M9.2 11.8h5.6M12 9v5.6"></path>
+          <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
+          <path d="M14 2v6h6"></path>
+          <path d="m9 15 2 2 4-4"></path>
         </svg>
-        <span>TEE-LLM 控制台</span>
+        <span>代码审计工作台</span>
       </button>
     </div>
   </div>
@@ -605,149 +606,160 @@
 </main>
 </div><!-- /#tabPanelPlatform -->
 
-<!-- ═══ TEE-LLM 控制台 ═══ -->
-<div id="tabPanelLLM" class="llc-panel" style="display: none;">
+<!-- ═══ Audit workbench ═══ -->
+<div id="tabPanelAudit" class="audit-panel" style="display: none;">
 
-  <!-- Login gate. Shown until the backend session cookie is accepted; the app
-       view below stays hidden behind it. -->
-  <div id="llmLoginView" class="llm-login">
-    <div class="llm-login-bg" aria-hidden="true">
-      <span class="llm-login-glow llm-login-glow-a"></span>
-      <span class="llm-login-glow llm-login-glow-b"></span>
-      <svg class="llm-login-decor" viewBox="0 0 1440 900" preserveAspectRatio="xMidYMid slice" focusable="false">
+  <!-- Login gate. The workbench stays hidden until the backend session cookie
+       is accepted; both views live under the same tab panel. -->
+  <div id="auditLoginView" class="audit-login">
+    <div class="audit-login-bg" aria-hidden="true">
+      <span class="audit-login-glow audit-login-glow-a"></span>
+      <span class="audit-login-glow audit-login-glow-b"></span>
+      <svg class="audit-login-decor" viewBox="0 0 1440 900" preserveAspectRatio="xMidYMid slice" focusable="false">
         <defs>
-          <pattern id="llmGridPattern" width="64" height="64" patternUnits="userSpaceOnUse">
+          <pattern id="auditGridPattern" width="64" height="64" patternUnits="userSpaceOnUse">
             <path d="M64 0H0V64" fill="none" stroke="currentColor" stroke-width="1" opacity=".45"></path>
           </pattern>
         </defs>
-        <rect x="0" y="0" width="100%" height="100%" fill="url(#llmGridPattern)"></rect>
+        <rect x="0" y="0" width="100%" height="100%" fill="url(#auditGridPattern)"></rect>
         <g fill="none" stroke="currentColor" stroke-width="1.2" opacity=".6">
-          <circle cx="268" cy="726" r="132"></circle>
-          <circle cx="268" cy="726" r="206"></circle>
-          <circle cx="268" cy="726" r="286"></circle>
-          <path d="M118 214h148v86H118z"></path>
-          <path d="M700 958 1148 510h300"></path>
-          <path d="M880 300h120v54H880z"></path>
+          <circle cx="252" cy="716" r="128"></circle>
+          <circle cx="252" cy="716" r="202"></circle>
+          <circle cx="252" cy="716" r="282"></circle>
+          <path d="M112 208h150v88H112z"></path>
+          <path d="M690 954 1140 504h300"></path>
+          <path d="M884 296h124v56H884z"></path>
         </g>
         <g fill="currentColor" opacity=".5">
-          <circle cx="268" cy="726" r="4"></circle>
-          <circle cx="1148" cy="510" r="3.5"></circle>
-          <circle cx="520" cy="452" r="3"></circle>
-          <circle cx="948" cy="842" r="3"></circle>
-          <circle cx="1000" cy="327" r="2.5"></circle>
+          <circle cx="252" cy="716" r="4"></circle>
+          <circle cx="1140" cy="504" r="3.5"></circle>
+          <circle cx="520" cy="448" r="3"></circle>
+          <circle cx="952" cy="836" r="3"></circle>
+          <circle cx="1004" cy="324" r="2.5"></circle>
         </g>
       </svg>
     </div>
 
-    <div class="llm-login-shell">
-      <section class="llm-brand" aria-label="产品介绍">
-        <div class="llm-brand-mark">
+    <div class="audit-login-shell">
+      <section class="audit-brand" aria-label="产品介绍">
+        <div class="audit-brand-mark">
           <svg width="42" height="42" viewBox="0 0 48 48" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
             <path d="M24 4 7 11v12c0 10.5 7.1 18.6 17 21 9.9-2.4 17-10.5 17-21V11L24 4z"></path>
             <path d="M17.5 24.5 22 29l9-10"></path>
           </svg>
-          <span class="llm-brand-mark-text">TEE-LLM</span>
+          <span class="audit-brand-mark-text">OSR AUDIT</span>
         </div>
-        <h1 class="llm-brand-title">TEE-LLM 机密推理网关</h1>
-        <p class="llm-brand-subtitle">在机密虚拟机内完成推理的网关控制台，提示词与模型响应全程处于硬件保护范围。</p>
+        <h1 class="audit-brand-title">代码安全审计平台</h1>
+        <p class="audit-brand-subtitle">密文交付 · 静态扫描 · AI 语义判定 · 可解释报告</p>
 
-        <ul class="llm-brand-points">
-          <li class="llm-brand-point">
-            <span class="llm-brand-point-icon">
+        <ul class="audit-brand-points">
+          <li class="audit-brand-point">
+            <span class="audit-brand-point-icon">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <rect x="4" y="10" width="16" height="11" rx="2.4"></rect>
+                <path d="M8 10V7a4 4 0 0 1 8 0v3"></path>
+              </svg>
+            </span>
+            <span class="audit-brand-point-text">
+              <strong>密文交付</strong>
+              <span>模型与代码以密文进入 CSV 机密域，仅在受保护内存内解密。</span>
+            </span>
+          </li>
+          <li class="audit-brand-point">
+            <span class="audit-brand-point-icon">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
+                <path d="M14 2v6h6"></path>
+                <path d="M8 13h8M8 17h5"></path>
+              </svg>
+            </span>
+            <span class="audit-brand-point-text">
+              <strong>双引擎扫描</strong>
+              <span>内置规则与离线静态引擎并行扫描，定位到文件与行号。</span>
+            </span>
+          </li>
+          <li class="audit-brand-point">
+            <span class="audit-brand-point-icon">
               <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
                 <path d="M12 2 4 5.5V11c0 5 3.4 8.9 8 11 4.6-2.1 8-6 8-11V5.5L12 2z"></path>
                 <path d="m8.6 11.8 2.4 2.4 4.4-4.6"></path>
               </svg>
             </span>
-            <span class="llm-brand-point-text">
-              <strong>端到端机密推理</strong>
-              <span>提示词经 TEE-TLS 1.3 进入 CSV 机密域，明文不离开受保护内存。</span>
+            <span class="audit-brand-point-text">
+              <strong>AI 语义判定</strong>
+              <span>AI 语义模块逐条复核扫描发现，输出可解释的判定理由。</span>
             </span>
           </li>
-          <li class="llm-brand-point">
-            <span class="llm-brand-point-icon">
+          <li class="audit-brand-point">
+            <span class="audit-brand-point-icon">
               <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                <path d="M3 7V5a2 2 0 0 1 2-2h2M17 3h2a2 2 0 0 1 2 2v2M21 17v2a2 2 0 0 1-2 2h-2M7 21H5a2 2 0 0 1-2-2v-2"></path>
-                <circle cx="12" cy="12" r="3.2"></circle>
-                <path d="M12 8.8V6M12 18v-2.8M8.8 12H6M18 12h-2.8"></path>
+                <path d="M5 20V10M12 20V4M19 20v-7"></path>
               </svg>
             </span>
-            <span class="llm-brand-point-text">
-              <strong>硬件远程证明</strong>
-              <span>校验 CSV 度量值、TLS 公钥绑定与握手耗时，未经验证的网关不放行。</span>
-            </span>
-          </li>
-          <li class="llm-brand-point">
-            <span class="llm-brand-point-icon">
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                <path d="M4 4h16v16H4z" opacity=".35"></path>
-                <path d="M8 9h8M8 13h8M8 17h5"></path>
-              </svg>
-            </span>
-            <span class="llm-brand-point-text">
-              <strong>全量调用留痕</strong>
-              <span>每次推理记录模型、耗时与状态，失败请求可直接回溯原因。</span>
+            <span class="audit-brand-point-text">
+              <strong>分级结论</strong>
+              <span>按风险等级与判定汇总，形成可追溯、可导出的审计报告。</span>
             </span>
           </li>
         </ul>
 
-        <p class="llm-brand-version">版本 V1.0 · 海光 CSV 机密计算</p>
+        <p class="audit-brand-version">版本 V1.0 · 海光 CSV 机密计算 · 纽创信安 OSR</p>
       </section>
 
-      <section class="llm-login-card" aria-labelledby="llmLoginTitle">
-        <div class="llm-login-card-head">
-          <div id="llmLoginLogo" class="llm-login-logo">
+      <section class="audit-login-card" aria-labelledby="auditLoginTitle">
+        <div class="audit-login-card-head">
+          <div id="auditLoginLogo" class="audit-login-logo">
             <svg width="34" height="34" viewBox="0 0 48 48" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
               <path d="M24 4 7 11v12c0 10.5 7.1 18.6 17 21 9.9-2.4 17-10.5 17-21V11L24 4z"></path>
               <rect x="18" y="21" width="12" height="9" rx="2"></rect>
               <path d="M20.5 21v-2.6a3.5 3.5 0 0 1 7 0V21"></path>
             </svg>
           </div>
-          <h2 id="llmLoginTitle" class="llm-login-title">登录控制台</h2>
-          <p class="llm-login-subtitle">使用管理员账号访问 TEE-LLM 机密推理网关</p>
+          <h2 id="auditLoginTitle" class="audit-login-title">登录工作台</h2>
+          <p class="audit-login-subtitle">使用管理员账号访问代码安全审计平台</p>
         </div>
 
-        <div class="llm-login-modes" role="tablist" aria-label="登录方式">
-          <button type="button" class="llm-login-mode active" role="tab" aria-selected="true">密码登录</button>
-          <button type="button" class="llm-login-mode" role="tab" aria-selected="false" aria-disabled="true" title="证书登录尚未开放，请使用密码登录">证书登录</button>
+        <div class="audit-login-modes" role="tablist" aria-label="登录方式">
+          <button type="button" class="audit-login-mode active" role="tab" aria-selected="true">密码登录</button>
+          <button type="button" class="audit-login-mode" role="tab" aria-selected="false" aria-disabled="true" title="证书登录尚未开放，请使用密码登录">证书登录</button>
         </div>
 
-        <form id="llmLoginForm" class="llm-login-form" onsubmit="llmConsoleLogin(event)" autocomplete="on">
-          <div class="llm-field">
-            <label for="llmLoginUser">管理员账号</label>
-            <div class="llm-input-wrap">
-              <svg class="llm-input-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <form id="auditLoginForm" class="audit-login-form" onsubmit="return auditConsoleLogin(event)" autocomplete="on">
+          <div class="audit-field">
+            <label for="auditLoginUser">管理员账号</label>
+            <div class="audit-input-wrap">
+              <svg class="audit-input-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
                 <path d="M20 21v-1.6a4.4 4.4 0 0 0-4.4-4.4H8.4A4.4 4.4 0 0 0 4 19.4V21"></path>
                 <circle cx="12" cy="7.5" r="3.9"></circle>
               </svg>
-              <input id="llmLoginUser" name="username" type="text" autocomplete="username" required spellcheck="false" placeholder="请输入账号">
+              <input id="auditLoginUser" name="username" type="text" autocomplete="username" required spellcheck="false" placeholder="请输入账号">
             </div>
           </div>
 
-          <div class="llm-field">
-            <label for="llmLoginPassword">登录口令</label>
-            <div class="llm-input-wrap">
-              <svg class="llm-input-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <div class="audit-field">
+            <label for="auditLoginPassword">登录口令</label>
+            <div class="audit-input-wrap">
+              <svg class="audit-input-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
                 <rect x="4" y="10" width="16" height="11" rx="2.4"></rect>
                 <path d="M8 10V7a4 4 0 0 1 8 0v3"></path>
               </svg>
-              <input id="llmLoginPassword" name="password" type="password" autocomplete="current-password" required placeholder="请输入口令">
-              <button type="button" id="llmLoginTogglePwd" class="llm-pwd-toggle" onclick="llmConsoleTogglePwd()" aria-label="显示口令" title="显示口令">
-                <svg class="llm-eye-on" width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <input id="auditLoginPassword" name="password" type="password" autocomplete="current-password" required placeholder="请输入口令">
+              <button type="button" id="auditLoginTogglePwd" class="audit-pwd-toggle" onclick="auditConsoleTogglePwd()" aria-label="显示口令" title="显示口令">
+                <svg class="audit-eye-on" width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
                   <path d="M1.5 12S5.5 5 12 5s10.5 7 10.5 7-4 7-10.5 7S1.5 12 1.5 12z"></path>
                   <circle cx="12" cy="12" r="3"></circle>
                 </svg>
-                <svg class="llm-eye-off" width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <svg class="audit-eye-off" width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
                   <path d="M3 3l18 18"></path>
                   <path d="M10.6 5.2A10.9 10.9 0 0 1 12 5c6.5 0 10.5 7 10.5 7a17.6 17.6 0 0 1-3.1 3.9M6.5 6.9A17.4 17.4 0 0 0 1.5 12S5.5 19 12 19a10.6 10.6 0 0 0 4.4-.9"></path>
                   <path d="M9.9 9.9a3 3 0 0 0 4.2 4.2"></path>
                 </svg>
               </button>
             </div>
-            <p id="llmLoginCapsWarn" class="llm-caps-warn" role="status" style="display: none;">大写锁定已开启，请注意口令大小写</p>
+            <p id="auditLoginCapsWarn" class="audit-caps-warn" role="status" style="display: none;">大写锁定已开启，请注意口令大小写</p>
           </div>
 
-          <div id="llmLoginError" class="llm-alert llm-alert-danger" role="alert" aria-live="assertive" style="display: none;">
+          <div id="auditLoginError" class="audit-alert audit-alert-danger" role="alert" aria-live="assertive" style="display: none;">
             <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
               <circle cx="12" cy="12" r="9.2"></circle>
               <path d="M12 7.5v5.2M12 16.4v.2"></path>
@@ -755,101 +767,109 @@
             <span>账号或口令不正确，请重试。</span>
           </div>
 
-          <div class="llm-login-row">
-            <label class="llm-check" for="llmLoginRemember">
-              <input type="checkbox" id="llmLoginRemember">
-              <span class="llm-check-box" aria-hidden="true"></span>
-              <span class="llm-check-text">保持登录状态</span>
+          <div class="audit-login-row">
+            <label class="audit-check" for="auditLoginRemember">
+              <input type="checkbox" id="auditLoginRemember">
+              <span class="audit-check-box" aria-hidden="true"></span>
+              <span class="audit-check-text">保持登录状态</span>
             </label>
-            <span class="llm-login-forgot" title="请通过部署机上的管理员重置口令">忘记密码？请联系管理员</span>
+            <span class="audit-login-forgot" title="请通过部署机上的管理员重置口令">忘记密码？请联系管理员</span>
           </div>
 
-          <button type="submit" id="llmLoginSubmit" class="llm-btn llm-btn-primary llm-login-submit">
-            <span class="llm-spinner" aria-hidden="true"></span>
-            <span class="llm-btn-text">登录</span>
+          <button type="submit" id="auditLoginSubmit" class="audit-btn audit-btn-primary audit-login-submit">
+            <span class="audit-spinner" aria-hidden="true"></span>
+            <span class="audit-btn-text">登录</span>
           </button>
         </form>
 
-        <p id="llmLoginHint" class="llm-login-hint">默认账号 admin，初始口令 teellm@2026；可用启动参数 -console-user / -console-password 覆盖。</p>
-        <p id="llmLoginFooter" class="llm-login-footer">© 2026 纽创信安 OSR · TEE-LLM 机密推理网关 V1.0 · 仅限授权运维使用</p>
+        <p id="auditLoginHint" class="audit-login-hint">默认账号 admin，初始口令 teellm@2026；可用启动参数 -console-user / -console-password 覆盖。</p>
+        <p id="auditLoginFooter" class="audit-login-footer">© 2026 纽创信安 OSR · 代码安全审计平台 V1.0 · 仅限授权运维使用</p>
       </section>
     </div>
-  </div><!-- /#llmLoginView -->
+  </div><!-- /#auditLoginView -->
 
-  <!-- Authenticated console. The login view above sits in front of this until
-       /api/llm/console/session accepts the session cookie. -->
-  <div id="llmAppView" class="llm-app" style="display: none;">
-    <header class="llm-topbar">
-      <div class="llm-topbar-left">
-        <span class="llm-topbar-logo">
+  <!-- Authenticated workbench. -->
+  <div id="auditAppView" class="audit-app" style="display: none;">
+    <header class="audit-topbar">
+      <div class="audit-topbar-left">
+        <span class="audit-topbar-logo">
           <svg width="24" height="24" viewBox="0 0 48 48" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
             <path d="M24 4 7 11v12c0 10.5 7.1 18.6 17 21 9.9-2.4 17-10.5 17-21V11L24 4z"></path>
             <path d="M17.5 24.5 22 29l9-10"></path>
           </svg>
         </span>
-        <div class="llm-topbar-name">
-          <strong>TEE-LLM 控制台</strong>
-          <span>机密推理网关 · 海光 CSV2</span>
+        <div class="audit-topbar-name">
+          <strong>代码安全审计平台</strong>
+          <span>密文交付 · 静态扫描 · AI 语义判定 · 可解释报告</span>
         </div>
+        <span class="audit-env-badge">CSV2 机密环境</span>
       </div>
-      <div class="llm-topbar-right">
-        <span id="llmSessionPill" class="llm-pill ok" title="会话状态由后端 Cookie 决定，操作时自动续期">
-          <span class="llm-pill-dot"></span>
-          <span>会话有效</span>
-        </span>
-        <button type="button" id="llmTopRefreshBtn" class="llm-icon-btn" title="刷新当前视图" aria-label="刷新当前视图">
+      <div class="audit-topbar-right">
+        <label class="audit-instance-wrap">
+          <span class="audit-instance-label">实例</span>
+          <select id="auditInstanceSelect" class="audit-select audit-select-sm" title="切换审计实例">
+            <option value="">加载实例…</option>
+          </select>
+        </label>
+        <button type="button" id="auditTopRefreshBtn" class="audit-icon-btn" title="刷新当前视图" aria-label="刷新当前视图">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
             <polyline points="23 4 23 10 17 10"></polyline>
             <polyline points="1 20 1 14 7 14"></polyline>
             <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path>
           </svg>
         </button>
-        <div class="llm-user">
-          <span class="llm-avatar" aria-hidden="true">A</span>
-          <span class="llm-user-meta">
-            <span class="llm-user-name" id="llmUserName">admin</span>
-            <span class="llm-user-role" id="llmUserRole">管理员</span>
+        <span id="auditSessionPill" class="audit-pill ok" title="会话状态由后端 Cookie 决定，操作时自动续期">
+          <span class="audit-pill-dot"></span>
+          <span>会话有效</span>
+        </span>
+        <div class="audit-user">
+          <span class="audit-avatar" aria-hidden="true">管</span>
+          <span class="audit-user-meta">
+            <span class="audit-user-name" id="auditUserName">admin</span>
+            <span class="audit-user-role" id="auditUserRole">管理员</span>
           </span>
         </div>
-        <button type="button" id="llmLogoutBtn" class="llm-btn llm-btn-ghost llm-btn-sm" onclick="llmConsoleLogout()">退出登录</button>
+        <button type="button" id="auditLogoutBtn" class="audit-btn audit-btn-ghost audit-btn-sm" onclick="auditConsoleLogout()">退出登录</button>
       </div>
     </header>
 
-    <div class="llm-app-body">
-      <nav class="llm-nav" aria-label="控制台导航">
-        <button type="button" class="llm-nav-item active" data-llm-view="overview" onclick="llmConsoleSwitchView('overview')">
+    <div class="audit-app-body">
+      <nav class="audit-nav" aria-label="审计导航">
+        <button type="button" class="audit-nav-item active" data-audit-view="overview" onclick="auditConsoleSwitchView('overview')">
           <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
             <rect x="3" y="3" width="7.5" height="7.5" rx="1.6"></rect>
             <rect x="13.5" y="3" width="7.5" height="7.5" rx="1.6"></rect>
             <rect x="3" y="13.5" width="7.5" height="7.5" rx="1.6"></rect>
             <rect x="13.5" y="13.5" width="7.5" height="7.5" rx="1.6"></rect>
           </svg>
-          <span>运行概览</span>
+          <span>审计概览</span>
         </button>
-        <button type="button" class="llm-nav-item" data-llm-view="workbench" onclick="llmConsoleSwitchView('workbench')">
+        <button type="button" class="audit-nav-item" data-audit-view="jobs" onclick="auditConsoleSwitchView('jobs')">
           <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-            <path d="M21 11.5a8.4 8.4 0 0 1-9 8.4 9.2 9.2 0 0 1-3.6-.7L3 21l1.7-4.6A8.3 8.3 0 0 1 3.6 11.5a8.4 8.4 0 0 1 8.4-8.4h1A8.4 8.4 0 0 1 21 11.5z"></path>
-            <path d="M8 10.5h8M8 14h5"></path>
+            <path d="M9 3h6a1 1 0 0 1 1 1v2H8V4a1 1 0 0 1 1-1z"></path>
+            <path d="M8 5H6a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2h-2"></path>
+            <path d="M9 11h6M9 15h6"></path>
           </svg>
-          <span>推理工作台</span>
+          <span>审计任务</span>
         </button>
-        <button type="button" class="llm-nav-item" data-llm-view="attest" onclick="llmConsoleSwitchView('attest')">
+        <button type="button" class="audit-nav-item" data-audit-view="findings" onclick="auditConsoleSwitchView('findings')">
           <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-            <path d="M12 2 4 5.5V11c0 5 3.4 8.9 8 11 4.6-2.1 8-6 8-11V5.5L12 2z"></path>
-            <path d="m8.6 11.8 2.4 2.4 4.4-4.6"></path>
+            <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
+            <path d="M14 2v6h6"></path>
+            <circle cx="11" cy="14" r="2.4"></circle>
+            <path d="m13 16 1.8 1.8"></path>
           </svg>
-          <span>远程证明</span>
+          <span>审计结果</span>
         </button>
-        <button type="button" class="llm-nav-item" data-llm-view="logs" onclick="llmConsoleSwitchView('logs')">
+        <button type="button" class="audit-nav-item" data-audit-view="engine" onclick="auditConsoleSwitchView('engine')">
           <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-            <path d="M8 6h13M8 12h13M8 18h13"></path>
-            <circle cx="3.6" cy="6" r="1.1"></circle>
-            <circle cx="3.6" cy="12" r="1.1"></circle>
-            <circle cx="3.6" cy="18" r="1.1"></circle>
+            <rect x="4" y="4" width="16" height="16" rx="2"></rect>
+            <path d="M9 9h6v6H9z"></path>
+            <path d="M9 2v2M15 2v2M9 20v2M15 20v2M2 9h2M2 15h2M20 9h2M20 15h2"></path>
           </svg>
-          <span>运行日志</span>
+          <span>安全引擎</span>
         </button>
-        <button type="button" class="llm-nav-item" data-llm-view="settings" onclick="llmConsoleSwitchView('settings')">
+        <button type="button" class="audit-nav-item" data-audit-view="settings" onclick="auditConsoleSwitchView('settings')">
           <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
             <path d="M4 7h10M18 7h2M4 17h4M12 17h8"></path>
             <circle cx="16" cy="7" r="2.2"></circle>
@@ -859,464 +879,606 @@
         </button>
       </nav>
 
-      <div class="llm-content">
+      <div class="audit-content">
 
-        <!-- ─── 运行概览 ─── -->
-        <section id="llmViewOverview" class="llm-view" aria-labelledby="llmOverviewTitle">
-          <div class="llm-view-head">
+        <!-- ─── Overview ─── -->
+        <section id="auditViewOverview" class="audit-view">
+          <div class="audit-view-head">
             <div>
-              <h2 id="llmOverviewTitle" class="llm-view-title">运行概览</h2>
-              <p class="llm-view-desc">受管 TEE-LLM 实例的在线状态、模型与时延摘要，每 5 秒自动刷新。</p>
+              <h2 class="audit-view-title">审计概览</h2>
+              <p class="audit-view-desc">所选实例的审计任务、风险分布与最新结论；进入本页签后每 5 秒自动刷新。</p>
             </div>
-            <span class="llm-live"><span class="llm-live-dot"></span>实时轮询</span>
+            <span class="audit-live"><span class="audit-live-dot"></span>实时轮询</span>
           </div>
 
-          <div id="llmOverviewWarn" class="llm-warn" role="status" style="display: none;">
+          <div id="auditOverviewWarn" class="audit-warn" role="status" style="display: none;">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
               <path d="M10.3 3.9 1.9 18a2 2 0 0 0 1.7 3h16.8a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"></path>
               <path d="M12 9v4.4M12 16.9v.2"></path>
             </svg>
-            <span id="llmOverviewWarnText">实例当前不可达，以下为最近一次成功采样的数据。</span>
+            <span id="auditOverviewWarnText">实例当前不可达，以下为最近一次成功采样的数据。</span>
           </div>
 
-          <div class="llm-kpi-grid">
-            <article class="llm-kpi">
-              <div class="llm-kpi-top">
-                <span class="llm-kpi-label">网关状态</span>
-                <span class="llm-kpi-icon">
+          <div class="audit-kpi-grid">
+            <article class="audit-kpi">
+              <div class="audit-kpi-top">
+                <span class="audit-kpi-label">审计任务</span>
+                <span class="audit-kpi-icon">
                   <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                    <path d="M3 12h4l2.5-7 4 14 2.5-7h5"></path>
+                    <path d="M9 3h6a1 1 0 0 1 1 1v2H8V4a1 1 0 0 1 1-1z"></path>
+                    <path d="M8 5H6a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2h-2"></path>
+                    <path d="M9 12h6M9 16h4"></path>
                   </svg>
                 </span>
               </div>
-              <div class="llm-kpi-value" id="llmKpiStatus">—</div>
-              <div class="llm-kpi-sub" id="llmKpiStatusSub">等待首次心跳</div>
+              <div class="audit-kpi-value" id="auditKpiJobs">—</div>
+              <div class="audit-kpi-sub">累计接收的审计请求</div>
             </article>
-            <article class="llm-kpi">
-              <div class="llm-kpi-top">
-                <span class="llm-kpi-label">当前模型</span>
-                <span class="llm-kpi-icon">
-                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                    <rect x="6" y="6" width="12" height="12" rx="2"></rect>
-                    <path d="M9 2v4M15 2v4M9 18v4M15 18v4M2 9h4M2 15h4M18 9h4M18 15h4"></path>
-                  </svg>
-                </span>
-              </div>
-              <div class="llm-kpi-value llm-kpi-value-sm" id="llmKpiModel">—</div>
-              <div class="llm-kpi-sub" id="llmKpiModelSub">模型由网关启动参数决定</div>
-            </article>
-            <article class="llm-kpi">
-              <div class="llm-kpi-top">
-                <span class="llm-kpi-label">运行时长</span>
-                <span class="llm-kpi-icon">
-                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                    <circle cx="12" cy="12" r="9"></circle>
-                    <path d="M12 7v5.4l3.4 2"></path>
-                  </svg>
-                </span>
-              </div>
-              <div class="llm-kpi-value" id="llmKpiUptime">—</div>
-              <div class="llm-kpi-sub" id="llmKpiUptimeSub">最近心跳 —</div>
-            </article>
-            <article class="llm-kpi">
-              <div class="llm-kpi-top">
-                <span class="llm-kpi-label">时延 P95</span>
-                <span class="llm-kpi-icon">
-                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                    <path d="M12 21a9 9 0 1 1 9-9"></path>
-                    <path d="M12 12 17 7"></path>
-                  </svg>
-                </span>
-              </div>
-              <div class="llm-kpi-value" id="llmKpiLatency">—</div>
-              <div class="llm-kpi-sub" id="llmKpiLatencySub">P50 — · 平均 —</div>
-            </article>
-            <article class="llm-kpi">
-              <div class="llm-kpi-top">
-                <span class="llm-kpi-label">请求成功率</span>
-                <span class="llm-kpi-icon">
+            <article class="audit-kpi">
+              <div class="audit-kpi-top">
+                <span class="audit-kpi-label">通过率</span>
+                <span class="audit-kpi-icon">
                   <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
                     <circle cx="12" cy="12" r="9"></circle>
                     <path d="m8.4 12.2 2.4 2.4 4.8-5"></path>
                   </svg>
                 </span>
               </div>
-              <div class="llm-kpi-value" id="llmKpiSuccess">—</div>
-              <div class="llm-kpi-sub" id="llmKpiSuccessSub">成功 — · 失败 —</div>
+              <div class="audit-kpi-value" id="auditKpiPassRate">—</div>
+              <div class="audit-kpi-sub">通过任务占已出结论任务的比例</div>
             </article>
-            <article class="llm-kpi">
-              <div class="llm-kpi-top">
-                <span class="llm-kpi-label">请求总数</span>
-                <span class="llm-kpi-icon">
+            <article class="audit-kpi">
+              <div class="audit-kpi-top">
+                <span class="audit-kpi-label">高风险发现</span>
+                <span class="audit-kpi-icon">
                   <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                    <path d="M5 20V10M12 20V4M19 20v-7"></path>
+                    <path d="M10.3 3.9 1.9 18a2 2 0 0 0 1.7 3h16.8a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"></path>
+                    <path d="M12 9v4.4M12 16.9v.2"></path>
                   </svg>
                 </span>
               </div>
-              <div class="llm-kpi-value" id="llmKpiRequests">—</div>
-              <div class="llm-kpi-sub" id="llmKpiRequestsSub">进程内统计，重启清零</div>
+              <div class="audit-kpi-value" id="auditKpiHigh">—</div>
+              <div class="audit-kpi-sub">HIGH 与 CRITICAL 级规则命中</div>
+            </article>
+            <article class="audit-kpi">
+              <div class="audit-kpi-top">
+                <span class="audit-kpi-label">平均耗时</span>
+                <span class="audit-kpi-icon">
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <circle cx="12" cy="12" r="9"></circle>
+                    <path d="M12 7v5.4l3.4 2"></path>
+                  </svg>
+                </span>
+              </div>
+              <div class="audit-kpi-value" id="auditKpiDuration">—</div>
+              <div class="audit-kpi-sub">单次审计端到端耗时</div>
+            </article>
+            <article class="audit-kpi">
+              <div class="audit-kpi-top">
+                <span class="audit-kpi-label">审计文件</span>
+                <span class="audit-kpi-icon">
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
+                    <path d="M14 2v6h6"></path>
+                  </svg>
+                </span>
+              </div>
+              <div class="audit-kpi-value" id="auditKpiFiles">—</div>
+              <div class="audit-kpi-sub">最近任务覆盖的代码文件数</div>
+            </article>
+            <article class="audit-kpi">
+              <div class="audit-kpi-top">
+                <span class="audit-kpi-label">发现总数</span>
+                <span class="audit-kpi-icon">
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <circle cx="11" cy="11" r="7"></circle>
+                    <path d="m20 20-3.6-3.6"></path>
+                  </svg>
+                </span>
+              </div>
+              <div class="audit-kpi-value" id="auditKpiFindings">—</div>
+              <div class="audit-kpi-sub">含 AI 复核后的判定结果</div>
             </article>
           </div>
 
-          <div class="llm-card llm-chart-card">
-            <div class="llm-card-head">
-              <div>
-                <h3 class="llm-card-title">推理时延趋势</h3>
-                <p class="llm-card-desc">最近成功请求的端到端耗时，单位毫秒；失败请求单独标记。</p>
+          <div class="audit-overview-grid">
+            <div class="audit-card">
+              <div class="audit-card-head">
+                <div>
+                  <h3 class="audit-card-title">风险分布</h3>
+                  <p class="audit-card-desc">按高风险、中风险、低风险与 AI 复核判定汇总当前实例的发现项。</p>
+                </div>
               </div>
-              <div class="llm-legend">
-                <span class="llm-legend-item"><i class="llm-legend-dot llm-ok"></i>成功</span>
-                <span class="llm-legend-item"><i class="llm-legend-dot llm-bad"></i>失败</span>
+              <div id="auditRiskChart" class="audit-risk-chart">
+                <div class="audit-empty">暂无审计数据，发起一次代码审计后将在此展示风险分布。</div>
               </div>
             </div>
-            <div class="llm-chart-host">
-              <svg id="llmLatencyChart" class="llm-chart" width="100%" height="180" role="img" aria-label="最近推理时延曲线">
-                <g class="llm-chart-grid" stroke="currentColor" stroke-width="1" opacity=".16">
-                  <line x1="0" y1="28" x2="100%" y2="28"></line>
-                  <line x1="0" y1="72" x2="100%" y2="72"></line>
-                  <line x1="0" y1="116" x2="100%" y2="116"></line>
-                  <line x1="0" y1="160" x2="100%" y2="160"></line>
-                </g>
-                <text x="50%" y="92" text-anchor="middle" class="llm-chart-empty">等待时延采样</text>
-              </svg>
+
+            <div class="audit-card audit-verdict-card">
+              <div class="audit-card-head">
+                <div>
+                  <h3 class="audit-card-title">最新结论</h3>
+                  <p class="audit-card-desc">来自最近一次审计任务的结论摘要，仅作为审计证据展示。</p>
+                </div>
+              </div>
+              <div class="audit-verdict-head">
+                <span id="auditLatestVerdict" class="audit-badge status-pending">待审计</span>
+              </div>
+              <p id="auditLatestSummary" class="audit-verdict-summary">尚未收到代码审计结果。前往「审计任务」下发一次审计后，结论会回流到此处。</p>
             </div>
           </div>
 
-          <div class="llm-card">
-            <div class="llm-card-head">
+          <div class="audit-card">
+            <div class="audit-card-head">
               <div>
-                <h3 class="llm-card-title">实例信息</h3>
-                <p class="llm-card-desc">平台侧轮询 /api/llm/status 得到的快照，最后更新时间见心跳字段。</p>
+                <h3 class="audit-card-title">最近审计任务</h3>
+                <p class="audit-card-desc">按接收时间倒序展示最近 10 条任务。</p>
               </div>
             </div>
-            <div class="llm-table-wrap">
-              <table class="llm-table">
+            <div class="audit-table-wrap">
+              <table class="audit-table">
                 <thead>
                   <tr>
-                    <th scope="col">字段</th>
-                    <th scope="col">值</th>
+                    <th scope="col">时间</th>
+                    <th scope="col">任务</th>
+                    <th scope="col">结论</th>
+                    <th scope="col">风险</th>
+                    <th scope="col">发现（高/中/低）</th>
+                    <th scope="col">耗时</th>
                   </tr>
                 </thead>
-                <tbody id="llmInstanceFields">
-                  <tr class="llm-table-empty"><td colspan="2">正在加载实例信息…</td></tr>
+                <tbody id="auditRecentRows">
+                  <tr class="audit-table-empty"><td colspan="6">暂无审计记录，可在「审计任务」中发起一次代码审计。</td></tr>
                 </tbody>
               </table>
             </div>
           </div>
         </section>
 
-        <!-- ─── 推理工作台 ─── -->
-        <section id="llmViewWorkbench" class="llm-view" style="display: none;" aria-labelledby="llmWorkbenchTitle">
-          <div class="llm-view-head">
+        <!-- ─── Audit jobs ─── -->
+        <section id="auditViewJobs" class="audit-view" style="display: none;">
+          <div class="audit-view-head">
             <div>
-              <h2 id="llmWorkbenchTitle" class="llm-view-title">推理工作台</h2>
-              <p class="llm-view-desc">向 TEE-LLM 网关发送提示词并读取回复；请求与响应均经 TEE-TLS 通道传输。</p>
+              <h2 class="audit-view-title">审计任务</h2>
+              <p class="audit-view-desc">通过 resourceUrl 下发待审计模型或代码包；TAA 完成导入后异步执行审计，结论自动回流。</p>
             </div>
           </div>
 
-          <div class="llm-workbench-grid">
-            <aside class="llm-card llm-params">
-              <div class="llm-card-head">
-                <div>
-                  <h3 class="llm-card-title">推理参数</h3>
-                  <p class="llm-card-desc">未填写时可选项使用网关默认值。</p>
-                </div>
+          <div class="audit-card">
+            <div class="audit-card-head">
+              <div>
+                <h3 class="audit-card-title">发起代码审计</h3>
+                <p class="audit-card-desc">运行配置决定审计任务在 TAA 侧的执行方式，留空时使用默认值。</p>
               </div>
+            </div>
 
-              <div class="llm-field">
-                <label for="llmModelSelect">模型</label>
-                <select id="llmModelSelect">
-                  <option value="">加载模型列表…</option>
+            <div class="audit-form-grid">
+              <div class="audit-field">
+                <label for="auditResourceUrl">resourceUrl</label>
+                <input id="auditResourceUrl" type="text" value="http://example.com/model.tar.gz" spellcheck="false" autocomplete="off">
+                <p class="audit-help">待审计包的下载地址，支持密文信封或明文归档。</p>
+              </div>
+              <div class="audit-field">
+                <label for="auditRequestId">requestId</label>
+                <input id="auditRequestId" type="text" placeholder="留空自动生成" spellcheck="false" autocomplete="off">
+                <p class="audit-help">同一次下发请求的唯一标识。</p>
+              </div>
+              <div class="audit-field">
+                <label for="auditTaskId">taskId</label>
+                <input id="auditTaskId" type="text" placeholder="留空自动生成" spellcheck="false" autocomplete="off">
+                <p class="audit-help">审计任务所属的任务标识。</p>
+              </div>
+            </div>
+
+            <div class="audit-field">
+              <label for="auditRuntimeConfig">runtimeConfig</label>
+              <textarea id="auditRuntimeConfig" class="audit-textarea audit-textarea-mono" rows="3" spellcheck="false">{"commands":["true"],"env":""}</textarea>
+              <p class="audit-help">JSON 格式，包含 commands 与 env；示例命令仅用于触发导入后的审计流程。</p>
+            </div>
+
+            <div class="audit-form-actions">
+              <button type="button" id="auditSubmitBtn" class="audit-btn audit-btn-primary" onclick="auditSubmitAudit()">
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <path d="M22 2 11 13"></path>
+                  <path d="M22 2 15 22l-4-9-9-4 20-7z"></path>
+                </svg>
+                下发并启动审计
+              </button>
+              <span id="auditSubmitHint" class="audit-hint">提交后由 TAA 异步执行审计，结果自动回流到本控制台。</span>
+            </div>
+          </div>
+
+          <div class="audit-card">
+            <div class="audit-card-head">
+              <div>
+                <h3 class="audit-card-title">审计任务列表</h3>
+                <p class="audit-card-desc">点击任务可跳转到「审计结果」查看逐条发现。</p>
+              </div>
+              <div class="audit-card-tools">
+                <label class="audit-inline-label" for="auditJobsFilter">筛选</label>
+                <select id="auditJobsFilter" class="audit-select audit-select-sm">
+                  <option value="all">全部任务</option>
+                  <option value="passed">仅通过</option>
+                  <option value="failed">仅未通过</option>
                 </select>
-                <p class="llm-help">来自网关 /api/tags 的已加载模型，选择后随请求下发。</p>
+                <span id="auditJobsCount" class="audit-muted-sm">0 条</span>
               </div>
-
-              <div class="llm-field">
-                <label for="llmSystemPrompt">系统提示词（可选）</label>
-                <textarea id="llmSystemPrompt" class="llm-textarea" rows="4" placeholder="例如：你是代码审计助手，只输出结论与依据，不展开寒暄。"></textarea>
-                <p class="llm-help">留空则不发送 system 字段，由模型自身模板决定。</p>
-              </div>
-
-              <div class="llm-field-pair">
-                <div class="llm-field">
-                  <label for="llmTemperature">采样温度</label>
-                  <input id="llmTemperature" type="number" min="0" max="2" step="0.1" value="0" inputmode="decimal">
-                  <p class="llm-help">0 ~ 2；审计场景建议保持 0。</p>
-                </div>
-                <div class="llm-field">
-                  <label for="llmNumPredict">最大输出 token</label>
-                  <input id="llmNumPredict" type="number" min="1" max="32768" step="1" placeholder="默认" inputmode="numeric">
-                  <p class="llm-help">留空使用模型默认上限。</p>
-                </div>
-              </div>
-
-              <div class="llm-request-meta">
-                <span class="llm-request-meta-title">最近一次请求</span>
-                <div id="llmRequestMeta" class="llm-request-meta-value">—</div>
-              </div>
-            </aside>
-
-            <section class="llm-card llm-chat">
-              <div class="llm-card-head">
-                <div>
-                  <h3 class="llm-card-title">推理会话</h3>
-                  <p class="llm-card-desc">每次发送都会生成独立 requestId，回复不写入平台侧存储。</p>
-                </div>
-                <div class="llm-btn-row">
-                  <button type="button" id="llmClearChatBtn" class="llm-btn llm-btn-ghost llm-btn-sm">清空会话</button>
-                  <button type="button" id="llmExportChatBtn" class="llm-btn llm-btn-ghost llm-btn-sm">导出记录</button>
-                </div>
-              </div>
-
-              <div id="llmConversation" class="llm-conversation" role="log" aria-live="polite"></div>
-
-              <div class="llm-composer">
-                <textarea id="llmPromptInput" class="llm-prompt" rows="4" placeholder="输入要发送给模型的提示词……"></textarea>
-                <div class="llm-composer-bar">
-                  <span id="llmCharCount" class="llm-muted-sm">0 字</span>
-                  <button type="button" id="llmSendBtn" class="llm-btn llm-btn-primary" onclick="llmConsoleSend()">
-                    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                      <path d="M22 2 11 13"></path>
-                      <path d="M22 2 15 22l-4-9-9-4 20-7z"></path>
-                    </svg>
-                    发送请求
-                  </button>
-                </div>
-              </div>
-              <p id="llmReplyHint" class="llm-hint" aria-live="polite">Ctrl + Enter 快速发送；默认温度 0，输出可复现。</p>
-            </section>
+            </div>
+            <div class="audit-table-wrap">
+              <table class="audit-table">
+                <thead>
+                  <tr>
+                    <th scope="col">时间</th>
+                    <th scope="col">任务 ID</th>
+                    <th scope="col">requestId</th>
+                    <th scope="col">结论</th>
+                    <th scope="col">风险</th>
+                    <th scope="col">发现</th>
+                    <th scope="col">文件</th>
+                    <th scope="col">耗时</th>
+                    <th scope="col">操作</th>
+                  </tr>
+                </thead>
+                <tbody id="auditJobsRows">
+                  <tr class="audit-table-empty"><td colspan="9">暂无审计任务。上方下发一次代码审计后，任务会显示在这里。</td></tr>
+                </tbody>
+              </table>
+            </div>
           </div>
         </section>
 
-        <!-- ─── 远程证明 ─── -->
-        <section id="llmViewAttest" class="llm-view" style="display: none;" aria-labelledby="llmAttestTitle">
-          <div class="llm-view-head">
+        <!-- ─── Audit findings ─── -->
+        <section id="auditViewFindings" class="audit-view" style="display: none;">
+          <div class="audit-view-head">
             <div>
-              <h2 id="llmAttestTitle" class="llm-view-title">远程证明</h2>
-              <p class="llm-view-desc">读取 CSV 硬件证明报告的度量字段，并核验 TEE-TLS 握手时的公钥绑定与证书链结论。</p>
-            </div>
-            <div class="llm-head-actions">
-              <span id="llmAttestVerifyPill" class="llm-pill pending">
-                <span class="llm-pill-dot"></span>
-                <span>未验证</span>
-              </span>
-              <span id="llmAttestFetchedAt" class="llm-muted-sm">尚未获取证明报告</span>
+              <h2 class="audit-view-title">审计结果</h2>
+              <p class="audit-view-desc">逐条查看扫描发现、AI 语义判定与代码证据；证据只用于人工复核，不代表平台已拦截。</p>
             </div>
           </div>
 
-          <div class="llm-card">
-            <div class="llm-card-head">
+          <div class="audit-card">
+            <div class="audit-card-head">
               <div>
-                <h3 class="llm-card-title">证明与握手</h3>
-                <p class="llm-card-desc">证明报告来自网关所在 CSV 虚拟机；握手信息由本次控制台连接采集。</p>
+                <h3 class="audit-card-title">任务结论</h3>
+                <p class="audit-card-desc">选择一个已完成的任务查看结论摘要与逐条发现。</p>
               </div>
-              <div class="llm-btn-row">
-                <button type="button" id="llmFetchAttestBtn" class="llm-btn llm-btn-primary">获取证明报告</button>
-                <button type="button" id="llmVerifyTLSBtn" class="llm-btn llm-btn-ghost">校验 TEE-TLS 握手</button>
-              </div>
-            </div>
-            <div class="llm-grid-2">
-              <div class="llm-subcard">
-                <h4 class="llm-subcard-title">CSV 证明报告字段</h4>
-                <div class="llm-table-wrap">
-                  <table class="llm-table">
-                    <thead>
-                      <tr>
-                        <th scope="col">字段</th>
-                        <th scope="col">值</th>
-                      </tr>
-                    </thead>
-                    <tbody id="llmAttestFields">
-                      <tr class="llm-table-empty"><td colspan="2">尚未获取，请点击“获取证明报告”。</td></tr>
-                    </tbody>
-                  </table>
-                </div>
-              </div>
-              <div class="llm-subcard">
-                <h4 class="llm-subcard-title">TEE-TLS 握手</h4>
-                <div class="llm-table-wrap">
-                  <table class="llm-table">
-                    <thead>
-                      <tr>
-                        <th scope="col">字段</th>
-                        <th scope="col">值</th>
-                      </tr>
-                    </thead>
-                    <tbody id="llmHandshakeFields">
-                      <tr class="llm-table-empty"><td colspan="2">尚未握手，请点击“校验 TEE-TLS 握手”。</td></tr>
-                    </tbody>
-                  </table>
-                </div>
+              <div class="audit-card-tools">
+                <label class="audit-inline-label" for="auditFindingsJobSelect">任务</label>
+                <select id="auditFindingsJobSelect" class="audit-select audit-select-wide">
+                  <option value="">加载任务…</option>
+                </select>
+                <span id="auditFindingsVerdict" class="audit-badge status-pending">待审计</span>
               </div>
             </div>
+            <div id="auditFindingsSummary" class="audit-findings-summary">选择任务后显示结论摘要与处置建议。</div>
           </div>
 
-          <div class="llm-card">
-            <div class="llm-card-head">
+          <div class="audit-card">
+            <div class="audit-card-head">
               <div>
-                <h3 class="llm-card-title">原始报告</h3>
-                <p class="llm-card-desc">接口返回的完整 JSON，便于与平台侧记录逐字段比对。</p>
+                <h3 class="audit-card-title">发现列表</h3>
+                <p class="audit-card-desc">可按严重级、AI 判定与关键字过滤，点击行查看完整证据。</p>
               </div>
             </div>
-            <pre id="llmRawAttestation" class="llm-code-block">（尚未获取证明报告）</pre>
-          </div>
-        </section>
 
-        <!-- ─── 运行日志 ─── -->
-        <section id="llmViewLogs" class="llm-view" style="display: none;" aria-labelledby="llmLogsTitle">
-          <div class="llm-view-head">
-            <div>
-              <h2 id="llmLogsTitle" class="llm-view-title">运行日志</h2>
-              <p class="llm-view-desc">平台侧从该实例拉取的运行日志，按等级过滤后可直接检索关键事件。</p>
-            </div>
-            <span class="llm-live"><span class="llm-live-dot"></span>随轮询更新</span>
-          </div>
-
-          <div class="llm-card llm-log-card">
-            <div class="llm-log-topbar">
-              <div id="llmConsoleLogLevels" class="llm-log-levels" role="group" aria-label="日志等级过滤">
-                <button type="button" class="llm-log-level active" data-level="ALL">全部</button>
-                <button type="button" class="llm-log-level" data-level="INFO">INFO</button>
-                <button type="button" class="llm-log-level" data-level="WARN">WARN</button>
-                <button type="button" class="llm-log-level" data-level="ERROR">ERROR</button>
+            <div class="audit-toolbar">
+              <div id="auditSeverityFilter" class="audit-filter-group" role="group" aria-label="按严重级筛选">
+                <button type="button" class="audit-filter-btn active" data-severity="all">全部</button>
+                <button type="button" class="audit-filter-btn" data-severity="high">高危</button>
+                <button type="button" class="audit-filter-btn" data-severity="medium">中危</button>
+                <button type="button" class="audit-filter-btn" data-severity="low">低危</button>
               </div>
-              <div class="llm-search">
+              <select id="auditVerdictFilter" class="audit-select audit-select-sm" title="按 AI 判定筛选">
+                <option value="all">全部判定</option>
+                <option value="MALICIOUS">MALICIOUS</option>
+                <option value="SUSPICIOUS">SUSPICIOUS</option>
+                <option value="BENIGN">BENIGN</option>
+                <option value="UNCERTAIN">UNCERTAIN</option>
+                <option value="none">未判定</option>
+              </select>
+              <div class="audit-search">
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
                   <circle cx="11" cy="11" r="7"></circle>
                   <path d="m20 20-3.6-3.6"></path>
                 </svg>
-                <input id="llmConsoleLogSearch" type="search" placeholder="搜索日志内容…" autocomplete="off" spellcheck="false">
+                <input id="auditFindingsSearch" type="search" placeholder="搜索文件、规则或描述…" autocomplete="off" spellcheck="false">
               </div>
-              <span id="llmConsoleLogCount" class="llm-muted-sm">0 条</span>
-              <div class="llm-log-actions">
-                <button type="button" id="llmConsoleLogPauseBtn" class="llm-btn llm-btn-ghost llm-btn-sm">暂停</button>
-                <button type="button" id="llmConsoleLogClearBtn" class="llm-btn llm-btn-ghost llm-btn-sm">清空</button>
-                <button type="button" id="llmConsolePollNowBtn" class="llm-btn llm-btn-ghost llm-btn-sm">立即拉取</button>
+              <span id="auditFindingStats" class="audit-muted-sm">0 条发现</span>
+              <button type="button" id="auditExportBtn" class="audit-btn audit-btn-ghost audit-btn-sm">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+                  <polyline points="7 10 12 15 17 10"></polyline>
+                  <line x1="12" y1="15" x2="12" y2="3"></line>
+                </svg>
+                导出报告
+              </button>
+            </div>
+
+            <div class="audit-table-wrap">
+              <table class="audit-table">
+                <thead>
+                  <tr>
+                    <th scope="col">严重级别</th>
+                    <th scope="col">规则 ID</th>
+                    <th scope="col">文件:行</th>
+                    <th scope="col">描述</th>
+                    <th scope="col">AI 判定</th>
+                    <th scope="col">AI 风险</th>
+                    <th scope="col">操作</th>
+                  </tr>
+                </thead>
+                <tbody id="auditFindingsRows">
+                  <tr class="audit-table-empty"><td colspan="7">尚未选择任务或该任务没有发现项。</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          <!-- Detail drawer: slides in from the right, full width on narrow screens. -->
+          <aside id="auditFindingDetail" class="audit-drawer" role="dialog" aria-modal="true" aria-labelledby="auditFindingDetailTitle" aria-hidden="true">
+            <div class="audit-drawer-head">
+              <h3 id="auditFindingDetailTitle" class="audit-drawer-title">发现详情</h3>
+              <button type="button" id="auditFindingDetailClose" class="audit-icon-btn" title="关闭" aria-label="关闭详情">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <path d="M18 6 6 18M6 6l12 12"></path>
+                </svg>
+              </button>
+            </div>
+            <div id="auditFindingDetailBody" class="audit-drawer-body">
+              <div class="audit-empty">点击一条发现查看代码证据与 AI 判定理由。</div>
+            </div>
+          </aside>
+        </section>
+
+        <!-- ─── Security engines ─── -->
+        <section id="auditViewEngine" class="audit-view" style="display: none;">
+          <div class="audit-view-head">
+            <div>
+              <h2 class="audit-view-title">安全引擎</h2>
+              <p class="audit-view-desc">静态扫描引擎与 AI 语义判定模块的运行状态、证明字段与网关日志。</p>
+            </div>
+          </div>
+
+          <div class="audit-engine-grid">
+            <div class="audit-card">
+              <div class="audit-card-head">
+                <div>
+                  <h3 class="audit-card-title">静态扫描引擎</h3>
+                  <p class="audit-card-desc">对解包后的代码执行规则扫描，产出可定位的发现项。</p>
+                </div>
+                <span id="engineStaticStatus" class="audit-pill idle"><span class="audit-pill-dot"></span><span>未检测</span></span>
+              </div>
+              <div class="audit-table-wrap">
+                <table class="audit-table">
+                  <thead>
+                    <tr>
+                      <th scope="col">字段</th>
+                      <th scope="col">值</th>
+                    </tr>
+                  </thead>
+                  <tbody id="engineStaticFields">
+                    <tr class="audit-table-empty"><td colspan="2">正在加载静态扫描引擎状态…</td></tr>
+                  </tbody>
+                </table>
               </div>
             </div>
 
-            <div class="llm-terminal">
-              <div class="llm-terminal-bar">
-                <span class="llm-terminal-dots" aria-hidden="true">
-                  <i class="llm-tdot red"></i><i class="llm-tdot yellow"></i><i class="llm-tdot green"></i>
-                </span>
-                <span class="llm-terminal-title">teellm · 运行日志</span>
-                <span class="llm-muted-sm">stdout / stderr</span>
+            <div class="audit-card">
+              <div class="audit-card-head">
+                <div>
+                  <h3 class="audit-card-title">AI 语义判定（TEE-LLM 安全模块）</h3>
+                  <p class="audit-card-desc">对静态扫描发现逐条复核，输出判定、风险与理由。</p>
+                </div>
+                <span id="engineLLMStatus" class="audit-pill idle"><span class="audit-pill-dot"></span><span>未检测</span></span>
               </div>
-              <div id="llmConsoleLogOutput" class="llm-log-output" role="log" aria-live="polite" tabindex="0"></div>
+              <div class="audit-table-wrap">
+                <table class="audit-table">
+                  <thead>
+                    <tr>
+                      <th scope="col">字段</th>
+                      <th scope="col">值</th>
+                    </tr>
+                  </thead>
+                  <tbody id="engineLLMFields">
+                    <tr class="audit-table-empty"><td colspan="2">正在加载 AI 语义判定模块状态…</td></tr>
+                  </tbody>
+                </table>
+              </div>
+              <div class="audit-btn-row">
+                <button type="button" id="engineFetchAttestBtn" class="audit-btn audit-btn-primary audit-btn-sm">获取证明报告</button>
+                <button type="button" id="engineVerifyTLSBtn" class="audit-btn audit-btn-ghost audit-btn-sm">校验 TEE-TLS 握手</button>
+              </div>
+            </div>
+          </div>
+
+          <div class="audit-card">
+            <div class="audit-card-head">
+              <div>
+                <h3 class="audit-card-title">远程证明与握手</h3>
+                <p class="audit-card-desc">展示安全模块所在 CSV 虚拟机的证明字段，以及本次连接的握手信息。</p>
+              </div>
+            </div>
+            <div class="audit-grid-2">
+              <div class="audit-subcard">
+                <h4 class="audit-subcard-title">CSV 证明报告字段</h4>
+                <div class="audit-table-wrap">
+                  <table class="audit-table">
+                    <thead>
+                      <tr>
+                        <th scope="col">字段</th>
+                        <th scope="col">值</th>
+                      </tr>
+                    </thead>
+                    <tbody id="engineAttestFields">
+                      <tr class="audit-table-empty"><td colspan="2">尚未获取，请点击“获取证明报告”。</td></tr>
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+              <div class="audit-subcard">
+                <h4 class="audit-subcard-title">TEE-TLS 握手</h4>
+                <div class="audit-table-wrap">
+                  <table class="audit-table">
+                    <thead>
+                      <tr>
+                        <th scope="col">字段</th>
+                        <th scope="col">值</th>
+                      </tr>
+                    </thead>
+                    <tbody id="engineHandshakeFields">
+                      <tr class="audit-table-empty"><td colspan="2">尚未握手，请点击“校验 TEE-TLS 握手”。</td></tr>
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="audit-grid-2">
+            <div class="audit-card">
+              <div class="audit-card-head">
+                <div>
+                  <h3 class="audit-card-title">模块自检</h3>
+                  <p class="audit-card-desc">向 AI 语义判定模块发送一条测试提示词，确认通道与响应可用。</p>
+                </div>
+              </div>
+              <div class="audit-field">
+                <label for="enginePromptInput">测试提示词</label>
+                <textarea id="enginePromptInput" class="audit-textarea" rows="4" placeholder="例如：请判断这段代码是否读取环境变量并外发网络请求，并给出理由。"></textarea>
+              </div>
+              <div class="audit-btn-row">
+                <button type="button" id="enginePromptSend" class="audit-btn audit-btn-primary audit-btn-sm" onclick="auditPromptSend()">
+                  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <path d="M22 2 11 13"></path>
+                    <path d="M22 2 15 22l-4-9-9-4 20-7z"></path>
+                  </svg>
+                  发送自检
+                </button>
+                <span id="enginePromptMeta" class="audit-muted-sm">尚未发送</span>
+              </div>
+              <div id="enginePromptReply" class="audit-reply">尚未发送提示词，模块回复将显示在这里。</div>
+            </div>
+
+            <div class="audit-card">
+              <div class="audit-card-head">
+                <div>
+                  <h3 class="audit-card-title">网关日志</h3>
+                  <p class="audit-card-desc">安全模块网关的最近运行日志，随轮询更新。</p>
+                </div>
+                <div class="audit-card-tools">
+                  <span id="engineLogCount" class="audit-muted-sm">0 条</span>
+                  <button type="button" id="engineLogPauseBtn" class="audit-btn audit-btn-ghost audit-btn-sm">暂停</button>
+                  <button type="button" id="engineLogClearBtn" class="audit-btn audit-btn-ghost audit-btn-sm">清空</button>
+                </div>
+              </div>
+              <div class="audit-terminal">
+                <div class="audit-terminal-bar">
+                  <span class="audit-terminal-dots" aria-hidden="true">
+                    <i class="audit-tdot red"></i><i class="audit-tdot yellow"></i><i class="audit-tdot green"></i>
+                  </span>
+                  <span class="audit-terminal-title">security-engine · 运行日志</span>
+                  <span class="audit-muted-sm">stdout / stderr</span>
+                </div>
+                <div id="engineLogOutput" class="audit-log-output" role="log" aria-live="polite" tabindex="0"></div>
+              </div>
             </div>
           </div>
         </section>
 
-        <!-- ─── 设置 ─── -->
-        <section id="llmViewSettings" class="llm-view" style="display: none;" aria-labelledby="llmSettingsTitle">
-          <div class="llm-view-head">
+        <!-- ─── Settings ─── -->
+        <section id="auditViewSettings" class="audit-view" style="display: none;">
+          <div class="audit-view-head">
             <div>
-              <h2 id="llmSettingsTitle" class="llm-view-title">设置</h2>
-              <p class="llm-view-desc">查看连接端点与模型清单，调整 TEE-TLS 校验策略；部分项由服务端启动参数决定。</p>
+              <h2 class="audit-view-title">设置</h2>
+              <p class="audit-view-desc">查看审计实例与安全模块端点，调整证明校验策略与会话参数。</p>
             </div>
           </div>
 
-          <div class="llm-settings-grid">
-            <div class="llm-card">
-              <div class="llm-card-head">
+          <div class="audit-settings-grid">
+            <div class="audit-card">
+              <div class="audit-card-head">
                 <div>
-                  <h3 class="llm-card-title">实例连接</h3>
-                  <p class="llm-card-desc">控制台经 TEE-TLS 通道访问机密端点，明文端点仅用于健康检查。</p>
+                  <h3 class="audit-card-title">实例连接</h3>
+                  <p class="audit-card-desc">控制台访问 TAA 与安全模块所用的端点，来自平台侧配置。</p>
                 </div>
               </div>
-              <dl class="llm-field-list">
-                <div class="llm-field-row">
-                  <dt>机密推理端点</dt>
-                  <dd><code id="llmEndpointValue">—</code></dd>
+              <dl class="audit-field-list">
+                <div class="audit-field-row">
+                  <dt>TAA 服务端点</dt>
+                  <dd><code id="auditEndpointValue">—</code></dd>
                 </div>
-                <div class="llm-field-row">
-                  <dt>明文端点</dt>
-                  <dd><code id="llmPlaintextEndpointValue">—</code></dd>
+                <div class="audit-field-row">
+                  <dt>AI 语义判定端点</dt>
+                  <dd><code id="auditLLMEndpointValue">—</code></dd>
                 </div>
               </dl>
-              <p class="llm-help">端点来自平台侧配置，控制台只读。</p>
+              <p class="audit-help">端点由平台侧配置，控制台只读。</p>
             </div>
 
-            <div class="llm-card">
-              <div class="llm-card-head">
+            <div class="audit-card">
+              <div class="audit-card-head">
                 <div>
-                  <h3 class="llm-card-title">证明与传输</h3>
-                  <p class="llm-card-desc">修改后仅对本次运行生效，重启网关后回到配置文件中的值。</p>
+                  <h3 class="audit-card-title">证明与传输</h3>
+                  <p class="audit-card-desc">修改后仅对本次运行生效，重启服务后回到配置文件中的值。</p>
                 </div>
               </div>
 
-              <div class="llm-field">
-                <label for="llmTLSModeSelect">TEE-TLS 校验模式</label>
-                <select id="llmTLSModeSelect">
+              <div class="audit-field">
+                <label for="auditTLSModeSelect">TEE-TLS 校验模式</label>
+                <select id="auditTLSModeSelect" class="audit-select">
                   <option value="permissive">permissive · 宽松（无信任锚时的默认值）</option>
                   <option value="strict">strict · 严格校验证书链与证明</option>
                   <option value="insecure">insecure · 跳过证明校验，仅限联调</option>
                 </select>
-                <p class="llm-help">严格模式需要预置 HRK / HSK 信任锚，否则握手会被拒绝。</p>
+                <p class="audit-help">严格模式需要预置 HRK / HSK 信任锚，否则握手会被拒绝。</p>
               </div>
 
-              <label class="llm-switch" for="llmTLSSkipChain">
-                <input type="checkbox" id="llmTLSSkipChain">
-                <span class="llm-switch-track" aria-hidden="true"><span class="llm-switch-thumb"></span></span>
-                <span class="llm-switch-text">跳过证书链校验（skipChainVerify）</span>
+              <label class="audit-switch" for="auditTLSSkipChain">
+                <input type="checkbox" id="auditTLSSkipChain">
+                <span class="audit-switch-track" aria-hidden="true"><span class="audit-switch-thumb"></span></span>
+                <span class="audit-switch-text">跳过证书链校验（skipChainVerify）</span>
               </label>
-              <p class="llm-help">仅当网关使用自签证书且没有平台 CA 时开启。</p>
+              <p class="audit-help">仅当安全模块使用自签证书且没有平台 CA 时开启。</p>
 
-              <div class="llm-field">
-                <label for="llmTLSTimeout">请求超时（秒）</label>
-                <input id="llmTLSTimeout" type="number" readonly>
-                <p class="llm-help">超时由部署参数决定，需在服务端调整；冷加载模型时请预留足够时间。</p>
+              <div class="audit-field">
+                <label for="auditTLSTimeout">请求超时（秒）</label>
+                <input id="auditTLSTimeout" class="audit-input-compact" type="number" readonly>
+                <p class="audit-help">超时由部署参数决定，需在服务端调整；冷加载模型时请预留足够时间。</p>
               </div>
             </div>
 
-            <div class="llm-card">
-              <div class="llm-card-head">
+            <div class="audit-card">
+              <div class="audit-card-head">
                 <div>
-                  <h3 class="llm-card-title">可用模型</h3>
-                  <p class="llm-card-desc">网关已加载的模型及其推理超时配置。</p>
+                  <h3 class="audit-card-title">会话</h3>
+                  <p class="audit-card-desc">控制台登录状态与后端签发策略。</p>
                 </div>
               </div>
-              <div id="llmModelsList" class="llm-model-list">
-                <div class="llm-empty">正在加载模型列表…</div>
-              </div>
-            </div>
-
-            <div class="llm-card">
-              <div class="llm-card-head">
-                <div>
-                  <h3 class="llm-card-title">会话</h3>
-                  <p class="llm-card-desc">控制台登录状态与后端签发策略。</p>
-                </div>
-              </div>
-              <dl class="llm-field-list">
-                <div class="llm-field-row">
+              <dl class="audit-field-list">
+                <div class="audit-field-row">
                   <dt>会话有效期</dt>
-                  <dd id="llmSessionTTL">8 小时（操作时滑动续期）</dd>
+                  <dd id="auditSessionTTL">8 小时（操作时滑动续期）</dd>
                 </div>
-                <div class="llm-field-row">
+                <div class="audit-field-row">
                   <dt>会话标识</dt>
                   <dd><code>pm_llm_session</code></dd>
                 </div>
               </dl>
-              <p class="llm-help">Cookie 为 HttpOnly、SameSite=Strict，退出登录会立即清除。</p>
+              <p class="audit-help">Cookie 为 HttpOnly、SameSite=Strict，退出登录会立即清除。</p>
             </div>
           </div>
 
-          <div class="llm-settings-actions">
-            <p id="llmSettingsHint" class="llm-hint">保存后立即作用于后续握手；若严格模式握手失败，可先切回 permissive 再排查信任锚。</p>
-            <div class="llm-btn-row">
-              <button type="button" id="llmResetBtn" class="llm-btn llm-btn-ghost">恢复默认</button>
-              <button type="button" id="llmSaveSettingsBtn" class="llm-btn llm-btn-primary">保存设置</button>
-            </div>
+          <div class="audit-settings-actions">
+            <p id="auditSettingsHint" class="audit-hint">保存后立即作用于后续握手；若严格模式握手失败，可先切回 permissive 再排查信任锚。</p>
+            <button type="button" id="auditSaveSettingsBtn" class="audit-btn audit-btn-primary">保存设置</button>
           </div>
         </section>
 
-      </div><!-- /.llm-content -->
-    </div><!-- /.llm-app-body -->
-  </div><!-- /#llmAppView -->
+      </div><!-- /.audit-content -->
+    </div><!-- /.audit-app-body -->
+  </div><!-- /#auditAppView -->
 
-</div><!-- /#tabPanelLLM -->
+</div><!-- /#tabPanelAudit -->
 
 <!-- Off-canvas Slide-over Drawer for Interface Inspection -->
 <div id="appDrawer" class="drawer" aria-hidden="true">
@@ -1428,6 +1590,6 @@
 <script src="/static/js/logs.js"></script>
 <script src="/static/js/llm.js"></script>
 <script src="/static/js/app.js"></script>
-<script src="/static/js/llm-console.js"></script>
+<script src="/static/js/audit-console.js"></script>
 </body>
 </html>

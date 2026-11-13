@@ -54,7 +54,8 @@ runs on the remote host.
 Useful options: `--state-dir` / `--upload-dir` (omitted when empty, which keeps the binary's
 own defaults), `--reuse` (start only if nothing already answers), `--reset-register` (POST
 `/api/register/reset` after the instance is ready), `--skip-build`, `--dry-run`, and
-`--ready-timeout` / `--ready-interval`. For the TEE-LLM console, `--console-user` /
+`--ready-timeout` / `--ready-interval`. For the code audit workbench (whose 安全引擎 view
+contains the TEE-LLM module), `--console-user` /
 `--console-password` set the login (default `admin` / `teellm@2026`) and
 `--tee-tls-endpoint HOST:PORT` overrides the secure listener (default `<llm-target host>:18443`);
 they are passed to the remote process through the environment, so the password does not show
@@ -74,8 +75,8 @@ up in its command line. Run `./deploy-platform-mock.sh --help` for the full list
 | `-allow-empty-attestation` | `false` | When set to `true`, permits node registration without a valid Hygon CSV attestation report (useful for simulated non-TEE environments). |
 | `-sm2-id` | `""` = `1234567812345678` (or `$PLATFORM_SM2_ID`) | SM2 signature identity (`ID_A`). Must be byte-identical to the `PLATFORM_SM2_ID` TAA was started with, or signatures will not verify. The effective value is logged at startup. |
 | `-platform-key-file` | `<state-dir>/platform-key.json` (or `$PLATFORM_KEY_FILE`) | Where the platform SM2 key pair (and the last registered TAA public key) is persisted. Generated on first use; a restart reuses the same pair. |
-| `-console-user` | `admin` (or `$CONSOLE_USER`) | Login name for the embedded TEE-LLM console. |
-| `-console-password` | `teellm@2026` (or `$CONSOLE_PASSWORD`) | Login password for the embedded TEE-LLM console. |
+| `-console-user` | `admin` (or `$CONSOLE_USER`) | Login name for the code audit workbench. |
+| `-console-password` | `teellm@2026` (or `$CONSOLE_PASSWORD`) | Login password for the code audit workbench. |
 
 ## SM2 Envelope
 
@@ -112,16 +113,30 @@ The platform mock provides an embedded single-page Web console accessible by ope
   attestation and `verifiedPass=false` ⇒ `fhe`, otherwise `tee`) and the selector labels
   each entry with it. An unattested TEE instance registers the same way as FHE and is shown
   as FHE, because that is all the platform was told.
-- **TEE-LLM Console tab**: the page has two tabs — `平台模拟` (everything above) and
-  `TEE-LLM 控制台`, a login-gated operations console for the inference gateway. The console
-  signs in with `-console-user` / `-console-password` (defaults `admin` / `teellm@2026`) and
-  keeps an HttpOnly, SameSite=Strict session cookie for 8 hours (sliding); five failed attempts
-  lock that source IP for 60 seconds. It shows the instance overview, a prompt workbench that
-  calls the gateway over TEE-TLS (`POST /v1/llm/generate`), the CSV attestation plus the TLS
-  handshake evidence (measurement, public-key binding, certificate subject, elapsed time),
-  the polled gateway logs, and connection settings. The console endpoints live under
-  `/api/llm/console/*` and require the session; `TEELLM_TLS_ENDPOINT` (or the settings page)
-  selects the secure listener when it is not derivable from `-llm-target`.
+- **Code Audit Workbench tab**: the page has two tabs — `平台模拟` (everything above) and
+  `代码审计工作台`, a login-gated workspace for the code-security audit product. TEE-LLM is
+  one module inside it (the AI semantic adjudicator), not the page's subject. It signs in with
+  `-console-user` / `-console-password` (defaults `admin` / `teellm@2026`) and keeps an
+  HttpOnly, SameSite=Strict session cookie for 8 hours (sliding); five failed attempts lock
+  that source IP for 60 seconds. Views:
+  - **审计概览** — job count, pass rate, severity distribution, average duration and the
+    latest conclusion, aggregated from the reports TAA sends to `reportAudit`.
+  - **审计任务** — the per-instance job list with a form that triggers a new audit by posting
+    `importModel` through the existing `/taa/*` proxy; the verdict appears here once TAA
+    reports it.
+  - **审计结果** — the findings explorer: severity and AI-verdict filters, search, a per-file
+    list, and a detail drawer with the code snippet, AI reason and CPG/taint evidence.
+  - **安全引擎** — the Tier 1 static-scan summary plus the AI semantic module's gateway
+    status, CSV attestation and TEE-TLS handshake evidence (measurement, public-key binding,
+    certificate subject, elapsed time), a prompt self-check and the polled gateway logs.
+  - **设置** — read-only endpoints, the TLS verification mode, and the session lifetime.
+  Audit data is mirrored from each accepted `reportAudit` callback into an in-memory ring of
+  200 jobs per instance, so it is lost on a restart; the platform still renders exactly the
+  projection TAA sends (`conclusion`, `file_reports`, `duration_ms`) and never invents engine
+  metadata. The endpoints live under `/api/audit/console/*` and share the session with the
+  `/api/console/{login,logout,session}` aliases; the TEE-LLM module still exposes
+  `/api/llm/console/*`, and `TEELLM_TLS_ENDPOINT` (or the settings page) selects the secure
+  listener when it is not derivable from `-llm-target`.
 - **TEE-LLM Instance**: the mock polls the instance's plaintext `/v1/llm/*` routes, so the console
   gives it a dedicated card (TEE mode only): the address it polls — the host address
   `http://<host>:16001` by default (`--llm-target` / `LLM_TARGET`), which is the host port the
@@ -176,12 +191,16 @@ tools/platform-mock/
 │   ├── handlers_crypto.go       # Cryptographic utilities and key validation
 │   ├── handlers_taa.go          # TAA callback endpoints (/api/register, /v1/taa/*)
 │   ├── handlers_upload.go       # File upload and static asset serving (/files/*)
+│   ├── audit_jobs.go            # In-memory audit job ring fed by reportAudit
+│   ├── audit_console.go         # Audit workbench read APIs (/api/audit/console/*)
+│   ├── llm_console.go           # TEE-LLM module APIs (/api/llm/console/*)
+│   ├── llm_console_session.go   # Shared console login/session for both tabs
 │   ├── keystore.go              # Platform SM2 key pair + registered TAA public key (persisted)
 │   ├── proxy.go                 # TAA reverse proxy and Kubernetes pod discovery
 │   ├── store.go                 # Thread-safe in-memory state and log ring buffer
 │   └── static/                  # Embedded Web console assets (embed.FS)
 │       ├── index.html           # Main dashboard template
-│       ├── css/                 # Stylesheets (layout, components, variables)
-│       └── js/                  # Frontend scripts (api, app, drawer, logs, tree, crypto)
+│       ├── css/                 # Stylesheets (layout, components, variables, audit-console)
+│       └── js/                  # Frontend scripts (api, app, drawer, logs, tree, crypto, audit-console)
 └── README.md                    # This documentation
 ```

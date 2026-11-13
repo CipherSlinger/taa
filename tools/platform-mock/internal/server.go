@@ -46,7 +46,7 @@ func init() {
 		"static/js/tree.js",
 		"static/js/logs.js",
 		"static/js/app.js",
-		"static/js/llm-console.js",
+		"static/js/audit-console.js",
 	}
 	for _, f := range jsFiles {
 		content, readErr := staticFS.ReadFile(f)
@@ -63,6 +63,7 @@ type Server struct {
 	cfg        Config
 	httpServer *http.Server
 	llmPoller  *llmPoller
+	auditJobs  *auditJobStore
 }
 
 // NewServer builds a Server from cfg: it prepares the state/upload directories,
@@ -138,6 +139,12 @@ func NewServer(cfg Config) *Server {
 	// poller's observations rather than calling the instance on its own for
 	// status, so the tab and the existing panel cannot show different states.
 	console := newLLMConsole(cfg, llmPoller, llmState)
+	// The generic console aliases serve the audit tab. They reuse the same
+	// handlers and session store as the TEE-LLM routes, so both surfaces share
+	// one login and one cookie.
+	mux.HandleFunc("/api/console/login", console.handleLogin)
+	mux.HandleFunc("/api/console/logout", console.handleLogout)
+	mux.HandleFunc("/api/console/session", console.handleSession)
 	mux.HandleFunc("/api/llm/console/login", console.handleLogin)
 	mux.HandleFunc("/api/llm/console/logout", console.handleLogout)
 	mux.HandleFunc("/api/llm/console/session", console.handleSession)
@@ -148,6 +155,14 @@ func NewServer(cfg Config) *Server {
 	mux.HandleFunc("/api/llm/console/attestation", console.requireSession(console.handleAttestation))
 	mux.HandleFunc("/api/llm/console/health", console.requireSession(console.handleHealth))
 	mux.HandleFunc("/api/llm/console/settings", console.requireSession(console.handleSettings))
+
+	// The audit workbench reads the jobs reportAuditHandler records. Its session
+	// gate is the console's, so an operator signs in once for both tabs.
+	auditJobs := globalAuditJobs
+	auditConsole := newAuditConsole(mgr, auditJobs)
+	mux.HandleFunc("/api/audit/console/overview", console.requireSession(auditConsole.handleOverview))
+	mux.HandleFunc("/api/audit/console/jobs", console.requireSession(auditConsole.handleJobs))
+	mux.HandleFunc("/api/audit/console/jobs/", console.requireSession(auditConsole.handleJobDetail))
 
 	mux.HandleFunc("/api/instances", instancesHandler(mgr))
 	mux.HandleFunc("/api/instances/delete", instancesDeleteHandler(mgr))
@@ -198,6 +213,7 @@ func NewServer(cfg Config) *Server {
 			ReadHeaderTimeout: 5 * time.Second,
 		},
 		llmPoller: llmPoller,
+		auditJobs: auditJobs,
 	}
 }
 
