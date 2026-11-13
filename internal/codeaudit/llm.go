@@ -51,13 +51,15 @@ type LLMConfig struct {
 	// draw blocks the import.
 	Temperature *float32
 
-	// CustomPrompt, when non-empty, is placed ahead of the built-in rubric of
-	// every AI prompt: the finding-level prompt, the source file prompt and the
-	// binary file prompt. It names the operator's own criteria and is meant for
-	// the mock workbench's prompt editor, where the effect of a wording change is
-	// being measured. Empty leaves every prompt byte-identical to the built-in
-	// text, which is what production runs.
-	CustomPrompt string
+	// PromptOverride, when non-empty, replaces the instruction half of the
+	// per-finding audit prompt: the rubric and judgement criteria. The code
+	// excerpt, the fired rule and the JSON answer contract are still appended
+	// verbatim, so an edit changes what the model is asked to judge without
+	// breaking the response parser. It exists for the mock workbench's prompt
+	// editor, where the effect of a wording change is measured directly. Empty
+	// leaves the prompt byte-identical to the built-in text, which is what
+	// production runs.
+	PromptOverride string
 
 	// TEE-TLS configuration
 	TEETLS *teetls.Config

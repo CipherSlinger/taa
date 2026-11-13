@@ -53,16 +53,38 @@ const findingAnalysisPromptTemplate = `你是一个代码安全审计专家。�
 {"verdict": "...", "reason": "...", "risk": "..."}
 `
 
-// withCustomPrompt puts an operator-supplied instruction ahead of the built-in
-// rubric. It is a prefix rather than a replacement so the model still gets the
-// JSON contract and the benign-use rules the parser and the measured verdicts
-// depend on; an empty custom text returns the prompt untouched.
-func withCustomPrompt(custom, prompt string) string {
-	custom = strings.TrimSpace(custom)
-	if custom == "" {
-		return prompt
+// findingPromptEvidenceMarker starts the per-finding half of the prompt: the
+// code excerpt, the rule that fired and the answer contract. The workbench's
+// prompt editor replaces everything before it and never touches it, so an edit
+// changes the judgement criteria without dropping the evidence or the JSON
+// shape the parser needs.
+const findingPromptEvidenceMarker = "## 代码片段"
+
+// DefaultFindingPrompt returns the instruction half of the built-in finding
+// prompt. It is what the workbench's prompt editor shows when no override is
+// set, and what an override replaces.
+func DefaultFindingPrompt() string {
+	head, _, _ := strings.Cut(findingAnalysisPromptTemplate, findingPromptEvidenceMarker)
+	return strings.TrimRight(head, "\n")
+}
+
+// BuildFindingPromptWithOverride renders the per-finding prompt. A non-empty
+// override replaces the built-in instruction text and the per-finding evidence
+// is appended unchanged; an empty override returns the built-in prompt
+// byte-identically, which is what production runs.
+func BuildFindingPromptWithOverride(override string, f Finding, contextAfter string) string {
+	builtin := BuildFindingPrompt(f, contextAfter)
+	override = strings.TrimSpace(override)
+	if override == "" {
+		return builtin
 	}
-	return "## 本次审计的附加要求（优先遵循）\n" + custom + "\n\n" + prompt
+	_, tail, ok := strings.Cut(builtin, findingPromptEvidenceMarker)
+	if !ok {
+		// The built-in template no longer contains the marker: returning the
+		// built-in prompt is safer than sending an override without evidence.
+		return builtin
+	}
+	return override + "\n\n" + findingPromptEvidenceMarker + tail
 }
 
 // BuildFindingPrompt renders the audit prompt for one finding. contextAfter is

@@ -55,7 +55,7 @@ func VerifyReport(ctx context.Context, report *Report, cfg LLMConfig, client LLM
 			ctxAfter = f.CPGEvidence
 		}
 
-		prompt := withCustomPrompt(cfg.CustomPrompt, BuildFindingPrompt(*f, ctxAfter))
+		prompt := BuildFindingPromptWithOverride(cfg.PromptOverride, *f, ctxAfter)
 
 		req := &llmclient.GenerateRequest{
 			ProtocolVersion: llmclient.CurrentProtocolVersion,
@@ -464,7 +464,7 @@ func GenerateAuditReport(ctx context.Context, dir string, engine StaticEngine, c
 		fr := BuildFileReport(filePath, findings)
 
 		if llmActive {
-			summary := analyzeFileWithLLM(ctx, client, filePath, findings, lineCounts, binaryEvidence, llmCfg.CustomPrompt)
+			summary := analyzeFileWithLLM(ctx, client, filePath, findings, lineCounts, binaryEvidence)
 			fr.RiskLevel = summary.RiskLevel
 			fr.Summary = summary.Summary
 			fr.Chained = summary.Chained
@@ -533,7 +533,7 @@ func runBinaryChannel(ctx context.Context, dir string, binCfg BinaryConfig) *Bin
 // binary channel introduces; the file-level prompt is exercised by the mock
 // rather than by the deployed pipeline. This function does not change that, and
 // its tests do not claim otherwise.
-func analyzeFileWithLLM(ctx context.Context, client LLMClient, filePath string, findings []Finding, lineCounts map[string]int, binaryEvidence map[string]*EvidenceSet, customPrompt string) FileSummary {
+func analyzeFileWithLLM(ctx context.Context, client LLMClient, filePath string, findings []Finding, lineCounts map[string]int, binaryEvidence map[string]*EvidenceSet) FileSummary {
 	fa, ok := client.(FileAnalyzer)
 	if !ok {
 		// Synthesize a FileSummary from findings when client does not implement FileAnalyzer.
@@ -541,7 +541,7 @@ func analyzeFileWithLLM(ctx context.Context, client LLMClient, filePath string, 
 	}
 
 	if ev := binaryEvidence[filePath]; ev != nil {
-		return analyzeBinaryFileWithLLM(ctx, fa, ev, findings, customPrompt)
+		return analyzeBinaryFileWithLLM(ctx, fa, ev, findings)
 	}
 
 	maxLines := 80
@@ -552,11 +552,11 @@ func analyzeFileWithLLM(ctx context.Context, client LLMClient, filePath string, 
 	}
 	summary := BuildFindingsSummary(findings)
 
-	prompt := withCustomPrompt(customPrompt, fmt.Sprintf(fileAnalysisPromptTemplate,
+	prompt := fmt.Sprintf(fileAnalysisPromptTemplate,
 		filepath.Base(filePath), lineCount,
 		len(findings), summary,
 		code,
-	))
+	)
 
 	result, err := fa.AnalyzeFile(ctx, prompt)
 	if err != nil {
@@ -585,12 +585,12 @@ func analyzeFileWithLLM(ctx context.Context, client LLMClient, filePath string, 
 const binaryFilePromptMaxLines = 120
 
 // analyzeBinaryFileWithLLM asks the model about a file the binary channel read.
-func analyzeBinaryFileWithLLM(ctx context.Context, fa FileAnalyzer, ev *EvidenceSet, findings []Finding, customPrompt string) FileSummary {
-	prompt := withCustomPrompt(customPrompt, fmt.Sprintf(binaryFileAnalysisPromptTemplate,
+func analyzeBinaryFileWithLLM(ctx context.Context, fa FileAnalyzer, ev *EvidenceSet, findings []Finding) FileSummary {
+	prompt := fmt.Sprintf(binaryFileAnalysisPromptTemplate,
 		filepath.Base(ev.File), ev.Kind, ev.Size, len(ev.Lines),
 		len(findings), BuildFindingsSummary(findings),
 		ev.RenderExcerpt(binaryFilePromptMaxLines),
-	))
+	)
 
 	result, err := fa.AnalyzeFile(ctx, prompt)
 	if err != nil {
