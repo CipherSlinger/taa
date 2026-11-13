@@ -73,6 +73,10 @@
     jobs: [],
     jobsTotal: 0,
     file: null,
+    // storedFile is an entry from the file area. Exactly one of file and
+    // storedFile is set: a local pick sends the bytes, a stored pick sends its id.
+    storedFile: null,
+    files: [],
     taskId: '',
     requestId: '',
     submitBusy: false,
@@ -530,6 +534,9 @@
   function resetAppData() {
     state.jobs = [];
     state.jobsTotal = 0;
+    state.files = [];
+    state.file = null;
+    state.storedFile = null;
     state.selectedJobId = '';
     state.currentJob = null;
     state.findings = [];
@@ -543,8 +550,9 @@
     [
       'auditRecentRows', 'auditJobsRows', 'auditFindingsRows', 'auditRiskChart',
       'engineStaticFields', 'engineLLMFields', 'engineAttestFields',
-      'engineHandshakeFields', 'engineLogOutput',
+      'engineHandshakeFields', 'engineLogOutput', 'auditFileList',
     ].forEach((id) => replaceChildren($(id)));
+    setText('auditFilesCount', '0 个文件');
     const select = $('auditFindingsJobSelect');
     if (select) {
       select.replaceChildren();
@@ -806,6 +814,7 @@
     switch (state.view) {
       case 'jobs':
         await refreshJobs(false);
+        await refreshAuditFiles(true);
         break;
       case 'findings':
         await refreshFindings(false);
@@ -954,6 +963,35 @@
     return state.jobs.slice();
   }
 
+  // renderJobMetrics feeds the four counters above the workbench from the job
+  // list already in memory; it never issues another request.
+  function renderJobMetrics() {
+    const jobs = Array.isArray(state.jobs) ? state.jobs : [];
+    let passed = 0;
+    let failed = 0;
+    let latest = null;
+
+    jobs.forEach((job) => {
+      const key = statusOf(job).key;
+      if (key === 'failed') {
+        failed += 1;
+        return;
+      }
+      if (key !== 'done') return;
+      if (job.passed) passed += 1;
+      else failed += 1;
+      const at = Date.parse(job.at || '') || 0;
+      if (!latest || at > latest.at) latest = { at: at, job: job };
+    });
+
+    setText('auditMetricTotal', String(Math.max(state.jobsTotal || 0, jobs.length)));
+    setText('auditMetricPassed', String(passed));
+    setText('auditMetricFailed', String(failed));
+    setText('auditMetricDuration', latest && latest.job.durationMs != null
+      ? fmtDuration(latest.job.durationMs)
+      : '—');
+  }
+
   function renderJobsTable() {
     const tbody = $('auditJobsRows');
     if (!tbody) return;
@@ -962,6 +1000,7 @@
     const rows = filteredJobs();
     const total = Math.max(state.jobsTotal, state.jobs.length);
     setText('auditJobsCount', '共 ' + total + ' 条，显示 ' + rows.length + ' 条');
+    renderJobMetrics();
 
     if (!rows.length) {
       const text = state.jobs.length
@@ -1202,6 +1241,15 @@
     return '文件';
   }
 
+  // Short badge shown beside a file-area entry's name.
+  function kindOfName(name) {
+    const lower = String(name || '').toLowerCase();
+    if (/\.zip$/.test(lower)) return 'ZIP';
+    if (/\.(tar|tar\.gz|tgz|tar\.bz2|tbz2|tar\.xz)$/.test(lower)) return 'TAR';
+    if (/\.gz$/.test(lower)) return 'GZ';
+    return 'ARCHIVE';
+  }
+
   // ── Audit submission ──
   //
   // The browser posts the plaintext archive to the mock and the mock runs the
@@ -1218,16 +1266,43 @@
 
     const stages = job && job.stages && typeof job.stages === 'object' ? job.stages : null;
 
+    const states = [];
     steps.forEach((item) => {
       const key = item.dataset.step || '';
       let state = stages ? stages[key] : '';
       if (!state) state = 'pending';
+      states.push(state);
       item.dataset.state = state;
       item.classList.toggle('is-active', state === 'active');
       item.classList.toggle('is-done', state === 'done');
       item.classList.toggle('is-skipped', state === 'skipped');
       item.classList.toggle('is-error', state === 'error');
     });
+
+    // The rail's header answers "where is this run" at a glance; the bar under
+    // it fills as steps settle, so a long AI step still shows progress.
+    const settled = states.filter((state) => state === 'done' || state === 'skipped').length;
+    const percent = steps.length ? Math.round((settled / steps.length) * 100) : 0;
+    const bar = $('auditRunProgressBar');
+    if (bar) bar.style.width = percent + '%';
+    const progress = document.querySelector('.audit-run-progress');
+    if (progress) progress.setAttribute('aria-valuenow', String(percent));
+
+    let tone = 'idle';
+    let label = job ? '未开始' : '空闲';
+    if (states.includes('error')) {
+      tone = 'error';
+      label = '执行失败';
+    } else if (states.includes('active')) {
+      tone = 'active';
+      label = '执行中';
+    } else if (job && settled === steps.length && settled > 0) {
+      tone = 'done';
+      label = '已完成';
+    }
+    const status = $('auditRunStatus');
+    if (status) status.dataset.tone = tone;
+    setText('auditRunStatusText', label);
   }
 
   function setUploadProgress(fraction, stageText) {
@@ -1243,37 +1318,226 @@
     if (el) el.style.display = visible ? '' : 'none';
   }
 
-  function setChosenFile(file) {
-    state.file = file || null;
-
+  // showChosen paints the selected-file strip for either a local File or a file
+  // area entry; both carry `name` and `size`.
+  function showChosen(picked, typeText) {
     const meta = $('auditFileMeta');
     const clearBtn = $('auditFileClearBtn');
     const drop = $('auditFileDrop');
 
-    if (!file) {
-      if (meta) meta.style.display = 'none';
-      if (clearBtn) clearBtn.style.display = 'none';
-      if (drop) drop.classList.remove('has-file');
-      setText('auditFileName', '');
-      setText('auditFileSize', '');
-      setText('auditFileTypeText', '在本机解压后审计');
-      return;
-    }
-
-    setText('auditFileName', file.name);
-    setText('auditFileSize', humanSize(file.size));
-    setText('auditFileTypeText', fileKind(file));
+    setText('auditFileName', picked.name);
+    setText('auditFileSize', humanSize(picked.size));
+    setText('auditFileTypeText', typeText);
     if (meta) meta.style.display = '';
     if (clearBtn) clearBtn.style.display = '';
     if (drop) drop.classList.add('has-file');
-    setHint('auditSubmitHint', true, '已选择 ' + file.name + '，点击「上传并启动审计」开始。');
+    setHint('auditSubmitHint', true, '已选择 ' + picked.name + '，点击「上传并启动审计」开始。');
+  }
+
+  function hideChosen() {
+    const meta = $('auditFileMeta');
+    const clearBtn = $('auditFileClearBtn');
+    const drop = $('auditFileDrop');
+    if (meta) meta.style.display = 'none';
+    if (clearBtn) clearBtn.style.display = 'none';
+    if (drop) drop.classList.remove('has-file');
+    setText('auditFileName', '');
+    setText('auditFileSize', '');
+    setText('auditFileTypeText', '在本机解压后审计');
+  }
+
+  function setChosenFile(file) {
+    state.file = file || null;
+    state.storedFile = null;
+    if (!file) {
+      hideChosen();
+      renderAuditFiles();
+      return;
+    }
+    showChosen(file, fileKind(file));
+    renderAuditFiles();
+  }
+
+  // chooseStoredFile selects an entry from the file area. The archive is
+  // already on the server, so submission sends its id instead of the bytes.
+  function chooseStoredFile(entry) {
+    state.file = null;
+    state.storedFile = entry || null;
+    const input = $('auditFileInput');
+    if (input) input.value = '';
+    if (!entry) {
+      hideChosen();
+      renderAuditFiles();
+      return;
+    }
+    showChosen(entry, '文件区域 · 可重复审计');
+    renderAuditFiles();
   }
 
   function clearChosenFile() {
     const input = $('auditFileInput');
     if (input) input.value = '';
-    setChosenFile(null);
+    state.file = null;
+    state.storedFile = null;
+    hideChosen();
+    renderAuditFiles();
     setHint('auditSubmitHint', true, '');
+  }
+
+  // ── File area ──
+  //
+  // Every accepted upload is kept server-side. The list is newest first; a drag
+  // from an item to the launcher selects it by id, so repeating a run re-uses
+  // the stored archive instead of uploading it again.
+  const ARCHIVE_ICON = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H7a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V7z"></path><path d="M14 2v5h5"></path><path d="M10 9h1M10 12h1M10 15h1"></path></svg>';
+
+  async function refreshAuditFiles(silent) {
+    if (!state.user) return;
+    try {
+      const res = await requestJSON('/api/audit/console/files', { timeoutMs: REQUEST_TIMEOUT_MS });
+      if (!res.ok) {
+        if (!silent) toast({ type: 'warning', title: '文件区域刷新失败', message: 'HTTP ' + res.status });
+        return;
+      }
+      const data = unwrap(res.data) || {};
+      state.files = Array.isArray(data.files) ? data.files : [];
+      renderAuditFiles();
+    } catch (err) {
+      if (err.unauthorized || silent) return;
+      toast({ type: 'warning', title: '文件区域刷新失败', message: err.message });
+    }
+  }
+
+  function renderAuditFiles() {
+    const host = $('auditFileList');
+    if (!host) return;
+    host.replaceChildren();
+    setText('auditFilesCount', state.files.length + ' 个文件');
+
+    if (!state.files.length) {
+      const empty = document.createElement('li');
+      empty.className = 'audit-file-empty';
+      empty.textContent = '暂无文件。上传一个归档后会自动保存在这里。';
+      host.appendChild(empty);
+      return;
+    }
+
+    state.files.forEach((entry) => {
+      const item = document.createElement('li');
+      item.className = 'audit-file-item';
+      item.dataset.fileId = entry.id;
+      item.draggable = true;
+      item.title = '拖拽到上方「发起代码审计」窗口，或点击选用';
+      if (state.storedFile && state.storedFile.id === entry.id) item.classList.add('is-selected');
+
+      const icon = document.createElement('span');
+      icon.className = 'audit-file-icon';
+      icon.innerHTML = ARCHIVE_ICON;
+      item.appendChild(icon);
+
+      const body = document.createElement('span');
+      body.className = 'audit-file-body';
+      const head = document.createElement('span');
+      head.className = 'audit-file-head';
+      const name = document.createElement('span');
+      name.className = 'audit-file-name';
+      name.textContent = entry.name || 'archive';
+      const kind = document.createElement('span');
+      kind.className = 'audit-file-kind';
+      kind.textContent = kindOfName(entry.name || '');
+      head.appendChild(name);
+      head.appendChild(kind);
+      const sub = document.createElement('span');
+      sub.className = 'audit-file-sub';
+      const shortID = (entry.id || '').slice(0, 6);
+      sub.textContent = humanSize(entry.size) + ' · ' + fmtTime(entry.uploadedAt)
+        + (shortID ? ' · #' + shortID : '');
+      body.appendChild(head);
+      body.appendChild(sub);
+      item.appendChild(body);
+
+      const actions = document.createElement('span');
+      actions.className = 'audit-file-actions';
+
+      const use = document.createElement('button');
+      use.type = 'button';
+      use.className = 'secondary audit-file-use';
+      use.textContent = '选用';
+      use.addEventListener('click', (ev) => {
+        ev.stopPropagation();
+        chooseStoredFile(entry);
+      });
+      actions.appendChild(use);
+
+      const del = document.createElement('button');
+      del.type = 'button';
+      del.className = 'secondary audit-danger-btn';
+      del.textContent = '删除';
+      del.addEventListener('click', (ev) => {
+        ev.stopPropagation();
+        armFileDelete(del, entry);
+      });
+      actions.appendChild(del);
+      item.appendChild(actions);
+
+      item.addEventListener('dragstart', (ev) => {
+        if (!ev.dataTransfer) return;
+        ev.dataTransfer.effectAllowed = 'copy';
+        ev.dataTransfer.setData('application/x-taa-audit-file', entry.id);
+        ev.dataTransfer.setData('text/plain', entry.name || '');
+      });
+      item.addEventListener('click', (ev) => {
+        if (ev.target.closest('button')) return;
+        chooseStoredFile(entry);
+      });
+
+      host.appendChild(item);
+    });
+  }
+
+  // Two clicks to delete, same as a job row: the first arms for four seconds.
+  const pendingFileDeletes = new Map();
+
+  function armFileDelete(btn, entry) {
+    const id = entry.id;
+    if (pendingFileDeletes.has(id)) {
+      clearTimeout(pendingFileDeletes.get(id));
+      pendingFileDeletes.delete(id);
+      deleteAuditFile(entry);
+      return;
+    }
+    btn.textContent = '确认删除';
+    btn.classList.add('is-armed');
+    const timer = setTimeout(() => {
+      pendingFileDeletes.delete(id);
+      btn.textContent = '删除';
+      btn.classList.remove('is-armed');
+    }, 4000);
+    pendingFileDeletes.set(id, timer);
+  }
+
+  async function deleteAuditFile(entry) {
+    try {
+      const res = await requestJSON(auditUrl('/api/audit/console/files/' + encodeURIComponent(entry.id)), {
+        method: 'DELETE',
+        timeoutMs: REQUEST_TIMEOUT_MS,
+      });
+      const data = unwrap(res.data) || {};
+      if (!res.ok || data.ok === false) {
+        throw new Error(data.error || data.msg || ('HTTP ' + res.status));
+      }
+      state.files = state.files.filter((item) => item.id !== entry.id);
+      if (state.storedFile && state.storedFile.id === entry.id) {
+        state.storedFile = null;
+        hideChosen();
+      }
+      renderAuditFiles();
+      setHint('auditSubmitHint', true, '已从文件区域删除 ' + (entry.name || '文件') + '。');
+    } catch (err) {
+      if (err.unauthorized) return;
+      toast({ type: 'warning', title: '删除失败', message: err.message });
+      renderAuditFiles();
+    }
   }
 
   function rotateTaskId() {
@@ -1351,12 +1615,14 @@
 
     const btn = $('auditSubmitBtn');
     const file = state.file;
+    const stored = state.storedFile;
+    const picked = stored || file;
 
-    if (!file) {
+    if (!picked) {
       setHint('auditSubmitHint', false, '请先选择待审计的模型包或代码包。');
       return;
     }
-    if (file.size <= 0) {
+    if (file && file.size <= 0) {
       setHint('auditSubmitHint', false, '文件为空，请重新选择。');
       return;
     }
@@ -1368,14 +1634,18 @@
     state.requestId = requestId;
 
     showUploadProgress(true);
-    setUploadProgress(0, '正在上传文件…');
+    setUploadProgress(stored ? 0.9 : 0, stored ? '正在启动本地审计…' : '正在上传文件…');
     renderStepper(null);
-    setHint('auditSubmitHint', true, '正在上传明文归档…');
-    setText('auditRunFile', file.name);
+    setHint('auditSubmitHint', true, stored ? '正在复用文件区域中的归档…' : '正在上传明文归档…');
+    setText('auditRunFile', picked.name);
 
     try {
       const form = new FormData();
-      form.append('file', file, file.name);
+      if (stored) {
+        form.append('fileId', stored.id);
+      } else {
+        form.append('file', file, file.name);
+      }
       form.append('requestId', requestId);
       form.append('taskId', state.taskId || '');
 
@@ -1398,11 +1668,12 @@
 
       setUploadProgress(1, '已接收，正在本机执行审计…');
 
-      const pending = optimisticPendingJob(data, file);
+      const pending = optimisticPendingJob(data, picked);
       state.jobs = [pending].concat(state.jobs.filter((job) => job.requestId !== pending.requestId));
       renderJobsTable();
       fillFindingsJobSelect();
       renderStepper(pending);
+      refreshAuditFiles(true);
 
       const dispatchedTaskId = data.taskId || state.taskId;
       rotateTaskId();
@@ -2320,7 +2591,9 @@
       const data = unwrap(res.data) || {};
       const input = $('auditPromptInput');
       if (input && document.activeElement !== input) input.value = data.prompt || '';
-      setPromptMeta(data.prompt ? '已加载（下次审计生效）' : '未设置，仅使用内置评分标准', 'muted');
+      setPromptMeta(data.custom
+        ? '已加载自定义提示词（下次审计生效）'
+        : '当前为内置默认提示词，可直接修改后保存', 'muted');
     } catch (err) {
       if (err.unauthorized || silent) return;
       setPromptMeta('读取失败：' + err.message, 'bad');
@@ -2336,7 +2609,10 @@
         : '';
   }
 
-  async function saveAuditPrompt() {
+  // putAuditPrompt writes one prompt value. An empty value restores the
+  // built-in default; the server answers with the effective text either way, so
+  // the textarea always shows what the next audit would send.
+  async function putAuditPrompt(text, announce) {
     if (!state.user) return;
     const input = $('auditPromptInput');
     const btn = $('auditPromptSaveBtn');
@@ -2346,7 +2622,7 @@
       const res = await requestJSON('/api/audit/console/prompt', {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ prompt: input ? input.value : '' }),
+        body: JSON.stringify({ prompt: text }),
         timeoutMs: REQUEST_TIMEOUT_MS,
       });
       const data = unwrap(res.data) || {};
@@ -2354,21 +2630,30 @@
         throw new Error(data.error || data.msg || ('HTTP ' + res.status));
       }
       if (input) input.value = data.prompt || '';
-      setPromptMeta(data.prompt ? '已保存 · 下次审计生效' : '已清空 · 仅使用内置评分标准', 'ok');
-      toast({ type: 'success', title: '提示词已保存', message: '下一次审计生效' });
+      setPromptMeta(data.custom ? '已保存 · 下次审计生效' : '已恢复内置默认提示词', 'ok');
+      if (announce) {
+        toast({
+          type: 'success',
+          title: data.custom ? '提示词已保存' : '已恢复默认提示词',
+          message: '下一次审计生效',
+        });
+      }
     } catch (err) {
       if (err.unauthorized) return;
       setPromptMeta('保存失败：' + err.message, 'bad');
-      toast({ type: 'warning', title: '提示词保存失败', message: err.message });
+      if (announce) toast({ type: 'warning', title: '提示词保存失败', message: err.message });
     } finally {
       if (btn) btn.disabled = false;
     }
   }
 
-  async function clearAuditPrompt() {
+  async function saveAuditPrompt() {
     const input = $('auditPromptInput');
-    if (input) input.value = '';
-    await saveAuditPrompt();
+    await putAuditPrompt(input ? input.value : '', true);
+  }
+
+  async function clearAuditPrompt() {
+    await putAuditPrompt('', true);
   }
 
   function ensureOptions(select, values) {
@@ -2615,6 +2900,14 @@
         });
       });
       drop.addEventListener('drop', (ev) => {
+        // A drag from the file area carries the stored id, not a File: select it
+        // so a repeat run reuses the archive already on the server.
+        const storedId = ev.dataTransfer && ev.dataTransfer.getData('application/x-taa-audit-file');
+        if (storedId) {
+          const entry = state.files.find((item) => item.id === storedId);
+          if (entry) chooseStoredFile(entry);
+          return;
+        }
         const file = ev.dataTransfer && ev.dataTransfer.files && ev.dataTransfer.files[0];
         if (!file) return;
         if (input) {

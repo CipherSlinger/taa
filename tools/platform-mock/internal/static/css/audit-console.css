@@ -1732,6 +1732,36 @@
   text-overflow: ellipsis;
 }
 
+/* Jobs view metrics: four compact counters in one row. */
+.audit-job-metrics {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.audit-job-metrics .audit-kpi {
+  padding: 14px 16px;
+}
+
+.audit-job-metrics .audit-kpi-value {
+  margin-top: 8px;
+  font-size: 26px;
+}
+
+.audit-kpi-icon-ok {
+  background: var(--aud-ok-soft);
+  color: var(--aud-ok);
+}
+
+.audit-kpi-icon-bad {
+  background: var(--aud-critical-soft);
+  color: var(--aud-critical);
+}
+
+.audit-kpi-icon-warn {
+  background: var(--aud-warn-soft);
+  color: var(--aud-warn);
+}
+
 /* risk distribution bars (markup is filled by audit-console.js) */
 .audit-risk-chart {
   display: flex;
@@ -1953,16 +1983,25 @@
   margin-top: 16px;
 }
 
-/* Upload launch panel: drop zone on the left, generated-metadata card on the right. */
-.audit-launch-grid {
+/* Workbench: launch + file area on the left, the live rail on the right. The
+   rail sticks while the left column scrolls, so the current step stays visible
+   during a long AI adjudication. */
+.audit-workbench {
   display: grid;
-  grid-template-columns: minmax(0, 1.7fr) minmax(0, 1fr);
+  grid-template-columns: minmax(0, 1.72fr) minmax(320px, 1fr);
   gap: 16px;
   align-items: start;
 }
 
-.audit-launch-main,
-.audit-launch-side {
+.audit-workbench-main {
+  display: grid;
+  gap: 16px;
+  min-width: 0;
+}
+
+.audit-workbench-side {
+  position: sticky;
+  top: calc(var(--aud-tabbar-h) + 92px);
   min-width: 0;
 }
 
@@ -1973,10 +2012,12 @@
   align-items: center;
   justify-content: center;
   gap: 8px;
-  padding: 34px 22px 30px;
+  padding: 28px 22px 26px;
   border: 1.5px dashed var(--aud-drop-border);
   border-radius: 14px;
-  background: var(--aud-drop-bg);
+  background:
+    radial-gradient(120% 95% at 50% 0%, var(--aud-accent-soft) 0%, transparent 62%),
+    var(--aud-drop-bg);
   color: var(--aud-text);
   text-align: center;
   cursor: pointer;
@@ -2010,7 +2051,8 @@
   border-radius: 14px;
   background: var(--aud-drop-icon-bg);
   color: var(--aud-drop-icon-fg);
-  transition: transform 0.16s ease;
+  box-shadow: inset 0 0 0 1px var(--aud-accent-soft), 0 10px 20px -16px var(--aud-glow);
+  transition: transform 0.16s ease, box-shadow 0.16s ease;
 }
 
 .audit-drop.is-dragover .audit-drop-icon {
@@ -2141,6 +2183,142 @@
 .audit-file-clear:focus-visible {
   outline: none;
   box-shadow: 0 0 0 3px var(--aud-accent-ring);
+}
+
+/* ── File area ──────────────────────────────────────────────────────────── */
+.audit-file-list {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.audit-file-empty {
+  padding: 20px 14px;
+  border: 1px dashed var(--aud-border-strong);
+  border-radius: 12px;
+  background: var(--aud-surface-2);
+  color: var(--aud-muted);
+  font-size: 12.5px;
+  text-align: center;
+}
+
+.audit-file-item {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px 10px 14px;
+  border: 1px solid var(--aud-border);
+  border-radius: 12px;
+  background: var(--aud-surface-2);
+  cursor: grab;
+  transition: border-color 0.16s ease, background-color 0.16s ease, box-shadow 0.16s ease;
+}
+
+/* Accent bar marks the entry currently loaded into the launch panel. */
+.audit-file-item::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 10px;
+  bottom: 10px;
+  width: 3px;
+  border-radius: 999px;
+  background: transparent;
+  transition: background-color 0.16s ease;
+}
+
+.audit-file-item.is-selected::before {
+  background: var(--aud-accent);
+}
+
+.audit-file-item:hover {
+  border-color: var(--aud-border-strong);
+  background: var(--aud-surface-3);
+}
+
+.audit-file-item:active {
+  cursor: grabbing;
+}
+
+.audit-file-item.is-selected {
+  border-color: var(--aud-accent);
+  background: var(--aud-accent-soft);
+  box-shadow: 0 0 0 1px var(--aud-accent-soft);
+}
+
+.audit-file-item:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px var(--aud-accent-ring);
+}
+
+.audit-file-item .audit-file-icon {
+  width: 34px;
+  height: 34px;
+  border-radius: 9px;
+}
+
+.audit-file-item .audit-file-icon svg {
+  display: block;
+}
+
+.audit-file-body {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+
+.audit-file-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.audit-file-kind {
+  flex: none;
+  padding: 1px 6px;
+  border-radius: 5px;
+  background: var(--aud-surface-3);
+  color: var(--aud-text-2);
+  font-size: 10px;
+  font-weight: 750;
+  letter-spacing: 0.04em;
+}
+
+.audit-file-body .audit-file-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.audit-file-body .audit-file-sub {
+  display: block;
+  font-size: 11.5px;
+  color: var(--aud-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.audit-file-actions {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 6px;
+}
+
+.audit-file-actions .secondary {
+  padding: 5px 11px;
+  font-size: 12px;
+}
+
+.audit-file-use {
+  color: var(--aud-accent-strong);
 }
 
 .audit-upload {
@@ -2319,6 +2497,81 @@
 
 .audit-stepper-step[data-state="error"] .audit-stepper-title {
   color: var(--aud-critical);
+}
+
+/* Run status pill and progress bar at the top of the rail. */
+.audit-run-head {
+  align-items: center;
+}
+
+.audit-run-status {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border: 1px solid var(--aud-border);
+  border-radius: 999px;
+  background: var(--aud-surface-2);
+  color: var(--aud-muted);
+  font-size: 11.5px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.audit-run-status-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.audit-run-status[data-tone="active"] {
+  border-color: var(--aud-accent-ring);
+  background: var(--aud-accent-soft);
+  color: var(--aud-accent);
+}
+
+.audit-run-status[data-tone="active"] .audit-run-status-dot {
+  animation: aud-flow-breathe 1.8s ease-in-out infinite;
+}
+
+.audit-run-status[data-tone="done"] {
+  border-color: var(--aud-ok-soft);
+  background: var(--aud-ok-soft);
+  color: var(--aud-ok);
+}
+
+.audit-run-status[data-tone="error"] {
+  border-color: var(--aud-critical-soft);
+  background: var(--aud-critical-soft);
+  color: var(--aud-critical);
+}
+
+.audit-run-progress {
+  height: 5px;
+  margin: -2px 0 16px;
+  border-radius: 999px;
+  background: var(--aud-flow-line);
+  overflow: hidden;
+}
+
+.audit-run-progress-bar {
+  display: block;
+  width: 0;
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, var(--aud-progress-from), var(--aud-progress-to));
+  transition: width 0.35s ease;
+}
+
+.audit-run-note {
+  margin: 14px 0 0;
+  padding-top: 12px;
+  border-top: 1px dashed var(--aud-border);
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--aud-muted);
 }
 
 @keyframes aud-flow-breathe {
@@ -3105,10 +3358,20 @@
   }
 }
 
+@media (max-width: 1180px) {
+  .audit-job-metrics {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
 @media (max-width: 900px) {
-  /* Upload panel stacks above the generated-metadata card. */
-  .audit-launch-grid {
+  /* The workbench stacks: launch and file area first, the rail after them. */
+  .audit-workbench {
     grid-template-columns: minmax(0, 1fr);
+  }
+
+  .audit-workbench-side {
+    position: static;
   }
 
   .audit-login-shell {
@@ -3184,6 +3447,16 @@
 @media (max-width: 767px) {
   .audit-kpi-grid {
     grid-template-columns: minmax(0, 1fr);
+  }
+
+  .audit-job-metrics {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  /* Keep the job table legible: scroll it horizontally instead of crushing the
+     task-id column into four lines. */
+  .audit-table {
+    min-width: 860px;
   }
 
   .audit-form-grid {
@@ -3277,18 +3550,40 @@
     padding: 12px 12px 44px;
   }
 
+  /* Four tabs as a tidy 2×2 grid instead of a ragged wrapped strip. */
   .audit-nav {
-    flex-wrap: wrap;
-    overflow-x: visible;
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 6px;
+    overflow: visible;
   }
 
   .audit-nav-item {
-    flex: 1 1 auto;
+    width: 100%;
     justify-content: center;
   }
 
   .audit-nav-item span {
     font-size: 12px;
+  }
+
+  .audit-topbar-right {
+    width: 100%;
+    justify-content: space-between;
+  }
+
+  /* The instance selector has nothing to switch in the local workbench, and
+     on a phone it pushes the logout button onto its own row. */
+  .audit-instance-wrap {
+    display: none;
+  }
+
+  .audit-job-metrics {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .audit-job-metrics .audit-kpi-value {
+    font-size: 24px;
   }
 
   .audit-search {
