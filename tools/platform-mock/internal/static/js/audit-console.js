@@ -2501,8 +2501,15 @@
 
     if (!job) {
       paintPill('engineStaticStatus', '暂无任务', 'muted');
+      // With no audit yet, show the engine's fixed posture instead of a nearly
+      // empty table: these rows come from how the local runner is wired, not
+      // from a scan.
       fillFieldList($('engineStaticFields'), [
         ['状态', '尚未收到任何审计结果'],
+        ['扫描引擎', '内置规则（regex）'],
+        ['二进制通道', '已启用（ELF / 归档 / pickle）'],
+        ['Tier 2 判定', '由 TEE-LLM 网关执行，网关不可达时跳过'],
+        ['执行位置', '控制台进程内，单任务串行'],
         ['数据范围', '平台只收到审计结论投影，引擎名称与规则明细留在 TEE 内。'],
       ]);
       return;
@@ -2517,7 +2524,7 @@
       ['耗时', fmtDuration(job.durationMs)],
       ['文件数', String(toNumber(job.files))],
       ['命中数', String(toNumber(job.findings))],
-      ['高 / 中 / 低', toNumber(job.high) + ' / ' + toNumber(job.medium) + ' / ' + toNumber(job.low)],
+      ['高危 / 中危 / 低危', toNumber(job.high) + ' / ' + toNumber(job.medium) + ' / ' + toNumber(job.low)],
       ['requestId', job.requestId || '—', { mono: true }],
       ['taskId', job.taskId || '—', { mono: true }],
       ['上报时间', fmtTime(job.at)],
