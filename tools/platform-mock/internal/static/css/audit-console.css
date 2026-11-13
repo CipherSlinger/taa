@@ -1626,6 +1626,10 @@
   align-items: start;
 }
 
+.audit-settings-grid > .audit-card-wide {
+  grid-column: 1 / -1;
+}
+
 /* ─────────────────────────── overview ─────────────────────────── */
 
 .audit-warn {
@@ -2183,169 +2187,137 @@
   transition: width 0.28s ease;
 }
 
-/* Three-stage flow strip: idle → active (breathing) → done / failed.
-   The console script may rebuild the steps, so the layout tolerates both the
-   static markup and its own dot + label pairs. */
-.audit-flow {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: stretch;
-  gap: 12px;
-  margin: 18px 0 0;
+/* Vertical audit rail: the six local-audit steps, each with its own dot on a
+   connector line. The server owns the state: pending, active, done, skipped,
+   error. Only the active row is emphasised, so the eye lands on the step that
+   is running right now. */
+.audit-stepper {
+  margin: 4px 0 16px;
   padding: 0;
   list-style: none;
+  display: flex;
+  flex-direction: column;
 }
 
-.audit-flow-step {
+.audit-stepper-step {
   position: relative;
   display: flex;
   align-items: flex-start;
-  gap: 10px;
-  flex: 1 1 170px;
-  padding: 12px 13px;
-  border: 1px solid var(--aud-border);
-  border-radius: 12px;
-  background: var(--aud-flow-step-bg);
+  gap: 11px;
+  padding: 0 0 18px 0;
   min-width: 0;
-  transition: border-color 0.18s ease, background-color 0.18s ease, box-shadow 0.18s ease;
 }
 
-/* Connector rail: runs from this step's dot, across the gap and the next
-   card's left padding, into the next dot. Its colour follows the step state:
-   idle grey, active accent, done green, failed red. */
-.audit-flow-step::after {
+.audit-stepper-step:last-child {
+  padding-bottom: 0;
+}
+
+/* Connector: from this dot down to the next one. */
+.audit-stepper-step::before {
   content: "";
   position: absolute;
-  top: 22px;
-  left: 100%;
-  width: calc(12px + 13px);
-  height: 1.5px;
+  top: 19px;
+  left: 7.25px;
+  width: 1.5px;
+  height: calc(100% - 15px);
   border-radius: 999px;
   background: var(--aud-flow-line);
   transition: background-color 0.2s ease;
 }
 
-.audit-flow-step:last-child::after {
+.audit-stepper-step:last-child::before {
   display: none;
 }
 
-.audit-flow-step[data-state="active"]::after,
-.audit-flow-step.is-active::after {
-  background: linear-gradient(90deg, var(--aud-accent), var(--aud-flow-line));
-}
-
-.audit-flow-step[data-state="done"]::after,
-.audit-flow-step.is-done::after {
+.audit-stepper-step[data-state="done"]::before {
   background: var(--aud-ok);
 }
 
-.audit-flow-step[data-state="failed"]::after,
-.audit-flow-step.is-error::after {
+.audit-stepper-step[data-state="error"]::before {
   background: var(--aud-critical);
 }
 
-.audit-flow-step-num,
-.audit-flow-step-dot {
+.audit-stepper-dot {
+  position: relative;
+  z-index: 1;
   display: inline-grid;
   place-items: center;
   flex: none;
-  width: 22px;
-  height: 22px;
+  width: 16px;
+  height: 16px;
   border-radius: 50%;
   border: 1.5px solid var(--aud-flow-line);
   background: var(--aud-surface);
-  color: var(--aud-flow-idle-fg);
-  font-family: var(--aud-font-mono);
-  font-size: 11px;
-  font-weight: 700;
-  line-height: 1;
+  transition: border-color 0.18s ease, background-color 0.18s ease;
 }
 
-.audit-flow-step-body {
+.audit-stepper-body {
   display: flex;
   flex-direction: column;
-  gap: 3px;
+  gap: 2px;
   min-width: 0;
+  padding-top: 0;
 }
 
-.audit-flow-step-title {
+.audit-stepper-title {
   font-size: 12.5px;
   font-weight: 700;
+  line-height: 1.35;
   color: var(--aud-muted);
 }
 
-.audit-flow-step-label {
-  font-size: 12.5px;
-  font-weight: 700;
-  color: var(--aud-muted);
-  overflow-wrap: anywhere;
-}
-
-/* When the console script rebuilds the strip it emits dot + label only, so the
-   bare label centres itself against the dot. */
-.audit-flow-step > .audit-flow-step-label {
-  align-self: center;
-  min-width: 0;
-}
-
-.audit-flow-step-desc {
+.audit-stepper-desc {
   font-size: 11.5px;
-  line-height: 1.5;
+  line-height: 1.45;
   color: var(--aud-muted);
 }
 
-.audit-flow-step[data-state="active"],
-.audit-flow-step.is-active {
-  border-color: var(--aud-accent);
-  background: var(--aud-accent-soft);
+.audit-stepper-step[data-state="pending"] .audit-stepper-title,
+.audit-stepper-step[data-state="pending"] .audit-stepper-desc {
+  opacity: 0.72;
 }
 
-.audit-flow-step[data-state="active"] .audit-flow-step-num,
-.audit-flow-step.is-active .audit-flow-step-dot {
+.audit-stepper-step[data-state="active"] .audit-stepper-dot {
   border-color: var(--aud-accent);
   background: var(--aud-accent);
-  color: var(--aud-on-accent);
+  box-shadow: 0 0 0 4px var(--aud-accent-ring);
   animation: aud-flow-breathe 1.8s ease-in-out infinite;
 }
 
-.audit-flow-step[data-state="active"] .audit-flow-step-title,
-.audit-flow-step.is-active .audit-flow-step-label {
+.audit-stepper-step[data-state="active"] .audit-stepper-title {
   color: var(--aud-text);
 }
 
-.audit-flow-step[data-state="done"],
-.audit-flow-step.is-done {
-  border-color: var(--aud-ok-soft);
-  background: var(--aud-ok-soft);
+.audit-stepper-step[data-state="active"] .audit-stepper-desc {
+  color: var(--aud-text-2);
 }
 
-.audit-flow-step[data-state="done"] .audit-flow-step-num,
-.audit-flow-step.is-done .audit-flow-step-dot {
+.audit-stepper-step[data-state="done"] .audit-stepper-dot {
   border-color: var(--aud-ok);
   background: var(--aud-ok);
-  color: var(--aud-on-accent);
 }
 
-.audit-flow-step[data-state="done"] .audit-flow-step-title,
-.audit-flow-step.is-done .audit-flow-step-label {
+.audit-stepper-step[data-state="done"] .audit-stepper-title {
   color: var(--aud-ok);
 }
 
-.audit-flow-step[data-state="failed"],
-.audit-flow-step.is-error {
-  border-color: var(--aud-critical-soft);
-  background: var(--aud-critical-soft);
+.audit-stepper-step[data-state="skipped"] .audit-stepper-dot {
+  border-style: dashed;
+  border-color: var(--aud-flow-line);
+  background: transparent;
 }
 
-.audit-flow-step[data-state="failed"] .audit-flow-step-num,
-.audit-flow-step.is-error .audit-flow-step-dot {
+.audit-stepper-step[data-state="skipped"] .audit-stepper-title {
+  color: var(--aud-muted);
+  font-weight: 600;
+}
+
+.audit-stepper-step[data-state="error"] .audit-stepper-dot {
   border-color: var(--aud-critical);
   background: var(--aud-critical);
-  color: var(--aud-on-accent);
 }
 
-.audit-flow-step[data-state="failed"] .audit-flow-step-title,
-.audit-flow-step.is-error .audit-flow-step-label {
+.audit-stepper-step[data-state="error"] .audit-stepper-title {
   color: var(--aud-critical);
 }
 
@@ -2357,6 +2329,20 @@
   50% {
     box-shadow: 0 0 0 5px var(--aud-accent-ring);
   }
+}
+
+/* Two inline actions in the jobs table: open and delete. */
+.audit-row-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.audit-danger-btn.is-armed {
+  color: var(--aud-critical);
+  border-color: var(--aud-critical);
+  background: var(--aud-critical-soft);
 }
 
 /* Right-hand card: label/value pairs, values in mono. */
@@ -3238,31 +3224,6 @@
 }
 
 @media (max-width: 640px) {
-  /* Flow strip turns vertical; connectors become short vertical ticks. */
-  .audit-flow {
-    flex-direction: column;
-    gap: 14px;
-  }
-
-  .audit-flow-step {
-    flex: 0 0 auto;
-  }
-
-  .audit-flow-step::after {
-    top: auto;
-    bottom: -14px;
-    left: 24px;
-    right: auto;
-    width: 1.5px;
-    height: 14px;
-    background: var(--aud-flow-line);
-  }
-
-  .audit-flow-step[data-state="active"]::after,
-  .audit-flow-step.is-active::after {
-    background: linear-gradient(180deg, var(--aud-accent), var(--aud-flow-line));
-  }
-
   .audit-drop {
     padding: 26px 16px 24px;
   }
@@ -3392,8 +3353,7 @@
   .audit-pending-dots::before,
   #auditJobsRows .status-pill.running::before,
   .audit-drop-icon,
-  .audit-flow-step[data-state="active"] .audit-flow-step-num,
-  .audit-flow-step.is-active .audit-flow-step-dot,
+  .audit-stepper-step[data-state="active"] .audit-stepper-dot,
   .audit-upload-bar {
     animation: none;
     transition: none;

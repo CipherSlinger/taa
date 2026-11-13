@@ -820,7 +820,7 @@
         </button>
         <span id="auditSessionPill" class="audit-pill ok" title="会话状态由后端 Cookie 决定，操作时自动续期">
           <span class="audit-pill-dot"></span>
-          <span>会话有效</span>
+          <span id="auditSessionText">会话有效</span>
         </span>
         <div class="audit-user">
           <span class="audit-avatar" aria-hidden="true">管</span>
@@ -835,16 +835,7 @@
 
     <div class="audit-app-body">
       <nav class="audit-nav" aria-label="审计导航">
-        <button type="button" class="audit-nav-item active" data-audit-view="overview" onclick="auditConsoleSwitchView('overview')">
-          <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-            <rect x="3" y="3" width="7.5" height="7.5" rx="1.6"></rect>
-            <rect x="13.5" y="3" width="7.5" height="7.5" rx="1.6"></rect>
-            <rect x="3" y="13.5" width="7.5" height="7.5" rx="1.6"></rect>
-            <rect x="13.5" y="13.5" width="7.5" height="7.5" rx="1.6"></rect>
-          </svg>
-          <span>审计概览</span>
-        </button>
-        <button type="button" class="audit-nav-item" data-audit-view="jobs" onclick="auditConsoleSwitchView('jobs')">
+        <button type="button" class="audit-nav-item active" data-audit-view="jobs" onclick="auditConsoleSwitchView('jobs')">
           <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
             <path d="M9 3h6a1 1 0 0 1 1 1v2H8V4a1 1 0 0 1 1-1z"></path>
             <path d="M8 5H6a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2h-2"></path>
@@ -881,166 +872,13 @@
 
       <div class="audit-content">
 
-        <!-- ─── Overview ─── -->
-        <section id="auditViewOverview" class="audit-view">
-          <div class="audit-view-head">
-            <div>
-              <h2 class="audit-view-title">审计概览</h2>
-              <p class="audit-view-desc">所选实例的审计任务、风险分布与最新结论；进入本页签后每 5 秒自动刷新。</p>
-            </div>
-            <span class="audit-live"><span class="audit-live-dot"></span>实时轮询</span>
-          </div>
-
-          <div id="auditOverviewWarn" class="audit-warn" role="status" style="display: none;">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-              <path d="M10.3 3.9 1.9 18a2 2 0 0 0 1.7 3h16.8a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"></path>
-              <path d="M12 9v4.4M12 16.9v.2"></path>
-            </svg>
-            <span id="auditOverviewWarnText">实例当前不可达，以下为最近一次成功采样的数据。</span>
-          </div>
-
-          <div class="audit-kpi-grid">
-            <article class="audit-kpi">
-              <div class="audit-kpi-top">
-                <span class="audit-kpi-label">审计任务</span>
-                <span class="audit-kpi-icon">
-                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                    <path d="M9 3h6a1 1 0 0 1 1 1v2H8V4a1 1 0 0 1 1-1z"></path>
-                    <path d="M8 5H6a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2h-2"></path>
-                    <path d="M9 12h6M9 16h4"></path>
-                  </svg>
-                </span>
-              </div>
-              <div class="audit-kpi-value" id="auditKpiJobs">—</div>
-              <div class="audit-kpi-sub">累计接收的审计请求</div>
-            </article>
-            <article class="audit-kpi">
-              <div class="audit-kpi-top">
-                <span class="audit-kpi-label">通过率</span>
-                <span class="audit-kpi-icon">
-                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                    <circle cx="12" cy="12" r="9"></circle>
-                    <path d="m8.4 12.2 2.4 2.4 4.8-5"></path>
-                  </svg>
-                </span>
-              </div>
-              <div class="audit-kpi-value" id="auditKpiPassRate">—</div>
-              <div class="audit-kpi-sub">通过任务占已出结论任务的比例</div>
-            </article>
-            <article class="audit-kpi">
-              <div class="audit-kpi-top">
-                <span class="audit-kpi-label">高风险发现</span>
-                <span class="audit-kpi-icon">
-                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                    <path d="M10.3 3.9 1.9 18a2 2 0 0 0 1.7 3h16.8a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"></path>
-                    <path d="M12 9v4.4M12 16.9v.2"></path>
-                  </svg>
-                </span>
-              </div>
-              <div class="audit-kpi-value" id="auditKpiHigh">—</div>
-              <div class="audit-kpi-sub">HIGH 与 CRITICAL 级规则命中</div>
-            </article>
-            <article class="audit-kpi">
-              <div class="audit-kpi-top">
-                <span class="audit-kpi-label">平均耗时</span>
-                <span class="audit-kpi-icon">
-                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                    <circle cx="12" cy="12" r="9"></circle>
-                    <path d="M12 7v5.4l3.4 2"></path>
-                  </svg>
-                </span>
-              </div>
-              <div class="audit-kpi-value" id="auditKpiDuration">—</div>
-              <div class="audit-kpi-sub">单次审计端到端耗时</div>
-            </article>
-            <article class="audit-kpi">
-              <div class="audit-kpi-top">
-                <span class="audit-kpi-label">审计文件</span>
-                <span class="audit-kpi-icon">
-                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                    <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
-                    <path d="M14 2v6h6"></path>
-                  </svg>
-                </span>
-              </div>
-              <div class="audit-kpi-value" id="auditKpiFiles">—</div>
-              <div class="audit-kpi-sub">最近任务覆盖的代码文件数</div>
-            </article>
-            <article class="audit-kpi">
-              <div class="audit-kpi-top">
-                <span class="audit-kpi-label">发现总数</span>
-                <span class="audit-kpi-icon">
-                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                    <circle cx="11" cy="11" r="7"></circle>
-                    <path d="m20 20-3.6-3.6"></path>
-                  </svg>
-                </span>
-              </div>
-              <div class="audit-kpi-value" id="auditKpiFindings">—</div>
-              <div class="audit-kpi-sub">含 AI 复核后的判定结果</div>
-            </article>
-          </div>
-
-          <div class="audit-overview-grid">
-            <div class="audit-card">
-              <div class="audit-card-head">
-                <div>
-                  <h3 class="audit-card-title">风险分布</h3>
-                  <p class="audit-card-desc">按高风险、中风险、低风险与 AI 复核判定汇总当前实例的发现项。</p>
-                </div>
-              </div>
-              <div id="auditRiskChart" class="audit-risk-chart">
-                <div class="audit-empty">暂无审计数据，发起一次代码审计后将在此展示风险分布。</div>
-              </div>
-            </div>
-
-            <div class="audit-card audit-verdict-card">
-              <div class="audit-card-head">
-                <div>
-                  <h3 class="audit-card-title">最新结论</h3>
-                  <p class="audit-card-desc">来自最近一次审计任务的结论摘要，仅作为审计证据展示。</p>
-                </div>
-              </div>
-              <div class="audit-verdict-head">
-                <span id="auditLatestVerdict" class="audit-badge status-pending">待审计</span>
-              </div>
-              <p id="auditLatestSummary" class="audit-verdict-summary">尚未收到代码审计结果。前往「审计任务」下发一次审计后，结论会回流到此处。</p>
-            </div>
-          </div>
-
-          <div class="audit-card">
-            <div class="audit-card-head">
-              <div>
-                <h3 class="audit-card-title">最近审计任务</h3>
-                <p class="audit-card-desc">按接收时间倒序展示最近 10 条任务。</p>
-              </div>
-            </div>
-            <div class="audit-table-wrap">
-              <table class="audit-table">
-                <thead>
-                  <tr>
-                    <th scope="col">时间</th>
-                    <th scope="col">任务</th>
-                    <th scope="col">结论</th>
-                    <th scope="col">风险</th>
-                    <th scope="col">发现（高/中/低）</th>
-                    <th scope="col">耗时</th>
-                  </tr>
-                </thead>
-                <tbody id="auditRecentRows">
-                  <tr class="audit-table-empty"><td colspan="6">暂无审计记录，可在「审计任务」中发起一次代码审计。</td></tr>
-                </tbody>
-              </table>
-            </div>
-          </div>
-        </section>
 
         <!-- ─── Audit jobs ─── -->
-        <section id="auditViewJobs" class="audit-view" style="display: none;">
+        <section id="auditViewJobs" class="audit-view">
           <div class="audit-view-head">
             <div>
               <h2 class="audit-view-title">审计任务</h2>
-              <p class="audit-view-desc">选择一个代码或模型归档，平台会用当前实例的 TAA 注册公钥封装密文信封并下发；TAA 在机密域内解密、解压后异步执行静态扫描与 AI 语义判定，结论自动回流到本控制台。</p>
+              <p class="audit-view-desc">上传一个代码或模型归档，明文包在本机解压后按与 TAA 相同的流程执行审计：静态扫描、二进制通道、AI 语义判定与结论汇总。审计不连接 TAA 实例，结论直接写入任务列表。</p>
             </div>
           </div>
 
@@ -1049,7 +887,7 @@
               <div class="audit-card-head">
                 <div>
                   <h3 class="audit-card-title">发起代码审计</h3>
-                  <p class="audit-card-desc">请求标识、任务标识与运行配置由平台自动生成，无需手工填写。</p>
+                  <p class="audit-card-desc">请求标识与任务标识由控制台自动生成，归档在本机解压后执行审计。</p>
                 </div>
               </div>
 
@@ -1091,7 +929,7 @@
                   <span class="audit-file-sub">
                     <span id="auditFileSize" class="audit-file-size">—</span>
                     <span class="audit-file-dot" aria-hidden="true">·</span>
-                    <span id="auditFileTypeText" class="audit-file-type">平台将自动加密后下发</span>
+                    <span id="auditFileTypeText" class="audit-file-type">在本机解压后审计</span>
                   </span>
                 </span>
                 <button type="button" id="auditFileClearBtn" class="audit-file-clear">移除</button>
@@ -1105,7 +943,7 @@
                   </svg>
                   上传并启动审计
                 </button>
-                <p id="auditSubmitHint" class="audit-hint">文件在平台侧完成加密后才下发，审计由 TAA 异步执行，结论自动回流。</p>
+                <p id="auditSubmitHint" class="audit-hint">归档在本机解压并执行审计，同一时间只运行一个任务；审计结束后临时目录自动删除。</p>
               </div>
 
               <div id="auditUploadProgress" class="audit-upload" style="display: none;">
@@ -1118,58 +956,70 @@
                 </div>
               </div>
 
-              <!-- Three-stage pipeline strip; each step carries data-state="idle|active|done|failed". -->
-              <div id="auditFlowSteps" class="audit-flow" role="group" aria-label="审计流程">
-                <div class="audit-flow-step" role="listitem" data-state="idle">
-                  <span class="audit-flow-step-num audit-flow-step-dot" aria-hidden="true">1</span>
-                  <span class="audit-flow-step-body">
-                    <span class="audit-flow-step-title audit-flow-step-label">上传并加密</span>
-                    <span class="audit-flow-step-desc">平台封装 SM2 信封后下发</span>
-                  </span>
-                </div>
-                <div class="audit-flow-step" role="listitem" data-state="idle">
-                  <span class="audit-flow-step-num audit-flow-step-dot" aria-hidden="true">2</span>
-                  <span class="audit-flow-step-body">
-                    <span class="audit-flow-step-title audit-flow-step-label">TAA 机密域审计</span>
-                    <span class="audit-flow-step-desc">解密解压后静态扫描与 AI 判定</span>
-                  </span>
-                </div>
-                <div class="audit-flow-step" role="listitem" data-state="idle">
-                  <span class="audit-flow-step-num audit-flow-step-dot" aria-hidden="true">3</span>
-                  <span class="audit-flow-step-body">
-                    <span class="audit-flow-step-title audit-flow-step-label">结论回流</span>
-                    <span class="audit-flow-step-desc">reportAudit 回报并落库</span>
-                  </span>
-                </div>
-              </div>
             </div>
 
             <aside class="audit-card audit-launch-side">
               <div class="audit-card-head">
                 <div>
                   <h3 class="audit-card-title">本次审计</h3>
-                  <p class="audit-card-desc">下列信息由平台在提交时自动生成。</p>
+                  <p class="audit-card-desc">本地执行 · 不连接 TAA 实例</p>
                 </div>
               </div>
+              <ol id="auditStepper" class="audit-stepper" aria-label="审计流程">
+                <li class="audit-stepper-step" data-step="receive" data-state="pending">
+                  <span class="audit-stepper-dot" aria-hidden="true"></span>
+                  <span class="audit-stepper-body">
+                    <span class="audit-stepper-title">接收明文包</span>
+                    <span class="audit-stepper-desc">校验归档并落盘</span>
+                  </span>
+                </li>
+                <li class="audit-stepper-step" data-step="extract" data-state="pending">
+                  <span class="audit-stepper-dot" aria-hidden="true"></span>
+                  <span class="audit-stepper-body">
+                    <span class="audit-stepper-title">解压归档</span>
+                    <span class="audit-stepper-desc">带路径穿越防护地展开</span>
+                  </span>
+                </li>
+                <li class="audit-stepper-step" data-step="static" data-state="pending">
+                  <span class="audit-stepper-dot" aria-hidden="true"></span>
+                  <span class="audit-stepper-body">
+                    <span class="audit-stepper-title">Tier 1 静态扫描</span>
+                    <span class="audit-stepper-desc">规则匹配与行号定位</span>
+                  </span>
+                </li>
+                <li class="audit-stepper-step" data-step="binary" data-state="pending">
+                  <span class="audit-stepper-dot" aria-hidden="true"></span>
+                  <span class="audit-stepper-body">
+                    <span class="audit-stepper-title">二进制通道</span>
+                    <span class="audit-stepper-desc">ELF / 归档 / pickle 检查</span>
+                  </span>
+                </li>
+                <li class="audit-stepper-step" data-step="ai" data-state="pending">
+                  <span class="audit-stepper-dot" aria-hidden="true"></span>
+                  <span class="audit-stepper-body">
+                    <span class="audit-stepper-title">Tier 2 AI 判定</span>
+                    <span class="audit-stepper-desc">网关不可达时跳过</span>
+                  </span>
+                </li>
+                <li class="audit-stepper-step" data-step="conclude" data-state="pending">
+                  <span class="audit-stepper-dot" aria-hidden="true"></span>
+                  <span class="audit-stepper-body">
+                    <span class="audit-stepper-title">汇总结论</span>
+                    <span class="audit-stepper-desc">统计发现并写入任务</span>
+                  </span>
+                </li>
+              </ol>
               <dl class="audit-meta-list">
-                <div class="audit-meta-row">
-                  <dt>加密方式</dt>
-                  <dd>密文信封（SM2 + SM4-GCM）</dd>
-                </div>
                 <div class="audit-meta-row">
                   <dt>任务标识</dt>
                   <dd><span id="auditTaskIdPreview" class="audit-meta-mono">提交时自动生成</span></dd>
                 </div>
                 <div class="audit-meta-row">
-                  <dt>目标实例</dt>
-                  <dd>当前选中的 TAA 实例</dd>
-                </div>
-                <div class="audit-meta-row">
-                  <dt>预计流程</dt>
-                  <dd>上传加密 → 机密域审计 → 结论回流</dd>
+                  <dt>文件</dt>
+                  <dd id="auditRunFile">—</dd>
                 </div>
               </dl>
-              <p class="audit-meta-note">任务标识、请求标识与运行配置无需人工填写：平台为每次下发自动生成并在审计完成后归档，避免人工填写造成的重复与错配。</p>
+              <p class="audit-meta-note">明文归档在本机解压，审计结束后临时目录自动删除；同一时间只执行一个任务。</p>
             </aside>
           </div>
 
@@ -1177,7 +1027,7 @@
             <div class="audit-card-head">
               <div>
                 <h3 class="audit-card-title">审计任务列表</h3>
-                <p class="audit-card-desc">点击任务可跳转到「审计结果」查看逐条发现。</p>
+                <p class="audit-card-desc">点击任务可跳转到「审计结果」查看逐条发现；已完成的任务可以删除本条记录。</p>
               </div>
               <div class="audit-card-tools">
                 <label class="audit-inline-label" for="auditJobsFilter">筛选</label>
@@ -1206,7 +1056,7 @@
                   </tr>
                 </thead>
                 <tbody id="auditJobsRows">
-                  <tr class="audit-table-empty"><td colspan="9">暂无审计任务。上传一个代码归档并下发后，任务会显示在这里。</td></tr>
+                  <tr class="audit-table-empty"><td colspan="9">暂无审计任务。上传一个代码归档并启动审计后，任务会显示在这里。</td></tr>
                 </tbody>
               </table>
             </div>
@@ -1476,7 +1326,7 @@
           <div class="audit-view-head">
             <div>
               <h2 class="audit-view-title">设置</h2>
-              <p class="audit-view-desc">查看审计实例与安全模块端点，调整证明校验策略与会话参数。</p>
+              <p class="audit-view-desc">查看安全模块端点，调整证明校验策略与代码审计提示词。</p>
             </div>
           </div>
 
@@ -1533,30 +1383,29 @@
               </div>
             </div>
 
-            <div class="audit-card">
+            <div class="audit-card audit-card-wide">
               <div class="audit-card-head">
                 <div>
-                  <h3 class="audit-card-title">会话</h3>
-                  <p class="audit-card-desc">控制台登录状态与后端签发策略。</p>
+                  <h3 class="audit-card-title">代码审计提示词</h3>
+                  <p class="audit-card-desc">附加在 Tier 2 AI 判定的内置评分标准之前，用于调整判定口径；留空则只使用内置标准。</p>
                 </div>
               </div>
-              <dl class="audit-field-list">
-                <div class="audit-field-row">
-                  <dt>会话有效期</dt>
-                  <dd id="auditSessionTTL">8 小时（操作时滑动续期）</dd>
-                </div>
-                <div class="audit-field-row">
-                  <dt>会话标识</dt>
-                  <dd><code>pm_llm_session</code></dd>
-                </div>
-              </dl>
-              <p class="audit-help">Cookie 为 HttpOnly、SameSite=Strict，退出登录会立即清除。</p>
+              <div class="audit-field">
+                <label for="auditPromptInput">附加提示词</label>
+                <textarea id="auditPromptInput" class="audit-textarea" rows="6" placeholder="例如：本次只关注读取环境变量并外发网络请求的行为，其余命中按低风险处理。"></textarea>
+              </div>
+              <div class="audit-btn-row">
+                <button type="button" id="auditPromptSaveBtn" class="audit-btn audit-btn-primary audit-btn-sm">保存提示词</button>
+                <button type="button" id="auditPromptResetBtn" class="audit-btn audit-btn-ghost audit-btn-sm">清空</button>
+                <span id="auditPromptMeta" class="audit-muted-sm">尚未加载</span>
+              </div>
+              <p class="audit-help">提示词保存在控制台进程内存中，下一次审计生效；服务重启后需重新填写。</p>
             </div>
           </div>
 
           <div class="audit-settings-actions">
-            <p id="auditSettingsHint" class="audit-hint">保存后立即作用于后续握手；若严格模式握手失败，可先切回 permissive 再排查信任锚。</p>
-            <button type="button" id="auditSaveSettingsBtn" class="audit-btn audit-btn-primary">保存设置</button>
+            <p id="auditSettingsHint" class="audit-hint">TLS 设置保存后立即作用于后续握手；若严格模式握手失败，可先切回 permissive 再排查信任锚。</p>
+            <button type="button" id="auditSaveSettingsBtn" class="audit-btn audit-btn-primary">保存 TLS 设置</button>
           </div>
         </section>
 

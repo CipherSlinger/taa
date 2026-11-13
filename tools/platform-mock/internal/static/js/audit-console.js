@@ -16,20 +16,15 @@
   const USER_KEY = 'pm.audit.user';             // localStorage: remembered username only
   const DOCKER_KEY = 'pm.audit.dockerId';       // localStorage: last selected instance
   const TAB_KEY = 'pm.audit.tab';               // sessionStorage: last active tab
-  const POLL_MS = 5000;                         // overview + gateway status cadence
-  const SUBMIT_POLL_MS = 3000;                  // post-submit job discovery cadence
-  const SUBMIT_POLL_WINDOW_MS = 300000;         // a TEE-side audit, LLM adjudication included
+  const POLL_MS = 5000;                         // job list + gateway status cadence
+  const SUBMIT_POLL_MS = 1000;                  // post-submit job discovery cadence
+  const SUBMIT_POLL_WINDOW_MS = 900000;         // a CPU-only AI adjudication can take minutes
   const REQUEST_TIMEOUT_MS = 15000;
   const GENERATE_TIMEOUT_MS = 130000;           // server allows a ~120s cold model load
   const ATTEST_TIMEOUT_MS = 120000;             // report fetch plus a handshake
-  const SESSION_TICK_MS = 60000;                // remaining-session display refresh
-  // The audit needs a runnable command even though it never trains; `true`
-  // is the same trigger-only config the console has always sent.
-  const DEFAULT_RUNTIME_CONFIG = '{"commands":["true"],"env":""}';
 
-  const VIEWS = ['overview', 'jobs', 'findings', 'engine', 'settings'];
+  const VIEWS = ['jobs', 'findings', 'engine', 'settings'];
   const VIEW_IDS = {
-    overview: 'auditViewOverview',
     jobs: 'auditViewJobs',
     findings: 'auditViewFindings',
     engine: 'auditViewEngine',
@@ -51,14 +46,14 @@
     muted:  { cls: 'pending', color: '#6b7280', bg: 'rgba(100, 116, 139, 0.10)', border: 'rgba(100, 116, 139, 0.25)' },
   };
 
-  const SETTINGS_HINT = '平台只展示安全引擎的证据与连通性，不代替 TEE 内给出的审计结论；'
-    + '保存后新的 TLS 参数只影响后续请求。';
+  const SETTINGS_HINT = '审计在本控制台进程内执行，提示词与 TLS 设置只影响后续审计；'
+    + '服务重启后回到默认值。';
 
   // ── Module state ──
   const state = {
     booted: false,
     tab: 'platform',
-    view: 'overview',
+    view: 'jobs',
 
     // Authentication
     user: null,
@@ -67,7 +62,6 @@
     dropping: false,
     loginBusy: false,
     loginCountdown: null,
-    sessionTimer: null,
 
     // Instances
     dockerId: '',
@@ -281,28 +275,6 @@
     });
   }
 
-  // setKpi resolves the value slot adaptively: the contract fixes the ID and the
-  // presence of .audit-kpi-sub, not the inner markup.
-  function setKpi(id, valueText, subText, tone) {
-    const el = $(id);
-    if (!el) return;
-
-    let value = el.querySelector('.audit-kpi-value, .audit-kpi-num, .audit-kpi-number, strong, b');
-    if (!value && el.children.length === 0) value = el;
-    if (!value) {
-      value = document.createElement('span');
-      value.className = 'audit-kpi-value';
-      const sub = el.querySelector('.audit-kpi-sub');
-      el.insertBefore(value, sub || el.firstChild);
-    }
-    value.textContent = valueText == null ? '—' : String(valueText);
-    value.style.color = tone && TONES[tone] ? TONES[tone].color : '';
-
-    let sub = el.querySelector('.audit-kpi-sub');
-    if (!sub && el.parentElement) sub = el.parentElement.querySelector('.audit-kpi-sub');
-    if (sub) sub.textContent = subText || '';
-  }
-
   // ── Safe storage ──
   function storeGet(store, key) {
     try { return store.getItem(key); } catch (_) { return null; }
@@ -340,12 +312,6 @@
     const t = Date.parse(iso);
     if (Number.isNaN(t)) return String(iso);
     return new Date(t).toLocaleString('zh-CN', { hour12: false });
-  }
-
-  function fmtPercent(numerator, denominator) {
-    const total = toNumber(denominator);
-    if (total <= 0) return '0.0%';
-    return ((toNumber(numerator) / total) * 100).toFixed(1) + '%';
   }
 
   function shortId(id) {
@@ -541,46 +507,12 @@
     }, 1000);
   }
 
+  // The session refreshes on every authenticated call, so a countdown would
+  // only add noise. The pill carries the state word and its dot stays outside
+  // the text node.
   function renderSessionPill() {
-    const pill = $('auditSessionPill');
-    if (!pill) return;
-    if (!state.expiresAt) {
-      pill.textContent = state.user ? '已登录' : '';
-      return;
-    }
-    const left = Math.round((Date.parse(state.expiresAt) - Date.now()) / 1000);
-    pill.textContent = Number.isNaN(left)
-      ? '已登录'
-      : (left > 0 ? '会话剩余 ' + fmtSeconds(left) : '会话即将过期');
-  }
-
-  function renderSessionTTL() {
-    const el = $('auditSessionTTL');
-    if (!el) return;
-    let text = '—';
-    if (state.expiresAt) {
-      const left = Math.round((Date.parse(state.expiresAt) - Date.now()) / 1000);
-      text = Number.isNaN(left) ? '—' : (left > 0 ? '会话剩余 ' + fmtSeconds(left) : '会话即将过期');
-    } else if (state.settings && state.settings.session && state.settings.session.ttlSeconds != null) {
-      text = '默认有效期 ' + fmtSeconds(state.settings.session.ttlSeconds);
-    }
-    if (el.tagName === 'INPUT') el.value = text;
-    else el.textContent = text;
-  }
-
-  function startSessionTicker() {
-    stopSessionTicker();
-    state.sessionTimer = setInterval(() => {
-      renderSessionPill();
-      renderSessionTTL();
-    }, SESSION_TICK_MS);
-  }
-
-  function stopSessionTicker() {
-    if (state.sessionTimer) {
-      clearInterval(state.sessionTimer);
-      state.sessionTimer = null;
-    }
+    const text = $('auditSessionText');
+    if (text) text.textContent = state.user ? '会话有效' : '';
   }
 
   function stopPollers() {
@@ -618,7 +550,6 @@
       select.replaceChildren();
       delete select.dataset.sig;
     }
-    paintPill('auditLatestVerdict', '—', 'muted');
     paintPill('auditFindingsVerdict', '—', 'muted');
     paintPill('engineStaticStatus', '暂无任务', 'muted');
     paintPill('engineLLMStatus', '未连接', 'muted');
@@ -639,7 +570,6 @@
     state.user = null;
     state.dropping = false;
     stopPollers();
-    stopSessionTicker();
     showAppView(false);
     restoreLoginForm();
     const pwd = $('auditLoginPassword');
@@ -656,7 +586,6 @@
   function dropToLogin(message) {
     const already = state.dropping;
     stopPollers();
-    stopSessionTicker();
     stopLoginCountdown();
     state.dropping = true;
     state.user = null;
@@ -685,9 +614,7 @@
     showLoginError('');
     setCapsWarning(false);
     renderSessionPill();
-    renderSessionTTL();
-    startSessionTicker();
-    applyView(VIEWS.indexOf(state.view) === -1 ? 'overview' : state.view);
+    applyView(VIEWS.indexOf(state.view) === -1 ? 'jobs' : state.view);
     bootstrapApp();
   }
 
@@ -791,7 +718,6 @@
     state.user = null;
     state.expiresAt = '';
     stopPollers();
-    stopSessionTicker();
     stopLoginCountdown();
     resetAppData();
     showAppView(false);
@@ -854,7 +780,7 @@
   }
 
   function applyView(view) {
-    const next = VIEWS.indexOf(view) === -1 ? 'overview' : view;
+    const next = VIEWS.indexOf(view) === -1 ? 'jobs' : view;
     state.view = next;
 
     VIEWS.forEach((name) => setDisplayed(VIEW_IDS[name], name === next));
@@ -878,9 +804,6 @@
   async function refreshVisibleView() {
     if (!state.user) return;
     switch (state.view) {
-      case 'overview':
-        await refreshOverview(false);
-        break;
       case 'jobs':
         await refreshJobs(false);
         break;
@@ -985,180 +908,12 @@
     const jobSelect = $('auditFindingsJobSelect');
     if (jobSelect) delete jobSelect.dataset.sig;
 
-    await refreshOverview(false);
     await refreshJobs(false);
     if (state.view === 'findings') await refreshFindings(false);
     if (state.view === 'engine') await refreshEngine();
     if (state.view === 'settings') await refreshSettings(false);
   }
 
-  // ── Overview ──
-  async function refreshOverview(silent) {
-    if (!state.user) return;
-    try {
-      const res = await requestJSON(auditUrl('/api/audit/console/overview'), { timeoutMs: REQUEST_TIMEOUT_MS });
-      if (!res.ok) {
-        if (!silent) toast({ type: 'warning', title: '概览刷新失败', message: 'HTTP ' + res.status });
-        return;
-      }
-      renderOverview(unwrap(res.data) || {});
-    } catch (err) {
-      if (err.unauthorized || silent) return;
-      toast({ type: 'warning', title: '概览刷新失败', message: err.message });
-    }
-  }
-
-  function renderOverview(data) {
-    const inst = data.instance || {};
-    const summary = data.summary || {};
-    const recent = Array.isArray(data.recent) ? data.recent : [];
-
-    const jobs = toNumber(summary.jobs);
-    const passed = toNumber(summary.passed);
-    const failed = toNumber(summary.failed);
-    const unavailable = toNumber(summary.llmUnavailable);
-    const pending = toNumber(summary.pending);
-    const high = toNumber(summary.high);
-    const medium = toNumber(summary.medium);
-    const low = toNumber(summary.low);
-
-    const passRate = Number(summary.passRate);
-    setKpi('auditKpiJobs', String(jobs),
-      '通过 ' + passed + ' · 未通过 ' + failed
-        + (unavailable ? ' · AI 不可用 ' + unavailable : '')
-        + (pending ? ' · 进行中 ' + pending : ''));
-    setKpi('auditKpiPassRate',
-      Number.isFinite(passRate) ? (Math.max(0, Math.min(1, passRate)) * 100).toFixed(1) + '%' : '—',
-      jobs > 0 ? '通过 ' + passed + ' / 共 ' + jobs : '暂无任务',
-      Number.isFinite(passRate) && passRate < 0.6 && jobs > 0 ? 'warn' : 'ok');
-    setKpi('auditKpiHigh', String(high),
-      '中危 ' + medium + ' · 低危 ' + low,
-      high > 0 ? 'high' : 'ok');
-    setKpi('auditKpiDuration',
-      Number.isFinite(Number(summary.avgDurationMs)) ? fmtDuration(summary.avgDurationMs) : '—',
-      '平均单次审计耗时');
-
-    // The overview projection has no instance-wide file/finding totals; the
-    // recent window is the only honest source, and the sub-label says so.
-    const recentFiles = recent.reduce((sum, job) => sum + toNumber(job.files), 0);
-    const recentFindings = recent.reduce((sum, job) => sum + toNumber(job.findings), 0);
-    setKpi('auditKpiFiles', recent.length ? String(recentFiles) : '—',
-      recent.length ? '最近 ' + recent.length + ' 条任务合计' : '暂无任务');
-    setKpi('auditKpiFindings', recent.length ? String(recentFindings) : '—',
-      recent.length ? '最近 ' + recent.length + ' 条任务合计' : '暂无任务');
-
-    renderRiskChart(high, medium, low);
-    renderRecentRows(recent);
-    renderLatestVerdict(recent[0] || null);
-
-    const warn = $('auditOverviewWarn');
-    if (warn) {
-      const parts = [];
-      if (inst.online === false) parts.push('当前实例不可达，以下数据取自最近一次记录。');
-      if (jobs === 0 && pending === 0) parts.push('尚无审计任务。可在「审计任务」页发起一次，或等待 TAA 上报。');
-      if (pending > 0) parts.push('有 ' + pending + ' 个任务正在 TEE 内审计，结论到达后自动归档。');
-      if (unavailable > 0) parts.push('有 ' + unavailable + ' 次任务因 AI 语义判定不可用而未完成，结论只含静态扫描部分。');
-      warn.textContent = parts.join(' ');
-      warn.style.display = parts.length ? '' : 'none';
-    }
-  }
-
-  function renderRiskChart(high, medium, low) {
-    const host = $('auditRiskChart');
-    if (!host) return;
-    host.replaceChildren();
-
-    const total = high + medium + low;
-    const rows = [
-      ['HIGH', '高危', high, TONES.high.color],
-      ['MEDIUM', '中危', medium, TONES.medium.color],
-      ['LOW', '低危', low, TONES.low.color],
-    ];
-
-    rows.forEach(([key, label, count, color]) => {
-      const row = document.createElement('div');
-      row.className = 'audit-risk-row';
-      row.dataset.risk = key;
-      row.style.cssText = 'display:flex;align-items:center;gap:10px;margin:7px 0;';
-
-      const name = document.createElement('span');
-      name.className = 'audit-risk-label';
-      name.textContent = label;
-      name.style.cssText = 'width:44px;font-size:12px;color:var(--muted, #6b7280);';
-
-      const track = document.createElement('div');
-      track.className = 'audit-risk-track';
-      track.style.cssText = 'flex:1;height:10px;border-radius:999px;background:rgba(100,116,139,0.15);overflow:hidden;';
-
-      const fill = document.createElement('div');
-      fill.className = 'audit-risk-fill';
-      fill.style.cssText = 'height:100%;border-radius:999px;width:' + fmtPercent(count, total)
-        + ';background:' + color + ';transition:width 0.3s ease;';
-      track.appendChild(fill);
-
-      const value = document.createElement('span');
-      value.className = 'audit-risk-value';
-      value.textContent = count + ' · ' + fmtPercent(count, total);
-      value.style.cssText = 'width:96px;text-align:right;font-size:12px;font-family:' + MONO_FONT + ';color:var(--text, #241b17);';
-
-      row.append(name, track, value);
-      host.appendChild(row);
-    });
-
-    if (total === 0) {
-      const empty = document.createElement('div');
-      empty.className = 'audit-risk-empty';
-      empty.textContent = '暂无规则命中，风险分布为空。';
-      empty.style.cssText = 'font-size:12px;color:var(--muted, #6b7280);margin-top:6px;';
-      host.appendChild(empty);
-    }
-  }
-
-  function renderRecentRows(recent) {
-    const tbody = $('auditRecentRows');
-    if (!tbody) return;
-    tbody.replaceChildren();
-
-    if (!recent.length) {
-      emptyRow(tbody, 6, '暂无审计记录，可在「审计任务」中发起一次代码审计。');
-      return;
-    }
-
-    recent.forEach((job) => {
-      const verdict = verdictOf(job);
-      const tr = document.createElement('tr');
-
-      tr.appendChild(makeCell(fmtTime(job.at), { nowrap: true }));
-      tr.appendChild(idCell(job));
-      tr.appendChild(makeCell(badge(verdict.label, verdict.tone)));
-      tr.appendChild(makeCell(badge(riskLabel(job.riskLevel), riskTone(job.riskLevel))));
-      tr.appendChild(makeCell(toNumber(job.high) + ' / ' + toNumber(job.medium) + ' / ' + toNumber(job.low), { mono: true }));
-      tr.appendChild(makeCell(fmtDuration(job.durationMs), { nowrap: true }));
-
-      if (statusOf(job).key !== 'pending') {
-        tr.style.cursor = 'pointer';
-        tr.addEventListener('click', () => auditLoadJob(job.id));
-      }
-      tbody.appendChild(tr);
-    });
-  }
-
-  function renderLatestVerdict(job) {
-    if (!job) {
-      paintPill('auditLatestVerdict', '—', 'muted');
-      setText('auditLatestSummary', '暂无审计结论。');
-      return;
-    }
-    const verdict = verdictOf(job);
-    paintPill('auditLatestVerdict', verdict.label, verdict.tone);
-    setText('auditLatestSummary',
-      fmtTime(job.at)
-      + ' · requestId ' + (job.requestId || '—')
-      + ' · 风险 ' + riskLabel(job.riskLevel)
-      + ' · 命中 高' + toNumber(job.high) + ' 中' + toNumber(job.medium) + ' 低' + toNumber(job.low)
-      + ' · 耗时 ' + fmtDuration(job.durationMs)
-      + ' · 文件 ' + toNumber(job.files) + ' 个');
-  }
 
   // ── Jobs ──
   async function refreshJobs(silent) {
@@ -1174,6 +929,11 @@
       state.jobsTotal = data.total != null ? toNumber(data.total) : state.jobs.length;
       renderJobsTable();
       fillFindingsJobSelect();
+      // Restore the rail from the newest local job so a page reload still shows
+      // where the last audit ended. A submission in flight owns the rail.
+      if (!state.submitBusy) {
+        renderStepper(state.jobs.find((job) => job && job.stages) || null);
+      }
     } catch (err) {
       if (err.unauthorized || silent) return;
       toast({ type: 'warning', title: '任务列表刷新失败', message: err.message });
@@ -1206,7 +966,7 @@
     if (!rows.length) {
       const text = state.jobs.length
         ? '当前筛选条件下没有任务。'
-        : '暂无审计任务。在上方选择文件并下发一次，或等待 TAA 上报。';
+        : '暂无审计任务。在上方选择文件并启动一次审计。';
       emptyRow(tbody, 9, text);
       return;
     }
@@ -1227,7 +987,7 @@
       if (pending) {
         const dots = document.createElement('span');
         dots.className = 'audit-pending-dots';
-        dots.textContent = '扫描中';
+        dots.textContent = stepLabel(job.stage);
         tr.appendChild(makeCell(dots));
         tr.appendChild(makeCell('—', { title: false }));
         tr.appendChild(makeCell(String(toNumber(job.files) || 1)));
@@ -1244,6 +1004,9 @@
         tr.appendChild(makeCell(fmtDuration(job.durationMs), { nowrap: true }));
       }
 
+      const actions = document.createElement('div');
+      actions.className = 'audit-row-actions';
+
       const action = document.createElement('button');
       action.type = 'button';
       action.className = 'secondary';
@@ -1257,7 +1020,7 @@
           toast({
             type: 'error',
             title: '任务未完成',
-            message: job.error || 'TAA 未返回审计结论，请检查实例连通性后重新下发。',
+            message: job.error || '审计未返回结论，请检查原因后重新提交。',
           });
         });
       } else {
@@ -1267,10 +1030,93 @@
           auditLoadJob(job.id);
         });
       }
-      tr.appendChild(makeCell(action, { title: false }));
+      actions.appendChild(action);
+
+      // A running row cannot be deleted: the runner still writes to it.
+      if (!pending) {
+        const del = document.createElement('button');
+        del.type = 'button';
+        del.className = 'secondary audit-danger-btn';
+        del.textContent = '删除';
+        del.addEventListener('click', (ev) => {
+          ev.stopPropagation();
+          armRowDelete(del, job);
+        });
+        actions.appendChild(del);
+      }
+      tr.appendChild(makeCell(actions, { title: false }));
 
       tbody.appendChild(tr);
     });
+  }
+
+  // stepLabel names the step a pending job is on, using the server's `stage`.
+  function stepLabel(key) {
+    switch (key) {
+      case 'receive': return '接收审计包…';
+      case 'extract': return '解压归档…';
+      case 'static': return '静态扫描…';
+      case 'binary': return '二进制检查…';
+      case 'ai': return 'AI 判定…';
+      case 'conclude': return '汇总结论…';
+      case 'done': return '已完成';
+      default: return '执行中…';
+    }
+  }
+
+  // ── Row deletion ──
+  // The first click arms the button for a few seconds; the second click sends
+  // the DELETE. Disarming on timeout keeps a stray click from removing a record.
+  const pendingRowDeletes = new Map();
+
+  function armRowDelete(btn, job) {
+    const id = job.id || job.requestId;
+    if (!id) return;
+    if (btn.dataset.armed === '1') {
+      clearTimeout(pendingRowDeletes.get(id));
+      pendingRowDeletes.delete(id);
+      auditDeleteJob(job);
+      return;
+    }
+    btn.dataset.armed = '1';
+    btn.textContent = '确认删除';
+    btn.classList.add('is-armed');
+    const timer = setTimeout(() => {
+      pendingRowDeletes.delete(id);
+      if (!btn.isConnected) return;
+      btn.dataset.armed = '0';
+      btn.textContent = '删除';
+      btn.classList.remove('is-armed');
+    }, 4000);
+    pendingRowDeletes.set(id, timer);
+  }
+
+  async function auditDeleteJob(job) {
+    const id = job.id || job.requestId;
+    if (!state.user || !id) return;
+    try {
+      const res = await requestJSON(auditUrl('/api/audit/console/jobs/' + encodeURIComponent(id)), {
+        method: 'DELETE',
+        timeoutMs: REQUEST_TIMEOUT_MS,
+      });
+      const data = unwrap(res.data) || {};
+      if (!res.ok || data.ok === false) {
+        const message = data.error || data.msg || ('HTTP ' + res.status);
+        toast({ type: 'warning', title: '删除失败', message: message });
+        return;
+      }
+      state.jobs = state.jobs.filter((row) => (row.id || row.requestId) !== id);
+      if (state.selectedJobId === id) {
+        state.selectedJobId = '';
+        state.currentJob = null;
+        state.findings = [];
+      }
+      renderJobsTable();
+      fillFindingsJobSelect();
+      toast({ type: 'success', title: '已删除', message: '任务记录已从列表移除' });
+    } catch (err) {
+      if (!err.unauthorized) toast({ type: 'warning', title: '删除失败', message: err.message });
+    }
   }
 
   function fillFindingsJobSelect() {
@@ -1358,43 +1204,29 @@
 
   // ── Audit submission ──
   //
-  // One request carries the whole pipeline the production platform runs: the
-  // browser posts the package to the mock, the mock wraps it in the same SM2
-  // key envelope and SM4 ciphertext the platform would use, and dispatches
-  // /v1/taa/importModel through the sealed proxy. TAA then audits inside the
-  // confidential VM and reports back asynchronously, so the returned job is
-  // recorded as `pending` and this view polls until the verdict arrives.
-  // The strip has three stages, matching what actually happens: the browser
-  // uploads and the mock seals the envelope; TAA decrypts and audits inside the
-  // confidential VM; the verdict comes back through reportAudit. The markup
-  // owns the labels, this only moves the state.
-  const FLOW_STEPS = ['upload', 'audit', 'report'];
-
-  function flowStepOf(key) {
-    const index = FLOW_STEPS.indexOf(key);
-    return index < 0 ? 0 : index;
-  }
-
-  // renderFlow paints the strip: the given stage is active, earlier ones are
-  // done, later ones idle. mode 'done' marks every stage done; 'error' paints
-  // the current stage red and leaves the rest idle.
-  function renderFlow(activeKey, mode) {
-    const host = $('auditFlowSteps');
+  // The browser posts the plaintext archive to the mock and the mock runs the
+  // whole audit in its own process, following the same design TAA uses: unpack,
+  // Tier 1 static scan, the binary channel, optional Tier 2 adjudication and the
+  // conclusion. The submission answers as soon as the job is recorded, so the
+  // returned row is `pending` and this view polls the job's `stages` until the
+  // verdict arrives. Only one audit runs at a time; the server answers 409.
+  function renderStepper(job) {
+    const host = $('auditStepper');
     if (!host) return;
-    const steps = host.querySelectorAll('.audit-flow-step');
+    const steps = host.querySelectorAll('.audit-stepper-step');
     if (!steps.length) return;
 
-    const active = flowStepOf(activeKey);
-    steps.forEach((item, index) => {
-      let state = 'idle';
-      if (mode === 'done') state = 'done';
-      else if (mode === 'error') state = index === active ? 'failed' : (index < active ? 'done' : 'idle');
-      else if (mode === 'running') state = index < active ? 'done' : (index === active ? 'active' : 'idle');
+    const stages = job && job.stages && typeof job.stages === 'object' ? job.stages : null;
 
+    steps.forEach((item) => {
+      const key = item.dataset.step || '';
+      let state = stages ? stages[key] : '';
+      if (!state) state = 'pending';
       item.dataset.state = state;
       item.classList.toggle('is-active', state === 'active');
       item.classList.toggle('is-done', state === 'done');
-      item.classList.toggle('is-error', state === 'failed');
+      item.classList.toggle('is-skipped', state === 'skipped');
+      item.classList.toggle('is-error', state === 'error');
     });
   }
 
@@ -1424,7 +1256,7 @@
       if (drop) drop.classList.remove('has-file');
       setText('auditFileName', '');
       setText('auditFileSize', '');
-      setText('auditFileTypeText', '平台将自动加密后下发');
+      setText('auditFileTypeText', '在本机解压后审计');
       return;
     }
 
@@ -1434,7 +1266,7 @@
     if (meta) meta.style.display = '';
     if (clearBtn) clearBtn.style.display = '';
     if (drop) drop.classList.add('has-file');
-    setHint('auditSubmitHint', true, '已选择 ' + file.name + '，点击「上传并启动审计」下发。');
+    setHint('auditSubmitHint', true, '已选择 ' + file.name + '，点击「上传并启动审计」开始。');
   }
 
   function clearChosenFile() {
@@ -1492,11 +1324,13 @@
   function optimisticPendingJob(data, file) {
     return {
       id: data.jobId || state.requestId,
-      dockerId: state.dockerId,
+      dockerId: 'local',
       requestId: data.requestId || state.requestId,
       taskId: data.taskId || state.taskId,
       at: data.at || new Date().toISOString(),
       status: 'pending',
+      stage: data.stage || 'receive',
+      stages: data.stages || null,
       code: 0,
       passed: false,
       riskLevel: '',
@@ -1509,20 +1343,6 @@
       originalName: data.originalName || (file && file.name) || '',
       size: data.size || (file && file.size) || 0,
     };
-  }
-
-  // friendlySubmitError rewrites the backend's transport error ("下发失败: Post
-  // ... connect: connection refused") into something an operator can act on.
-  // Anything it does not recognise passes through unchanged.
-  function friendlySubmitError(message) {
-    const text = String(message || '');
-    if (/connection refused|no route to host|network is unreachable/i.test(text)) {
-      return '无法连接所选 TAA 实例，请确认实例已启动且网络可达后重试。';
-    }
-    if (/i\/o timeout|context deadline exceeded|timed out/i.test(text)) {
-      return '目标 TAA 实例响应超时，请稍后重试。';
-    }
-    return text;
   }
 
   async function auditSubmitAudit() {
@@ -1540,10 +1360,6 @@
       setHint('auditSubmitHint', false, '文件为空，请重新选择。');
       return;
     }
-    if (!state.dockerId) {
-      setHint('auditSubmitHint', false, '请先在顶部选择一个已注册的 TAA 实例。');
-      return;
-    }
 
     state.submitBusy = true;
     if (btn) btn.disabled = true;
@@ -1553,20 +1369,20 @@
 
     showUploadProgress(true);
     setUploadProgress(0, '正在上传文件…');
-    renderFlow('upload', 'running');
-    setHint('auditSubmitHint', true, '正在加密并下发审计任务…');
+    renderStepper(null);
+    setHint('auditSubmitHint', true, '正在上传明文归档…');
+    setText('auditRunFile', file.name);
 
     try {
       const form = new FormData();
       form.append('file', file, file.name);
       form.append('requestId', requestId);
       form.append('taskId', state.taskId || '');
-      form.append('runtimeConfig', DEFAULT_RUNTIME_CONFIG);
 
       const res = await uploadAuditPackage(form, (fraction) => {
-        // The upload owns the first 80% of the bar; the remaining fifth is the
-        // server-side envelope plus the importModel round trip.
-        setUploadProgress(fraction * 0.8, '正在上传 ' + Math.round(fraction * 100) + '%…');
+        // The upload owns the first 90% of the bar; the rest is the archive
+        // sniff, job record and the asynchronous start.
+        setUploadProgress(fraction * 0.9, '正在上传 ' + Math.round(fraction * 100) + '%…');
       });
 
       if (res.status === 401) {
@@ -1580,35 +1396,29 @@
         throw new Error(message);
       }
 
-      setUploadProgress(0.88, '已封装 SM2/SM4 信封，TAA 正在接收…');
-      renderFlow('report', 'running');
+      setUploadProgress(1, '已接收，正在本机执行审计…');
 
       const pending = optimisticPendingJob(data, file);
       state.jobs = [pending].concat(state.jobs.filter((job) => job.requestId !== pending.requestId));
       renderJobsTable();
       fillFindingsJobSelect();
-
-      setUploadProgress(1, '已下发，等待 TEE 内审计结论…');
+      renderStepper(pending);
 
       const dispatchedTaskId = data.taskId || state.taskId;
       rotateTaskId();
       clearChosenFile();
-      setHint('auditSubmitHint', true, '已下发审计任务 ' + dispatchedTaskId + '，等待结论回流。');
+      setHint('auditSubmitHint', true, '已接收审计任务 ' + dispatchedTaskId + '，本地审计执行中。');
 
       await waitForSubmittedJob(pending.requestId);
     } catch (err) {
       if (err.unauthorized) return;
-      // The failed requestId is spent: the backend keeps the abandoned row, so
-      // a retry must carry a fresh one or it would be deduplicated against it.
+      // The failed requestId is spent: a retry must carry a fresh one, or a
+      // later begin with the same id would be deduplicated against the failed row.
       rotateTaskId();
-      const reason = err.timeout ? '请求超时，请稍后重试。' : friendlySubmitError(err.message);
+      const reason = err.timeout ? '请求超时，请稍后重试。' : String(err.message || '提交失败');
       showUploadProgress(false);
-      renderFlow('upload', 'error');
       setHint('auditSubmitHint', false, '提交失败：' + reason);
-      toast({ type: 'error', title: '审计任务下发失败', message: reason });
-      // The backend records the abandoned attempt as a failed job; pull it in
-      // so the operator sees the reason in the table, not only in the hint.
-      await refreshJobs(true);
+      toast({ type: 'error', title: '审计任务提交失败', message: reason });
     } finally {
       state.submitBusy = false;
       if (btn) btn.disabled = false;
@@ -1637,6 +1447,7 @@
             renderJobsTable();
             fillFindingsJobSelect();
             found = jobs.find((job) => job.requestId === requestId) || null;
+            if (found) renderStepper(found);
           }
         } catch (err) {
           if (err.unauthorized) {
@@ -1646,12 +1457,13 @@
         }
 
         if (found && String(found.status || '') !== 'pending') {
-          renderFlow('report', found.status === 'failed' ? 'error' : 'done');
-          // The strip carries the outcome; the transfer bar has no meaning once
-          // the job has settled.
+          // The stepper carries the outcome; the transfer bar has no meaning
+          // once the job has settled.
           showUploadProgress(false);
           const verdict = verdictOf(found);
-          setHint('auditSubmitHint', found.status !== 'failed', '审计结束：' + verdict.label
+          // Green only for a pass; a blocked verdict is a finished audit, not an error.
+          const ok = found.status !== 'failed' && !!found.passed;
+          setHint('auditSubmitHint', ok, '审计结束：' + verdict.label
             + (found.status === 'failed' && found.error ? '（' + found.error + '）' : ''));
           resolve();
           return;
@@ -1659,7 +1471,7 @@
 
         if (Date.now() - started >= SUBMIT_POLL_WINDOW_MS) {
           showUploadProgress(false);
-          setHint('auditSubmitHint', true, '已下发，审计仍在执行，稍后可在任务列表查看结果。');
+          setHint('auditSubmitHint', true, '审计仍在执行，稍后可在任务列表查看结果。');
           resolve();
           return;
         }
@@ -1738,6 +1550,7 @@
       state.currentJob = job || null;
       state.selectedJobId = (job && job.id) || id;
       state.findings = flattenFindings(job);
+      renderStepper(job);
       renderFindingsHeader(job);
       renderFindingsTable();
       fillFindingsJobSelect();
@@ -1869,7 +1682,7 @@
 
     if (!state.currentJob && !state.findings.length) {
       setText('auditFindingStats', '命中 0 条');
-      emptyRow(tbody, 7, '暂无审计任务。请先在「审计任务」发起一次，或等待 TAA 上报。');
+      emptyRow(tbody, 7, '暂无审计结果。请先在「审计任务」发起一次。');
       return;
     }
 
@@ -2103,7 +1916,7 @@
     const conclusion = conclusionOf(state.currentJob);
     const payload = {
       exportedAt: new Date().toISOString(),
-      note: '平台只展示 TAA 上报的审计结论投影，引擎名称与规则明细留在 TEE 内。',
+      note: '平台只展示审计结论投影，规则明细与证据附在 file_reports 中。',
       dockerId: state.dockerId,
       job: {
         id: state.currentJob.id,
@@ -2479,6 +2292,7 @@
   async function refreshSettings(silent) {
     if (!state.user) return;
     if (!state.instances.length) await loadInstances();
+    await refreshAuditPrompt(silent);
     try {
       const res = await requestJSON('/api/llm/console/settings', { timeoutMs: REQUEST_TIMEOUT_MS });
       if (!res.ok) {
@@ -2490,6 +2304,71 @@
       if (err.unauthorized || silent) return;
       toast({ type: 'warning', title: '设置读取失败', message: err.message });
     }
+  }
+
+  // The audit prompt lives in the server process, next to the other console
+  // settings. The textarea is the authority while it holds focus; a reload of
+  // the settings view re-reads whatever the runner would use for the next audit.
+  async function refreshAuditPrompt(silent) {
+    if (!state.user) return;
+    try {
+      const res = await requestJSON('/api/audit/console/prompt', { timeoutMs: REQUEST_TIMEOUT_MS });
+      if (!res.ok) {
+        if (!silent) setPromptMeta('读取失败 · HTTP ' + res.status, 'bad');
+        return;
+      }
+      const data = unwrap(res.data) || {};
+      const input = $('auditPromptInput');
+      if (input && document.activeElement !== input) input.value = data.prompt || '';
+      setPromptMeta(data.prompt ? '已加载（下次审计生效）' : '未设置，仅使用内置评分标准', 'muted');
+    } catch (err) {
+      if (err.unauthorized || silent) return;
+      setPromptMeta('读取失败：' + err.message, 'bad');
+    }
+  }
+
+  function setPromptMeta(text, tone) {
+    const el = $('auditPromptMeta');
+    if (!el) return;
+    el.textContent = text || '';
+    el.style.color = tone === 'bad' ? 'var(--bad, #dc2626)'
+      : tone === 'ok' ? 'var(--ok, #059669)'
+        : '';
+  }
+
+  async function saveAuditPrompt() {
+    if (!state.user) return;
+    const input = $('auditPromptInput');
+    const btn = $('auditPromptSaveBtn');
+    if (btn) btn.disabled = true;
+    setPromptMeta('保存中…', 'muted');
+    try {
+      const res = await requestJSON('/api/audit/console/prompt', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ prompt: input ? input.value : '' }),
+        timeoutMs: REQUEST_TIMEOUT_MS,
+      });
+      const data = unwrap(res.data) || {};
+      if (!res.ok || data.ok === false) {
+        throw new Error(data.error || data.msg || ('HTTP ' + res.status));
+      }
+      if (input) input.value = data.prompt || '';
+      setPromptMeta(data.prompt ? '已保存 · 下次审计生效' : '已清空 · 仅使用内置评分标准', 'ok');
+      toast({ type: 'success', title: '提示词已保存', message: '下一次审计生效' });
+    } catch (err) {
+      if (err.unauthorized) return;
+      setPromptMeta('保存失败：' + err.message, 'bad');
+      toast({ type: 'warning', title: '提示词保存失败', message: err.message });
+    } finally {
+      if (btn) btn.disabled = false;
+    }
+  }
+
+  async function clearAuditPrompt() {
+    const input = $('auditPromptInput');
+    if (input) input.value = '';
+    await saveAuditPrompt();
   }
 
   function ensureOptions(select, values) {
@@ -2541,7 +2420,6 @@
     }
 
     updateEndpointDisplay();
-    renderSessionTTL();
     setText('auditSettingsHint', SETTINGS_HINT);
   }
 
@@ -2603,7 +2481,7 @@
     state.polling = true;
     try {
       await Promise.allSettled([
-        refreshOverview(true),
+        refreshJobs(true),
         refreshLLMOverview(true),
       ]);
       if (state.view === 'engine') await refreshLogs(true);
@@ -2751,7 +2629,7 @@
     }
 
     if (!state.taskId) rotateTaskId();
-    renderFlow('upload', 'idle');
+    renderStepper(null);
   }
 
   function wireFindings() {
@@ -2845,6 +2723,8 @@
 
   function wireSettings() {
     bindIfNoInline('auditSaveSettingsBtn', saveSettings);
+    bindIfNoInline('auditPromptSaveBtn', saveAuditPrompt);
+    bindIfNoInline('auditPromptResetBtn', clearAuditPrompt);
   }
 
   function wireTopbar() {
@@ -2852,7 +2732,6 @@
     bindIfNoInline('auditTopRefreshBtn', async () => {
       if (!state.user) return;
       renderSessionPill();
-      renderSessionTTL();
       await loadInstances();
       await refreshVisibleView();
     });
