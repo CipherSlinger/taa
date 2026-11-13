@@ -2875,6 +2875,16 @@
   box-shadow: inset 3px 0 0 var(--aud-low);
 }
 
+/* Finished rows open the findings view when clicked. */
+.audit-row-clickable {
+  cursor: pointer;
+}
+
+.audit-row-clickable:focus-visible {
+  outline: 2px solid var(--aud-accent);
+  outline-offset: -2px;
+}
+
 .audit-pending-dots {
   display: inline-flex;
   align-items: center;
@@ -3830,12 +3840,6 @@
     gap: 8px;
   }
 
-  /* Keep the job list readable without a long horizontal scroll: the identity,
-     state and action columns carry the whole story on a phone. */
-  .audit-jobs-table {
-    min-width: 0;
-  }
-
   /* The job picker carries a whole line of text; let it take the card width
      instead of overflowing it. */
   #auditViewFindings .audit-card-tools {
@@ -3925,26 +3929,135 @@
     grid-column: 1 / -1;
   }
 
-  .audit-jobs-table tr:not(.audit-empty-row) td:nth-child(2) {
-    max-width: 0;
+  /* Jobs turn into stacked cards as well: state, time and duration on the top
+     line, the identity below it, then the verdict, risk and counters, with the
+     actions pinned to the last line. */
+  .audit-jobs-table {
+    display: block;
+    min-width: 0;
+  }
+
+  .audit-jobs-table thead {
+    display: none;
+  }
+
+  .audit-jobs-table tbody,
+  .audit-jobs-table tr {
+    display: block;
+  }
+
+  .audit-jobs-table tr:not(.audit-empty-row) {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    gap: 6px 10px;
+    padding: 12px 14px;
+    border-bottom: 1px solid var(--aud-border);
+  }
+
+  .audit-jobs-table tr:not(.audit-empty-row):last-child {
+    border-bottom: 0;
+  }
+
+  .audit-jobs-table tbody tr:not(.audit-empty-row) td {
+    padding: 0;
+    border: 0;
+    background: transparent;
+    white-space: normal;
+    overflow: visible;
+  }
+
+  .audit-jobs-table tr:not(.audit-empty-row) td:nth-child(4) {
+    grid-column: 1;
+    grid-row: 1;
+  }
+
+  .audit-jobs-table tr:not(.audit-empty-row) td:nth-child(1) {
+    grid-column: 2;
+    grid-row: 1;
+    align-self: center;
+    font-size: 11.5px;
+    color: var(--aud-muted);
     white-space: nowrap;
+  }
+
+  .audit-jobs-table tr:not(.audit-empty-row) td:nth-child(8) {
+    grid-column: 3;
+    grid-row: 1;
+    align-self: center;
+    justify-self: end;
+    font-size: 11.5px;
+    color: var(--aud-muted);
+    white-space: nowrap;
+  }
+
+  .audit-jobs-table tr:not(.audit-empty-row) td:nth-child(2) {
+    grid-column: 1 / -1;
+    grid-row: 2;
     overflow: hidden;
+    white-space: nowrap;
     text-overflow: ellipsis;
   }
 
-  .audit-jobs-table th:nth-child(1),
-  .audit-jobs-table tr:not(.audit-empty-row) td:nth-child(1),
-  .audit-jobs-table th:nth-child(3),
-  .audit-jobs-table tr:not(.audit-empty-row) td:nth-child(3),
-  .audit-jobs-table th:nth-child(5),
-  .audit-jobs-table tr:not(.audit-empty-row) td:nth-child(5),
-  .audit-jobs-table th:nth-child(6),
-  .audit-jobs-table tr:not(.audit-empty-row) td:nth-child(6),
-  .audit-jobs-table th:nth-child(7),
-  .audit-jobs-table tr:not(.audit-empty-row) td:nth-child(7),
-  .audit-jobs-table th:nth-child(8),
-  .audit-jobs-table tr:not(.audit-empty-row) td:nth-child(8) {
+  .audit-jobs-table tr:not(.audit-empty-row) td:nth-child(3) {
+    grid-column: 1;
+    grid-row: 3;
+  }
+
+  .audit-jobs-table tr:not(.audit-empty-row) td:nth-child(5) {
+    grid-column: 2;
+    grid-row: 3;
+    justify-self: start;
+  }
+
+  .audit-jobs-table tr:not(.audit-empty-row) td:nth-child(6) {
+    grid-column: 3;
+    grid-row: 3;
+    justify-self: end;
+    white-space: nowrap;
+  }
+
+  .audit-jobs-table tr:not(.audit-empty-row) td:nth-child(9) {
+    grid-column: 1 / -1;
+    grid-row: 4;
+    justify-self: end;
+  }
+
+  /* The file count carries little on a phone card. */
+  .audit-jobs-table tr:not(.audit-empty-row) td:nth-child(7) {
     display: none;
+  }
+
+  /* Label the bare counters so "0 / 0 / 2" is not a mystery. */
+  .audit-jobs-table tr:not(.audit-empty-row) td:nth-child(6)::before {
+    content: "发现 ";
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    color: var(--aud-muted);
+  }
+
+  /* Running rows show the current step in place of the counters. */
+  .audit-jobs-table tr[data-status="pending"] td:nth-child(8),
+  .audit-jobs-table tr[data-status="pending"] td:nth-child(6) {
+    display: none;
+  }
+
+  .audit-jobs-table tr[data-status="pending"] td:nth-child(5) {
+    grid-column: 2 / -1;
+    grid-row: 3;
+    justify-self: start;
+  }
+
+  /* Failed rows have no verdict or counters to show. */
+  .audit-jobs-table tr[data-status="failed"] td:nth-child(3),
+  .audit-jobs-table tr[data-status="failed"] td:nth-child(5),
+  .audit-jobs-table tr[data-status="failed"] td:nth-child(6),
+  .audit-jobs-table tr[data-status="failed"] td:nth-child(8) {
+    display: none;
+  }
+
+  .audit-jobs-table tr.audit-empty-row,
+  .audit-jobs-table tr.audit-empty-row td {
+    display: block;
+    grid-column: 1 / -1;
   }
 }
 

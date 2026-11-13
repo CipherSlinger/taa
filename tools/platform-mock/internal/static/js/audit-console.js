@@ -1043,6 +1043,34 @@
       const tr = document.createElement('tr');
       if (pending) tr.classList.add('audit-row-pending');
       tr.dataset.jobId = job.id || '';
+      tr.dataset.status = status.key;
+
+      // A finished row opens its findings on click, matching the card hint.
+      // The inline buttons stop propagation so they keep their own behaviour.
+      if (!pending) {
+        tr.classList.add('audit-row-clickable');
+        tr.tabIndex = 0;
+        tr.setAttribute('role', 'button');
+        tr.title = '打开「审计结果」查看逐条发现';
+        const openRow = () => {
+          if (status.key === 'failed') {
+            toast({
+              type: 'error',
+              title: '任务未完成',
+              message: job.error || '审计未返回结论，请检查原因后重新提交。',
+            });
+            return;
+          }
+          auditLoadJob(job.id);
+        };
+        tr.addEventListener('click', openRow);
+        tr.addEventListener('keydown', (ev) => {
+          if (ev.key === 'Enter' || ev.key === ' ') {
+            ev.preventDefault();
+            openRow();
+          }
+        });
+      }
 
       tr.appendChild(makeCell(fmtTime(job.at), { nowrap: true }));
       tr.appendChild(idCell(job));
