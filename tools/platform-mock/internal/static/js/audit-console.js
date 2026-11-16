@@ -2594,6 +2594,11 @@
   function renderRules(data) {
     const source = Array.isArray(data.rules) ? data.rules : [];
     const binary = Array.isArray(data.binary) ? data.binary : [];
+    const engine = data.engine || {};
+    // Semgrep scans the YAML rule directory, not this table. The table stays
+    // visible as the regex fallback's rule set and is not editable while it is
+    // out of the scan.
+    const semgrepActive = engine.name === 'semgrep';
     setText('engineSourceRuleCount', String(source.length));
     setText('engineBinaryRuleCount', String(binary.length));
     document.querySelectorAll('.audit-rules-tab').forEach((tab) => {
@@ -2601,16 +2606,31 @@
       tab.classList.toggle('is-active', on);
       tab.setAttribute('aria-selected', on ? 'true' : 'false');
     });
-    renderRuleRows(rulesSource === 'binary' ? binary : source, rulesSource === 'binary');
+    const readOnly = rulesSource === 'binary' || semgrepActive;
+    renderRuleRows(rulesSource === 'binary' ? binary : source, readOnly,
+      rulesSource === 'binary' ? '没有二进制通道规则。' : '没有源码规则。');
+    const desc = $('engineRulesDesc');
+    if (desc) {
+      desc.textContent = semgrepActive
+        ? '当前静态引擎是 Semgrep CLI：扫描使用下方规则目录中的 YAML 规则，本卡片的内置规则表只作为 regex 回退使用，不参与本次扫描。'
+        : '引擎自带的规则集合。源码规则逐条可查看与编辑，保存后在下一次扫描生效；二进制通道的规则由证据读取器固定，只读。';
+    }
+    const reset = $('engineRulesResetBtn');
+    if (reset) {
+      reset.disabled = semgrepActive;
+      reset.title = semgrepActive ? 'Semgrep 引擎使用规则目录，内置规则表不参与扫描' : '';
+    }
     const note = $('engineRulesNote');
     if (note) {
       note.textContent = rulesSource === 'binary'
         ? '二进制通道的规则由证据读取器固定：证据来自动态符号表、依赖库、字符串、pickle 目标与熵测量，改规则等于改判定边界，因此只读。'
-        : '规则的顺序就是扫描顺序：一行命中多条规则时，只有排在前面的那条上报。点「编辑」修改模式、级别与说明，保存后在下一次扫描生效。';
+        : semgrepActive
+          ? 'Semgrep 按规则文件判断命中，规则的顺序不影响归属；规则目录在「安全引擎」卡片中显示。切回 regex 后本表恢复可编辑。'
+          : '规则的顺序就是扫描顺序：一行命中多条规则时，只有排在前面的那条上报。点「编辑」修改模式、级别与说明，保存后在下一次扫描生效。';
     }
   }
 
-  function renderRuleRows(rows, readOnly) {
+  function renderRuleRows(rows, readOnly, emptyText) {
     const body = $('engineRuleRows');
     if (!body) return;
     body.replaceChildren();
@@ -2619,7 +2639,7 @@
       tr.className = 'audit-table-empty';
       const td = document.createElement('td');
       td.colSpan = 5;
-      td.textContent = readOnly ? '没有二进制通道规则。' : '没有源码规则。';
+      td.textContent = emptyText || (readOnly ? '没有二进制通道规则。' : '没有源码规则。');
       tr.appendChild(td);
       body.appendChild(tr);
       return;
@@ -2848,8 +2868,18 @@
     try {
       const data = await loadRules(false);
       if (!data) return;
-      renderStaticEngineFacts(data.engine || {});
-      paintPill('engineStaticStatus', '规则 ' + toNumber(data.engine && data.engine.sourceRules) + ' 条', 'ok');
+      const engine = data.engine || {};
+      renderStaticEngineFacts(engine);
+      // The pill names the engine that will actually scan, not the one that was
+      // configured: a semgrep selection this host cannot satisfy scans with
+      // regex, and the card below carries the reason.
+      if (engine.name === 'semgrep') {
+        paintPill('engineStaticStatus', 'Semgrep · ' + toNumber(engine.ruleFiles) + ' 个规则文件', 'ok');
+      } else if (engine.name === 'regex') {
+        paintPill('engineStaticStatus', 'regex · 规则 ' + toNumber(engine.sourceRules) + ' 条', 'ok');
+      } else {
+        paintPill('engineStaticStatus', '配置无效', 'bad');
+      }
     } catch (err) {
       if (err.unauthorized) return;
       paintPill('engineStaticStatus', '读取失败', 'bad');
@@ -2860,16 +2890,37 @@
   function renderStaticEngineFacts(facts) {
     const exts = Array.isArray(facts.extensions) ? facts.extensions.join(' / ') : '—';
     const skips = Array.isArray(facts.skipDirs) ? facts.skipDirs : [];
-    fillFieldList($('engineStaticFields'), [
-      ['引擎', facts.name === 'semgrep' ? 'Semgrep CLI' : '内置规则匹配（regex）'],
-      ['扫描文件类型', exts],
-      ['最多上报发现', String(toNumber(facts.maxFindings))],
-      ['注释行', facts.commentSkipped ? '跳过（注释里的示例代码不会误报）' : '参与匹配'],
-      ['跳过目录', skips.length ? skips.join('、') : '—'],
-      ['源码规则', String(toNumber(facts.sourceRules)) + ' 条（可编辑）'],
-      ['二进制通道规则', String(toNumber(facts.binaryRules)) + ' 条（只读）'],
-      ['每行归属', '一行只归属第一条命中的规则'],
-    ]);
+    const isSemgrep = facts.name === 'semgrep';
+    const requested = facts.requestedName || facts.name || '';
+    const rows = [];
+    if (facts.name === 'semgrep') {
+      rows.push(['引擎', 'Semgrep CLI']);
+    } else if (facts.name === 'regex') {
+      rows.push(['引擎', '内置规则匹配（regex）']);
+    } else {
+      rows.push(['引擎', '未启用（配置无效）']);
+    }
+    if (facts.fallbackReason) {
+      const tail = requested === 'semgrep' && facts.name === 'regex' ? '，因此本次扫描使用内置 regex 引擎' : '';
+      rows.push(['回退原因', facts.fallbackReason + tail]);
+    }
+    if (isSemgrep) {
+      rows.push(['规则目录', facts.rulesPath || '—']);
+      rows.push(['规则文件', String(toNumber(facts.ruleFiles)) + ' 个 YAML']);
+      rows.push(['semgrep 可执行文件', facts.semgrepBin || 'PATH 中未找到']);
+    }
+    rows.push(['扫描文件类型', exts]);
+    rows.push(['最多上报发现', String(toNumber(facts.maxFindings))]);
+    if (!isSemgrep) {
+      rows.push(['注释行', facts.commentSkipped ? '跳过（注释里的示例代码不会误报）' : '参与匹配']);
+    }
+    rows.push(['跳过目录', skips.length ? skips.join('、') : '—']);
+    rows.push(['源码规则', isSemgrep
+      ? '来自规则目录，内置规则表不参与扫描'
+      : String(toNumber(facts.sourceRules)) + ' 条（可编辑）']);
+    rows.push(['二进制通道规则', String(toNumber(facts.binaryRules)) + ' 条（只读）']);
+    rows.push(['每行归属', isSemgrep ? '由 Semgrep 规则决定' : '一行只归属第一条命中的规则']);
+    fillFieldList($('engineStaticFields'), rows);
   }
 
 

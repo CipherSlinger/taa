@@ -4,6 +4,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
@@ -44,8 +47,19 @@ type auditBinaryRule struct {
 // auditEngineFacts describes the static engine's fixed configuration. Only the
 // rules are editable; these come from codeaudit's defaults and are reported so
 // a reader can tell what a rule is matched against.
+//
+// Name is the engine the next scan will actually run, which is not always the
+// one that was configured: semgrep needs both its CLI and its rules on the
+// host, and a missing one falls back to regex. RequestedName and
+// FallbackReason keep that decision visible instead of leaving the reader to
+// wonder why the card says regex.
 type auditEngineFacts struct {
 	Name           string   `json:"name"`
+	RequestedName  string   `json:"requestedName,omitempty"`
+	FallbackReason string   `json:"fallbackReason,omitempty"`
+	RulesPath      string   `json:"rulesPath,omitempty"`
+	SemgrepBin     string   `json:"semgrepBin,omitempty"`
+	RuleFiles      int      `json:"ruleFiles,omitempty"`
 	Extensions     []string `json:"extensions"`
 	MaxFindings    int      `json:"maxFindings"`
 	SkipDirs       []string `json:"skipDirs"`
@@ -64,15 +78,123 @@ type auditRulesResponse struct {
 // built-in table and is edited in place; nothing is persisted, for the same
 // reason the prompt is not: the workbench is a comparison tool and an edit is
 // usually weighed against a run made moments earlier.
+//
+// It also carries the operator's engine selection. The regex table only feeds
+// the regex engine; when semgrep is selected the table stays editable but does
+// not take part in the scan.
 type auditRuleStore struct {
 	mu    sync.Mutex
 	rules []auditRuleSpec
+	// engineName is the configured engine: codeaudit.EngineNameRegex or
+	// codeaudit.EngineNameSemgrep. resolveEngine decides whether semgrep can
+	// actually run here.
+	engineName string
+	// rulesPath is semgrep's --config target. Ignored by the regex engine.
+	rulesPath string
 }
 
+// newAuditRuleStore builds a store on the regex baseline. Tests and any caller
+// that does not select an engine get the built-in table; the workbench's
+// production constructor calls useEngine with the configured choice.
 func newAuditRuleStore() *auditRuleStore {
-	s := &auditRuleStore{}
+	s := &auditRuleStore{engineName: codeaudit.EngineNameRegex}
 	s.resetLocked()
 	return s
+}
+
+// useEngine records the operator's engine selection. It is not validated here:
+// resolveEngine reports an unusable selection at the next scan, and the engine
+// card shows the same answer, so a broken flag has one place to look.
+func (s *auditRuleStore) useEngine(name, rulesPath string) {
+	name = strings.ToLower(strings.TrimSpace(name))
+	if name == "" {
+		// An unset selection means the baseline, which keeps a hand-built
+		// Config{} (tests, embedded use) on the regex engine instead of failing
+		// every scan.
+		name = codeaudit.EngineNameRegex
+	}
+	s.mu.Lock()
+	s.engineName = name
+	s.rulesPath = strings.TrimSpace(rulesPath)
+	s.mu.Unlock()
+}
+
+// requestedEngineName reports the selection as configured.
+func (s *auditRuleStore) requestedEngineName() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.engineName
+}
+
+// resolveEngine turns the selection into the engine configuration the next
+// scan will use. A semgrep selection that cannot run here resolves to the regex
+// baseline and returns the reason; an unknown name resolves to an error, which
+// matches codeaudit.NewEngine refusing a name rather than silently scanning
+// with something else.
+func (s *auditRuleStore) resolveEngine() (codeaudit.EngineConfig, string, error) {
+	s.mu.Lock()
+	name, rulesPath := s.engineName, s.rulesPath
+	s.mu.Unlock()
+
+	switch name {
+	case codeaudit.EngineNameRegex:
+		return codeaudit.EngineConfig{Name: codeaudit.EngineNameRegex}, "", nil
+
+	case codeaudit.EngineNameSemgrep:
+		// The CLI is resolved through PATH, the same way the adapter finds it
+		// when it runs, so this check answers exactly what a scan would hit.
+		reason := ""
+		switch {
+		case rulesPath == "":
+			reason = "未配置 Semgrep 规则目录"
+		default:
+			if _, err := os.Stat(rulesPath); err != nil {
+				reason = "Semgrep 规则路径不可用：" + err.Error()
+			} else if _, err := exec.LookPath("semgrep"); err != nil {
+				reason = "PATH 中找不到 semgrep 可执行文件"
+			}
+		}
+		if reason != "" {
+			return codeaudit.EngineConfig{Name: codeaudit.EngineNameRegex}, reason, nil
+		}
+		return codeaudit.EngineConfig{
+			Name:             codeaudit.EngineNameSemgrep,
+			SemgrepRulesPath: rulesPath,
+		}, "", nil
+
+	default:
+		return codeaudit.EngineConfig{}, "", fmt.Errorf(
+			"不支持的静态引擎 %q：只能是 semgrep 或 regex", name)
+	}
+}
+
+// countRuleFiles counts the YAML rule files semgrep will load. A single file
+// counts as one; a directory is walked for .yml/.yaml. Errors and odd paths
+// report zero rather than failing the card: the count is orientation, not a
+// decision.
+func countRuleFiles(path string) int {
+	if path == "" {
+		return 0
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		return 0
+	}
+	if !info.IsDir() {
+		return 1
+	}
+	count := 0
+	_ = filepath.WalkDir(path, func(_ string, entry os.DirEntry, err error) error {
+		if err != nil || entry.IsDir() {
+			return nil
+		}
+		switch strings.ToLower(filepath.Ext(entry.Name())) {
+		case ".yml", ".yaml":
+			count++
+		}
+		return nil
+	})
+	return count
 }
 
 func (s *auditRuleStore) resetLocked() {
@@ -199,10 +321,18 @@ func (s *auditRuleStore) compile() ([]codeaudit.Rule, error) {
 	return rules, nil
 }
 
-// engine builds a scanner over the current table so an edit takes effect on the
-// next scan. The engine is construction-cheap: the patterns are compiled once
-// here and the scan itself is an in-memory match.
+// engine builds the scanner the next scan will run. The regex arm is built
+// over the current editable table, so an edit takes effect on the next scan;
+// the semgrep arm is built by codeaudit's selection point from the configured
+// rules path, and only after resolveEngine has confirmed it can run here.
 func (s *auditRuleStore) engine() (codeaudit.StaticEngine, error) {
+	selection, _, err := s.resolveEngine()
+	if err != nil {
+		return nil, err
+	}
+	if selection.Name == codeaudit.EngineNameSemgrep {
+		return codeaudit.NewEngine(selection)
+	}
 	rules, err := s.compile()
 	if err != nil {
 		return nil, err
@@ -244,8 +374,12 @@ func auditEngineFactsNow(store *auditRuleStore) auditEngineFacts {
 		}
 	}
 	sort.Strings(skipDirs)
-	return auditEngineFacts{
-		Name:           codeaudit.EngineNameRegex,
+
+	selection, fallback, err := store.resolveEngine()
+	facts := auditEngineFacts{
+		Name:           selection.Name,
+		RequestedName:  store.requestedEngineName(),
+		FallbackReason: fallback,
 		Extensions:     cfg.Extensions,
 		MaxFindings:    cfg.MaxFindings,
 		SkipDirs:       skipDirs,
@@ -253,6 +387,24 @@ func auditEngineFactsNow(store *auditRuleStore) auditEngineFacts {
 		BinaryRules:    len(binaryRules()),
 		CommentSkipped: true,
 	}
+	if err != nil {
+		// The scan will fail at the static step; the card says why instead of
+		// presenting the requested name as if it were running.
+		facts.Name = ""
+		facts.FallbackReason = err.Error()
+		return facts
+	}
+	if selection.Name == codeaudit.EngineNameSemgrep {
+		facts.RulesPath = selection.SemgrepRulesPath
+		if bin, err := exec.LookPath("semgrep"); err == nil {
+			facts.SemgrepBin = bin
+		}
+		facts.RuleFiles = countRuleFiles(selection.SemgrepRulesPath)
+		// Semgrep decides which lines its rules claim; the regex engine's
+		// first-match-wins ordering and its comment skipping do not apply.
+		facts.CommentSkipped = false
+	}
+	return facts
 }
 
 // auditRulesHandler serves the engine's rule set: read it, edit one source

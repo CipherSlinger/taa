@@ -67,9 +67,14 @@ func newLocalAuditRunner(jobs *auditJobStore, cfg Config, console *llmConsole) *
 		root = abs
 	}
 	filesDir := filepath.Join(root, "audit-files")
+	rules := newAuditRuleStore()
+	// The workbench reports the engine it actually runs. A semgrep selection
+	// that this host cannot satisfy resolves back to regex per scan, with the
+	// reason shown in the engine card.
+	rules.useEngine(cfg.AuditEngine, cfg.SemgrepRules)
 	return &localAuditRunner{
 		jobs:     jobs,
-		rules:    newAuditRuleStore(),
+		rules:    rules,
 		binary:   codeaudit.DefaultBinaryConfig(),
 		console:  console,
 		workRoot: root,

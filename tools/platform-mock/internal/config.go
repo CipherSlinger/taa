@@ -2,6 +2,7 @@ package mock
 
 import (
 	"os"
+	"path/filepath"
 	"strconv"
 )
 
@@ -9,10 +10,15 @@ const (
 	defaultAddr      = ":8080"
 	defaultStateDir  = "/root/taa"
 	defaultUploadDir = ".local/upload"
-	defaultTAAPod    = "simple-busybox"
-	defaultTAAPort   = "6001"
-	defaultLLMPod    = "taa-teellm"
-	defaultLLMPort   = "6001"
+	// defaultAuditEngine is the workbench's Tier 1 engine. The workbench exists
+	// to show what TAA will actually run, and production defaults to semgrep;
+	// a host without the semgrep CLI falls back to the built-in regex engine at
+	// scan time and reports why.
+	defaultAuditEngine = "semgrep"
+	defaultTAAPod      = "simple-busybox"
+	defaultTAAPort     = "6001"
+	defaultLLMPod      = "taa-teellm"
+	defaultLLMPort     = "6001"
 	// Console credentials have a documented default so a freshly started mock is
 	// usable without configuration; CONSOLE_USER / CONSOLE_PASSWORD override it.
 	defaultConsoleUser     = "admin"
@@ -80,6 +86,15 @@ type Config struct {
 	// replace the port with 18443", which is right for the standard deployment
 	// where both listeners live in one pod. TEELLM_TLS_ENDPOINT overrides it.
 	ConsoleTLSHost string
+	// AuditEngine selects the workbench's Tier 1 static engine: "semgrep" or
+	// "regex". Semgrep is used only when both the CLI and the rules path are
+	// present; otherwise the workbench falls back to regex and the engine card
+	// reports the reason.
+	AuditEngine string
+	// SemgrepRules is the semgrep --config argument: a rules file or a directory
+	// of them. Empty means <StateDir>/semgrep-rules, which is where
+	// deploy-platform-mock.sh uploads the repository's rule set.
+	SemgrepRules string
 }
 
 func (c Config) withDefaults() Config {
@@ -109,6 +124,15 @@ func (c Config) withDefaults() Config {
 	}
 	if c.ConsolePassword == "" {
 		c.ConsolePassword = defaultConsolePassword
+	}
+	if c.AuditEngine == "" {
+		c.AuditEngine = defaultAuditEngine
+	}
+	// Resolved after StateDir so an unset path lands beside the other state the
+	// deployment owns rather than inside the repository, which the remote host
+	// does not have.
+	if c.SemgrepRules == "" {
+		c.SemgrepRules = filepath.Join(c.StateDir, "semgrep-rules")
 	}
 	return c
 }
@@ -160,5 +184,7 @@ func DefaultConfig() Config {
 		ConsoleUser:     envOrDefault("CONSOLE_USER", defaultConsoleUser),
 		ConsolePassword: envOrDefault("CONSOLE_PASSWORD", defaultConsolePassword),
 		ConsoleTLSHost:  envOrDefault("TEELLM_TLS_ENDPOINT", ""),
+		AuditEngine:     envOrDefault("AUDIT_ENGINE", ""),
+		SemgrepRules:    envOrDefault("SEMGREP_RULES", ""),
 	}.withDefaults()
 }

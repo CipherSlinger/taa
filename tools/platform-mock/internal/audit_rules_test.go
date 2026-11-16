@@ -4,11 +4,123 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"taa/internal/codeaudit"
 )
+
+// writeFakeSemgrep puts an executable named semgrep on a private PATH. The
+// engine is built, never run, so an empty script is enough to prove the
+// selection resolves to the semgrep arm.
+func writeFakeSemgrep(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "semgrep")
+	if err := os.WriteFile(path, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatalf("write fake semgrep: %v", err)
+	}
+	t.Setenv("PATH", dir)
+	return path
+}
+
+func writeSemgrepRules(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	for _, name := range []string{"a.yml", "b.yaml", "README.md"} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte("rules: []\n"), 0o644); err != nil {
+			t.Fatalf("write rule file %s: %v", name, err)
+		}
+	}
+	return dir
+}
+
+// A semgrep selection this host cannot satisfy must scan with regex and say
+// why. The rules-path case and the missing-CLI case are separate because the
+// operator fixes them differently.
+func TestAuditEngineFallsBackToRegexWhenSemgrepCannotRun(t *testing.T) {
+	t.Run("missing rules path", func(t *testing.T) {
+		writeFakeSemgrep(t)
+		store := newAuditRuleStore()
+		store.useEngine(codeaudit.EngineNameSemgrep, filepath.Join(t.TempDir(), "absent"))
+
+		engine, err := store.engine()
+		if err != nil {
+			t.Fatalf("engine: %v", err)
+		}
+		if engine.Name() != codeaudit.EngineNameRegex {
+			t.Fatalf("engine = %q, want regex fallback", engine.Name())
+		}
+		facts := auditEngineFactsNow(store)
+		if facts.Name != codeaudit.EngineNameRegex || facts.FallbackReason == "" {
+			t.Fatalf("facts = %+v, want regex plus a fallback reason", facts)
+		}
+		if facts.RequestedName != codeaudit.EngineNameSemgrep {
+			t.Fatalf("requested = %q, want semgrep", facts.RequestedName)
+		}
+	})
+
+	t.Run("missing semgrep binary", func(t *testing.T) {
+		rulesPath := writeSemgrepRules(t)
+		t.Setenv("PATH", t.TempDir())
+		store := newAuditRuleStore()
+		store.useEngine(codeaudit.EngineNameSemgrep, rulesPath)
+
+		engine, err := store.engine()
+		if err != nil {
+			t.Fatalf("engine: %v", err)
+		}
+		if engine.Name() != codeaudit.EngineNameRegex {
+			t.Fatalf("engine = %q, want regex fallback", engine.Name())
+		}
+		if facts := auditEngineFactsNow(store); !strings.Contains(facts.FallbackReason, "semgrep") {
+			t.Fatalf("fallback reason = %q, want it to name the missing CLI", facts.FallbackReason)
+		}
+	})
+}
+
+// With both the CLI and the rules present the store must build the semgrep
+// engine, and the card must report the rules directory and its YAML count.
+func TestAuditEngineUsesSemgrepWhenAvailable(t *testing.T) {
+	bin := writeFakeSemgrep(t)
+	rulesPath := writeSemgrepRules(t)
+	store := newAuditRuleStore()
+	store.useEngine("  Semgrep ", rulesPath)
+
+	engine, err := store.engine()
+	if err != nil {
+		t.Fatalf("engine: %v", err)
+	}
+	if engine.Name() != codeaudit.EngineNameSemgrep {
+		t.Fatalf("engine = %q, want semgrep", engine.Name())
+	}
+	facts := auditEngineFactsNow(store)
+	if facts.Name != codeaudit.EngineNameSemgrep || facts.FallbackReason != "" {
+		t.Fatalf("facts = %+v, want semgrep with no fallback", facts)
+	}
+	if facts.RulesPath != rulesPath || facts.SemgrepBin != bin {
+		t.Fatalf("facts rules/bin = %q/%q, want %q/%q", facts.RulesPath, facts.SemgrepBin, rulesPath, bin)
+	}
+	if facts.RuleFiles != 2 {
+		t.Fatalf("rule files = %d, want 2 YAML files", facts.RuleFiles)
+	}
+}
+
+// An unknown engine name is refused at scan time rather than silently replaced,
+// matching codeaudit's selection rule.
+func TestAuditEngineRefusesUnknownName(t *testing.T) {
+	store := newAuditRuleStore()
+	store.useEngine("bandit", "")
+	if _, err := store.engine(); err == nil {
+		t.Fatal("unknown engine name was accepted")
+	}
+	facts := auditEngineFactsNow(store)
+	if facts.Name != "" || facts.FallbackReason == "" {
+		t.Fatalf("facts = %+v, want no engine and an error note", facts)
+	}
+}
 
 // The built-in table must arrive intact: an editor that shows a truncated rule
 // set would let an operator "fix" a rule by deleting what never loaded.

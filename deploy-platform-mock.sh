@@ -46,6 +46,16 @@ LLM_PORT=""
 LLM_HOST_PORT="${PLATFORM_MOCK_LLM_HOST_PORT:-16001}"
 SM2_ID="${PLATFORM_SM2_ID:-}"
 PLATFORM_KEY_FILE="${PLATFORM_KEY_FILE:-}"
+# Audit workbench static engine. The workbench runs TAA's Tier 1 scan in-process,
+# so the engine is selected here. Semgrep is the default because production TAA
+# defaults to it; when the CLI or the rules are not on the remote host the
+# workbench falls back to the built-in regex engine and says why on the engine
+# card, so a failed install degrades the display but never blocks a start.
+AUDIT_ENGINE="${PLATFORM_MOCK_AUDIT_ENGINE:-semgrep}"
+SEMGREP_RULES="${PLATFORM_MOCK_SEMGREP_RULES-__unset__}"
+SEMGREP_BIN_DIR="${PLATFORM_MOCK_SEMGREP_BIN_DIR-__unset__}"
+SEMGREP_RULES_SOURCE="${SEMGREP_RULES_SOURCE:-$PROJECT_DIR/models/audit/semgrep/rules}"
+SEMGREP_VERSION="${SEMGREP_VERSION:-1.177.0}"
 # TEE-LLM console account and secure listener. Empty means the binary's own
 # defaults: admin / teellm@2026, and a TLS endpoint derived from the LLM target
 # host on port 18443.
@@ -127,6 +137,16 @@ Common options:
   --console-password PASS    TEE-LLM console password (default teellm@2026)
   --tee-tls-endpoint H:P     TEE-LLM TEE-TLS listener used by the console
                              (default <llm-target host>:18443)
+  --audit-engine NAME        Audit workbench static engine: semgrep (default)
+                             or regex
+  --semgrep-rules PATH       Remote semgrep rules file or directory (default
+                             <remote-dir>/semgrep-rules); the local rule set is
+                             uploaded there on start
+  --semgrep-bin-dir DIR      Remote directory holding the semgrep CLI (default
+                             <remote-dir>/sgvenv/bin); a venv is created there
+                             when the CLI is missing. Empty means use the remote
+                             PATH and install nothing. A failed install falls
+                             back to regex instead of blocking the start.
   --allow-empty-attestation  Skip attestation validation (non-TEE testing)
   --reuse                    On start, reuse an instance already answering
   --reset-register           POST /api/register/reset once the instance is ready
@@ -192,6 +212,9 @@ parse_args() {
       --console-user) need_value "$@"; CONSOLE_USER="$2"; shift 2 ;;
       --console-password) need_value "$@"; CONSOLE_PASSWORD="$2"; shift 2 ;;
       --tee-tls-endpoint) need_value "$@"; TEE_TLS_ENDPOINT="$2"; shift 2 ;;
+      --audit-engine) need_value "$@"; AUDIT_ENGINE="$2"; shift 2 ;;
+      --semgrep-rules) need_value "$@"; SEMGREP_RULES="$2"; shift 2 ;;
+      --semgrep-bin-dir) need_value "$@"; SEMGREP_BIN_DIR="$2"; shift 2 ;;
       --allow-empty-attestation) ALLOW_EMPTY_ATTESTATION=1; shift ;;
       --reuse) REUSE_IF_RUNNING=1; shift ;;
       --reset-register) RESET_REGISTER=1; shift ;;
@@ -228,6 +251,8 @@ resolve_defaults() {
   [ "$UPLOAD_DIR" = "__unset__" ] && UPLOAD_DIR=""
   [ "$LOG_FILE" = "__unset__" ] && LOG_FILE="$REMOTE_DIR/platform-mock.log"
   [ "$PID_FILE" = "__unset__" ] && PID_FILE="$REMOTE_DIR/platform-mock.pid"
+  [ "$SEMGREP_RULES" = "__unset__" ] && SEMGREP_RULES="$REMOTE_DIR/semgrep-rules"
+  [ "$SEMGREP_BIN_DIR" = "__unset__" ] && SEMGREP_BIN_DIR="$REMOTE_DIR/sgvenv/bin"
   [ -n "$REMOTE_HOST" ] || die "--host or REMOTE_HOST is required"
   [ -n "$REMOTE_BINARY" ] || REMOTE_BINARY="$REMOTE_DIR/$BINARY_NAME"
   return 0
@@ -346,6 +371,8 @@ build_mock_args() {
   [ "$ALLOW_EMPTY_ATTESTATION" = "1" ] && MOCK_ARGS+=(-allow-empty-attestation)
   [ -n "$SM2_ID" ] && MOCK_ARGS+=(-sm2-id "$SM2_ID")
   [ -n "$PLATFORM_KEY_FILE" ] && MOCK_ARGS+=(-platform-key-file "$PLATFORM_KEY_FILE")
+  [ -n "$AUDIT_ENGINE" ] && MOCK_ARGS+=(-audit-engine "$AUDIT_ENGINE")
+  [ -n "$SEMGREP_RULES" ] && MOCK_ARGS+=(-semgrep-rules "$SEMGREP_RULES")
 
   # The console reads these from the environment, and passing them this way
   # keeps the password out of the process arguments on the remote host.
@@ -353,6 +380,12 @@ build_mock_args() {
   [ -n "$CONSOLE_USER" ] && REMOTE_ENV_PREFIX+="CONSOLE_USER=$(shell_quote "$CONSOLE_USER") "
   [ -n "$CONSOLE_PASSWORD" ] && REMOTE_ENV_PREFIX+="CONSOLE_PASSWORD=$(shell_quote "$CONSOLE_PASSWORD") "
   [ -n "$TEE_TLS_ENDPOINT" ] && REMOTE_ENV_PREFIX+="TEELLM_TLS_ENDPOINT=$(shell_quote "$TEE_TLS_ENDPOINT") "
+  # The adapter resolves "semgrep" through PATH, so the venv's bin directory
+  # must be in the process environment rather than named on the command line.
+  # $PATH stays unexpanded here so the remote shell composes the final value.
+  if [ -n "$SEMGREP_BIN_DIR" ]; then
+    REMOTE_ENV_PREFIX+="PATH=$SEMGREP_BIN_DIR:\$PATH "
+  fi
   return 0
 }
 
@@ -381,6 +414,69 @@ upload_remote() {
   log "uploaded $BINARY_PATH -> $REMOTE_TARGET:$REMOTE_BINARY"
 }
 
+# ensure_semgrep_remote installs the semgrep CLI into the venv at
+# <semgrep-bin-dir>/.. when it is missing. It never fails the deployment: the
+# workbench falls back to regex and reports the reason, which is a usable
+# workbench, while a hard failure would take down every other mock panel too.
+ensure_semgrep_remote() {
+  [ "$AUDIT_ENGINE" = "semgrep" ] || return 0
+  if [ -z "$SEMGREP_BIN_DIR" ]; then
+    log "semgrep install skipped (empty --semgrep-bin-dir); the remote PATH is used as-is"
+    return 0
+  fi
+  if is_dry_run; then
+    log "would ensure $SEMGREP_BIN_DIR/semgrep (semgrep==$SEMGREP_VERSION)"
+    return 0
+  fi
+  if remote_sh "[ -x $(shell_quote "$SEMGREP_BIN_DIR/semgrep") ]"; then
+    log "semgrep CLI present at $SEMGREP_BIN_DIR/semgrep"
+    return 0
+  fi
+  local venv_dir
+  venv_dir="$(dirname "$SEMGREP_BIN_DIR")"
+  log "installing semgrep $SEMGREP_VERSION into $venv_dir (first start only; this takes a few minutes)"
+  if ! remote_sh "python3 -m venv $(shell_quote "$venv_dir") && $(shell_quote "$venv_dir/bin/pip") install -q --upgrade pip && $(shell_quote "$venv_dir/bin/pip") install -q $(shell_quote "semgrep==$SEMGREP_VERSION")"; then
+    warn "semgrep install failed; the audit workbench will report a regex fallback"
+    return 0
+  fi
+  log "semgrep installed: $(shell_quote "$SEMGREP_BIN_DIR/semgrep")"
+}
+
+# upload_semgrep_rules replaces the remote rule directory with the repository's
+# rule set. The directory is replaced rather than merged so a rule deleted here
+# stops influencing the workbench; the upload is packed locally because scp of a
+# tree cannot delete stale files.
+upload_semgrep_rules() {
+  [ "$AUDIT_ENGINE" = "semgrep" ] || return 0
+  if [ ! -d "$SEMGREP_RULES_SOURCE" ]; then
+    warn "semgrep rules source $SEMGREP_RULES_SOURCE is missing; the workbench will report a regex fallback"
+    return 0
+  fi
+  if is_dry_run; then
+    log "would upload $SEMGREP_RULES_SOURCE -> $REMOTE_TARGET:$SEMGREP_RULES"
+    return 0
+  fi
+  local tarball remote_tar
+  tarball="$(mktemp "${TMPDIR:-/tmp}/semgrep-rules.XXXXXX.tar.gz")"
+  remote_tar="${REMOTE_DIR}/semgrep-rules.tar.gz"
+  if ! tar -C "$SEMGREP_RULES_SOURCE" -czf "$tarball" .; then
+    rm -f "$tarball"
+    warn "could not pack $SEMGREP_RULES_SOURCE; leaving the remote rules unchanged"
+    return 0
+  fi
+  if ! "${SCP_CMD[@]}" "$tarball" "$REMOTE_TARGET:$remote_tar"; then
+    rm -f "$tarball"
+    warn "could not upload the semgrep rules; leaving the remote rules unchanged"
+    return 0
+  fi
+  rm -f "$tarball"
+  if ! remote_sh "rm -rf $(shell_quote "$SEMGREP_RULES") && mkdir -p $(shell_quote "$SEMGREP_RULES") && tar -C $(shell_quote "$SEMGREP_RULES") -xzf $(shell_quote "$remote_tar") && rm -f $(shell_quote "$remote_tar")"; then
+    warn "could not unpack the semgrep rules at $SEMGREP_RULES"
+    return 0
+  fi
+  log "uploaded semgrep rules -> $REMOTE_TARGET:$SEMGREP_RULES"
+}
+
 start_remote() {
   build_mock_args
   if [ -n "$LLM_TARGET_EFFECTIVE" ]; then
@@ -389,6 +485,7 @@ start_remote() {
     log "TEE-LLM target: kubectl discovery from the Pod name (--llm-pod/--llm-ns/--llm-port)"
   fi
   log "console: user ${CONSOLE_USER:-admin}; TEE-TLS endpoint ${TEE_TLS_ENDPOINT:-(derived from the LLM target host on port 18443)}"
+  log "audit engine: $AUDIT_ENGINE (semgrep rules $SEMGREP_RULES, CLI $SEMGREP_BIN_DIR)"
   if is_dry_run; then
     log "would start ${REMOTE_ENV_PREFIX}$REMOTE_BINARY on $REMOTE_TARGET with ${MOCK_ARGS[*]} (log $LOG_FILE)"
     return 0
@@ -396,8 +493,13 @@ start_remote() {
   remote_sh "mkdir -p $(shell_quote "$REMOTE_DIR")" || die "could not create $REMOTE_DIR on $REMOTE_TARGET"
   stop_remote
   upload_remote
+  ensure_semgrep_remote
+  upload_semgrep_rules
   log "starting platform-mock on $REMOTE_TARGET ($ADDR)"
-  remote_sh "nohup ${REMOTE_ENV_PREFIX}$(shell_quote "$REMOTE_BINARY") $(shell_quote "${MOCK_ARGS[@]}") > $(shell_quote "$LOG_FILE") 2>&1 < /dev/null & echo \$! > $(shell_quote "$PID_FILE")" \
+  # Environment assignments must precede nohup: nohup treats its first argument
+  # as the command, so `nohup VAR=value binary` looks for a program named
+  # VAR=value.
+  remote_sh "${REMOTE_ENV_PREFIX}nohup $(shell_quote "$REMOTE_BINARY") $(shell_quote "${MOCK_ARGS[@]}") > $(shell_quote "$LOG_FILE") 2>&1 < /dev/null & echo \$! > $(shell_quote "$PID_FILE")" \
     || die "failed to start $REMOTE_BINARY on $REMOTE_TARGET"
   if ! wait_ready; then
     remote_sh "tail -n 40 $(shell_quote "$LOG_FILE")" >&2 || true

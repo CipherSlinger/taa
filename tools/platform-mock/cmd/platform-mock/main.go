@@ -29,6 +29,8 @@ func main() {
 	flag.StringVar(&cfg.PlatformKeyFile, "platform-key-file", cfg.PlatformKeyFile, "platform SM2 key file (default: <state-dir>/platform-key.json)")
 	flag.StringVar(&cfg.ConsoleUser, "console-user", cfg.ConsoleUser, "TEE-LLM console username")
 	flag.StringVar(&cfg.ConsolePassword, "console-password", cfg.ConsolePassword, "TEE-LLM console password")
+	flag.StringVar(&cfg.AuditEngine, "audit-engine", cfg.AuditEngine, "audit workbench static engine: semgrep or regex")
+	flag.StringVar(&cfg.SemgrepRules, "semgrep-rules", cfg.SemgrepRules, "semgrep rules file or directory")
 	flag.Parse()
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
