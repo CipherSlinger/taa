@@ -1498,34 +1498,6 @@
   align-items: stretch;
 }
 
-.audit-engine-grid {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 16px;
-  align-items: stretch;
-}
-
-/* The two engine cards show the same kind of field table and one of them has
-   an action row, so stretching both to the taller one and pinning the actions
-   to the bottom keeps their baselines aligned. */
-.audit-engine-grid > .audit-card {
-  display: flex;
-  flex-direction: column;
-}
-
-/* Keep the table at its natural height: stretching the bordered wrapper left
-   an empty framed box below the shorter card's rows. The pinned footer already
-   absorbs the height difference. */
-.audit-engine-grid > .audit-card > .audit-table-wrap {
-  flex: 0 0 auto;
-}
-
-.audit-engine-grid > .audit-card > .audit-btn-row,
-.audit-engine-grid > .audit-card > .audit-help {
-  margin-top: auto;
-  padding-top: 14px;
-}
-
 /* The self-test and gateway-log pair shares a row: stretch both cards and let
    the reply area take the leftover height. */
 .audit-engine-lower {
@@ -2303,6 +2275,16 @@
 }
 
 /* ─────────────────────────── engine rules ─────────────────────────── */
+
+/* Engine panes: the tab row reuses the rules segmented control, and each pane
+   stacks its cards with the same vertical rhythm the view itself uses. */
+.audit-engine-tabs {
+  margin-bottom: 0;
+}
+
+.audit-engine-pane > * + * {
+  margin-top: 16px;
+}
 
 .audit-rules-tabs {
   display: inline-flex;
@@ -3909,7 +3891,6 @@
   }
 
   .audit-overview-grid,
-  .audit-engine-grid,
   .audit-settings-grid,
   .audit-grid-2 {
     grid-template-columns: minmax(0, 1fr);

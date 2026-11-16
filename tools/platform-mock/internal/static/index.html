@@ -1275,11 +1275,16 @@
           <div class="audit-view-head">
             <div>
               <h2 class="audit-view-title">安全引擎</h2>
-              <p class="audit-view-desc">静态扫描引擎与 AI 语义判定模块的运行状态、证明字段与网关日志。</p>
+              <p class="audit-view-desc">静态扫描引擎与规则、AI 语义判定与证明握手分区查看。</p>
             </div>
           </div>
 
-          <div class="audit-engine-grid">
+          <div class="audit-rules-tabs audit-engine-tabs" role="tablist" aria-label="安全引擎分区">
+            <button type="button" class="audit-rules-tab is-active" data-engine-pane="static" role="tab" aria-selected="true">静态扫描</button>
+            <button type="button" class="audit-rules-tab" data-engine-pane="llm" role="tab" aria-selected="false">AI 语义与证明</button>
+          </div>
+
+          <div id="enginePaneStatic" class="audit-engine-pane">
             <div class="audit-card">
               <div class="audit-card-head">
                 <div>
@@ -1303,34 +1308,6 @@
               </div>
               <p class="audit-help">这里的字段描述引擎自身的配置，不随某一次审计变化；上次扫描的结论在「审计结果」里。</p>
             </div>
-
-            <div class="audit-card">
-              <div class="audit-card-head">
-                <div>
-                  <h3 class="audit-card-title">AI 语义判定（TEE-LLM 安全模块）</h3>
-                  <p class="audit-card-desc">对静态扫描发现逐条复核，输出判定、风险与理由。</p>
-                </div>
-                <span id="engineLLMStatus" class="audit-pill idle"><span class="audit-pill-dot"></span><span>未检测</span></span>
-              </div>
-              <div class="audit-table-wrap">
-                <table class="audit-table">
-                  <thead>
-                    <tr>
-                      <th scope="col">字段</th>
-                      <th scope="col">值</th>
-                    </tr>
-                  </thead>
-                  <tbody id="engineLLMFields">
-                    <tr class="audit-table-empty"><td colspan="2">正在加载 AI 语义判定模块状态…</td></tr>
-                  </tbody>
-                </table>
-              </div>
-              <div class="audit-btn-row">
-                <button type="button" id="engineFetchAttestBtn" class="audit-btn audit-btn-primary audit-btn-sm">获取证明报告</button>
-                <button type="button" id="engineVerifyTLSBtn" class="audit-btn audit-btn-ghost audit-btn-sm">校验 TEE-TLS 握手</button>
-              </div>
-            </div>
-          </div>
 
           <!-- ─── Built-in rules ─── -->
           <div class="audit-card audit-rules-card">
@@ -1384,6 +1361,7 @@
             </div>
             <p class="audit-help" id="engineRulesNote">规则的顺序就是扫描顺序：一行命中多条规则时，只有排在前面的那条上报。</p>
           </div>
+          </div>
 
           <!-- Rule detail drawer: the editor for one source rule. -->
           <div id="auditRuleBackdrop" class="audit-drawer-backdrop" hidden></div>
@@ -1400,6 +1378,34 @@
               <div class="audit-empty">从规则列表中选择一条查看。</div>
             </div>
           </aside>
+
+          <div id="enginePaneLLM" class="audit-engine-pane" hidden>
+            <div class="audit-card">
+              <div class="audit-card-head">
+                <div>
+                  <h3 class="audit-card-title">AI 语义判定（TEE-LLM 安全模块）</h3>
+                  <p class="audit-card-desc">对静态扫描发现逐条复核，输出判定、风险与理由。</p>
+                </div>
+                <span id="engineLLMStatus" class="audit-pill idle"><span class="audit-pill-dot"></span><span>未检测</span></span>
+              </div>
+              <div class="audit-table-wrap">
+                <table class="audit-table">
+                  <thead>
+                    <tr>
+                      <th scope="col">字段</th>
+                      <th scope="col">值</th>
+                    </tr>
+                  </thead>
+                  <tbody id="engineLLMFields">
+                    <tr class="audit-table-empty"><td colspan="2">正在加载 AI 语义判定模块状态…</td></tr>
+                  </tbody>
+                </table>
+              </div>
+              <div class="audit-btn-row">
+                <button type="button" id="engineFetchAttestBtn" class="audit-btn audit-btn-primary audit-btn-sm">获取证明报告</button>
+                <button type="button" id="engineVerifyTLSBtn" class="audit-btn audit-btn-ghost audit-btn-sm">校验 TEE-TLS 握手</button>
+              </div>
+            </div>
 
           <div class="audit-card">
             <div class="audit-card-head">
@@ -1508,6 +1514,7 @@
                 <div id="engineLogOutput" class="audit-log-output" role="log" aria-live="polite" tabindex="0"></div>
               </div>
             </div>
+          </div>
           </div>
         </section>
 

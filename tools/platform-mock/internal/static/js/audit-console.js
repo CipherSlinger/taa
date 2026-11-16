@@ -3851,6 +3851,23 @@
         if (rulesCache) applyRuleFilter(rulesCache);
       });
     });
+    // The engine view is split in two: the static scanner and its rules on one
+    // side, the AI adjudication with attestation, self-check and logs on the
+    // other. Both panes stay rendered so switching costs nothing.
+    document.querySelectorAll('[data-engine-pane]').forEach((tab) => {
+      tab.addEventListener('click', () => {
+        const pane = tab.dataset.enginePane === 'llm' ? 'llm' : 'static';
+        document.querySelectorAll('[data-engine-pane]').forEach((other) => {
+          const on = other.dataset.enginePane === pane;
+          other.classList.toggle('is-active', on);
+          other.setAttribute('aria-selected', on ? 'true' : 'false');
+        });
+        const staticPane = $('enginePaneStatic');
+        const llmPane = $('enginePaneLLM');
+        if (staticPane) staticPane.hidden = pane !== 'static';
+        if (llmPane) llmPane.hidden = pane !== 'llm';
+      });
+    });
     bindIfNoInline('enginePromptSend', auditPromptSend);
     bindIfNoInline('engineLogPauseBtn', toggleLogPause);
     bindIfNoInline('engineLogClearBtn', clearLogs);
