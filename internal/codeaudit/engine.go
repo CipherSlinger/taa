@@ -166,3 +166,19 @@ func NewEngine(cfg EngineConfig) (StaticEngine, error) {
 func DefaultEngine() StaticEngine {
 	return regexEngine{scanner: DefaultScanner()}
 }
+
+// NewRegexEngine returns the regex engine over an explicit rule set and config.
+//
+// It exists for callers that need the baseline engine's matching semantics but
+// not its fixed rules: the platform-mock workbench lets an operator edit the
+// built-in rules, and a scan has to run with the edited set. Production builds
+// its engine through DefaultEngine or NewEngine and never reaches this, so the
+// selection point stays single.
+//
+// The rules are taken as given rather than validated here: NewScanner does not
+// check them either, and a caller that assembled them has already decided what
+// they mean. A nil rules slice is not "the defaults" - it is an engine that
+// matches nothing, which is the honest reading of what was handed in.
+func NewRegexEngine(rules []Rule, cfg Config) StaticEngine {
+	return regexEngine{scanner: NewScanner(rules, cfg)}
+}

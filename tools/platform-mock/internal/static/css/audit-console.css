@@ -1241,26 +1241,6 @@
   flex-wrap: wrap;
 }
 
-/* The workbench has exactly one engine, so the top bar names it instead of
-   pretending to offer a choice. It reads as metadata, not as a control. */
-.audit-engine-chip {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 5px 11px;
-  border: 1px solid var(--aud-border);
-  border-radius: 999px;
-  background: var(--aud-surface-2);
-  color: var(--aud-muted);
-  font-size: 12.5px;
-  font-weight: 600;
-  white-space: nowrap;
-}
-
-.audit-engine-chip svg {
-  color: var(--aud-accent);
-}
-
 .audit-user {
   display: inline-flex;
   align-items: center;
@@ -1333,15 +1313,6 @@
   letter-spacing: 0.14em;
   color: var(--aud-muted);
   text-transform: uppercase;
-}
-
-.audit-nav-foot {
-  margin: 6px 0 0;
-  padding: 10px 12px 2px;
-  border-top: 1px solid var(--aud-border);
-  font-size: 11px;
-  line-height: 1.5;
-  color: var(--aud-muted);
 }
 
 .audit-nav-item {
@@ -2329,6 +2300,77 @@
 .audit-source-tab.is-active .audit-source-count {
   background: var(--aud-accent-soft);
   color: var(--aud-accent-strong);
+}
+
+/* ─────────────────────────── engine rules ─────────────────────────── */
+
+.audit-rules-tabs {
+  display: inline-flex;
+  gap: 4px;
+  padding: 3px;
+  margin: 2px 0 12px;
+  border: 1px solid var(--aud-border);
+  border-radius: 10px;
+  background: var(--aud-surface-2);
+}
+
+.audit-rules-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 13px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--aud-text-2);
+  font-family: inherit;
+  font-size: 12.5px;
+  font-weight: 650;
+  cursor: pointer;
+  transition: background-color 0.16s ease, color 0.16s ease;
+}
+
+.audit-rules-tab:hover {
+  color: var(--aud-text);
+}
+
+.audit-rules-tab.is-active {
+  background: var(--aud-surface);
+  color: var(--aud-accent-strong);
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.08);
+}
+
+.audit-rules-tab:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px var(--aud-accent-ring);
+}
+
+/* The rule list is shown in full. A capped box cut the last row in half at the
+   container edge, which reads as a rendering bug rather than as "more below";
+   the built-in set is small and bounded, so the page can carry all of it. */
+.audit-rules-wrap {
+  overflow-y: visible;
+}
+
+.audit-rules-table td.audit-rule-desc {
+  max-width: 520px;
+  color: var(--aud-text-2);
+}
+
+.audit-rule-id {
+  font-weight: 700;
+  color: var(--aud-text);
+  white-space: nowrap;
+}
+
+.audit-rule-row td.audit-col-action {
+  width: 1%;
+  white-space: nowrap;
+  text-align: right;
+}
+
+.audit-rule-detail > * + * {
+  margin-top: 14px;
 }
 
 .audit-source-list {
@@ -3923,8 +3965,7 @@
   }
 
   /* The horizontal rail has no room for the caption block. */
-  .audit-nav-label,
-  .audit-nav-foot {
+  .audit-nav-label {
     display: none;
   }
 
@@ -4063,12 +4104,6 @@
   .audit-topbar-right {
     width: 100%;
     justify-content: space-between;
-  }
-
-  /* The engine chip is decorative metadata; on a phone it costs the logout
-     button its row, so it is the first thing dropped. */
-  .audit-engine-chip {
-    display: none;
   }
 
   .audit-job-metrics {

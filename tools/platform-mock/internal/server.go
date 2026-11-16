@@ -172,6 +172,11 @@ func NewServer(cfg Config) *Server {
 	mux.HandleFunc("/api/audit/console/files", console.requireSession(auditConsole.handleFiles))
 	mux.HandleFunc("/api/audit/console/files/", console.requireSession(auditConsole.handleFileDetail))
 	mux.HandleFunc("/api/audit/console/prompt", console.requireSession(auditPromptHandler(localAudits)))
+	// The static engine's rule table is readable and editable: the workbench
+	// exists to show what the rules do, and a rules path that could only be
+	// changed by rebuilding the binary would make that a one-way street.
+	mux.HandleFunc("/api/audit/console/rules", console.requireSession(auditRulesHandler(localAudits.rules)))
+	mux.HandleFunc("/api/audit/console/rules/", console.requireSession(auditRulesHandler(localAudits.rules)))
 	// Submission stores the plaintext archive and starts the audit. The job store
 	// is the same one reportAuditHandler writes to, so both shapes of verdict land
 	// in one list.

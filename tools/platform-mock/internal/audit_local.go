@@ -30,8 +30,11 @@ const localAuditInstanceKey = "local"
 // is CPU-bound and the mock is a development tool, so a second submission is
 // answered with 409 rather than queued behind an unbounded wait.
 type localAuditRunner struct {
-	jobs     *auditJobStore
-	engine   codeaudit.StaticEngine
+	jobs *auditJobStore
+	// rules is the editable table the next scan runs with. The engine is built
+	// from it per audit rather than once at startup, so an edit takes effect on
+	// the next run without a restart.
+	rules    *auditRuleStore
 	binary   codeaudit.BinaryConfig
 	console  *llmConsole
 	workRoot string
@@ -66,7 +69,7 @@ func newLocalAuditRunner(jobs *auditJobStore, cfg Config, console *llmConsole) *
 	filesDir := filepath.Join(root, "audit-files")
 	return &localAuditRunner{
 		jobs:     jobs,
-		engine:   codeaudit.DefaultEngine(),
+		rules:    newAuditRuleStore(),
 		binary:   codeaudit.DefaultBinaryConfig(),
 		console:  console,
 		workRoot: root,
@@ -289,7 +292,18 @@ func (r *localAuditRunner) run(ctx context.Context, workDir, archivePath, dataKe
 		}
 	}
 
-	audit, err := r.auditFn(ctx, srcDir, r.engine,
+	// The engine is built here, per audit, from the table as it stands now: an
+	// operator who edits a rule while the previous run is finishing expects the
+	// next run to use it, and a startup-built engine would silently ignore it.
+	engine, err := r.rules.engine()
+	if err != nil {
+		reason := "静态扫描引擎不可用: " + err.Error()
+		log.Printf("local audit %s: %s", requestID, reason)
+		r.jobs.failAt(localAuditInstanceKey, requestID, "static", reason)
+		return
+	}
+
+	audit, err := r.auditFn(ctx, srcDir, engine,
 		codeaudit.AuditConfig{LLM: llmCfg, Binary: r.binary, OnStage: onStage},
 		client)
 	if err != nil {

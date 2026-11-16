@@ -2567,6 +2567,272 @@
     toast({ type: 'warning', title: '下载被拦截', message: 'JSON 已放入详情区，可手动复制' });
   }
 
+  // ── Rules ──
+  // The rule table is the engine's own configuration: it is read once per view
+  // refresh, rendered as a list, and edited one rule at a time. The source arm
+  // is editable and the binary arm is not, because a binary rule is a claim
+  // about symbol tables and pickle targets rather than about text a line can
+  // match.
+  let rulesCache = null;
+  let rulesSource = 'source';
+
+  async function loadRules(force) {
+    if (!state.user) return null;
+    if (rulesCache && !force) {
+      // Re-render from the cache rather than leave the list as whatever the last
+      // visit drew: the source/binary tab can have changed between visits.
+      renderRules(rulesCache);
+      return rulesCache;
+    }
+    const res = await requestJSON('/api/audit/console/rules', { timeoutMs: REQUEST_TIMEOUT_MS });
+    if (!res.ok) throw new Error('读取规则失败：HTTP ' + res.status);
+    rulesCache = unwrap(res.data) || {};
+    renderRules(rulesCache);
+    return rulesCache;
+  }
+
+  function renderRules(data) {
+    const source = Array.isArray(data.rules) ? data.rules : [];
+    const binary = Array.isArray(data.binary) ? data.binary : [];
+    setText('engineSourceRuleCount', String(source.length));
+    setText('engineBinaryRuleCount', String(binary.length));
+    document.querySelectorAll('.audit-rules-tab').forEach((tab) => {
+      const on = tab.dataset.rules === rulesSource;
+      tab.classList.toggle('is-active', on);
+      tab.setAttribute('aria-selected', on ? 'true' : 'false');
+    });
+    renderRuleRows(rulesSource === 'binary' ? binary : source, rulesSource === 'binary');
+    const note = $('engineRulesNote');
+    if (note) {
+      note.textContent = rulesSource === 'binary'
+        ? '二进制通道的规则由证据读取器固定：证据来自动态符号表、依赖库、字符串、pickle 目标与熵测量，改规则等于改判定边界，因此只读。'
+        : '规则的顺序就是扫描顺序：一行命中多条规则时，只有排在前面的那条上报。点「编辑」修改模式、级别与说明，保存后在下一次扫描生效。';
+    }
+  }
+
+  function renderRuleRows(rows, readOnly) {
+    const body = $('engineRuleRows');
+    if (!body) return;
+    body.replaceChildren();
+    if (!rows.length) {
+      const tr = document.createElement('tr');
+      tr.className = 'audit-table-empty';
+      const td = document.createElement('td');
+      td.colSpan = 5;
+      td.textContent = readOnly ? '没有二进制通道规则。' : '没有源码规则。';
+      tr.appendChild(td);
+      body.appendChild(tr);
+      return;
+    }
+    rows.forEach((rule) => {
+      const tr = document.createElement('tr');
+      tr.className = 'audit-rule-row';
+
+      const idCell = document.createElement('td');
+      const idSpan = document.createElement('span');
+      idSpan.className = 'audit-rule-id audit-mono';
+      idSpan.textContent = rule.id || '—';
+      idCell.appendChild(idSpan);
+      tr.appendChild(idCell);
+
+      tr.appendChild(makeCell(rule.category || '—'));
+
+      const sevCell = document.createElement('td');
+      sevCell.appendChild(badge(riskLabel(rule.severity), riskTone(rule.severity)));
+      tr.appendChild(sevCell);
+
+      const descCell = makeCell(rule.description || '—');
+      descCell.classList.add('audit-rule-desc');
+      tr.appendChild(descCell);
+
+      const actionCell = document.createElement('td');
+      actionCell.className = 'audit-col-action';
+      const open = document.createElement('button');
+      open.type = 'button';
+      open.className = 'audit-btn audit-btn-ghost audit-btn-sm';
+      open.textContent = readOnly ? '查看' : '编辑';
+      open.addEventListener('click', () => openRuleDetail(rule, readOnly));
+      actionCell.appendChild(open);
+      tr.appendChild(actionCell);
+
+      body.appendChild(tr);
+    });
+  }
+
+  function openRuleDetail(rule, readOnly) {
+    const panel = $('auditRuleDetail');
+    if (!panel) return;
+    setText('auditRuleDetailTitle', (rule.id || '规则') + (readOnly ? ' · 只读' : ''));
+
+    const body = $('auditRuleDetailBody');
+    if (body) {
+      body.replaceChildren();
+      body.appendChild(buildRuleDetailBody(rule, readOnly));
+    }
+
+    const backdrop = $('auditRuleBackdrop');
+    if (backdrop) backdrop.hidden = false;
+    panel.hidden = false;
+    panel.classList.add('open');
+    panel.setAttribute('aria-hidden', 'false');
+  }
+
+  function closeRuleDetail() {
+    const panel = $('auditRuleDetail');
+    if (!panel) return;
+    panel.hidden = true;
+    panel.classList.remove('open');
+    panel.setAttribute('aria-hidden', 'true');
+    const backdrop = $('auditRuleBackdrop');
+    if (backdrop) backdrop.hidden = true;
+  }
+
+  function buildRuleDetailBody(rule, readOnly) {
+    const wrap = document.createElement('div');
+    wrap.className = 'audit-rule-detail';
+
+    if (readOnly) {
+      wrap.appendChild(buildDetailGrid([
+        ['规则', rule.id || '—', { mono: true }],
+        ['类别', rule.category || '—'],
+        ['级别', badge(riskLabel(rule.severity), riskTone(rule.severity))],
+        ['说明', rule.description || '—', { wide: true }],
+      ]));
+      const note = document.createElement('p');
+      note.className = 'audit-help';
+      note.textContent = '该规则属于二进制通道，证据来自文件的符号表、依赖、字符串、pickle 目标或熵测量，不能在这里修改。';
+      wrap.appendChild(note);
+      return wrap;
+    }
+
+    // id and category are shown, not edited: the id is the key the report and
+    // every stored verdict carry, and the category is a display grouping rather
+    // than a thing a scan reads. Severity, description and patterns are what a
+    // scan actually consumes, and those are editable.
+    wrap.appendChild(buildDetailGrid([
+      ['规则', rule.id || '—', { mono: true }],
+      ['类别', rule.category || '—'],
+    ]));
+
+    const sevField = document.createElement('label');
+    sevField.className = 'audit-field';
+    const sevLabel = document.createElement('span');
+    sevLabel.textContent = '级别';
+    const sevSelect = document.createElement('select');
+    sevSelect.id = 'auditRuleSeverity';
+    [['HIGH', '高危'], ['MEDIUM', '中危'], ['LOW', '低危']].forEach(([value, label]) => {
+      const opt = document.createElement('option');
+      opt.value = value;
+      opt.textContent = label + '（' + value + '）';
+      if (value === rule.severity) opt.selected = true;
+      sevSelect.appendChild(opt);
+    });
+    sevField.append(sevLabel, sevSelect);
+    wrap.appendChild(sevField);
+
+    const descField = document.createElement('label');
+    descField.className = 'audit-field';
+    const descLabel = document.createElement('span');
+    descLabel.textContent = '说明';
+    const descInput = document.createElement('input');
+    descInput.type = 'text';
+    descInput.id = 'auditRuleDescription';
+    descInput.value = rule.description || '';
+    descField.append(descLabel, descInput);
+    wrap.appendChild(descField);
+
+    const patField = document.createElement('label');
+    patField.className = 'audit-field';
+    const patLabel = document.createElement('span');
+    patLabel.textContent = '匹配模式（每行一条正则，命中任意一条即触发）';
+    const patArea = document.createElement('textarea');
+    patArea.id = 'auditRulePatterns';
+    patArea.className = 'audit-textarea audit-textarea-mono';
+    patArea.rows = Math.min(14, Math.max(4, (rule.patterns || []).length + 1));
+    patArea.value = (rule.patterns || []).join('\n');
+    patField.append(patLabel, patArea);
+    wrap.appendChild(patField);
+
+    const actions = document.createElement('div');
+    actions.className = 'audit-btn-row';
+    const save = document.createElement('button');
+    save.type = 'button';
+    save.className = 'audit-btn audit-btn-primary audit-btn-sm';
+    save.textContent = '保存规则';
+    save.addEventListener('click', () => saveRuleDetail(rule, save));
+    const hint = document.createElement('span');
+    hint.id = 'auditRuleSaveHint';
+    hint.className = 'audit-muted-sm';
+    hint.textContent = '保存后在下一次扫描生效';
+    actions.append(save, hint);
+    wrap.appendChild(actions);
+
+    return wrap;
+  }
+
+  async function saveRuleDetail(rule, btn) {
+    if (!state.user) return;
+    // Patterns keep their own leading/trailing spaces: a regex may anchor on
+    // indentation, so trimming here would rewrite a rule the operator did not
+    // touch. Only blank lines are dropped, matching the server's validation.
+    const patterns = ($('auditRulePatterns') ? $('auditRulePatterns').value : '')
+      .split('\n')
+      .map((line) => line.replace(/\r$/, ''))
+      .filter((line) => line.trim() !== '');
+    const payload = {
+      id: rule.id,
+      category: rule.category || '',
+      severity: $('auditRuleSeverity') ? $('auditRuleSeverity').value : rule.severity,
+      description: $('auditRuleDescription') ? $('auditRuleDescription').value.trim() : '',
+      patterns,
+    };
+    if (btn) btn.disabled = true;
+    try {
+      const res = await requestJSON('/api/audit/console/rules/' + encodeURIComponent(rule.id), {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+        timeoutMs: REQUEST_TIMEOUT_MS,
+      });
+      const data = unwrap(res.data) || {};
+      if (!res.ok || data.ok === false) {
+        throw new Error(data.error || ('HTTP ' + res.status));
+      }
+      rulesCache = null;
+      await loadRules(true);
+      renderStaticEngineFacts((rulesCache && rulesCache.engine) || {});
+      closeRuleDetail();
+      toast({ type: 'success', title: '规则已保存', message: rule.id + ' 将在下一次扫描生效' });
+    } catch (err) {
+      setText('auditRuleSaveHint', '保存失败：' + err.message);
+      toast({ type: 'warning', title: '保存失败', message: err.message });
+    } finally {
+      if (btn) btn.disabled = false;
+    }
+  }
+
+  async function resetRules() {
+    if (!state.user) return;
+    try {
+      const res = await requestJSON('/api/audit/console/rules/reset', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: '{}',
+        timeoutMs: REQUEST_TIMEOUT_MS,
+      });
+      const data = unwrap(res.data) || {};
+      if (!res.ok || data.ok === false) {
+        throw new Error(data.error || ('HTTP ' + res.status));
+      }
+      rulesCache = null;
+      await loadRules(true);
+      renderStaticEngineFacts((rulesCache && rulesCache.engine) || {});
+      toast({ type: 'success', title: '已恢复内置规则', message: '下一次扫描使用内置规则表' });
+    } catch (err) {
+      toast({ type: 'warning', title: '恢复失败', message: err.message });
+    }
+  }
+
   // ── Security engine ──
   async function refreshEngine() {
     await refreshStaticEngine();
@@ -2574,42 +2840,38 @@
     await refreshLogs(false);
   }
 
+  // The static engine card describes the engine, not a run: its configuration
+  // is the same before and after an audit, so it is read from the rules
+  // endpoint rather than derived from whichever job happens to be newest. A
+  // run's numbers belong to the run and live in 审计结果.
   async function refreshStaticEngine() {
-    if (!state.jobs.length) await refreshJobs(true);
-    const job = state.jobs[0] || null;
-
-    if (!job) {
-      paintPill('engineStaticStatus', '暂无任务', 'muted');
-      // With no audit yet, show the engine's fixed posture instead of a nearly
-      // empty table: these rows come from how the local runner is wired, not
-      // from a scan.
-      fillFieldList($('engineStaticFields'), [
-        ['状态', '尚未收到任何审计结果'],
-        ['扫描引擎', '内置规则（regex）'],
-        ['二进制通道', '已启用（ELF / 归档 / pickle）'],
-        ['Tier 2 判定', '由 TEE-LLM 网关执行，网关不可达时跳过'],
-        ['执行位置', '控制台进程内，单任务串行'],
-        ['数据范围', '平台只收到审计结论投影，引擎名称与规则明细留在 TEE 内。'],
-      ]);
-      return;
+    try {
+      const data = await loadRules(false);
+      if (!data) return;
+      renderStaticEngineFacts(data.engine || {});
+      paintPill('engineStaticStatus', '规则 ' + toNumber(data.engine && data.engine.sourceRules) + ' 条', 'ok');
+    } catch (err) {
+      if (err.unauthorized) return;
+      paintPill('engineStaticStatus', '读取失败', 'bad');
+      fillFieldList($('engineStaticFields'), [['错误', err.message]]);
     }
+  }
 
-    const verdict = verdictOf(job);
-    paintPill('engineStaticStatus', verdict.label + ' · ' + riskLabel(job.riskLevel), verdict.tone);
-
+  function renderStaticEngineFacts(facts) {
+    const exts = Array.isArray(facts.extensions) ? facts.extensions.join(' / ') : '—';
+    const skips = Array.isArray(facts.skipDirs) ? facts.skipDirs : [];
     fillFieldList($('engineStaticFields'), [
-      ['结论', badge(verdict.label, verdict.tone)],
-      ['风险级别', badge(riskLabel(job.riskLevel), riskTone(job.riskLevel))],
-      ['耗时', fmtDuration(job.durationMs)],
-      ['文件数', String(toNumber(job.files))],
-      ['命中数', String(toNumber(job.findings))],
-      ['高危 / 中危 / 低危', toNumber(job.high) + ' / ' + toNumber(job.medium) + ' / ' + toNumber(job.low)],
-      ['requestId', job.requestId || '—', { mono: true }],
-      ['taskId', job.taskId || '—', { mono: true }],
-      ['上报时间', fmtTime(job.at)],
-      ['数据范围', '平台只收到结论投影，引擎名称与规则明细留在 TEE 内。'],
+      ['引擎', facts.name === 'semgrep' ? 'Semgrep CLI' : '内置规则匹配（regex）'],
+      ['扫描文件类型', exts],
+      ['最多上报发现', String(toNumber(facts.maxFindings))],
+      ['注释行', facts.commentSkipped ? '跳过（注释里的示例代码不会误报）' : '参与匹配'],
+      ['跳过目录', skips.length ? skips.join('、') : '—'],
+      ['源码规则', String(toNumber(facts.sourceRules)) + ' 条（可编辑）'],
+      ['二进制通道规则', String(toNumber(facts.binaryRules)) + ' 条（只读）'],
+      ['每行归属', '一行只归属第一条命中的规则'],
     ]);
   }
+
 
   async function refreshLLMOverview(silent) {
     if (!state.user) return;
@@ -3343,6 +3605,16 @@
   function wireEngine() {
     bindIfNoInline('engineVerifyTLSBtn', runAttestation);
     bindIfNoInline('engineFetchAttestBtn', runAttestation);
+    bindIfNoInline('engineRulesResetBtn', resetRules);
+    bindIfNoInline('auditRuleDetailClose', closeRuleDetail);
+    bindIfNoInline('auditRuleBackdrop', closeRuleDetail);
+
+    document.querySelectorAll('.audit-rules-tab').forEach((tab) => {
+      tab.addEventListener('click', () => {
+        rulesSource = tab.dataset.rules === 'binary' ? 'binary' : 'source';
+        if (rulesCache) renderRules(rulesCache);
+      });
+    });
     bindIfNoInline('enginePromptSend', auditPromptSend);
     bindIfNoInline('engineLogPauseBtn', toggleLogPause);
     bindIfNoInline('engineLogClearBtn', clearLogs);
@@ -3380,12 +3652,6 @@
 
   function wireTopbar() {
     bindIfNoInline('auditLogoutBtn', auditConsoleLogout);
-    bindIfNoInline('auditTopRefreshBtn', async () => {
-      if (!state.user) return;
-      renderSessionPill();
-      await loadInstances();
-      await refreshVisibleView();
-    });
   }
 
   function wireVisibility() {

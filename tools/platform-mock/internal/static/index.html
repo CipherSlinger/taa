@@ -771,20 +771,6 @@
         <span class="audit-env-badge">CSV2 机密环境</span>
       </div>
       <div class="audit-topbar-right">
-        <span class="audit-engine-chip" title="审计在控制台进程内执行，不连接 TAA 实例">
-          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-            <rect x="4" y="4" width="16" height="16" rx="3"></rect>
-            <path d="M9 9h6v6H9z"></path>
-          </svg>
-          本地审计引擎
-        </span>
-        <button type="button" id="auditTopRefreshBtn" class="audit-icon-btn" title="刷新当前视图" aria-label="刷新当前视图">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-            <polyline points="23 4 23 10 17 10"></polyline>
-            <polyline points="1 20 1 14 7 14"></polyline>
-            <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path>
-          </svg>
-        </button>
         <span id="auditSessionPill" class="audit-pill ok" title="会话状态由后端 Cookie 决定，操作时自动续期">
           <span class="audit-pill-dot"></span>
           <span id="auditSessionText">会话有效</span>
@@ -836,7 +822,6 @@
           </svg>
           <span>设置</span>
         </button>
-        <p class="audit-nav-foot">本机执行 · 单任务串行 · V1.0</p>
       </nav>
 
       <div class="audit-content">
@@ -1257,7 +1242,7 @@
                   </tbody>
                 </table>
               </div>
-              <p class="audit-help">发起一次审计后，这里显示最近一次扫描的统计与结论投影。</p>
+              <p class="audit-help">这里的字段描述引擎自身的配置，不随某一次审计变化；上次扫描的结论在「审计结果」里。</p>
             </div>
 
             <div class="audit-card">
@@ -1287,6 +1272,60 @@
               </div>
             </div>
           </div>
+
+          <!-- ─── Built-in rules ─── -->
+          <div class="audit-card audit-rules-card">
+            <div class="audit-card-head">
+              <div>
+                <h3 class="audit-card-title">内置扫描规则</h3>
+                <p class="audit-card-desc">引擎自带的规则集合。源码规则逐条可查看与编辑，保存后在下一次扫描生效；二进制通道的规则由证据读取器固定，只读。</p>
+              </div>
+              <div class="audit-card-tools">
+                <button type="button" id="engineRulesResetBtn" class="audit-btn audit-btn-ghost audit-btn-sm">恢复内置规则</button>
+              </div>
+            </div>
+            <div class="audit-rules-tabs" role="tablist" aria-label="规则来源">
+              <button type="button" class="audit-rules-tab is-active" data-rules="source" role="tab" aria-selected="true">
+                源码规则 <span id="engineSourceRuleCount" class="audit-source-count">0</span>
+              </button>
+              <button type="button" class="audit-rules-tab" data-rules="binary" role="tab" aria-selected="false">
+                二进制通道 <span id="engineBinaryRuleCount" class="audit-source-count">0</span>
+              </button>
+            </div>
+            <div class="audit-table-wrap audit-rules-wrap">
+              <table class="audit-table audit-rules-table">
+                <thead>
+                  <tr>
+                    <th scope="col">规则</th>
+                    <th scope="col">类别</th>
+                    <th scope="col">级别</th>
+                    <th scope="col">说明</th>
+                    <th scope="col" class="audit-col-action">操作</th>
+                  </tr>
+                </thead>
+                <tbody id="engineRuleRows">
+                  <tr class="audit-table-empty"><td colspan="5">正在加载规则…</td></tr>
+                </tbody>
+              </table>
+            </div>
+            <p class="audit-help" id="engineRulesNote">规则的顺序就是扫描顺序：一行命中多条规则时，只有排在前面的那条上报。</p>
+          </div>
+
+          <!-- Rule detail drawer: the editor for one source rule. -->
+          <div id="auditRuleBackdrop" class="audit-drawer-backdrop" hidden></div>
+          <aside id="auditRuleDetail" class="audit-drawer" role="dialog" aria-modal="true" aria-labelledby="auditRuleDetailTitle" aria-hidden="true">
+            <div class="audit-drawer-head">
+              <h3 id="auditRuleDetailTitle" class="audit-drawer-title">规则详情</h3>
+              <button type="button" id="auditRuleDetailClose" class="audit-icon-btn" title="关闭" aria-label="关闭规则详情">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <path d="M18 6 6 18M6 6l12 12"></path>
+                </svg>
+              </button>
+            </div>
+            <div id="auditRuleDetailBody" class="audit-drawer-body">
+              <div class="audit-empty">从规则列表中选择一条查看。</div>
+            </div>
+          </aside>
 
           <div class="audit-card">
             <div class="audit-card-head">
