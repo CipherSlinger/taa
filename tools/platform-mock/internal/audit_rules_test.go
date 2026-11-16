@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -182,11 +183,74 @@ func TestAuditRulesHandlerListsSemgrepRules(t *testing.T) {
 	if len(got.Languages) != 1 || got.Languages[0] != "python" || got.File != "rules.yaml" {
 		t.Fatalf("first rule source = %+v", got)
 	}
+	// The doc puts the first rule on line 2 and the second on line 9, so the
+	// first block ends on the line before, with the blank separator excluded.
+	if got.Line != 2 || got.EndLine != 8 {
+		t.Fatalf("first rule lines = %d–%d, want 2–8", got.Line, got.EndLine)
+	}
 
 	// An unmapped rule is still listed, but with its YAML values mapped onto
 	// the three display levels: it is a diagnostic, not a verdict.
 	if unmapped := resp.Semgrep[1]; unmapped.Severity != codeaudit.SeverityMedium || unmapped.Category != "custom" {
 		t.Fatalf("unmapped rule = %+v", unmapped)
+	} else if unmapped.Line != 9 || unmapped.EndLine != 14 {
+		// The last block ends with the file's trailing newline trimmed, not at
+		// the empty split element past it.
+		t.Fatalf("unmapped rule lines = %d–%d, want 9–14", unmapped.Line, unmapped.EndLine)
+	}
+}
+
+// The drawer shows the YAML Semgrep reads, so the endpoint must return the
+// file's exact text — and must not read anything outside the rules directory.
+func TestAuditRulesFileEndpointServesOnlyRulesFiles(t *testing.T) {
+	writeFakeSemgrep(t)
+	rulesPath := t.TempDir()
+	doc := "rules:\n  - id: one\n    languages: [python]\n"
+	if err := os.WriteFile(filepath.Join(rulesPath, "rules.yaml"), []byte(doc), 0o644); err != nil {
+		t.Fatalf("write rules: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(rulesPath, "notes.txt"), []byte("x"), 0o644); err != nil {
+		t.Fatalf("write txt: %v", err)
+	}
+	store := newAuditRuleStore()
+	store.useEngine(codeaudit.EngineNameSemgrep, rulesPath)
+	handler := auditRulesHandler(store)
+
+	get := func(query string) (int, map[string]any) {
+		rec := httptest.NewRecorder()
+		handler(rec, httptest.NewRequest(http.MethodGet, "/api/audit/console/rules/file?"+query, nil))
+		var body map[string]any
+		_ = json.Unmarshal(rec.Body.Bytes(), &body)
+		return rec.Code, body
+	}
+
+	code, body := get("path=rules.yaml")
+	if code != http.StatusOK || body["content"] != doc {
+		t.Fatalf("read = %d %+v, want the file text", code, body)
+	}
+	if want := filepath.Join(rulesPath, "rules.yaml"); body["path"] != want {
+		t.Fatalf("path = %v, want %v", body["path"], want)
+	}
+
+	for _, query := range []string{
+		"path=../rules.yaml",
+		"path=" + url.QueryEscape(filepath.Join(rulesPath, "rules.yaml")),
+		"path=notes.txt",
+		"path=",
+	} {
+		if code, _ := get(query); code != http.StatusBadRequest {
+			t.Fatalf("%s: status = %d, want 400", query, code)
+		}
+	}
+}
+
+// Without the semgrep engine there is no rule file to read.
+func TestAuditRulesFileEndpointRefusesRegexEngine(t *testing.T) {
+	store := newAuditRuleStore()
+	rec := httptest.NewRecorder()
+	auditRulesHandler(store)(rec, httptest.NewRequest(http.MethodGet, "/api/audit/console/rules/file?path=rules.yaml", nil))
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want 409", rec.Code)
 	}
 }
 

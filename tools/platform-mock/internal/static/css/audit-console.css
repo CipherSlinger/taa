@@ -3827,6 +3827,32 @@
   color: var(--aud-muted);
 }
 
+/* Whole semgrep rule file in the rule drawer: one block per line so the rule's
+   own span can be highlighted, with a muted gutter number. Long lines scroll
+   horizontally instead of wrapping, which keeps YAML indentation readable. */
+.audit-rule-file {
+  max-height: 380px;
+  white-space: pre;
+}
+
+.audit-rule-file-row {
+  display: block;
+  white-space: pre;
+}
+
+.audit-rule-file-num {
+  color: rgba(148, 163, 184, 0.7);
+  user-select: none;
+}
+
+/* The drawer paints code blocks dark, so the light theme's faint critical tint
+   is not enough to separate the rule's own lines from the rest of the file. */
+.audit-rule-file .audit-rule-file-row.audit-code-hit {
+  background: rgba(248, 113, 113, 0.18);
+  box-shadow: inset 2px 0 0 #f87171;
+  color: var(--aud-code-text);
+}
+
 .audit-log-empty {
   padding: 12px 14px;
   font-size: 12px;

@@ -175,7 +175,9 @@ The platform mock provides an embedded single-page Web console accessible by ope
     built-in regex engine and the card states the reason plus the configured engine. The
     source tab follows whichever engine is active. Under semgrep it lists the rules actually
     loaded from the rule directory (rule id, family, category, severity, description,
-    languages and file) and is read-only: each finding's category, severity and description
+    languages, absolute file path and line span); each drawer also shows the complete YAML
+    file with this rule's block highlighted. The tab is read-only: each finding's category,
+    severity and description
     come from the canonical 13-family table keyed by the rule's `metadata.rule_family`, not
     from the YAML's own `severity` and `message`, so changing them means editing and
     redeploying the YAML. Under regex it shows the built-in table with per-rule drawers
@@ -203,9 +205,12 @@ The platform mock provides an embedded single-page Web console accessible by ope
   generated half with placeholders) and replaced with `PUT` `{"prompt": "..."}`, which stores
   only the text before `## 代码片段`; the static rule table is read with
   `GET /api/audit/console/rules`
-  (engine facts, source rules, binary rules), one source rule is replaced with
+  (engine facts, source rules, binary rules, and — when semgrep is active — the loaded
+  Semgrep rules with their file and line span), one source rule is replaced with
   `PUT /api/audit/console/rules/{id}` and the built-in table is restored with
-  `POST /api/audit/console/rules/reset`. They share the
+  `POST /api/audit/console/rules/reset`. A semgrep rule's full YAML file is read with
+  `GET /api/audit/console/rules/file?path=<relative path>` (the path must stay inside the
+  configured rules directory and name a `.yml`/`.yaml`). They share the
   session with the `/api/console/{login,logout,session}` aliases; the TEE-LLM module still
   exposes `/api/llm/console/*`, and `TEELLM_TLS_ENDPOINT` (or the settings page) selects the
   secure listener when it is not derivable from `-llm-target`.

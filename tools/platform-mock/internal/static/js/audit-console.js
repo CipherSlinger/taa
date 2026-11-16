@@ -2575,6 +2575,10 @@
   // match.
   let rulesCache = null;
   let rulesSource = 'source';
+  // Absolute directory the active semgrep engine loads its YAML from. The
+  // drawer shows each rule's full path, so it needs the directory, not only the
+  // relative file the listing carries.
+  let semgrepRulesPath = '';
 
   async function loadRules(force) {
     if (!state.user) return null;
@@ -2715,6 +2719,49 @@
     if (backdrop) backdrop.hidden = true;
   }
 
+  // loadRuleFileText fetches one semgrep rule file and paints it with the
+  // rule's own line span highlighted. The file is read on demand rather than
+  // embedded in the rule listing, and a failure is shown in place instead of
+  // blanking the drawer.
+  async function loadRuleFileText(rule, pre) {
+    if (!rule.file) {
+      pre.textContent = '该规则没有记录规则文件。';
+      return;
+    }
+    try {
+      const res = await requestJSON(
+        '/api/audit/console/rules/file?path=' + encodeURIComponent(rule.file),
+        { timeoutMs: REQUEST_TIMEOUT_MS });
+      if (!res.ok) {
+        const message = res.data && res.data.error ? res.data.error : 'HTTP ' + res.status;
+        throw new Error(message);
+      }
+      const data = unwrap(res.data) || {};
+      renderRuleFileText(pre, String(data.content || ''), rule.line, rule.endLine);
+    } catch (err) {
+      if (err.unauthorized) return;
+      pre.textContent = '读取规则文件失败：' + err.message;
+    }
+  }
+
+  function renderRuleFileText(pre, content, startLine, endLine) {
+    const lines = content.replace(/\n$/, '').split('\n');
+    const width = String(lines.length).length;
+    pre.textContent = '';
+    lines.forEach((line, index) => {
+      const number = index + 1;
+      const inRule = startLine && number >= startLine
+        && number <= (endLine || startLine);
+      const row = document.createElement('span');
+      row.className = inRule ? 'audit-rule-file-row audit-code-hit' : 'audit-rule-file-row';
+      const gutter = document.createElement('span');
+      gutter.className = 'audit-rule-file-num';
+      gutter.textContent = String(number).padStart(width, ' ') + ' │ ';
+      row.append(gutter, document.createTextNode(line || ' '));
+      pre.appendChild(row);
+    });
+  }
+
   function buildRuleDetailBody(rule, mode) {
     const wrap = document.createElement('div');
     wrap.className = 'audit-rule-detail';
@@ -2736,18 +2783,40 @@
     if (mode === 'semgrep') {
       const languages = Array.isArray(rule.languages) && rule.languages.length
         ? rule.languages.join(' / ') : '—';
-      wrap.appendChild(buildDetailGrid([
+      const filePath = semgrepRulesPath
+        ? semgrepRulesPath.replace(/\/+$/, '') + '/' + (rule.file || '')
+        : (rule.file || '—');
+      const rows = [
         ['规则', rule.id || '—', { mono: true }],
         ['规则族', rule.family ? rule.family + '（TAA 规范规则）' : '未声明 rule_family'],
         ['类别', rule.category || '—'],
         ['级别', badge(riskLabel(rule.severity), riskTone(rule.severity))],
         ['说明', rule.description || '—', { wide: true }],
         ['语言', languages],
-        ['规则文件', rule.file || '—', { mono: true }],
-      ]));
+        ['规则文件', filePath || '—', { mono: true }],
+      ];
+      if (rule.line) {
+        rows.push(['规则行号', rule.endLine && rule.endLine !== rule.line
+          ? rule.line + '–' + rule.endLine
+          : String(rule.line)]);
+      }
+      wrap.appendChild(buildDetailGrid(rows));
+
+      // The canonical fields above are what a finding reports; the YAML below
+      // is what Semgrep matches. Showing the whole file (not just the block)
+      // lets an operator read the neighbouring rules and the file's own
+      // conventions before deciding to change one.
+      const section = detailSection('完整规则文件');
+      const pre = document.createElement('pre');
+      pre.className = 'audit-detail-code audit-rule-file';
+      pre.textContent = '正在读取规则文件…';
+      section.appendChild(pre);
+      wrap.appendChild(section);
+      loadRuleFileText(rule, pre);
+
       const note = document.createElement('p');
       note.className = 'audit-help';
-      note.textContent = '该规则由 Semgrep CLI 从规则目录加载；级别、类别与说明按 metadata.rule_family 取自 TAA 的规范规则表。修改需编辑对应的 YAML 规则文件后重新部署，不能在这里编辑。';
+      note.textContent = '高亮部分是这条规则在文件中的完整定义。该规则由 Semgrep CLI 从规则目录加载；级别、类别与说明按 metadata.rule_family 取自 TAA 的规范规则表。修改需编辑对应的 YAML 规则文件后重新部署，不能在这里编辑。';
       wrap.appendChild(note);
       return wrap;
     }
@@ -2918,6 +2987,7 @@
     const exts = Array.isArray(facts.extensions) ? facts.extensions.join(' / ') : '—';
     const skips = Array.isArray(facts.skipDirs) ? facts.skipDirs : [];
     const isSemgrep = facts.name === 'semgrep';
+    semgrepRulesPath = isSemgrep ? (facts.rulesPath || '') : '';
     const requested = facts.requestedName || facts.name || '';
     const rows = [];
     if (facts.name === 'semgrep') {

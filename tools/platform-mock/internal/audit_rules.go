@@ -85,6 +85,11 @@ type auditSemgrepRule struct {
 	Description string   `json:"description"`
 	Languages   []string `json:"languages,omitempty"`
 	File        string   `json:"file,omitempty"`
+	// Line and EndLine locate the rule's own YAML block in File, so the drawer
+	// can show the whole file and mark the block this rule is. Both are 1-based
+	// and come from the YAML node tree, not from re-parsing the text.
+	Line    int `json:"line,omitempty"`
+	EndLine int `json:"endLine,omitempty"`
 }
 
 type auditRulesResponse struct {
@@ -284,7 +289,8 @@ func loadSemgrepRules(rulesPath string) []auditSemgrepRule {
 		if err != nil {
 			rel = filepath.Base(file)
 		}
-		for _, entry := range doc.Rules {
+		ranges := semgrepRuleLineRanges(data)
+		for i, entry := range doc.Rules {
 			if entry.ID == "" {
 				continue
 			}
@@ -294,6 +300,9 @@ func loadSemgrepRules(rulesPath string) []auditSemgrepRule {
 				Description: entry.Message,
 				Languages:   entry.Languages,
 				File:        rel,
+			}
+			if i < len(ranges) {
+				rule.Line, rule.EndLine = ranges[i][0], ranges[i][1]
 			}
 			if base, ok := canonical[entry.Metadata.RuleFamily]; ok {
 				rule.Category = base.Category
@@ -310,6 +319,90 @@ func loadSemgrepRules(rulesPath string) []auditSemgrepRule {
 		}
 	}
 	return out
+}
+
+// semgrepRuleLineRanges returns the line span of each entry in the file's
+// "rules" sequence, in declaration order. A rule's block runs from its first
+// key to the line before the next rule starts; the last one runs to the end of
+// the file. Empty or non-rule files yield nil, and callers then omit the
+// locator rather than guess it.
+func semgrepRuleLineRanges(data []byte) [][2]int {
+	var root yaml.Node
+	if err := yaml.Unmarshal(data, &root); err != nil || len(root.Content) == 0 {
+		return nil
+	}
+	doc := root.Content[0]
+	if doc.Kind != yaml.MappingNode {
+		return nil
+	}
+	lines := strings.Split(string(data), "\n")
+	total := len(lines)
+	for i := 0; i+1 < len(doc.Content); i += 2 {
+		if doc.Content[i].Value != "rules" {
+			continue
+		}
+		seq := doc.Content[i+1]
+		if seq.Kind != yaml.SequenceNode {
+			return nil
+		}
+		ranges := make([][2]int, len(seq.Content))
+		for j, item := range seq.Content {
+			end := total
+			if j+1 < len(seq.Content) {
+				// The next rule's own first line; the blank lines the author
+				// leaves between blocks are trimmed below.
+				end = seq.Content[j+1].Line - 1
+			}
+			for end > item.Line && strings.TrimSpace(lines[end-1]) == "" {
+				end--
+			}
+			ranges[j] = [2]int{item.Line, end}
+		}
+		return ranges
+	}
+	return nil
+}
+
+// resolveSemgrepRuleFile maps a relative rule path from the listing onto a real
+// file under the configured rules directory. The drawer asks for a path it
+// received from this process, but the parameter is still untrusted input: it
+// must stay inside the rules directory and name a YAML file.
+func resolveSemgrepRuleFile(rulesPath, rel string) (string, error) {
+	rel = strings.TrimSpace(rel)
+	if rel == "" {
+		return "", fmt.Errorf("缺少 path 参数")
+	}
+	info, err := os.Stat(rulesPath)
+	if err != nil {
+		return "", fmt.Errorf("规则目录不可用")
+	}
+	clean := filepath.Clean(filepath.FromSlash(rel))
+	// A single-file rules path has no directory to join onto: the only valid
+	// name is that file itself.
+	if !info.IsDir() {
+		if clean == filepath.Base(rulesPath) {
+			return rulesPath, nil
+		}
+		return "", fmt.Errorf("规则文件不在配置的路径内")
+	}
+	if filepath.IsAbs(clean) || clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
+		return "", fmt.Errorf("规则文件不在配置的路径内")
+	}
+	full := filepath.Join(rulesPath, clean)
+	back, err := filepath.Rel(rulesPath, full)
+	if err != nil || back == ".." || strings.HasPrefix(back, ".."+string(filepath.Separator)) {
+		return "", fmt.Errorf("规则文件不在配置的路径内")
+	}
+	switch strings.ToLower(filepath.Ext(full)) {
+	case ".yml", ".yaml":
+	default:
+		return "", fmt.Errorf("只能读取 YAML 规则文件")
+	}
+	fileInfo, err := os.Stat(full)
+	if err != nil || fileInfo.IsDir() {
+		return "", fmt.Errorf("规则文件不存在")
+	}
+	return full, nil
 }
 
 // semgrepSeverityLabel maps Semgrep's severity names onto the three levels the
@@ -541,6 +634,7 @@ func auditEngineFactsNow(store *auditRuleStore) auditEngineFacts {
 // rule, or restore the built-in table.
 //
 //	GET  /api/audit/console/rules          → the whole set plus engine facts
+//	GET  /api/audit/console/rules/file     → one semgrep rule file's text
 //	PUT  /api/audit/console/rules/{id}     → replace one source rule
 //	POST /api/audit/console/rules/reset    → restore the built-in table
 func auditRulesHandler(store *auditRuleStore) http.HandlerFunc {
@@ -563,6 +657,39 @@ func auditRulesHandler(store *auditRuleStore) http.HandlerFunc {
 				resp.Semgrep = loadSemgrepRules(facts.RulesPath)
 			}
 			writeJSON(w, http.StatusOK, resp)
+
+		case path == "file":
+			// The drawer shows the YAML Semgrep actually reads, so it needs the
+			// file's text. It is served one file at a time instead of being
+			// embedded in the listing: the whole rule set is ~160 KiB and the
+			// card is refreshed on every visit.
+			if r.Method != http.MethodGet {
+				w.Header().Set("Allow", http.MethodGet)
+				writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"ok": false, "error": "仅支持 GET 方法"})
+				return
+			}
+			facts := auditEngineFactsNow(store)
+			if facts.Name != codeaudit.EngineNameSemgrep {
+				writeJSON(w, http.StatusConflict, map[string]any{"ok": false, "error": "当前静态引擎不是 semgrep，没有规则文件可读"})
+				return
+			}
+			rel := r.URL.Query().Get("path")
+			full, err := resolveSemgrepRuleFile(facts.RulesPath, rel)
+			if err != nil {
+				writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": err.Error()})
+				return
+			}
+			data, err := os.ReadFile(full)
+			if err != nil {
+				writeJSON(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": "读取规则文件失败: " + err.Error()})
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]any{
+				"ok":      true,
+				"file":    rel,
+				"path":    full,
+				"content": string(data),
+			})
 
 		case path == "reset" && (r.Method == http.MethodPost || r.Method == http.MethodPut):
 			store.reset()
