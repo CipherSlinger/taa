@@ -21,11 +21,12 @@
   const GENERATE_TIMEOUT_MS = 130000;           // server allows a ~120s cold model load
   const ATTEST_TIMEOUT_MS = 120000;             // report fetch plus a handshake
 
-  const VIEWS = ['jobs', 'findings', 'engine', 'settings'];
+  const VIEWS = ['jobs', 'findings', 'engine', 'ai', 'settings'];
   const VIEW_IDS = {
     jobs: 'auditViewJobs',
     findings: 'auditViewFindings',
     engine: 'auditViewEngine',
+    ai: 'auditViewAI',
     settings: 'auditViewSettings',
   };
 
@@ -863,7 +864,10 @@
         await refreshFindings(false);
         break;
       case 'engine':
-        await refreshEngine();
+        await refreshStaticEngine();
+        break;
+      case 'ai':
+        await refreshAIView();
         break;
       case 'settings':
         await refreshSettings(false);
@@ -3014,8 +3018,10 @@
   }
 
   // ── Security engine ──
-  async function refreshEngine() {
-    await refreshStaticEngine();
+  // The AI adjudication, the CSV proof and the gateway logs need their own pass
+  // to the gateway, so they live in their own view and are fetched only when
+  // that view is visible.
+  async function refreshAIView() {
     await refreshLLMOverview(false);
     await refreshLogs(false);
   }
@@ -3599,7 +3605,7 @@
         refreshJobs(true),
         refreshLLMOverview(true),
       ]);
-      if (state.view === 'engine') await refreshLogs(true);
+      if (state.view === 'ai') await refreshLogs(true);
     } finally {
       state.polling = false;
     }
@@ -3849,23 +3855,6 @@
       if (!select) return;
       select.addEventListener('change', () => {
         if (rulesCache) applyRuleFilter(rulesCache);
-      });
-    });
-    // The engine view is split in two: the static scanner and its rules on one
-    // side, the AI adjudication with attestation, self-check and logs on the
-    // other. Both panes stay rendered so switching costs nothing.
-    document.querySelectorAll('[data-engine-pane]').forEach((tab) => {
-      tab.addEventListener('click', () => {
-        const pane = tab.dataset.enginePane === 'llm' ? 'llm' : 'static';
-        document.querySelectorAll('[data-engine-pane]').forEach((other) => {
-          const on = other.dataset.enginePane === pane;
-          other.classList.toggle('is-active', on);
-          other.setAttribute('aria-selected', on ? 'true' : 'false');
-        });
-        const staticPane = $('enginePaneStatic');
-        const llmPane = $('enginePaneLLM');
-        if (staticPane) staticPane.hidden = pane !== 'static';
-        if (llmPane) llmPane.hidden = pane !== 'llm';
       });
     });
     bindIfNoInline('enginePromptSend', auditPromptSend);

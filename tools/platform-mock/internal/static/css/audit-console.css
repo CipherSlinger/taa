@@ -2276,16 +2276,6 @@
 
 /* ─────────────────────────── engine rules ─────────────────────────── */
 
-/* Engine panes: the tab row reuses the rules segmented control, and each pane
-   stacks its cards with the same vertical rhythm the view itself uses. */
-.audit-engine-tabs {
-  margin-bottom: 0;
-}
-
-.audit-engine-pane > * + * {
-  margin-top: 16px;
-}
-
 .audit-rules-tabs {
   display: inline-flex;
   gap: 4px;
