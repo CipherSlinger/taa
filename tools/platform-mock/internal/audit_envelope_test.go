@@ -158,6 +158,9 @@ func TestAuditFileReuseDecrypts(t *testing.T) {
 	}
 	fileID := toString(decodeLocalSubmit(t, rec)["fileId"])
 	waitLocalAudit(t, jobs, "req-a", auditJobStatusDone)
+	// "done" lands before the goroutine releases the single-runner slot; reuse
+	// must wait for the slot or it can legitimately be answered with 409.
+	waitRunnerIdle(t, runner)
 
 	rec = submitLocalMultipart(t, handler, "", nil, map[string]string{"requestId": "req-b", "fileId": fileID})
 	if rec.Code != http.StatusOK {

@@ -198,6 +198,9 @@ func TestLocalAuditBusyReturnsConflict(t *testing.T) {
 		t.Fatalf("third status = %d, want 200: %s", third.Code, third.Body.String())
 	}
 	waitLocalAudit(t, jobs, "req-three", auditJobStatusDone)
+	// The temp directory is removed in the same deferred block that releases the
+	// slot, so "done" alone does not yet mean the cleanup has run.
+	waitRunnerIdle(t, runner)
 
 	if dirs := auditTempDirs(t, uploadDir); dirs != 0 {
 		t.Fatalf("upload dir = %d audit temp dirs, want none", dirs)
@@ -352,6 +355,10 @@ func TestLocalAuditFilesSaveAndReuse(t *testing.T) {
 		t.Fatalf("first response has no fileId: %s", rec.Body.String())
 	}
 	waitLocalAudit(t, jobs, "req-first", auditJobStatusDone)
+	// The verdict is recorded just before the goroutine releases its slot, so
+	// waiting for "done" alone would race the reuse submission against a runner
+	// that still reports busy.
+	waitRunnerIdle(t, runner)
 
 	files := runner.files.list()
 	if len(files) != 1 || files[0].ID != fileID || files[0].Name != "pkg.zip" || files[0].Size <= 0 {
