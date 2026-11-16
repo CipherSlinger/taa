@@ -1351,6 +1351,21 @@
                 二进制通道 <span id="engineBinaryRuleCount" class="audit-source-count">0</span>
               </button>
             </div>
+            <div class="audit-rules-filters" id="engineRuleFilters" hidden>
+              <label class="audit-rules-filter">
+                <span class="audit-rules-filter-label">语言</span>
+                <select id="engineRuleLangFilter" class="audit-select audit-select-sm">
+                  <option value="">全部语言</option>
+                </select>
+              </label>
+              <label class="audit-rules-filter">
+                <span class="audit-rules-filter-label">类别</span>
+                <select id="engineRuleCategoryFilter" class="audit-select audit-select-sm">
+                  <option value="">全部类别</option>
+                </select>
+              </label>
+              <span class="audit-rules-filter-count" id="engineRuleFilterCount"></span>
+            </div>
             <div class="audit-table-wrap audit-rules-wrap">
               <table class="audit-table audit-rules-table">
                 <thead>

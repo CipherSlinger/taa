@@ -176,8 +176,9 @@ The platform mock provides an embedded single-page Web console accessible by ope
     source tab follows whichever engine is active. Under semgrep it lists the rules actually
     loaded from the rule directory (rule id, family, category, severity, description,
     languages, absolute file path and line span); each drawer also shows the complete YAML
-    file with this rule's block highlighted. The tab is read-only: each finding's category,
-    severity and description
+    file with this rule's block highlighted. A language and a category dropdown filter the
+    list and report the visible count, and the choice survives a tab switch. The tab is
+    read-only: each finding's category, severity and description
     come from the canonical 13-family table keyed by the rule's `metadata.rule_family`, not
     from the YAML's own `severity` and `message`, so changing them means editing and
     redeploying the YAML. Under regex it shows the built-in table with per-rule drawers

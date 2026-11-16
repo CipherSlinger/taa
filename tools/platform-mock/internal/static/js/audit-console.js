@@ -2617,8 +2617,20 @@
     // regex editor. Collapsing them into one read-only flag was what made
     // every Semgrep-era rule claim it belonged to the binary channel.
     const mode = rulesSource === 'binary' ? 'binary' : (semgrepActive ? 'semgrep' : 'edit');
-    renderRuleRows(rulesSource === 'binary' ? binary : source, mode,
-      rulesSource === 'binary' ? '没有二进制通道规则。' : (semgrepActive ? 'Semgrep 规则目录中没有规则。' : '没有源码规则。'));
+    // Language and category filters only make sense for the semgrep rule set:
+    // the editable regex table is ordered by scan precedence, and the binary
+    // channel has ten fixed rows. Filtering either would hide a rule whose
+    // position or presence is the thing worth seeing.
+    const filtersOn = semgrepActive && rulesSource === 'source';
+    const filterBar = $('engineRuleFilters');
+    if (filterBar) filterBar.hidden = !filtersOn;
+    if (filtersOn) {
+      syncRuleFilterOptions(semgrepRules);
+      applyRuleFilter(data);
+    } else {
+      renderRuleRows(rulesSource === 'binary' ? binary : source, mode,
+        rulesSource === 'binary' ? '没有二进制通道规则。' : (semgrepActive ? 'Semgrep 规则目录中没有规则。' : '没有源码规则。'));
+    }
     const desc = $('engineRulesDesc');
     if (desc) {
       desc.textContent = semgrepActive
@@ -2638,6 +2650,58 @@
           ? '这些规则来自 Semgrep 规则目录，按语言分文件；一条 finding 的规则系列由 YAML 的 metadata.rule_family 决定。切回 regex 后本卡片恢复可编辑的 13 条内置规则。'
           : '规则的顺序就是扫描顺序：一行命中多条规则时，只有排在前面的那条上报。点「编辑」修改模式、级别与说明，保存后在下一次扫描生效。';
     }
+  }
+
+  // syncRuleFilterOptions rebuilds both dropdowns from the loaded rule set.
+  // The current choice survives unless the value no longer exists, so a view
+  // refresh does not silently widen the list back to everything.
+  function syncRuleFilterOptions(rules) {
+    const languages = [];
+    const categories = [];
+    rules.forEach((rule) => {
+      const langs = Array.isArray(rule.languages) ? rule.languages : [];
+      langs.forEach((lang) => {
+        if (lang && !languages.includes(lang)) languages.push(lang);
+      });
+      if (rule.category && !categories.includes(rule.category)) categories.push(rule.category);
+    });
+    languages.sort((a, b) => a.localeCompare(b));
+    categories.sort((a, b) => a.localeCompare(b, 'zh-Hans-CN'));
+    fillRuleFilterSelect($('engineRuleLangFilter'), '全部语言', languages);
+    fillRuleFilterSelect($('engineRuleCategoryFilter'), '全部类别', categories);
+  }
+
+  function fillRuleFilterSelect(select, allLabel, values) {
+    if (!select) return;
+    const previous = select.value;
+    select.replaceChildren();
+    const all = document.createElement('option');
+    all.value = '';
+    all.textContent = allLabel;
+    select.appendChild(all);
+    values.forEach((value) => {
+      const option = document.createElement('option');
+      option.value = value;
+      option.textContent = value;
+      select.appendChild(option);
+    });
+    select.value = values.includes(previous) ? previous : '';
+  }
+
+  function applyRuleFilter(data) {
+    const rules = Array.isArray(data.semgrep) ? data.semgrep : [];
+    const langSelect = $('engineRuleLangFilter');
+    const categorySelect = $('engineRuleCategoryFilter');
+    const lang = langSelect ? langSelect.value : '';
+    const category = categorySelect ? categorySelect.value : '';
+    const visible = rules.filter((rule) => {
+      if (lang && !(Array.isArray(rule.languages) && rule.languages.includes(lang))) return false;
+      if (category && rule.category !== category) return false;
+      return true;
+    });
+    renderRuleRows(visible, 'semgrep',
+      rules.length ? '没有符合筛选条件的规则。' : 'Semgrep 规则目录中没有规则。');
+    setText('engineRuleFilterCount', '显示 ' + visible.length + ' / ' + rules.length + ' 条');
   }
 
   function renderRuleRows(rows, mode, emptyText) {
@@ -3778,6 +3842,13 @@
       tab.addEventListener('click', () => {
         rulesSource = tab.dataset.rules === 'binary' ? 'binary' : 'source';
         if (rulesCache) renderRules(rulesCache);
+      });
+    });
+    ['engineRuleLangFilter', 'engineRuleCategoryFilter'].forEach((id) => {
+      const select = $(id);
+      if (!select) return;
+      select.addEventListener('change', () => {
+        if (rulesCache) applyRuleFilter(rulesCache);
       });
     });
     bindIfNoInline('enginePromptSend', auditPromptSend);
