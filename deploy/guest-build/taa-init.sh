@@ -31,15 +31,6 @@ CSV_SYSDEV_FILE="${CSV_SYSDEV_FILE:-/sys/class/misc/csv-guest/dev}"
 CMDLINE_FILE="${CMDLINE_FILE:-/proc/cmdline}"
 CSV_DEV=/dev/csv-guest
 CSV_MAJOR=10
-# kmod is a multicall binary: it selects its applet from argv[0], not from a
-# subcommand (`kmod modprobe foo` is rejected with "invalid command 'modprobe'",
-# measured 2026-11-13). The package ships these two dispatcher symlinks beside
-# the binary and this script calls them by their own names. Every other role's
-# initrd has no module tool at all and an empty module list, so neither path is
-# reached there.
-MODPROBE_BIN=/usr/sbin/modprobe
-DEPMOD_BIN=/usr/sbin/depmod
-MODULES_DIR=/lib/modules
 
 log() { echo "taa-init: $*" >"$CONSOLE" 2>/dev/null || true; }
 
@@ -107,51 +98,6 @@ resolve_csv_minor() {
   if [ -n "$minor" ]; then
     printf '%s\n' "$minor"
   fi
-  return 0
-}
-
-# Load the modules named by taa.taa_modules=..., comma-separated.
-#
-# Nothing else loads them here: the base initrd has no udev and no
-# systemd-modules-load, and a DCU guest's driver (hycu) is an out-of-tree module
-# that the kernel does not build in. The module tree and the kmod applet links
-# arrive in the package's DCU payload; for every other role the list is empty and
-# this is a no-op.
-#
-# Failures are logged, never acted on. This is PID 1 -- exiting would panic the
-# VM -- and TAA has to start even if the device never appears: the task that
-# needs the card fails later with an error that names it, which is far more
-# useful than a dead guest.
-load_kernel_modules() {
-  [ -n "${TAA_MODULES:-}" ] || return 0
-  if [ ! -x "$MODPROBE_BIN" ]; then
-    log "WARNING: taa.taa_modules=$TAA_MODULES but $MODPROBE_BIN is absent; not loading them"
-    return 0
-  fi
-  local release name saved_ifs
-  release="$(uname -r 2>/dev/null || true)"
-  if [ -n "$release" ] && [ ! -f "$MODULES_DIR/$release/modules.dep" ]; then
-    # The payload normally ships modules.dep; regenerating it writes only into
-    # the initrd's ramfs and is cheap compared with a module the kernel cannot
-    # resolve at boot.
-    if [ -x "$DEPMOD_BIN" ]; then
-      "$DEPMOD_BIN" -b / "$release" >/dev/null 2>&1 ||
-        log "WARNING: depmod $release failed"
-    else
-      log "WARNING: $DEPMOD_BIN is absent; $MODULES_DIR/$release/modules.dep stays missing"
-    fi
-  fi
-  saved_ifs="$IFS"
-  IFS=,
-  for name in $TAA_MODULES; do
-    [ -n "$name" ] || continue
-    if "$MODPROBE_BIN" "$name" >/dev/null 2>&1; then
-      log "module loaded: $name"
-    else
-      log "WARNING: modprobe $name failed; the device it drives will be unusable"
-    fi
-  done
-  IFS="$saved_ifs"
   return 0
 }
 
@@ -313,11 +259,6 @@ mount -t sysfs sysfs /sys  >/dev/null 2>&1 || true
 #     Must run after /proc is mounted: /proc/cmdline is the only copy of it.
 apply_cmdline_identity
 
-# 1c) Load the modules the identity names. The DCU guest's hycu driver is an
-#     out-of-tree module, and this is the only place that can load it before
-#     anything (including the container runtime) looks for the card.
-load_kernel_modules
-
 # 2) Create /dev/csv-guest. The driver is built in (CONFIG_CSV_GUEST=y) and has
 #    already called misc_register(); only the node is missing, because this
 #    guest's /dev is neither devtmpfs nor managed by udev.
@@ -364,6 +305,24 @@ if [ -r "$TAA_CONFIG" ]; then
   supervise_taa &
 else
   log "WARNING: missing $TAA_CONFIG; not starting TAA"
+fi
+
+# 4) Record how the guest can power itself off, because an orderly power-off is
+#    the only path that calls the driver's shutdown callback before QEMU exits.
+#
+#    kata-agent's Linux guest shutdown writes 'o' to /proc/sysrq-trigger (the
+#    path is in the agent binary), but this kernel is built without
+#    CONFIG_MAGIC_SYSRQ -- verified from the config embedded in
+#    vmlinuz-hycu-confidential-csv.container -- so that file does not exist and
+#    no userspace action can create it. What is left is reboot(2), which the
+#    agent uses only if its own code carries that fallback. Nothing here can
+#    change either; the line below puts the fact on the console next to the
+#    teardown evidence, so "did this VM power off in order?" can be answered
+#    from the log instead of guessed.
+if [ -e /proc/sysrq-trigger ]; then
+  log "shutdown path: /proc/sysrq-trigger present"
+else
+  log "shutdown path: /proc/sysrq-trigger absent (kernel has no CONFIG_MAGIC_SYSRQ)"
 fi
 
 exec /sbin/init "$@"

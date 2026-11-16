@@ -158,8 +158,9 @@ rc=$?
 set -e
 check "missing CMDLINE_FILE still returns 0" "0" "$rc"
 
-# taa.taa_modules is not a TAA setting: it names the drivers taa-init has to
-# load before anything looks for the device.
+# taa.taa_modules is not a TAA setting: it names the drivers the DCU guest's
+# prestart hook loads. The generic mapping is checked here because the hook
+# reads the same line and this is the code that proves the value survives.
 modules_cmdline="$WORK_DIR/cmdline-modules"
 printf 'taa.taa_modules=hycu,hycu-sched\n' >"$modules_cmdline"
 got="$(
@@ -169,102 +170,6 @@ got="$(
   printf '%s' "${TAA_MODULES:-<unset>}"
 )"
 check "maps taa.taa_modules onto TAA_MODULES" "hycu,hycu-sched" "$got"
-
-echo "== load_kernel_modules =="
-
-# kmod selects its applet from argv[0], so the package ships /usr/sbin/modprobe
-# and /usr/sbin/depmod as symlinks to it. The stubs are named the same way and
-# record the name they were invoked under: that name is what the real binary
-# dispatches on, and `kmod modprobe ...` -- which this fixture would catch as a
-# literal "kmod" argv[0] -- is rejected outright.
-stub_dir="$WORK_DIR/kmod-applets"
-mkdir -p "$stub_dir"
-kmod_log="$WORK_DIR/kmod.log"
-cat >"$stub_dir/stub" <<'EOF'
-#!/bin/sh
-printf '%s %s\n' "${0##*/}" "$*" >>"${KMOD_LOG:?}"
-exit "${KMOD_STUB_RC:-0}"
-EOF
-chmod +x "$stub_dir/stub"
-ln -sf stub "$stub_dir/modprobe"
-ln -sf stub "$stub_dir/depmod"
-stub_modprobe="$stub_dir/modprobe"
-stub_depmod="$stub_dir/depmod"
-
-release="$(uname -r)"
-modules_dir="$WORK_DIR/modules"
-mkdir -p "$modules_dir/$release"
-: >"$modules_dir/$release/modules.dep"
-
-# Empty list: the function must not touch modprobe at all. That is what every
-# non-DCU role relies on, since their initrd ships no module tool.
-rm -f "$kmod_log"
-set +e
-( unset TAA_MODULES
-  MODPROBE_BIN="$stub_modprobe" DEPMOD_BIN="$stub_depmod" MODULES_DIR="$modules_dir" \
-    load_kernel_modules ) >/dev/null 2>&1
-rc=$?
-set -e
-check "an empty module list is a no-op" "absent" \
-  "$([[ -e "$kmod_log" ]] && echo present || echo absent)"
-check "an empty module list still returns 0" "0" "$rc"
-
-# Comma-separated, in order, one modprobe per name; an empty element between
-# commas must not become an empty module name.
-got="$(
-  export KMOD_LOG="$kmod_log"
-  MODPROBE_BIN="$stub_modprobe" DEPMOD_BIN="$stub_depmod" MODULES_DIR="$modules_dir" \
-    TAA_MODULES=hycu,,hycu-sched load_kernel_modules >/dev/null 2>&1
-  cat "$kmod_log"
-)"
-check "loads each named module in order" 'modprobe hycu
-modprobe hycu-sched' "$got"
-
-# modules.dep is shipped, so the normal path must not pay for a depmod.
-rm -f "$kmod_log"
-( export KMOD_LOG="$kmod_log"
-  MODPROBE_BIN="$stub_modprobe" DEPMOD_BIN="$stub_depmod" MODULES_DIR="$modules_dir" \
-    TAA_MODULES=hycu load_kernel_modules ) >/dev/null 2>&1
-check "does not re-run depmod when modules.dep is present" "1" "$(wc -l <"$kmod_log")"
-
-# Without it the kernel cannot resolve dependencies, so depmod runs first; it
-# writes only into the initrd's ramfs and is cheap next to an unloadable module.
-empty_modules="$WORK_DIR/modules-empty"
-mkdir -p "$empty_modules"
-rm -f "$kmod_log"
-( export KMOD_LOG="$kmod_log"
-  MODPROBE_BIN="$stub_modprobe" DEPMOD_BIN="$stub_depmod" MODULES_DIR="$empty_modules" \
-    TAA_MODULES=hycu load_kernel_modules ) >/dev/null 2>&1
-check "runs depmod before loading when modules.dep is missing" "depmod -b / $release" \
-  "$(head -1 "$kmod_log")"
-
-# depmod is only a repair step for a missing modules.dep: without it the load
-# still has to be attempted, because the module may resolve anyway.
-rm -f "$kmod_log"
-( export KMOD_LOG="$kmod_log"
-  MODPROBE_BIN="$stub_modprobe" DEPMOD_BIN="$WORK_DIR/no-such-depmod" \
-    MODULES_DIR="$empty_modules" TAA_MODULES=hycu \
-    load_kernel_modules ) >/dev/null 2>&1
-check "a missing depmod still loads the module" "modprobe hycu" "$(cat "$kmod_log")"
-
-# PID 1 must not exit: a module that fails to load is logged, and the boot goes
-# on. The task that needs the card fails later with an error naming it.
-set +e
-( export KMOD_LOG="$kmod_log"; export KMOD_STUB_RC=1
-  MODPROBE_BIN="$stub_modprobe" DEPMOD_BIN="$stub_depmod" MODULES_DIR="$modules_dir" \
-    TAA_MODULES=hycu,hycu-sched load_kernel_modules ) >/dev/null 2>&1
-rc=$?
-set -e
-check "a failed modprobe is not fatal" "0" "$rc"
-
-# A role whose package lacks the applet links (or a payload fetched without
-# kmod) must warn and continue rather than abort.
-set +e
-( MODPROBE_BIN="$WORK_DIR/no-such-modprobe" MODULES_DIR="$modules_dir" TAA_MODULES=hycu \
-  load_kernel_modules ) >/dev/null 2>&1
-rc=$?
-set -e
-check "a missing modprobe is not fatal" "0" "$rc"
 
 echo "== TAA restart supervision =="
 
@@ -354,16 +259,23 @@ check "exports the deployment marker before starting TAA" "yes" \
 check "declares the initrd shape rather than guessing" "yes" \
   "$(grep -qF 'TAA_DEPLOYMENT=initrd' "$TAA_INIT" && echo yes || echo no)"
 
-# Module loading sits between the two edges that define it: after
-# apply_cmdline_identity, because the list comes from the command line, and
-# before TAA starts, because the device has to exist by the time anything opens
-# it. Getting either edge wrong leaves the driver unloaded with no error.
-identity_line="$(grep -n '^apply_cmdline_identity$' "$TAA_INIT" | cut -d: -f1 | head -1 || true)"
-modules_line="$(grep -n '^load_kernel_modules$' "$TAA_INIT" | cut -d: -f1 | head -1 || true)"
-check "loads modules after the command line is read" "yes" \
-  "$([[ -n "$identity_line" && -n "$modules_line" && "$identity_line" -lt "$modules_line" ]] && echo yes || echo no)"
-check "loads modules before TAA starts" "yes" \
-  "$([[ -n "$modules_line" && -n "$taa_line" && "$modules_line" -lt "$taa_line" ]] && echo yes || echo no)"
+# The driver is loaded by the guest's prestart CDI hook, not by PID 1. The hook
+# sits at the same lifecycle point as the vendor guest's udev -- after the agent
+# is up, immediately before the container that needs the card -- and that timing
+# is the one deliberate difference from the vendor shape. Keeping the load out
+# of this script is what preserves it.
+check "does not load kernel modules from PID 1" "yes" \
+  "$(grep -q 'load_kernel_modules' "$TAA_INIT" && echo no || echo yes)"
+check "the CDI hook owns the module load" "yes" \
+  "$(grep -q '^load_kernel_modules$' "$SCRIPT_DIR/guest-hycu-cdi-generator.sh" && echo yes || echo no)"
+check "the hook reads taa.taa_modules from the command line" "yes" \
+  "$(grep -q 'taa.taa_modules=' "$SCRIPT_DIR/guest-hycu-cdi-generator.sh" && echo yes || echo no)"
+
+# Teardown: this kernel has no CONFIG_MAGIC_SYSRQ, so the agent's sysrq write
+# cannot work. The boot log has to say what was actually available, otherwise
+# the next "did the VM power off in order?" question is guesswork again.
+check "records the guest's shutdown path on the console" "yes" \
+  "$(grep -q '/proc/sysrq-trigger absent' "$TAA_INIT" && echo yes || echo no)"
 
 # The supervisor itself must wait on each TAA process and pause between retries;
 # without both it would either spawn unbounded processes or exit on the first

@@ -39,10 +39,74 @@ DRM_DIR=${DRM_DIR:-/sys/class/drm}
 DEV_DIR=${DEV_DIR:-/dev}
 HYHAL_DIR=${HYHAL_DIR:-/opt/hyhal}
 HYCU_VENDOR_ID=${HYCU_VENDOR_ID:-0x1d94}
-WAIT_SECONDS_MAX=${HYCU_CDI_WAIT_SECONDS:-10}
+CMDLINE_FILE=${CMDLINE_FILE:-/proc/cmdline}
+MODPROBE_BIN=${MODPROBE_BIN:-/usr/sbin/modprobe}
+DEPMOD_BIN=${DEPMOD_BIN:-/usr/sbin/depmod}
+MODULES_DIR=${MODULES_DIR:-/lib/modules}
+# The vendor waits up to 240 s for the card's DRM nodes; its hook runs beside a
+# driver that udev loads on device discovery. Here the same hook is what loads
+# the driver (see load_kernel_modules), so the wait has to cover firmware load
+# and probe as well, not just node creation.
+WAIT_SECONDS_MAX=${HYCU_CDI_WAIT_SECONDS:-240}
 
 log() {
   printf '%s: %s\n' "$LOG_TAG" "$*"
+}
+
+# Print the value of taa.taa_modules= from the kernel command line, which is
+# also what build-initrd renders and what taa-init used to consume itself.
+cmdline_modules() {
+  [ -r "$CMDLINE_FILE" ] || return 0
+  for token in $(cat "$CMDLINE_FILE" 2>/dev/null); do
+    case "$token" in
+      taa.taa_modules=*) printf '%s\n' "${token#taa.taa_modules=}"; return 0 ;;
+    esac
+  done
+  return 0
+}
+
+# Load the modules the command line names (comma-separated), then let the DRM
+# wait below cover the probe.
+#
+# This load used to happen in taa-init, before kata-agent even started. The
+# vendor guest does not load the driver that early: its systemd/udev loads it on
+# device discovery, after the agent is up. That load timing was the one
+# remaining difference between the two guest shapes, so it moves here -- the
+# last userspace point before the container that needs the card, which is the
+# same lifecycle position as the vendor's udev. The driver itself, the module
+# tree and the kmod applet links are unchanged; both guest shapes now hand the
+# card to the driver after the guest is fully up.
+#
+# Failures are logged and never fatal: a non-zero exit aborts container
+# creation, and leaving no spec instead lets the agent's own CDI timeout
+# report the failure, which is the message operators already know.
+load_kernel_modules() {
+  modules=$(cmdline_modules)
+  [ -n "$modules" ] || return 0
+  if [ ! -x "$MODPROBE_BIN" ]; then
+    log "WARNING: taa.taa_modules=$modules but $MODPROBE_BIN is absent; not loading them"
+    return 0
+  fi
+  release=$(uname -r 2>/dev/null || true)
+  if [ -n "$release" ] && [ ! -f "$MODULES_DIR/$release/modules.dep" ] && [ -x "$DEPMOD_BIN" ]; then
+    # The payload normally ships modules.dep. Regenerating it writes only into
+    # the guest's ramfs and is cheap compared with a module the kernel cannot
+    # resolve at all.
+    "$DEPMOD_BIN" -b / "$release" >/dev/null 2>&1 ||
+      log "WARNING: depmod $release failed"
+  fi
+  saved_ifs=$IFS
+  IFS=,
+  for name in $modules; do
+    [ -n "$name" ] || continue
+    if "$MODPROBE_BIN" "$name" >/dev/null 2>&1; then
+      log "module loaded: $name"
+    else
+      log "WARNING: modprobe $name failed; the card will stay unbound"
+    fi
+  done
+  IFS=$saved_ifs
+  return 0
 }
 
 # Print the DRM node name (card0, renderD128) whose sysfs entry resolves to the
@@ -63,6 +127,10 @@ drm_node_for() {
   done
   return 1
 }
+
+# Load the driver before the scan: the device is visible in sysfs either way,
+# but its DRM nodes only exist after the probe.
+load_kernel_modules
 
 # CDI device names are indices ("0", "1", ...), not BDFs: the shim asks for
 # hygon.cn/hycu=0 in the order it cold-plugs the devices, so the spec has to
@@ -105,9 +173,9 @@ for bdf in $candidates; do
   card=
   render=
   waited=0
-  # The module is loaded by taa-init before the agent starts, so by the time a
-  # container is created the DRM nodes either exist or never will. The wait is
-  # a short safety margin, not the vendor's 240 s.
+  # The driver is loaded just above and its probe runs asynchronously, so the
+  # nodes may not exist yet even on a healthy card. This waits for them, as the
+  # vendor does, for up to WAIT_SECONDS_MAX.
   while [ -z "$card" ] || [ -z "$render" ]; do
     card=$(drm_node_for "$bdf" card) || card=
     render=$(drm_node_for "$bdf" renderD) || render=
@@ -122,6 +190,9 @@ for bdf in $candidates; do
   fi
 
   if [ -e "$DEV_DIR/dri/$card" ] && [ -e "$DEV_DIR/dri/$render" ]; then
+    # The vendor's udev rule makes the DRM nodes 0666. This guest has no udev,
+    # and a container may run as a non-root user, so apply the same mode here.
+    chmod 0666 "$DEV_DIR/dri/$card" "$DEV_DIR/dri/$render" 2>/dev/null || true
     if [ "$index" -gt 0 ]; then
       printf ',\n' >>"$devices_file"
     fi
@@ -146,6 +217,8 @@ fi
 nodes=
 for node in kfd mkfd; do
   if [ -e "$DEV_DIR/$node" ]; then
+    # Same vendor parity as the DRM nodes above.
+    chmod 0666 "$DEV_DIR/$node" 2>/dev/null || true
     [ -n "$nodes" ] && nodes="$nodes, "
     nodes="$nodes{\"path\": \"$DEV_DIR/$node\"}"
   else

@@ -181,8 +181,10 @@ role_test_image() {
 
 # Kernel modules the guest must load before anything can use the device. The
 # DCU kernel builds hycu out of tree and the base initrd carries neither the
-# module tree nor kmod, so the package ships both and taa-init loads them from
-# this list, which it receives as taa.taa_modules= on the kernel command line.
+# module tree nor kmod, so the package ships both and the prestart CDI hook
+# loads them from this list, which it reads as taa.taa_modules= from the kernel
+# command line. The hook is the last userspace point before the container that
+# needs the card, which is where the vendor guest's udev loads the driver too.
 role_kernel_modules() {
   case "$TAA_ROLE" in
     taa-train-dcu|taa-infer-dcu) echo hycu ;;
@@ -396,7 +398,7 @@ if [[ -n "${TAA_CONTRACT_TYPE:-}" && "$TAA_CONTRACT_TYPE" != "$(role_contract_ty
 fi
 TAA_CONTRACT_TYPE="$(role_contract_type)"
 TAA_LLM_ENDPOINT="${TAA_LLM_ENDPOINT:-}"
-# Kernel modules the guest wrapper loads at boot (comma-separated). It travels as
+# Kernel modules the guest's CDI hook loads (comma-separated). It travels as
 # taa.taa_modules= on the kernel command line, like the rest of the identity, so
 # an operator can change it without rebuilding the measured initrd.
 TAA_MODULES="${TAA_MODULES:-$(role_kernel_modules)}"

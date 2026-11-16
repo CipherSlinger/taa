@@ -999,6 +999,54 @@ check_absent "create script: calls no shipped measurement script" \
   'pkg_dir/measure.py' "$(cat "$pkg/test/create-test-pod.sh")"
 check_contains "delete script: deletes the test Pod" \
   'kubectl delete pod' "$(cat "$pkg/test/delete-test-pod.sh")"
+
+# A deleted Pod's VM can still hold the card's vfio group after
+# `kubectl delete --wait` returns. Both scripts have to wait for the group to be
+# released before the card is handed to another VM, or the second VM starts on a
+# card the first one has not let go of.
+check_contains "create script: waits for the vfio group before applying" \
+  'wait_dcu_vfio_release' "$(cat "$pkg/test/create-test-pod.sh")"
+check_contains "delete script: waits for the vfio group before returning" \
+  'wait_dcu_vfio_release' "$(cat "$pkg/test/delete-test-pod.sh")"
+create_wait_line="$(grep -n '^kubectl delete pod' "$pkg/test/create-test-pod.sh" | cut -d: -f1 | head -1)"
+apply_line="$(grep -n '^kubectl apply -f "\$pod_manifest"' "$pkg/test/create-test-pod.sh" | cut -d: -f1 | head -1)"
+wait_call_line="$(grep -n '^wait_dcu_vfio_release$' "$pkg/test/create-test-pod.sh" | cut -d: -f1 | head -1)"
+check "create script: the wait sits between delete and apply" "yes" \
+  "$([[ -n "$create_wait_line" && -n "$wait_call_line" && -n "$apply_line" \
+       && "$create_wait_line" -lt "$wait_call_line" && "$wait_call_line" -lt "$apply_line" ]] \
+     && echo yes || echo no)"
+
+# Exercise the helper itself against a fake sysfs/procfs. The paths are the only
+# part of it that can be wrong silently: a mistyped link target makes the scan
+# find nothing, and every run then looks like "already released".
+extract_vfio_wait() {
+  awk '/^SYSFS_PCI_DIR=/{f=1} f{print} f&&/^\}$/{exit}' "$1"
+}
+vfio_root="$tmp_dir/vfio"
+mkdir -p "$vfio_root/sys/0000:02:00.0" "$vfio_root/kernel/iommu_groups/69" \
+  "$vfio_root/proc/4242/fd" "$vfio_root/proc/empty"
+echo 0x1d94 >"$vfio_root/sys/0000:02:00.0/vendor"
+echo 0x0b4000 >"$vfio_root/sys/0000:02:00.0/class"
+ln -s "$vfio_root/kernel/iommu_groups/69" "$vfio_root/sys/0000:02:00.0/iommu_group"
+ln -s /dev/vfio/69 "$vfio_root/proc/4242/fd/7"
+vfio_body="$(extract_vfio_wait "$pkg/test/create-test-pod.sh")"
+set +e
+vfio_out="$(SYSFS_PCI_DIR="$vfio_root/sys" PROC_ROOT="$vfio_root/proc" \
+  DCU_VFIO_RELEASE_TIMEOUT=1 bash -c "$vfio_body"$'\n''wait_dcu_vfio_release' 2>&1)"
+vfio_rc=$?
+set -e
+check "an unreleased vfio group fails the create path" "1" "$vfio_rc"
+check_contains "the holder is named" 'held by' "$vfio_out"
+rm -f "$vfio_root/proc/4242/fd/7"
+set +e
+SYSFS_PCI_DIR="$vfio_root/sys" PROC_ROOT="$vfio_root/proc" \
+  bash -c "$vfio_body"$'\n''wait_dcu_vfio_release' >/dev/null 2>&1
+vfio_rc=$?
+set -e
+check "a released vfio group returns 0" "0" "$vfio_rc"
+vfio_out="$(SYSFS_PCI_DIR="$tmp_dir/vfio/no-dcu" PROC_ROOT="$vfio_root/proc" \
+  bash -c "$vfio_body"$'\n''wait_dcu_vfio_release' 2>&1)"
+check_contains "a host without a DCU is not an error" 'no Hygon DCU' "$vfio_out"
 check_contains "install.sh: verifies the package first" 'sha256sum -c --quiet SHA256SUMS' "$(cat "$pkg/install.sh")"
 check_contains "install.sh: preflights the prospective config" \
   '预检通过' "$(cat "$pkg/install.sh")"

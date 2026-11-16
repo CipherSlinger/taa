@@ -21,12 +21,75 @@ set -euo pipefail
 
 pkg_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
-for cmd in kubectl python3 ps; do
+for cmd in kubectl python3 ps find; do
   if ! command -v "$cmd" >/dev/null 2>&1; then
     echo "error: $cmd is not installed or not in PATH" >&2
     exit 1
   fi
 done
+
+# Wait until no process holds the DCU's /dev/vfio/<group> open.
+#
+# `kubectl delete --wait` returns when the Pod object is gone, but the shim can
+# still be tearing the VM down after that. Applying the next Pod in that window
+# starts a second VM on a card the first one has not released yet -- the one
+# ordering mistake this script can make, and the reason it waits. The IOMMU
+# groups come from sysfs (this image has no lspci); only open file descriptors
+# are inspected, so the card's binding is never touched.
+#
+# A holder that does not go away is fatal here rather than a warning: creating
+# the Pod anyway is the risky action, and a failure leaves the previous Pod
+# deleted, which is easy to recover from.
+#
+# The two roots are overridable only so the helper can be tested locally, like
+# taa-init's fixtures; production always uses the defaults.
+SYSFS_PCI_DIR="${SYSFS_PCI_DIR:-/sys/bus/pci/devices}"
+PROC_ROOT="${PROC_ROOT:-/proc}"
+wait_dcu_vfio_release() {
+  local timeout="${DCU_VFIO_RELEASE_TIMEOUT:-120}" waited=0 group holder groups dev
+  groups=""
+  for dev in "$SYSFS_PCI_DIR"/*; do
+    [ -r "$dev/vendor" ] || continue
+    [ "$(cat "$dev/vendor" 2>/dev/null)" = "0x1d94" ] || continue
+    # Same filter as the guest hook: only the display/co-processor functions
+    # are the card. Hygon root complexes and bridges share the vendor id, and
+    # their IOMMU groups belong to the host, not to a Kata VM.
+    case "$(cat "$dev/class" 2>/dev/null)" in
+      0x03* | 0x0b40*) ;;
+      *) continue ;;
+    esac
+    if ! group="$(readlink -f "$dev/iommu_group" 2>/dev/null)"; then
+      continue
+    fi
+    group="${group##*/}"
+    [ -n "$group" ] && groups="$groups $group"
+  done
+  groups="$(printf '%s\n' $groups | sort -u)"
+  if [[ -z "$groups" ]]; then
+    echo "no Hygon DCU on this host; nothing to wait for"
+    return 0
+  fi
+  for group in $groups; do
+    while :; do
+      holder="$(find "$PROC_ROOT"/[0-9]*/fd -lname "/dev/vfio/$group" -print -quit 2>/dev/null || true)"
+      [[ -z "$holder" ]] && break
+      if (( waited >= timeout )); then
+        echo "error: /dev/vfio/$group is still open after ${timeout}s (held by $holder)" >&2
+        echo "hint: the previous VM has not exited; applying now can wedge the card" >&2
+        return 1
+      fi
+      if (( waited == 0 )); then
+        echo "waiting for /dev/vfio/$group to be released (held by $holder)"
+      fi
+      sleep 1
+      waited=$((waited + 1))
+    done
+  done
+  if (( waited > 0 )); then
+    echo "DCU vfio group(s) released after ${waited}s"
+  fi
+  return 0
+}
 
 # The package's own reading of itself. Kept inline rather than shipped as a
 # separate file: it is the only Python this script needs, and a package with
@@ -643,6 +706,7 @@ fi
 
 echo "pod: $TEST_POD_NAME  handler: $RUNTIME_HANDLER"
 kubectl delete pod "$TEST_POD_NAME" --ignore-not-found --wait=true
+wait_dcu_vfio_release
 kubectl apply -f "$pod_manifest"
 
 echo

@@ -97,6 +97,10 @@ run_generator() {
     CDI_DIR="$root/cdi" \
     HYHAL_DIR="${HYHAL_DIR:-$root/opt/hyhal}" \
     HYCU_CDI_WAIT_SECONDS="${WAIT:-0}" \
+    CMDLINE_FILE="${CMDLINE_FILE:-$root/proc/cmdline}" \
+    MODPROBE_BIN="${MODPROBE_BIN:-/usr/sbin/modprobe}" \
+    DEPMOD_BIN="${DEPMOD_BIN:-/usr/sbin/depmod}" \
+    MODULES_DIR="${MODULES_DIR:-/lib/modules}" \
     "$@" \
     sh "$GENERATOR"
 }
@@ -126,6 +130,9 @@ check_absent "mkfd is omitted when absent" 'mkfd' "$spec"
 check_contains "the DTK tree is bind-mounted when present" '"hostPath": "'"$root"'/opt/hyhal"' "$spec"
 check_contains "the mount is read-only rbind" '"options": ["rbind", "ro", "rprivate"]' "$spec"
 check_contains "the log names the pairing" '0000:02:00.0 -> device "0"' "$out"
+check "the card node is open to every container user" "666" "$(stat -c %a "$root/dev/dri/card0")"
+check "the render node is open to every container user" "666" "$(stat -c %a "$root/dev/dri/renderD128")"
+check "kfd is open to every container user" "666" "$(stat -c %a "$root/dev/kfd")"
 if python3 -I - "$root/cdi/hygon.cn-hycu.json" <<'PY'
 import json, sys
 with open(sys.argv[1]) as f:
@@ -165,6 +172,119 @@ set -e
 check "a failed pairing still exits 0" 0 "$status"
 check "no spec is written" no "$([[ -e "$root/cdi/hygon.cn-hycu.json" ]] && echo yes || echo no)"
 check_contains "the unbound BDF is logged" '0000:02:00.0 has no DRM nodes' "$out"
+
+echo "== driver loading =="
+
+# The hook loads the driver itself, at the same point in the guest's life as the
+# vendor's udev. The stub selects its applet from argv[0] (that is how the real
+# kmod binary dispatches), records the call, and on `modprobe hycu` emulates the
+# probe: the DRM sysfs entries and /dev nodes appear only then. A spec can
+# therefore only be written if the wait actually spans the probe.
+make_modprobe_stub() {
+  local root="$1"
+  mkdir -p "$root/bin"
+  cat >"$root/bin/stub" <<'EOF'
+#!/bin/sh
+printf '%s %s\n' "${0##*/}" "$*" >>"${STUB_LOG:?}"
+if [ "${0##*/}" = modprobe ] && [ "$1" = hycu ] && [ "${STUB_RC:-0}" = 0 ]; then
+  ln -sfn ../../devices/pci0000:00/0000:02:00.0/drm/card0 "$FIXTURE/sys/class/drm/card0"
+  ln -sfn ../../devices/pci0000:00/0000:02:00.0/drm/renderD128 "$FIXTURE/sys/class/drm/renderD128"
+  : >"$FIXTURE/dev/dri/card0"
+  : >"$FIXTURE/dev/dri/renderD128"
+  chmod 0600 "$FIXTURE/dev/dri/card0" "$FIXTURE/dev/dri/renderD128"
+fi
+exit "${STUB_RC:-0}"
+EOF
+  chmod +x "$root/bin/stub"
+  ln -sf stub "$root/bin/modprobe"
+  ln -sf stub "$root/bin/depmod"
+}
+
+release="$(uname -r)"
+root="$tmp_dir/driver"
+make_fixture "$root" 0 0
+make_modprobe_stub "$root"
+mkdir -p "$root/proc" "$root/modules/$release"
+printf 'taa.taa_modules=hycu,hycu-sched\n' >"$root/proc/cmdline"
+: >"$root/modules/$release/modules.dep"
+stub_log="$root/modprobe.log"
+out="$(run_generator "$root" \
+  FIXTURE="$root" STUB_LOG="$stub_log" \
+  MODPROBE_BIN="$root/bin/modprobe" DEPMOD_BIN="$root/bin/depmod" \
+  MODULES_DIR="$root/modules" HYCU_CDI_WAIT_SECONDS=5 2>&1)"
+check "loads each named module in order" 'modprobe hycu
+modprobe hycu-sched' "$(cat "$stub_log")"
+check_contains "the load is logged" 'module loaded: hycu' "$out"
+check_contains "the spec waits for the probe's DRM nodes" '0000:02:00.0 -> device "0"' "$out"
+check "the probe's node modes are fixed as well" "666" "$(stat -c %a "$root/dev/dri/card0")"
+
+# No module list: nothing to load, and that is every non-DCU role.
+root="$tmp_dir/driver-none"
+make_fixture "$root" 0 0
+make_modprobe_stub "$root"
+rm -f "$root/modprobe.log"
+out="$(run_generator "$root" FIXTURE="$root" STUB_LOG="$root/modprobe.log" \
+  MODPROBE_BIN="$root/bin/modprobe" DEPMOD_BIN="$root/bin/depmod" 2>&1)"
+check "an empty module list is a no-op" "absent" \
+  "$([[ -e "$root/modprobe.log" ]] && echo present || echo absent)"
+
+# modules.dep is shipped by the payload, so the normal path must not pay for a
+# depmod. Without it the kernel cannot resolve dependencies, so it runs first.
+root="$tmp_dir/driver-depmod"
+make_fixture "$root" 0 0
+make_modprobe_stub "$root"
+mkdir -p "$root/proc"
+printf 'taa.taa_modules=hycu\n' >"$root/proc/cmdline"
+run_generator "$root" FIXTURE="$root" STUB_LOG="$root/modprobe.log" \
+  MODPROBE_BIN="$root/bin/modprobe" DEPMOD_BIN="$root/bin/depmod" \
+  MODULES_DIR="$root/modules" >/dev/null 2>&1
+check "runs depmod before loading when modules.dep is missing" "depmod -b / $release" \
+  "$(head -1 "$root/modprobe.log")"
+
+# depmod is only a repair step: a missing depmod or a failed modprobe must not
+# stop the generator, which has to exit 0 and leave the CDI timeout to report.
+root="$tmp_dir/driver-no-depmod"
+make_fixture "$root" 0 0
+make_modprobe_stub "$root"
+mkdir -p "$root/proc"
+printf 'taa.taa_modules=hycu\n' >"$root/proc/cmdline"
+set +e
+out="$(run_generator "$root" FIXTURE="$root" STUB_LOG="$root/modprobe.log" \
+  MODPROBE_BIN="$root/bin/modprobe" DEPMOD_BIN="$root/no-such-depmod" \
+  MODULES_DIR="$root/modules" 2>&1)"
+status=$?
+set -e
+check "a missing depmod still loads the module" "modprobe hycu" "$(cat "$root/modprobe.log")"
+check "a missing depmod is not fatal" "0" "$status"
+
+root="$tmp_dir/driver-fail"
+make_fixture "$root" 0 0
+make_modprobe_stub "$root"
+mkdir -p "$root/proc"
+printf 'taa.taa_modules=hycu\n' >"$root/proc/cmdline"
+set +e
+out="$(run_generator "$root" FIXTURE="$root" STUB_LOG="$root/modprobe.log" STUB_RC=1 \
+  MODPROBE_BIN="$root/bin/modprobe" DEPMOD_BIN="$root/bin/depmod" \
+  MODULES_DIR="$root/modules" 2>&1)"
+status=$?
+set -e
+check "a failed modprobe is not fatal" "0" "$status"
+check_contains "a failed modprobe is reported" 'modprobe hycu failed' "$out"
+
+root="$tmp_dir/driver-no-modprobe"
+make_fixture "$root" 0 0
+mkdir -p "$root/proc"
+printf 'taa.taa_modules=hycu\n' >"$root/proc/cmdline"
+set +e
+out="$(run_generator "$root" MODPROBE_BIN="$root/no-such-modprobe" 2>&1)"
+status=$?
+set -e
+check "a missing modprobe is not fatal" "0" "$status"
+check_contains "a missing modprobe is reported" 'no-such-modprobe is absent' "$out"
+
+echo "== wait default =="
+check_contains "the DRM wait defaults to the vendor's 240 s" 'HYCU_CDI_WAIT_SECONDS:-240' \
+  "$(cat "$GENERATOR")"
 
 echo "== two Hygon devices are indexed in BDF order =="
 root="$tmp_dir/two"
