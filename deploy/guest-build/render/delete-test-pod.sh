@@ -11,13 +11,24 @@
 # dangerous happens by returning, and the next create repeats the wait.
 #
 # It also gives the card a quiet period before tearing the VM down. A DCU that
-# was computing when the VM is killed keeps live queues and translations, has no
-# reset to clear them (the fixup module sets NO_BUS_RESET, and the function has
-# no FLR), and wedges the next VM: the IOMMU's invalidations time out and the
-# driver never probes. Measured on this hardware, 90 s of idleness after the
-# last command is enough for the card to drain; deleting sooner is what left the
-# previous VM's state behind. The quiet period is measured from the last sign of
-# guest activity the host can see, not from the start of this script.
+# was computing when the VM is killed can leave state the next VM's probe cannot
+# recover from: the card has no reset to clear it (the fixup module sets
+# NO_BUS_RESET and the function reports FLReset-), the next guest then fails in
+# `gfx_v9_0_hw_init` (`RLC ucode load fail`, `ring kiq_2.1.0 test failed -110`)
+# and the driver never initialises, so the CDI hook writes no spec and the Pod
+# dies in `failed to inject devices after CDI timeout of 100 seconds` while the
+# card itself is fine. Measured on 172.16.10.178: a VM deleted 111 s after its
+# last matmul handed the card over cleanly, one deleted 18 s after its last
+# matmul wedged the next guest. One round that was deleted 12 s after a short
+# exec was fine, so the boundary is not a fixed number and 90 s is a choice
+# between the two measured points, not a threshold.
+#
+# The period is counted from the start of this script, so an operator who starts
+# the delete immediately after a training run gets the full quiet period. The
+# host has no signal for "the card is still computing": the guest's MSI is
+# delivered through irqbypass and never reaches the host, and the only runtime
+# state sysfs offers is runtime-PM, which says whether a VM holds the card and
+# nothing about whether that VM is using it.
 #
 # Usage: sudo bash test/delete-test-pod.sh
 set -euo pipefail

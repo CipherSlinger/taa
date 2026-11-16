@@ -71,12 +71,15 @@ dcu_iommu_groups() {
 }
 
 # Give the card time to drain before an existing test Pod is deleted. A DCU that
-# was computing when its VM is killed keeps live queues and translations, has no
-# reset to clear them (the fixup module sets NO_BUS_RESET, and the function has
-# no FLR), and wedges the next VM: IOMMU invalidations time out and the driver
-# never probes. Measured on this hardware, 90 s of idleness after the last
-# command is enough. See delete-test-pod.sh for the same wait on the standalone
-# delete path.
+# was computing when its VM is killed can leave state the next VM's probe cannot
+# recover from: there is no reset to clear it (the fixup module sets
+# NO_BUS_RESET and the function has no FLR), and the next guest then fails in
+# `gfx_v9_0_hw_init` before the driver ever initialises. Measured on
+# 172.16.10.178: a VM deleted 111 s after its last matmul handed the card over
+# cleanly, one deleted 18 s after its last matmul wedged the next guest. One
+# round that was deleted 12 s after a short exec was fine, so the boundary is
+# not a fixed number and 90 s is a choice between the two measured points, not a
+# threshold. See delete-test-pod.sh for the same wait on the delete path.
 quiesce_dcu() {
   local seconds="${DCU_QUIESCE_SECONDS:-90}" groups
   groups="$(dcu_iommu_groups)"
