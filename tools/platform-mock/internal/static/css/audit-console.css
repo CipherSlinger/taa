@@ -2351,6 +2351,148 @@
   list-style: none;
 }
 
+/* ── Source picker ──────────────────────────────────────────────────────── */
+/* The samples and the operator's uploads are two groups behind one switcher:
+   the launch card stays one card tall, and the fixture corpus cannot be
+   confused with a delivered archive. */
+.audit-source {
+  margin-top: 16px;
+  border-top: 1px solid var(--aud-border);
+  padding-top: 14px;
+}
+
+.audit-source-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-bottom: 10px;
+}
+
+.audit-source-tabs {
+  display: inline-flex;
+  gap: 4px;
+  padding: 3px;
+  border: 1px solid var(--aud-border);
+  border-radius: 10px;
+  background: var(--aud-surface-2);
+}
+
+.audit-source-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 11px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--aud-text-2);
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 650;
+  cursor: pointer;
+  transition: background-color 0.16s ease, color 0.16s ease;
+}
+
+.audit-source-tab:hover {
+  color: var(--aud-text);
+}
+
+.audit-source-tab.is-active {
+  background: var(--aud-surface);
+  color: var(--aud-accent-strong);
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.08);
+}
+
+.audit-source-tab:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px var(--aud-accent-ring);
+}
+
+.audit-source-count {
+  min-width: 18px;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: var(--aud-surface-3);
+  color: var(--aud-text-2);
+  font-family: var(--aud-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-size: 10.5px;
+  font-weight: 700;
+  text-align: center;
+}
+
+.audit-source-tab.is-active .audit-source-count {
+  background: var(--aud-accent-soft);
+  color: var(--aud-accent-strong);
+}
+
+.audit-source-list {
+  max-height: 268px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding-right: 4px;
+  scrollbar-width: thin;
+  scrollbar-color: var(--aud-border-strong) transparent;
+}
+
+.audit-source-list::-webkit-scrollbar {
+  width: 8px;
+}
+
+.audit-source-list::-webkit-scrollbar-thumb {
+  border: 2px solid transparent;
+  border-radius: 999px;
+  background-clip: padding-box;
+  background-color: var(--aud-border-strong);
+}
+
+.audit-source-note {
+  margin: 10px 0 0;
+  color: var(--aud-muted);
+  font-size: 11.5px;
+  line-height: 1.5;
+}
+
+.audit-file-search {
+  display: flex;
+  align-items: center;
+}
+
+.audit-file-search input {
+  width: 170px;
+  padding: 5px 10px;
+  border: 1px solid var(--aud-border);
+  border-radius: 8px;
+  background: var(--aud-surface-2);
+  color: var(--aud-text);
+  font-family: inherit;
+  font-size: 12px;
+  transition: border-color 0.16s ease, box-shadow 0.16s ease;
+}
+
+.audit-file-search input::placeholder {
+  color: var(--aud-muted);
+}
+
+.audit-file-search input:focus {
+  outline: none;
+  border-color: var(--aud-accent);
+  box-shadow: 0 0 0 3px var(--aud-accent-ring);
+}
+
+.audit-visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}
+
 .audit-file-empty {
   padding: 20px 14px;
   border: 1px dashed var(--aud-border-strong);
@@ -2445,6 +2587,26 @@
   font-size: 10px;
   font-weight: 750;
   letter-spacing: 0.04em;
+}
+
+/* The kind badge of a sample is its rule id: an operator scanning the list is
+   looking for the rule, and the archive name is just how it is stored. */
+.audit-file-kind.is-sample {
+  background: var(--aud-accent-soft);
+  color: var(--aud-accent-strong);
+  font-family: var(--aud-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  letter-spacing: 0.02em;
+}
+
+/* The two groups live in different tabs, so the sample rows only need a quieter
+   frame than an upload — not a second badge shouting the same thing. */
+.audit-file-item.is-sample {
+  border-color: transparent;
+  background: var(--aud-surface-2);
+}
+
+.audit-file-item.is-sample:hover {
+  border-color: var(--aud-border-strong);
 }
 
 .audit-file-body .audit-file-name {
@@ -2568,6 +2730,21 @@
   min-width: 0;
 }
 
+/* Per-step wall time, right-aligned so the numbers form a column down the rail.
+   The body takes the slack, which keeps the title/description at their natural
+   width and the times from drifting with the text. */
+.audit-stepper-time {
+  flex: none;
+  margin-left: auto;
+  padding-top: 1px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--aud-muted);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
 .audit-stepper-step:last-child {
   padding-bottom: 0;
 }
@@ -2616,6 +2793,7 @@
   flex-direction: column;
   gap: 2px;
   min-width: 0;
+  flex: 1 1 auto;
   padding-top: 0;
 }
 
@@ -2659,6 +2837,10 @@
 
 .audit-stepper-step[data-state="done"] .audit-stepper-title {
   color: var(--aud-ok);
+}
+
+.audit-stepper-step[data-state="error"] .audit-stepper-time {
+  color: var(--aud-critical);
 }
 
 .audit-stepper-step[data-state="skipped"] .audit-stepper-dot {

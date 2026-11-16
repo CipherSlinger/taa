@@ -162,6 +162,9 @@ func NewServer(cfg Config) *Server {
 	// once for both tabs.
 	auditJobs := globalAuditJobs
 	localAudits := newLocalAuditRunner(auditJobs, cfg, console)
+	// The file area starts with one sealed archive per static rule, so every rule
+	// can be triggered from the console without authoring a package by hand.
+	localAudits.seedSamples()
 	auditConsole := newAuditConsole(auditJobs, localAudits.files)
 	mux.HandleFunc("/api/audit/console/overview", console.requireSession(auditConsole.handleOverview))
 	mux.HandleFunc("/api/audit/console/jobs", console.requireSession(auditConsole.handleJobs))

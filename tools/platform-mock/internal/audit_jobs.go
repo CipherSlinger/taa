@@ -87,6 +87,17 @@ func newLocalAuditStages() map[string]string {
 	return stages
 }
 
+func cloneStepDurations(src map[string]int64) map[string]int64 {
+	if src == nil {
+		return nil
+	}
+	out := make(map[string]int64, len(src))
+	for k, v := range src {
+		out[k] = v
+	}
+	return out
+}
+
 func cloneAuditStages(stages map[string]string) map[string]string {
 	if stages == nil {
 		return nil
@@ -141,6 +152,15 @@ type auditJobSummary struct {
 	// flow diagram has one authoritative answer. It is omitted for jobs that
 	// came from a TAA callback.
 	Stages map[string]string `json:"stages,omitempty"`
+	// StepStartedMS is when each step became active, as a Unix millisecond
+	// value. It is bookkeeping for StepDurationsMS and never leaves the server's
+	// own store shape, so it is not part of the wire JSON.
+	StepStartedMS map[string]int64 `json:"-"`
+	// StepDurationsMS is the measured wall time of each settled step, keyed by
+	// the step ids in localAuditStepKeys. It is measured as the interval between
+	// the step becoming active and it settling, so it is what actually elapsed
+	// rather than a share of the report's total. Omitted for TAA callback rows.
+	StepDurationsMS map[string]int64 `json:"stepDurationsMs,omitempty"`
 }
 
 // auditJob keeps the parsed report fields the list does not carry. The raw
@@ -299,11 +319,13 @@ func (s *auditJobStore) record(dockerID, requestID, taskID string, code int, raw
 	// place but keep the identifier the console may already be showing.
 	id := ""
 	var inheritedStages map[string]string
+	var inheritedDurations map[string]int64
 	if requestID != "" {
 		for i, existing := range jobs {
 			if existing.RequestID == requestID {
 				id = existing.ID
 				inheritedStages = existing.Stages
+				inheritedDurations = existing.StepDurationsMS
 				jobs = append(jobs[:i], jobs[i+1:]...)
 				break
 			}
@@ -331,6 +353,14 @@ func (s *auditJobStore) record(dockerID, requestID, taskID string, code int, raw
 		stages["conclude"] = auditStepDone
 		job.Stages = stages
 		job.Stage = "done"
+		job.StepDurationsMS = cloneStepDurations(inheritedDurations)
+	}
+	// conclude was still active when the verdict was recorded through the hook,
+	// so the runner never sends the transition that would close it.
+	if job.StepDurationsMS != nil {
+		if _, ok := job.StepDurationsMS["conclude"]; !ok {
+			job.StepDurationsMS["conclude"] = s.stepElapsedMS(job, "conclude", now)
+		}
 	}
 
 	jobs = append([]*auditJob{job}, jobs...)
@@ -375,6 +405,15 @@ func nextAuditJobID(jobs []*auditJob, requestID, taskID string, now time.Time) s
 // has a row changes nothing. A done row wins over a new pending one, because a
 // real verdict is worth more than the knowledge that a request was sent.
 func (s *auditJobStore) begin(dockerID, requestID, taskID string) {
+	s.beginFrom(dockerID, requestID, taskID, time.Time{})
+}
+
+// beginFrom is begin with the moment the submission arrived. The receive step
+// covers the handler's own work — spooling the upload and sealing it — which
+// happens before the row exists, so a row opened afterwards would report a
+// receive time of zero. Passing the arrival time makes the measured interval the
+// one the operator waited through. A zero time keeps the old behaviour.
+func (s *auditJobStore) beginFrom(dockerID, requestID, taskID string, receivedAt time.Time) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -398,6 +437,9 @@ func (s *auditJobStore) begin(dockerID, requestID, taskID string) {
 		Stage:     localAuditStepKeys[0],
 		Stages:    newLocalAuditStages(),
 	}}
+	if !receivedAt.IsZero() {
+		job.StepStartedMS = map[string]int64{localAuditStepKeys[0]: receivedAt.UnixMilli()}
+	}
 
 	jobs = append([]*auditJob{job}, jobs...)
 	if len(jobs) > auditJobRingCapacity {
@@ -467,12 +509,60 @@ func (s *auditJobStore) setStage(dockerID, requestID, step, state string) bool {
 		if updated.Stages == nil {
 			updated.Stages = newPendingAuditStages()
 		}
+		now := s.now()
+		// A step that settles is finished: its duration is the time it was the
+		// active one. Measuring here rather than in the runner keeps the clock
+		// seam in one place, and it covers skipped steps too (a skipped AI step
+		// still spent the time between becoming active and being skipped).
+		if state != auditStepActive && updated.Stages[step] == auditStepActive {
+			updated.StepDurationsMS = cloneStepDurations(job.StepDurationsMS)
+			if updated.StepDurationsMS == nil {
+				updated.StepDurationsMS = make(map[string]int64, len(localAuditStepKeys))
+			}
+			updated.StepDurationsMS[step] = s.stepElapsedMS(job, step, now)
+		}
 		updated.Stages[step] = state
 		updated.Stage = step
+		if state == auditStepActive {
+			// The start is recorded on the row so the interval is closed by the
+			// same stored value the later setStage reads, not by a clock the
+			// runner would have to thread through.
+			updated.StepStartedMS = cloneStepStart(job.StepStartedMS)
+			if updated.StepStartedMS == nil {
+				updated.StepStartedMS = make(map[string]int64, len(localAuditStepKeys))
+			}
+			updated.StepStartedMS[step] = now.UnixMilli()
+		}
 		jobs[i] = &updated
 		return true
 	}
 	return false
+}
+
+// stepElapsedMS closes the interval for one step. A step whose start was never
+// recorded (a row written before durations existed, or a state change that did
+// not go through active) falls back to zero rather than inventing a duration.
+func (s *auditJobStore) stepElapsedMS(job *auditJob, step string, now time.Time) int64 {
+	started, ok := job.StepStartedMS[step]
+	if !ok || started <= 0 {
+		return 0
+	}
+	elapsed := now.UnixMilli() - started
+	if elapsed < 0 {
+		return 0
+	}
+	return elapsed
+}
+
+func cloneStepStart(src map[string]int64) map[string]int64 {
+	if src == nil {
+		return nil
+	}
+	out := make(map[string]int64, len(src))
+	for k, v := range src {
+		out[k] = v
+	}
+	return out
 }
 
 // failAt turns a pending local audit into a failed row at step. Steps that

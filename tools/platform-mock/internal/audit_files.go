@@ -45,6 +45,14 @@ type auditFileEntry struct {
 	// PlainSize is the archive's own size, which differs from Size once an
 	// envelope adds its nonce and tag.
 	PlainSize int64 `json:"plainSize,omitempty"`
+	// Sample names the built-in rule sample this entry is, when it is one. It is
+	// what makes seeding idempotent: a matching entry is left alone instead of
+	// being written again on every restart.
+	Sample string `json:"sample,omitempty"`
+	// SampleTitle and SampleNote explain the sample in the file area so an
+	// operator knows which rule it is meant to trigger without opening it.
+	SampleTitle string `json:"sampleTitle,omitempty"`
+	SampleNote  string `json:"sampleNote,omitempty"`
 }
 
 // auditFileStore keeps the archives uploaded through the workbench so a run can
@@ -127,6 +135,14 @@ func (s *auditFileStore) saveFromFile(srcPath, originalName string, keys *workbe
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	if keys != nil {
+		plaintext, err := os.ReadFile(srcPath)
+		if err != nil {
+			return auditFileEntry{}, err
+		}
+		return s.saveSealedLocked(plaintext, originalName, auditFileEntry{}, keys)
+	}
+
 	id, err := newAuditFileID()
 	if err != nil {
 		return auditFileEntry{}, err
@@ -138,35 +154,6 @@ func (s *auditFileStore) saveFromFile(srcPath, originalName string, keys *workbe
 		ID:         id,
 		Name:       cleanAuditFileName(originalName),
 		UploadedAt: time.Now().UTC(),
-	}
-
-	if keys != nil {
-		plaintext, err := os.ReadFile(srcPath)
-		if err != nil {
-			return auditFileEntry{}, err
-		}
-		body, dataKeyCipher, err := keys.seal(plaintext)
-		if err != nil {
-			return auditFileEntry{}, err
-		}
-		entry.PlainSize = int64(len(plaintext))
-		if err := os.WriteFile(tmpPath, body, 0o600); err != nil {
-			_ = os.Remove(tmpPath)
-			return auditFileEntry{}, err
-		}
-		if err := os.Rename(tmpPath, dstPath); err != nil {
-			_ = os.Remove(tmpPath)
-			return auditFileEntry{}, err
-		}
-		entry.Size = int64(len(body))
-		entry.DataKeyCipher = dataKeyCipher
-		entry.Encrypted = true
-		s.entries = append(s.entries, entry)
-		s.trimLocked()
-		if err := s.persistLocked(); err != nil {
-			log.Printf("audit file store index write failed: %v", err)
-		}
-		return entry, nil
 	}
 
 	src, err := os.Open(srcPath)
@@ -198,6 +185,63 @@ func (s *auditFileStore) saveFromFile(srcPath, originalName string, keys *workbe
 		log.Printf("audit file store index write failed: %v", err)
 	}
 	return entry, nil
+}
+
+// saveSample stores a built-in rule sample. It takes the body already in
+// memory: the corpus is generated at startup, not uploaded, so there is no
+// staged file to copy from.
+//
+// ruleID, title and note are echoed by the file area so the entry explains
+// which rule it is meant to trigger.
+func (s *auditFileStore) saveSample(body []byte, originalName, ruleID, title, note string, keys *workbenchKeys) (auditFileEntry, error) {
+	if keys == nil {
+		return auditFileEntry{}, errWorkbenchKeysUnavailable
+	}
+	meta := auditFileEntry{Sample: ruleID, SampleTitle: title, SampleNote: note}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.saveSealedLocked(body, originalName, meta, keys)
+}
+
+// saveSealedLocked writes one sealed entry. meta supplies the fields the caller
+// owns; the rest (id, timestamps, sizes, envelope) are filled here. The caller
+// holds the lock.
+func (s *auditFileStore) saveSealedLocked(plaintext []byte, originalName string, meta auditFileEntry, keys *workbenchKeys) (auditFileEntry, error) {
+	id, err := newAuditFileID()
+	if err != nil {
+		return auditFileEntry{}, err
+	}
+	body, dataKeyCipher, err := keys.seal(plaintext)
+	if err != nil {
+		return auditFileEntry{}, err
+	}
+	dstPath := filepath.Join(s.dir, id+".bin")
+	tmpPath := dstPath + ".tmp"
+	if err := os.WriteFile(tmpPath, body, 0o600); err != nil {
+		_ = os.Remove(tmpPath)
+		return auditFileEntry{}, err
+	}
+	if err := os.Rename(tmpPath, dstPath); err != nil {
+		_ = os.Remove(tmpPath)
+		return auditFileEntry{}, err
+	}
+
+	meta.ID = id
+	meta.Name = cleanAuditFileName(originalName)
+	if meta.UploadedAt.IsZero() {
+		meta.UploadedAt = time.Now().UTC()
+	}
+	meta.Size = int64(len(body))
+	meta.PlainSize = int64(len(plaintext))
+	meta.DataKeyCipher = dataKeyCipher
+	meta.Encrypted = true
+
+	s.entries = append(s.entries, meta)
+	s.trimLocked()
+	if err := s.persistLocked(); err != nil {
+		log.Printf("audit file store index write failed: %v", err)
+	}
+	return meta, nil
 }
 
 // path resolves a stored id for a submission. The returned path is the stored

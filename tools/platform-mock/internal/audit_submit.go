@@ -39,6 +39,10 @@ func auditSubmitHandler(runner *localAuditRunner, uploadDir string) http.Handler
 	}
 
 	return func(w http.ResponseWriter, r *http.Request) {
+		// Arrival time of the submission. The receive step's duration covers the
+		// handler's own work — spooling the upload and sealing it — which happens
+		// before the job row exists, so it has to be taken here.
+		receivedAt := time.Now()
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusNoContent)
 			return
@@ -256,7 +260,7 @@ func auditSubmitHandler(runner *localAuditRunner, uploadDir string) http.Handler
 			}
 		}
 
-		runner.jobs.begin(localAuditInstanceKey, requestID, taskID)
+		runner.jobs.beginFrom(localAuditInstanceKey, requestID, taskID, receivedAt)
 		summary, _ := runner.jobs.summaryForRequest(localAuditInstanceKey, requestID)
 
 		log.Printf("local audit accepted: requestId=%s taskId=%s file=%s size=%d fileId=%s encrypted=%v",

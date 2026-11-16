@@ -76,6 +76,12 @@
     // storedFile is set: a local pick sends the bytes, a stored pick sends its id.
     storedFile: null,
     files: [],
+    // fileQuery filters the current file list; fileSource is which group it
+    // shows. Samples and uploads are separate groups rather than one list with
+    // badges: a fixture and a delivered archive are different things to an
+    // operator, and the sample group is what a new console opens on.
+    fileQuery: '',
+    fileSource: 'samples',
     taskId: '',
     requestId: '',
     submitBusy: false,
@@ -593,7 +599,8 @@
       'engineStaticFields', 'engineLLMFields', 'engineAttestFields',
       'engineHandshakeFields', 'engineLogOutput', 'auditFileList',
     ].forEach((id) => replaceChildren($(id)));
-    setText('auditFilesCount', '0 个文件');
+    setText('auditSampleCount', '0');
+    setText('auditUploadCount', '0');
     const select = $('auditFindingsJobSelect');
     if (select) {
       select.replaceChildren();
@@ -1100,6 +1107,27 @@
     });
   }
 
+  // setStepDuration fills the trailing time cell of one step. The server
+  // measures the interval between a step becoming active and settling, so a
+  // running step has no value yet and shows nothing rather than a zero that
+  // would read as "instant".
+  function setStepDuration(item, ms, state) {
+    let cell = item.querySelector('.audit-stepper-time');
+    const value = Number(ms);
+    const show = state !== 'active' && state !== 'pending' && Number.isFinite(value) && value >= 0;
+    if (!show) {
+      if (cell) cell.remove();
+      return;
+    }
+    if (!cell) {
+      cell = document.createElement('span');
+      cell.className = 'audit-stepper-time';
+      item.appendChild(cell);
+    }
+    cell.textContent = fmtDuration(value);
+    cell.title = '该步骤实测耗时';
+  }
+
   // stepLabel names the step a pending job is on, using the server's `stage`.
   function stepLabel(key) {
     switch (key) {
@@ -1289,6 +1317,8 @@
     if (!steps.length) return;
 
     const stages = job && job.stages && typeof job.stages === 'object' ? job.stages : null;
+    const durations = job && job.stepDurationsMs && typeof job.stepDurationsMs === 'object'
+      ? job.stepDurationsMs : null;
 
     const states = [];
     steps.forEach((item) => {
@@ -1301,6 +1331,7 @@
       item.classList.toggle('is-done', state === 'done');
       item.classList.toggle('is-skipped', state === 'skipped');
       item.classList.toggle('is-error', state === 'error');
+      setStepDuration(item, durations ? durations[key] : null, state);
     });
 
     // The rail's header answers "where is this run" at a glance; the bar under
@@ -1447,26 +1478,70 @@
     }
   }
 
+  function fileMatchesQuery(entry, query) {
+    if (!query) return true;
+    const haystack = [entry.name, entry.sample, entry.sampleTitle, entry.sampleNote]
+      .filter(Boolean)
+      .join(' ')
+      .toLowerCase();
+    return haystack.includes(query);
+  }
+
+  // A sample is part of the built-in corpus; anything else is an operator upload.
+  // The two live in separate tabs so a fixture is never mistaken for a delivered
+  // archive, and the sample tab is the one that opens first: it is the reason a
+  // new operator visits this panel at all.
+  function isSampleEntry(entry) {
+    return Boolean(entry && entry.sample);
+  }
+
   function renderAuditFiles() {
     const host = $('auditFileList');
     if (!host) return;
     host.replaceChildren();
-    setText('auditFilesCount', state.files.length + ' 个文件');
 
-    if (!state.files.length) {
+    const query = (state.fileQuery || '').trim().toLowerCase();
+    const samples = state.files.filter(isSampleEntry);
+    const uploads = state.files.filter((entry) => !isSampleEntry(entry));
+    setText('auditSampleCount', String(samples.length));
+    setText('auditUploadCount', String(uploads.length));
+
+    // Samples arrive newest-first because the store appends in seeding order. The
+// list reads as a rule catalogue, so it is sorted by rule id with the control
+// sample last: it is the one entry that proves nothing fired.
+    const ordered = state.fileSource === 'uploads' ? uploads : samples.slice().sort((a, b) => {
+      if (a.sample === 'clean') return 1;
+      if (b.sample === 'clean') return -1;
+      return String(a.sample).localeCompare(String(b.sample));
+    });
+    const visible = ordered.filter((entry) => fileMatchesQuery(entry, query));
+
+    if (!ordered.length) {
       const empty = document.createElement('li');
       empty.className = 'audit-file-empty';
-      empty.textContent = '暂无文件。上传一个归档后会自动保存在这里。';
+      empty.textContent = state.fileSource === 'uploads'
+        ? '还没有上传过文件。上传一个归档后会自动以密文保存在这里。'
+        : '内置样例缺失，请检查工作台的样例播种日志。';
+      host.appendChild(empty);
+      return;
+    }
+    if (!visible.length) {
+      const empty = document.createElement('li');
+      empty.className = 'audit-file-empty';
+      empty.textContent = '没有匹配「' + state.fileQuery + '」的文件。';
       host.appendChild(empty);
       return;
     }
 
-    state.files.forEach((entry) => {
+    visible.forEach((entry) => {
       const item = document.createElement('li');
       item.className = 'audit-file-item';
       item.dataset.fileId = entry.id;
       item.draggable = true;
-      item.title = '拖拽到上方「发起代码审计」窗口，或点击选用';
+      item.title = entry.sample
+        ? (entry.sampleNote || '内置规则样例，点击即可用它发起审计')
+        : '点击选用，或拖拽到上方窗口发起审计';
+      if (entry.sample) item.classList.add('is-sample');
       if (state.storedFile && state.storedFile.id === entry.id) item.classList.add('is-selected');
 
       const icon = document.createElement('span');
@@ -1481,16 +1556,27 @@
       const name = document.createElement('span');
       name.className = 'audit-file-name';
       name.textContent = entry.name || 'archive';
+      head.appendChild(name);
       const kind = document.createElement('span');
       kind.className = 'audit-file-kind';
       kind.textContent = kindOfName(entry.name || '');
-      head.appendChild(name);
+      if (entry.sample) {
+        kind.classList.add('is-sample');
+        kind.textContent = entry.sample;
+      }
       head.appendChild(kind);
       const sub = document.createElement('span');
       sub.className = 'audit-file-sub';
-      const shortID = (entry.id || '').slice(0, 6);
-      sub.textContent = humanSize(entry.size) + ' · ' + fmtTime(entry.uploadedAt)
-        + (shortID ? ' · #' + shortID : '');
+      if (entry.sample) {
+        // The corpus explains itself: the sub-line names the rule's family
+        // instead of the size, which is meaningless for a generated few hundred
+        // bytes and would only push the useful text out of the row.
+        sub.textContent = entry.sampleTitle || '内置规则样例';
+      } else {
+        const shortID = (entry.id || '').slice(0, 6);
+        sub.textContent = humanSize(entry.size) + ' · ' + fmtTime(entry.uploadedAt)
+          + (shortID ? ' · #' + shortID : '');
+      }
       body.appendChild(head);
       body.appendChild(sub);
       item.appendChild(body);
@@ -1501,12 +1587,35 @@
       const use = document.createElement('button');
       use.type = 'button';
       use.className = 'secondary audit-file-use';
-      use.textContent = '选用';
+      use.textContent = entry.sample ? '运行' : '选用';
       use.addEventListener('click', (ev) => {
         ev.stopPropagation();
         chooseStoredFile(entry);
+        // A sample has nothing to configure: the whole point of the corpus is
+        // to see a rule fire, so the button runs it instead of only loading it
+        // into the panel and leaving a second click to find.
+        if (entry.sample) auditSubmitAudit();
       });
       actions.appendChild(use);
+
+      // A sample is part of the corpus and comes back on the next restart, so
+      // deleting one is a temporary hide rather than a destructive action; the
+      // label says so instead of offering the same two-click delete.
+      if (entry.sample) {
+        item.appendChild(actions);
+        item.addEventListener('dragstart', (ev) => {
+          if (!ev.dataTransfer) return;
+          ev.dataTransfer.effectAllowed = 'copy';
+          ev.dataTransfer.setData('application/x-taa-audit-file', entry.id);
+          ev.dataTransfer.setData('text/plain', entry.name || '');
+        });
+        item.addEventListener('click', (ev) => {
+          if (ev.target.closest('button')) return;
+          chooseStoredFile(entry);
+        });
+        host.appendChild(item);
+        return;
+      }
 
       const del = document.createElement('button');
       del.type = 'button';
@@ -3201,6 +3310,28 @@
         renderFindingsTable();
       });
     }
+
+    const fileSearch = $('auditFileSearch');
+    if (fileSearch) {
+      fileSearch.addEventListener('input', () => {
+        state.fileQuery = fileSearch.value || '';
+        renderAuditFiles();
+      });
+    }
+
+    document.querySelectorAll('.audit-source-tab').forEach((tab) => {
+      tab.addEventListener('click', () => {
+        const next = tab.dataset.source === 'uploads' ? 'uploads' : 'samples';
+        if (state.fileSource === next) return;
+        state.fileSource = next;
+        document.querySelectorAll('.audit-source-tab').forEach((other) => {
+          const on = other === tab;
+          other.classList.toggle('is-active', on);
+          other.setAttribute('aria-selected', on ? 'true' : 'false');
+        });
+        renderAuditFiles();
+      });
+    });
 
     bindIfNoInline('auditExportBtn', exportFindings);
     bindIfNoInline('auditFindingDetailClose', closeFindingDetail);

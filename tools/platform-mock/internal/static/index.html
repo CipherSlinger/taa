@@ -978,6 +978,30 @@
                 <button type="button" id="auditFileClearBtn" class="audit-file-clear">移除</button>
               </div>
 
+              <!-- Pickers: the built-in rule corpus and the operator's own uploads
+                   are separate groups, so a sample is never mistaken for a file
+                   someone delivered. -->
+              <div class="audit-source">
+                <div class="audit-source-head">
+                  <div class="audit-source-tabs" role="tablist" aria-label="文件来源">
+                    <button type="button" class="audit-source-tab is-active" data-source="samples" role="tab" aria-selected="true">
+                      内置样例 <span id="auditSampleCount" class="audit-source-count">0</span>
+                    </button>
+                    <button type="button" class="audit-source-tab" data-source="uploads" role="tab" aria-selected="false">
+                      我的上传 <span id="auditUploadCount" class="audit-source-count">0</span>
+                    </button>
+                  </div>
+                  <label class="audit-file-search">
+                    <span class="audit-visually-hidden">搜索文件</span>
+                    <input id="auditFileSearch" type="search" placeholder="搜索…" autocomplete="off" />
+                  </label>
+                </div>
+                <ul id="auditFileList" class="audit-file-list audit-source-list">
+                  <li class="audit-file-empty">暂无文件。上传一个归档后会自动保存在这里。</li>
+                </ul>
+                <p class="audit-source-note">样例是内置的规则触发包，用来验证每条静态规则；上传的归档以密文保存在本机。</p>
+              </div>
+
               <div class="audit-form-actions">
                 <button type="button" id="auditSubmitBtn" class="audit-btn audit-btn-primary" onclick="auditSubmitAudit()">
                   <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
@@ -999,22 +1023,6 @@
                 </div>
               </div>
 
-            </div>
-
-            <!-- ─── File area ─── -->
-            <div class="audit-card">
-              <div class="audit-card-head">
-                <div>
-                  <h3 class="audit-card-title">文件区域</h3>
-                  <p class="audit-card-desc">上传过的归档以密文保存在本机；拖拽到上方窗口即可直接重复审计，无需再次上传。</p>
-                </div>
-                <div class="audit-card-tools">
-                  <span id="auditFilesCount" class="audit-muted-sm">0 个文件</span>
-                </div>
-              </div>
-              <ul id="auditFileList" class="audit-file-list">
-                <li class="audit-file-empty">暂无文件。上传一个归档后会自动保存在这里。</li>
-              </ul>
             </div>
             </div><!-- /audit-workbench-main -->
 
