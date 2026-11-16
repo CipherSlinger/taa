@@ -3157,6 +3157,23 @@
     }
   }
 
+  // The generated half of the prompt starts here: the code excerpt, the rule
+  // that fired and the answer contract. The editor shows it so the operator can
+  // read the complete prompt, and cuts it off again on save.
+  const PROMPT_EVIDENCE_MARKER = '## 代码片段';
+
+  function completePromptText(instruction, suffix) {
+    const head = (instruction || '').replace(/\s+$/, '');
+    if (!suffix) return head;
+    return head + '\n\n' + suffix;
+  }
+
+  function promptInstructionOnly(text) {
+    const raw = text || '';
+    const idx = raw.indexOf(PROMPT_EVIDENCE_MARKER);
+    return idx === -1 ? raw : raw.slice(0, idx);
+  }
+
   // The audit prompt lives in the server process, next to the other console
   // settings. The textarea is the authority while it holds focus; a reload of
   // the settings view re-reads whatever the runner would use for the next audit.
@@ -3170,7 +3187,7 @@
       }
       const data = unwrap(res.data) || {};
       const input = $('auditPromptInput');
-      if (input && document.activeElement !== input) input.value = data.prompt || '';
+      if (input && document.activeElement !== input) input.value = completePromptText(data.prompt, data.suffix);
       renderPromptState(!!data.custom);
       setPromptMeta(data.custom
         ? '已加载自定义提示词（下次审计生效）'
@@ -3221,14 +3238,14 @@
       const res = await requestJSON('/api/audit/console/prompt', {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ prompt: text }),
+        body: JSON.stringify({ prompt: promptInstructionOnly(text) }),
         timeoutMs: REQUEST_TIMEOUT_MS,
       });
       const data = unwrap(res.data) || {};
       if (!res.ok || data.ok === false) {
         throw new Error(data.error || data.msg || ('HTTP ' + res.status));
       }
-      if (input) input.value = data.prompt || '';
+      if (input) input.value = completePromptText(data.prompt, data.suffix);
       renderPromptState(!!data.custom);
       setPromptMeta(data.custom ? '已保存 · 下次审计生效' : '已恢复内置默认提示词', 'ok');
       if (announce) {

@@ -5,6 +5,8 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+
+	"taa/internal/codeaudit"
 )
 
 const (
@@ -165,13 +167,31 @@ func (a *auditConsole) handleFileDetail(w http.ResponseWriter, r *http.Request) 
 type auditPromptResponse struct {
 	Prompt string `json:"prompt"`
 	Custom bool   `json:"custom"`
+	// Suffix is the half the audit generates per finding, with {{placeholders}}
+	// where the code, rule and file values go. The editor shows Prompt + Suffix
+	// so the operator sees the complete prompt, and cuts the suffix off again on
+	// save so it is not stored and appended twice.
+	Suffix string `json:"suffix"`
 }
 
 func currentAuditPrompt(runner *localAuditRunner) auditPromptResponse {
 	return auditPromptResponse{
 		Prompt: runner.effectivePromptText(),
 		Custom: runner.promptText() != "",
+		Suffix: codeaudit.FindingPromptEvidenceTemplate(),
 	}
+}
+
+// instructionPart keeps only the half an operator composes. The editor displays
+// the complete prompt, evidence template included, so a save can arrive with the
+// generated half still in the box; cutting at the marker keeps that half from
+// becoming part of the override.
+func instructionPart(prompt string) string {
+	head, _, ok := strings.Cut(prompt, codeaudit.FindingPromptEvidenceMarker)
+	if !ok {
+		return prompt
+	}
+	return head
 }
 
 // auditPromptHandler reads and writes the operator's prompt. It is not
@@ -189,12 +209,13 @@ func auditPromptHandler(runner *localAuditRunner) http.HandlerFunc {
 				writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": "请求体不是合法 JSON: " + err.Error()})
 				return
 			}
-			runner.setPrompt(body.Prompt)
+			runner.setPrompt(instructionPart(body.Prompt))
 			response := currentAuditPrompt(runner)
 			writeJSON(w, http.StatusOK, map[string]any{
 				"ok":     true,
 				"prompt": response.Prompt,
 				"custom": response.Custom,
+				"suffix": response.Suffix,
 			})
 		default:
 			w.Header().Set("Allow", http.MethodGet+", "+http.MethodPut)

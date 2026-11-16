@@ -53,19 +53,46 @@ const findingAnalysisPromptTemplate = `你是一个代码安全审计专家。�
 {"verdict": "...", "reason": "...", "risk": "..."}
 `
 
-// findingPromptEvidenceMarker starts the per-finding half of the prompt: the
+// FindingPromptEvidenceMarker starts the per-finding half of the prompt: the
 // code excerpt, the rule that fired and the answer contract. The workbench's
 // prompt editor replaces everything before it and never touches it, so an edit
 // changes the judgement criteria without dropping the evidence or the JSON
-// shape the parser needs.
-const findingPromptEvidenceMarker = "## 代码片段"
+// shape the parser needs. Exported because an editor that shows the complete
+// prompt has to know where the generated half begins.
+const FindingPromptEvidenceMarker = "## 代码片段"
 
 // DefaultFindingPrompt returns the instruction half of the built-in finding
 // prompt. It is what the workbench's prompt editor shows when no override is
 // set, and what an override replaces.
 func DefaultFindingPrompt() string {
-	head, _, _ := strings.Cut(findingAnalysisPromptTemplate, findingPromptEvidenceMarker)
+	head, _, _ := strings.Cut(findingAnalysisPromptTemplate, FindingPromptEvidenceMarker)
 	return strings.TrimRight(head, "\n")
+}
+
+// FindingPromptEvidenceTemplate returns the generated half of the prompt with
+// its runtime values replaced by {{placeholders}}. It exists for display: an
+// editor that shows only the instruction half hides the part that decides the
+// answer shape, and rendering the real template keeps the display from drifting
+// away from what an audit actually sends.
+func FindingPromptEvidenceTemplate() string {
+	rendered := BuildFindingPrompt(Finding{
+		File:          "{{file}}",
+		Line:          0,
+		ContextBefore: "{{contextBefore}}",
+		CodeSnippet:   "{{codeSnippet}}",
+		RuleID:        "{{ruleId}}",
+		Category:      "{{category}}",
+		Severity:      "{{severity}}",
+		Description:   "{{description}}",
+	}, "{{contextAfter}}")
+	_, tail, ok := strings.Cut(rendered, FindingPromptEvidenceMarker)
+	if !ok {
+		return ""
+	}
+	// The line number is formatted as an integer, so the placeholder is put back
+	// after rendering rather than threaded through the format string.
+	tail = strings.Replace(tail, "第 0 行", "第 {{line}} 行", 1)
+	return FindingPromptEvidenceMarker + tail
 }
 
 // BuildFindingPromptWithOverride renders the per-finding prompt. A non-empty
@@ -78,13 +105,13 @@ func BuildFindingPromptWithOverride(override string, f Finding, contextAfter str
 	if override == "" {
 		return builtin
 	}
-	_, tail, ok := strings.Cut(builtin, findingPromptEvidenceMarker)
+	_, tail, ok := strings.Cut(builtin, FindingPromptEvidenceMarker)
 	if !ok {
 		// The built-in template no longer contains the marker: returning the
 		// built-in prompt is safer than sending an override without evidence.
 		return builtin
 	}
-	return override + "\n\n" + findingPromptEvidenceMarker + tail
+	return override + "\n\n" + FindingPromptEvidenceMarker + tail
 }
 
 // BuildFindingPrompt renders the audit prompt for one finding. contextAfter is

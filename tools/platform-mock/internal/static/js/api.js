@@ -15,6 +15,10 @@ function defaultTaaAddr() {
 
 function setTaaAddr(addr) {
   taaAddrCurrent = addr || '';
+  // The target resolves asynchronously after the first status poll. The API
+  // tester follows this value until the operator types an address of their own,
+  // so it has to learn about the change rather than keep its startup fallback.
+  window.dispatchEvent(new CustomEvent('taa-addr-change', { detail: { addr: taaAddrCurrent } }));
 }
 
 function getTaaAddr() {

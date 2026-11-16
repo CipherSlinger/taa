@@ -1227,6 +1227,24 @@ button.is-loading::before {
   cursor: not-allowed;
 }
 
+/* On a phone the pill cannot hold the four phases and the key controls on one
+   line, and its intrinsic width used to drag the whole page sideways. Let it
+   wrap and drop the key group onto its own row instead. */
+@media (max-width: 768px) {
+  .phase-switch-bar {
+    flex-wrap: wrap;
+    justify-content: flex-start;
+    border-radius: 14px;
+  }
+
+  #globalKeyManagementBox {
+    margin-left: 0 !important;
+    padding-left: 0 !important;
+    border-left: 0 !important;
+    flex-wrap: wrap;
+  }
+}
+
 /* ── Modals ── */
 .modal-overlay {
   position: fixed;
@@ -1300,6 +1318,10 @@ button.is-loading::before {
   inset: 0;
   z-index: 1100;
   visibility: hidden;
+  /* The closed panel is translated one width to the right. Without clipping, it
+     still counts toward the document's scroll width and the page can be dragged
+     sideways on a narrow screen. */
+  overflow: hidden;
   transition: visibility 0.25s ease;
 }
 
@@ -1912,5 +1934,89 @@ body[data-mode="fhe"] .header-badge {
 @media (max-width: 768px) {
   .fhe-picker-grid {
     grid-template-columns: 1fr;
+  }
+}
+
+/* ── API tester ── */
+/* Endpoint picker and target sit side by side; the command below is a terminal
+   block because what gets copied is a shell command, and it scrolls inside its
+   own box instead of wrapping so the copied text stays one statement per line. */
+.api-tester-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+  margin-top: 2px;
+}
+
+.api-tester-grid > div > label {
+  margin-top: 0;
+}
+
+.api-tester-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-top: 2px;
+}
+
+.api-tester-row label {
+  margin-bottom: 0;
+}
+
+.api-tester-curl-head {
+  margin-top: 16px;
+}
+
+.api-tester-curl {
+  margin: 0;
+  padding: 14px 16px;
+  border: 1px solid #1e293b;
+  border-radius: 10px;
+  background: #090d16;
+  color: #e2e8f0;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 12.5px;
+  line-height: 1.6;
+  white-space: pre;
+  overflow-x: auto;
+  scrollbar-width: thin;
+  scrollbar-color: #334155 #0f172a;
+}
+
+.api-tester-note {
+  margin: 8px 0 0;
+  padding: 9px 12px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: var(--panel-sub);
+  color: var(--muted);
+  font-size: 12.5px;
+  line-height: 1.55;
+}
+
+.api-tester-note.is-warn {
+  background: rgba(245, 158, 11, 0.1);
+  border-color: rgba(245, 158, 11, 0.3);
+  color: #b45309;
+}
+
+@media (prefers-color-scheme: dark) {
+  .api-tester-note.is-warn {
+    background: rgba(245, 158, 11, 0.12);
+    border-color: rgba(245, 158, 11, 0.35);
+    color: #fbbf24;
+  }
+}
+
+@media (max-width: 768px) {
+  .api-tester-grid {
+    grid-template-columns: 1fr;
+    gap: 0;
+  }
+
+  .api-tester-curl {
+    font-size: 12px;
+    padding: 12px;
   }
 }

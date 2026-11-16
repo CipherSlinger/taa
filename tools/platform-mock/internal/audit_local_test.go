@@ -463,9 +463,29 @@ func TestAuditPromptEndpointShowsTheEffectivePrompt(t *testing.T) {
 	if body["custom"] != false {
 		t.Fatalf("custom = %v, want false", body["custom"])
 	}
+	suffix := toString(body["suffix"])
+	if suffix != codeaudit.FindingPromptEvidenceTemplate() {
+		t.Fatalf("suffix is not the evidence template:\n%s", suffix)
+	}
+	if !strings.HasPrefix(suffix, codeaudit.FindingPromptEvidenceMarker) {
+		t.Fatalf("suffix does not start at the evidence marker:\n%s", suffix)
+	}
+
+	// The editor shows the complete prompt, so a save can arrive with the
+	// generated half still attached. Only the instruction half may be stored,
+	// or the next audit would append the evidence template twice.
+	fullPrompt := "只看外发行为\n\n" + suffix
+	fullJSON, _ := json.Marshal(map[string]string{"prompt": fullPrompt})
+	rec = httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPut, "/api/audit/console/prompt", strings.NewReader(string(fullJSON)))
+	handler(rec, req)
+	body = decode(rec)
+	if body["custom"] != true || toString(body["prompt"]) != "只看外发行为" {
+		t.Fatalf("saving a complete prompt kept the generated half: %v", body)
+	}
 
 	rec = httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPut, "/api/audit/console/prompt", strings.NewReader(`{"prompt":"只看外发行为"}`))
+	req = httptest.NewRequest(http.MethodPut, "/api/audit/console/prompt", strings.NewReader(`{"prompt":"只看外发行为"}`))
 	handler(rec, req)
 	body = decode(rec)
 	if body["custom"] != true || body["prompt"] != "只看外发行为" {

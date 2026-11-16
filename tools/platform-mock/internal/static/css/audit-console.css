@@ -3576,32 +3576,8 @@
   color: var(--aud-accent);
 }
 
-.audit-prompt-appendix {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  flex-wrap: wrap;
-  margin: -4px 0 14px;
-}
-
-.audit-prompt-appendix-label {
-  font-size: 11px;
-  font-weight: 650;
-  color: var(--aud-muted);
-}
-
-.audit-prompt-chip {
-  padding: 2px 8px;
-  border: 1px solid var(--aud-border);
-  border-radius: 999px;
-  background: var(--aud-surface-2);
-  color: var(--aud-text-2);
-  font-size: 11px;
-  font-weight: 600;
-}
-
 .audit-prompt-input {
-  min-height: 330px;
+  min-height: 460px;
   line-height: 1.68;
   font-size: 12.8px;
   resize: vertical;

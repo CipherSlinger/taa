@@ -431,6 +431,44 @@
     </section>
   </div>
 
+  <!-- ─── API tester ─── -->
+  <!-- The console calls TAA through the mock's own /taa proxy, which seals each
+       plain JSON body with the registered instance's public key. That proxy is
+       also the only path a hand-written curl can use: TAA rejects plaintext on
+       every business route, and the callbacks it sends are sealed envelopes too. -->
+  <section class="card" id="card-apiTester" style="margin-bottom:24px;">
+    <div class="card-head">
+      <div>
+        <h2>接口测试</h2>
+        <div class="muted" style="font-size:12.5px; margin-top:4px;">选一个接口，生成可直接粘贴运行的 curl 命令</div>
+      </div>
+      <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+        <button type="button" class="secondary btn-sm" onclick="apiTesterUseConsoleTarget()" title="恢复为控制台当前调用的地址">控制台当前地址</button>
+      </div>
+    </div>
+    <div class="api-tester-grid">
+      <div>
+        <label for="apiTesterEndpoint">接口</label>
+        <select id="apiTesterEndpoint" onchange="apiTesterSelectEndpoint()"></select>
+      </div>
+      <div>
+        <label for="apiTesterBase">目标地址</label>
+        <input id="apiTesterBase" spellcheck="false" autocomplete="off" oninput="apiTesterOnBaseInput()">
+      </div>
+    </div>
+    <div class="api-tester-row">
+      <label for="apiTesterBody">请求体</label>
+      <button type="button" class="secondary btn-sm" onclick="apiTesterResetBody()">重置示例</button>
+    </div>
+    <textarea id="apiTesterBody" rows="7" spellcheck="false" autocomplete="off" oninput="apiTesterRender()"></textarea>
+    <p class="api-tester-note" id="apiTesterNote"></p>
+    <div class="api-tester-row api-tester-curl-head">
+      <span class="muted" style="font-size:12.5px; font-weight:650;">curl 命令</span>
+      <button type="button" class="btn-sm" id="apiTesterCopyBtn" onclick="apiTesterCopy()">复制命令</button>
+    </div>
+    <pre id="apiTesterCurl" class="api-tester-curl"></pre>
+  </section>
+
   <!-- ─── FHE 任务下发 ─── -->
   <!-- FHE only. This is the step the TEE console has no equivalent of: the platform
        hands the FHE service an evaluation key and a data package, and TAA starts and
@@ -1528,22 +1566,15 @@
               <div class="audit-card-head">
                 <div>
                   <h3 class="audit-card-title">代码审计提示词</h3>
-                  <p class="audit-card-desc">这是每次代码审计实际下发给 TEE-LLM 的判定提示词；命中代码、触发规则与回答格式会自动追加在后面。修改后保存，下一次审计生效。</p>
+                  <p class="audit-card-desc">编辑框显示每次代码审计实际下发给 TEE-LLM 的完整提示词。「## 代码片段」之后的部分由审计时按命中内容生成（文件、行号、代码、触发规则、回答格式），保存时会自动截断，只保存前面的判定说明。</p>
                 </div>
                 <div class="audit-card-tools">
                   <span id="auditPromptBadge" class="audit-prompt-badge" data-state="default">内置默认</span>
                 </div>
               </div>
-              <div class="audit-prompt-appendix" aria-label="自动追加的下发内容">
-                <span class="audit-prompt-appendix-label">自动追加</span>
-                <span class="audit-prompt-chip">命中代码</span>
-                <span class="audit-prompt-chip">触发规则</span>
-                <span class="audit-prompt-chip">判定提醒</span>
-                <span class="audit-prompt-chip">JSON 回答格式</span>
-              </div>
               <div class="audit-field">
-                <label for="auditPromptInput">判定提示词</label>
-                <textarea id="auditPromptInput" class="audit-textarea audit-prompt-input" rows="14" placeholder="加载内置判定提示词…"></textarea>
+                <label for="auditPromptInput">判定提示词（完整）</label>
+                <textarea id="auditPromptInput" class="audit-textarea audit-prompt-input" rows="22" placeholder="加载内置判定提示词…"></textarea>
               </div>
               <div class="audit-btn-row audit-prompt-actions">
                 <button type="button" id="auditPromptSaveBtn" class="audit-btn audit-btn-primary audit-btn-sm">保存提示词</button>
@@ -1672,6 +1703,7 @@
 <script src="/static/js/logs.js"></script>
 <script src="/static/js/llm.js"></script>
 <script src="/static/js/app.js"></script>
+<script src="/static/js/api-tester.js"></script>
 <script src="/static/js/audit-console.js"></script>
 </body>
 </html>

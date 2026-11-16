@@ -107,6 +107,14 @@ The platform mock provides an embedded single-page Web console accessible by ope
 - **Model Ingress & Audit**: Upload model packages, inspect static AST rule violations, and observe Ollama LLM semantic verification outcomes. The console shows the platform SM2 key pair the mock generated and persisted at startup (the same pair its envelopes use), and the regenerate button rotates that pair and overwrites the key file; loading the page never rotates it.
 - **Real-Time Progress & Logs**: Displays real-time progress bars, streamed terminal logs (`modelLog`), and TAA daemon operational logs (`taaLog`).
 - **Execution Control**: Send graceful stop commands (`/v1/taa/stopTraining`) to interrupt running workloads.
+- **API Tester**: Pick a TAA business endpoint from a dropdown, edit its example JSON body and
+  target address, and the card generates a ready-to-paste `curl` command with a copy button.
+  The address follows the console's own target (the `/taa` proxy once an instance has
+  registered) until it is edited by hand; an explicit 控制台当前地址 button restores that
+  target. The note under the body says which path is in force: TAA only accepts SM2/SM4
+  envelopes, so a direct address is flagged as rejected with `请求缺少 cipher/sign`, while the
+  proxy seals the plaintext command. Callbacks TAA sends to the platform are sealed envelopes
+  and are not in the list, because a hand-written body cannot reproduce them.
 - **Instance-Kind Panels**: the console shows the TEE or FHE panel set for the instance
   selected in the 平台注册 card; there is no separate mode switch. The registration carries
   no explicit server type, so `GET /api/instances` derives `kind` from the report (empty
@@ -153,11 +161,12 @@ The platform mock provides an embedded single-page Web console accessible by ope
     binding, certificate subject, elapsed time), a prompt self-check and the polled gateway
     logs.
   - **设置** — read-only endpoints, the TLS verification mode, and the editable code-audit
-    prompt. This is the **actual judgement prompt** sent to TEE-LLM, not an addendum: it
-    replaces the instruction half of each finding prompt (everything before `## 代码片段`),
-    while the matched code, rule id and JSON answer contract are always appended. Saving the
-    built-in text clears the override. It lives in process memory, applies to the next audit,
-    and is gone after a restart.
+    prompt. The editor shows the **complete prompt** sent to TEE-LLM: the instruction half
+    plus the generated half with `{{placeholders}}` for the file, line, code, rule and answer
+    contract. Only the instruction half (everything before `## 代码片段`) is stored, so the
+    generated half is never duplicated, and saving arrives with it still in the box.
+    Saving the built-in text clears the override. It lives in process memory, applies to the
+    next audit, and is gone after a restart.
   Real `reportAudit` callbacks still arrive from registered TAA instances and keep their own
   per-`dockerId` ring, but this workbench reads only the `local` bucket, so those callbacks are
   not shown. The read endpoints live under `/api/audit/console/*`; submissions use
@@ -165,8 +174,10 @@ The platform mock provides an embedded single-page Web console accessible by ope
   `requestId` and `taskId`), one job is deleted with `DELETE /api/audit/console/jobs/{id}`,
   the file area is listed with `GET /api/audit/console/files` and an entry is dropped with
   `DELETE /api/audit/console/files/{id}`, and the prompt is read with
-  `GET /api/audit/console/prompt` (returns `{prompt, custom}`) and replaced with `PUT`
-  `{"prompt": "..."}`; the static rule table is read with `GET /api/audit/console/rules`
+  `GET /api/audit/console/prompt` (returns `{prompt, custom, suffix}`, where `suffix` is the
+  generated half with placeholders) and replaced with `PUT` `{"prompt": "..."}`, which stores
+  only the text before `## 代码片段`; the static rule table is read with
+  `GET /api/audit/console/rules`
   (engine facts, source rules, binary rules), one source rule is replaced with
   `PUT /api/audit/console/rules/{id}` and the built-in table is restored with
   `POST /api/audit/console/rules/reset`. They share the
