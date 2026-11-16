@@ -14,7 +14,6 @@
 
   // ── Constants ──
   const USER_KEY = 'pm.audit.user';             // localStorage: remembered username only
-  const TAB_KEY = 'pm.audit.tab';               // sessionStorage: last active tab
   const POLL_MS = 5000;                         // job list + gateway status cadence
   const SUBMIT_POLL_MS = 1000;                  // post-submit job discovery cadence
   const SUBMIT_POLL_WINDOW_MS = 900000;         // a CPU-only AI adjudication can take minutes
@@ -799,9 +798,11 @@
   }
 
   // ── Tabs and views ──
+  // The URL is the only source of truth: the bare address opens the platform
+  // simulator, `#audit` opens the workbench. Nothing is remembered across loads,
+  // so a bookmark always lands on the same panel.
   function tabFromLocation() {
-    if (location.hash === '#audit') return 'audit';
-    return storeGet(sessionStorage, TAB_KEY) === 'audit' ? 'audit' : 'platform';
+    return location.hash === '#audit' ? 'audit' : 'platform';
   }
 
   function replaceHash(tab) {
@@ -819,13 +820,6 @@
     setDisplayed('tabPanelPlatform', next === 'platform');
     setDisplayed('tabPanelAudit', next === 'audit');
 
-    document.querySelectorAll('#tabBar .tab-btn').forEach((btn) => {
-      const on = btn.dataset.tab === next;
-      btn.classList.toggle('active', on);
-      btn.setAttribute('aria-selected', on ? 'true' : 'false');
-    });
-
-    storeSet(sessionStorage, TAB_KEY, next);
     replaceHash(next);
 
     if (next === 'audit') {
@@ -3128,13 +3122,6 @@
     el.addEventListener('click', handler);
   }
 
-  function wireTabs() {
-    document.querySelectorAll('#tabBar .tab-btn').forEach((btn) => {
-      if (btn.getAttribute('onclick')) return;
-      btn.addEventListener('click', () => auditTabSwitch(btn.dataset.tab));
-    });
-  }
-
   function wireNav() {
     document.querySelectorAll('.audit-nav-item[data-audit-view]').forEach((btn) => {
       if (btn.getAttribute('onclick')) return;
@@ -3405,8 +3392,16 @@
     document.addEventListener('visibilitychange', () => syncPoller(true));
   }
 
+  // There is no tab bar, so editing the hash by hand is the only way to move
+  // between panels after load; follow it rather than showing the old panel.
+  function wireHash() {
+    window.addEventListener('hashchange', () => {
+      const next = tabFromLocation();
+      if (next !== state.tab) auditTabSwitch(next);
+    });
+  }
+
   function wireAll() {
-    wireTabs();
     wireNav();
     wireLogin();
     wireJobs();
@@ -3415,6 +3410,7 @@
     wireSettings();
     wireTopbar();
     wireVisibility();
+    wireHash();
   }
 
   // ── Boot ──

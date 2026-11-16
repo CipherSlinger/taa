@@ -1,12 +1,10 @@
 /* ==========================================================================
    Audit workbench — code security audit platform
-   Scoped to #tabBar / .llc-* / .audit-* / .aud-* so the platform simulator
-   panels in #tabPanelPlatform keep their existing look untouched.
+   Scoped to .llc-* / .audit-* / .aud-* so the platform simulator panels in
+   #tabPanelPlatform keep their existing look untouched.
    ========================================================================== */
 
 :root {
-  --aud-tabbar-h: 56px;
-
   --aud-accent: #2563eb;
   --aud-accent-strong: #1d4ed8;
   --aud-accent-soft: rgba(37, 99, 235, 0.10);
@@ -71,7 +69,6 @@
   --aud-code-bg: #0e1728;
   --aud-code-text: #d7e5fb;
 
-  --aud-tabbar-bg: rgba(255, 255, 255, 0.86);
   --aud-login-bg:
     radial-gradient(1100px 640px at 10% 4%, #e7f0ff 0%, rgba(231, 240, 255, 0) 62%),
     radial-gradient(920px 720px at 90% 92%, #edf4ff 0%, rgba(237, 244, 255, 0) 60%),
@@ -157,7 +154,6 @@
     --aud-code-bg: #050a13;
     --aud-code-text: #cfe0ff;
 
-    --aud-tabbar-bg: rgba(9, 14, 24, 0.86);
     --aud-login-bg:
       radial-gradient(1100px 640px at 8% 0%, rgba(37, 99, 235, 0.16) 0%, rgba(37, 99, 235, 0) 62%),
       radial-gradient(900px 700px at 92% 96%, rgba(13, 116, 255, 0.12) 0%, rgba(13, 116, 255, 0) 60%),
@@ -174,103 +170,11 @@
   }
 }
 
-/* ─────────────────────────── tab bar ─────────────────────────── */
-
-#tabBar {
-  position: sticky;
-  top: 0;
-  z-index: 60;
-  background: var(--aud-tabbar-bg);
-  -webkit-backdrop-filter: saturate(1.4) blur(12px);
-  backdrop-filter: saturate(1.4) blur(12px);
-  border-bottom: 1px solid var(--line);
-}
-
-.llc-tabbar-inner {
-  max-width: 1680px;
-  width: 96%;
-  margin: 0 auto;
-  padding: 0 16px;
-  height: var(--aud-tabbar-h);
-  display: flex;
-  align-items: center;
-  gap: clamp(12px, 3vw, 30px);
-}
-
-.llc-tabbar-brand {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  font-size: 13.5px;
-  font-weight: 750;
-  letter-spacing: -0.01em;
-  color: var(--text);
-  white-space: nowrap;
-}
-
-.llc-tabbar-brand svg {
-  color: var(--accent);
-}
-
-.llc-tabs {
-  display: inline-flex;
-  align-items: center;
-  gap: 3px;
-  padding: 4px;
-  border-radius: 12px;
-  background: var(--panel-sub);
-  border: 1px solid var(--line);
-}
-
-.tab-btn {
-  display: inline-flex;
-  align-items: center;
-  gap: 7px;
-  padding: 7px 15px;
-  border: 0;
-  border-radius: 9px;
-  background: transparent;
-  color: var(--muted);
-  font-family: inherit;
-  font-size: 13px;
-  font-weight: 650;
-  line-height: 1.2;
-  cursor: pointer;
-  white-space: nowrap;
-  transition: color 0.16s ease, background-color 0.16s ease, box-shadow 0.16s ease;
-}
-
-.tab-btn svg {
-  flex: none;
-}
-
-.tab-btn:hover:not(:disabled) {
-  background: transparent;
-  color: var(--text);
-  transform: none;
-  box-shadow: none;
-}
-
-.tab-btn.active {
-  background: var(--panel);
-  color: var(--text);
-  box-shadow: 0 1px 2px rgba(16, 32, 64, 0.10), inset 0 0 0 1px var(--line);
-}
-
-.tab-btn.active svg {
-  color: var(--accent);
-}
-
-.tab-btn:focus-visible {
-  outline: none;
-  box-shadow: 0 0 0 3px var(--ring);
-}
-
 /* ─────────────────────────── panel base ─────────────────────────── */
 
 #tabPanelAudit {
   overflow-x: clip;
-  min-height: calc(100dvh - var(--aud-tabbar-h));
+  min-height: 100dvh;
 }
 
 .audit-panel,
@@ -298,7 +202,7 @@
     radial-gradient(1200px 520px at 18% -8%, var(--aud-accent-soft) 0%, transparent 58%),
     radial-gradient(900px 420px at 92% 0%, rgba(29, 78, 216, 0.05) 0%, transparent 55%),
     var(--aud-bg);
-  min-height: calc(100dvh - var(--aud-tabbar-h));
+  min-height: 100dvh;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -960,7 +864,7 @@
   max-width: 1180px;
   margin: 0 auto;
   padding: clamp(36px, 6vh, 76px) clamp(20px, 4vw, 44px);
-  min-height: calc(100dvh - var(--aud-tabbar-h));
+  min-height: 100dvh;
 }
 
 .audit-brand {
@@ -1260,7 +1164,7 @@
 
 .audit-topbar {
   position: sticky;
-  top: var(--aud-tabbar-h);
+  top: 0;
   z-index: 40;
   display: flex;
   align-items: center;
@@ -1407,7 +1311,7 @@
 
 .audit-nav {
   position: sticky;
-  top: calc(var(--aud-tabbar-h) + 78px);
+  top: 78px;
   flex: 0 0 var(--aud-nav-w);
   width: var(--aud-nav-w);
   display: flex;
@@ -2123,7 +2027,7 @@
 
 .audit-workbench-side {
   position: sticky;
-  top: calc(var(--aud-tabbar-h) + 92px);
+  top: 92px;
   min-width: 0;
 }
 
@@ -3290,7 +3194,7 @@
    hooks are accepted so the client can toggle whichever one it prefers. */
 .audit-drawer-backdrop {
   position: fixed;
-  inset: var(--aud-tabbar-h) 0 0 0;
+  inset: 0;
   z-index: 78;
   background: rgba(11, 22, 44, 0.30);
   -webkit-backdrop-filter: blur(1.5px);
@@ -3309,7 +3213,7 @@
 
 .audit-drawer {
   position: fixed;
-  top: var(--aud-tabbar-h);
+  top: 0;
   right: 0;
   bottom: 0;
   z-index: 80;
@@ -4110,25 +4014,6 @@
     gap: 3px;
   }
 
-  .llc-tabbar-inner {
-    gap: 10px;
-  }
-
-  .llc-tabbar-brand {
-    display: none;
-  }
-
-  .llc-tabs {
-    width: 100%;
-    justify-content: center;
-  }
-
-  .tab-btn {
-    flex: 1 1 0;
-    justify-content: center;
-    padding: 7px 10px;
-  }
-
   .audit-login-card {
     padding: 30px 22px 24px;
     /* Put the form first so a phone user does not scroll past the
@@ -4461,7 +4346,6 @@
   .audit-filter-btn,
   .audit-card,
   .audit-drawer,
-  .tab-btn,
   .audit-check-box,
   .audit-switch-track,
   .audit-switch-thumb,

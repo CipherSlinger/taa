@@ -113,9 +113,12 @@ The platform mock provides an embedded single-page Web console accessible by ope
   attestation and `verifiedPass=false` ⇒ `fhe`, otherwise `tee`) and the selector labels
   each entry with it. An unattested TEE instance registers the same way as FHE and is shown
   as FHE, because that is all the platform was told.
-- **Code Audit Workbench tab**: the page has two tabs — `平台模拟` (everything above) and
-  `代码审计工作台`, a login-gated workspace for the code-security audit product. TEE-LLM is
-  one module inside it (the AI semantic adjudicator), not the page's subject. It signs in with
+- **Code Audit Workbench**: a login-gated workspace for the code-security audit product,
+  served by the same binary but on its own URL — the bare address opens the platform
+  simulator, `http://<host>:18081/#audit` opens the workbench. There is no on-page switch
+  between the two; editing the hash moves between them and reloading lands on whichever the
+  URL names. TEE-LLM is one module inside it (the AI semantic adjudicator), not the page's
+  subject. It signs in with
   `-console-user` / `-console-password` (defaults `admin` / `teellm@2026`) and keeps an
   HttpOnly, SameSite=Strict session cookie for 8 hours (sliding); five failed attempts lock
   that source IP for 60 seconds. Views:

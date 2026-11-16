@@ -10,39 +10,10 @@
   <link rel="stylesheet" href="/static/css/audit-console.css">
 </head>
 <body data-mode="tee">
-<!-- Top-level mode switch: the simulator keeps its original content untouched
-     inside #tabPanelPlatform; the audit workbench is a self-contained app in
-     #tabPanelAudit with its own login gate, so the two never share state. -->
-<nav id="tabBar" class="llc-tabbar" aria-label="控制台页签">
-  <div class="llc-tabbar-inner">
-    <span class="llc-tabbar-brand">
-      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-        <rect x="3" y="3" width="18" height="18" rx="4"></rect>
-        <path d="M8 9h8M8 13h5"></path>
-      </svg>
-      TAA 平台模拟器
-    </span>
-    <div class="llc-tabs" role="tablist" aria-label="控制台视图切换">
-      <button type="button" class="tab-btn active" data-tab="platform" role="tab" aria-selected="true" aria-controls="tabPanelPlatform" onclick="auditTabSwitch('platform')">
-        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-          <path d="M12 2 3 7l9 5 9-5-9-5z"></path>
-          <path d="m3 12 9 5 9-5"></path>
-          <path d="m3 17 9 5 9-5"></path>
-        </svg>
-        <span>平台模拟</span>
-      </button>
-      <button type="button" class="tab-btn" data-tab="audit" role="tab" aria-selected="false" aria-controls="tabPanelAudit" onclick="auditTabSwitch('audit')">
-        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-          <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
-          <path d="M14 2v6h6"></path>
-          <path d="m9 15 2 2 4-4"></path>
-        </svg>
-        <span>代码审计工作台</span>
-      </button>
-    </div>
-  </div>
-</nav>
-
+<!-- Two panels live in this document. The bare URL opens the simulator
+     (#tabPanelPlatform); the audit workbench is a self-contained app in
+     #tabPanelAudit that is reached by appending #audit to the URL. There is no
+     on-page switch between them, so the two never share state. -->
 <div id="tabPanelPlatform" class="llc-panel">
 <main>
   <header style="margin-bottom: 22px;">
