@@ -21,11 +21,14 @@ const (
 	auditSubmitMemoryLimit = 32 << 20
 )
 
-// auditSubmitHandler accepts a plaintext code archive and hands it to the
-// in-process audit runner. There is no TAA dispatch, no envelope and no
-// registered public key: the workbench is a test tool for the audit pipeline
-// itself, so the same archive that TAA would decrypt out of an envelope is
-// simply extracted here.
+// auditSubmitHandler accepts a code archive, seals it into the workbench's SM2 /
+// SM4-GCM envelope, and hands the envelope to the in-process audit runner.
+//
+// The workbench reproduces TAA's ciphertext ingress rather than auditing a
+// plaintext upload: the accepted bytes are encrypted to a locally generated key
+// pair, the stored copy is ciphertext, and the runner opens it with the same
+// unwrap-then-decrypt sequence TAA runs on an import. Nothing here talks to a
+// real TAA instance.
 //
 // The pending job row exists before the audit starts, so the console can show
 // the run from its first step. The runner replaces it in place when the verdict
@@ -102,12 +105,21 @@ func auditSubmitHandler(runner *localAuditRunner, uploadDir string) http.Handler
 		// The runner owns the directory from here on and removes it when the
 		// audit settles. Every path that fails before start cleans it explicitly.
 		archivePath := filepath.Join(workDir, "package")
+		// The runner gets ciphertext plus the envelope over its data key, never a
+		// plaintext path: opening the envelope is the audit's own first step, so
+		// the mock's decrypt path is TAA's decrypt path, not a copy of it.
+		dataKeyCipher := ""
 		originalName := ""
 		size := int64(0)
 		savedID := fileID
 
 		if fileErr == nil {
 			originalName = header.Filename
+			if !runner.keys.ready() {
+				_ = os.RemoveAll(workDir)
+				writeJSON(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": errWorkbenchKeysUnavailable.Error()})
+				return
+			}
 			size, err = copyToFile(archivePath, file)
 			if err != nil {
 				_ = os.RemoveAll(workDir)
@@ -126,20 +138,42 @@ func auditSubmitHandler(runner *localAuditRunner, uploadDir string) http.Handler
 				return
 			}
 			// The accepted upload is kept in the file area so it can be dragged
-			// back into the launcher later. The staged copy above is what the
-			// audit uses and what the temp-directory cleanup removes.
+			// back into the launcher later. Sealing happens here, once: the store
+			// keeps ciphertext and this submission's work directory keeps the
+			// plaintext the audit consumes, which the temp cleanup removes.
 			if runner.files == nil {
 				_ = os.RemoveAll(workDir)
 				writeJSON(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": "文件区域不可用"})
 				return
 			}
-			entry, saveErr := runner.files.saveFromFile(archivePath, originalName)
+			entry, saveErr := runner.files.saveFromFile(archivePath, originalName, runner.keys)
 			if saveErr != nil {
 				_ = os.RemoveAll(workDir)
-				writeJSON(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": "保存文件到文件区域失败: " + saveErr.Error()})
+				writeJSON(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": "加密并保存到文件区域失败: " + saveErr.Error()})
 				return
 			}
 			savedID = entry.ID
+			dataKeyCipher = entry.DataKeyCipher
+
+			// Hand the runner the envelope the store just wrote, so the run reads
+			// the same ciphertext the file area holds.
+			cipherPath := filepath.Join(workDir, "package.sm4")
+			_, srcPath, ok := runner.files.path(entry.ID)
+			if !ok {
+				_ = os.RemoveAll(workDir)
+				writeJSON(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": "文件区域写入后无法定位密文"})
+				return
+			}
+			if _, err := copyAuditFileTo(cipherPath, srcPath); err != nil {
+				_ = os.RemoveAll(workDir)
+				writeJSON(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": "复制密文失败: " + err.Error()})
+				return
+			}
+			// The staged plaintext has served its purpose: the envelope is what
+			// this run consumes, and the temp cleanup removes it with the rest.
+			_ = os.Remove(archivePath)
+			archivePath = cipherPath
+			size = entry.PlainSize
 		} else {
 			if runner.files == nil {
 				_ = os.RemoveAll(workDir)
@@ -153,37 +187,83 @@ func auditSubmitHandler(runner *localAuditRunner, uploadDir string) http.Handler
 				return
 			}
 			originalName = entry.Name
-			size, err = copyAuditFileTo(archivePath, srcPath)
-			if err != nil {
+			if !runner.keys.ready() {
 				_ = os.RemoveAll(workDir)
-				if errors.Is(err, errAuditFileNotFound) {
-					writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": errAuditFileNotFound.Error()})
+				writeJSON(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": errWorkbenchKeysUnavailable.Error()})
+				return
+			}
+			if entry.Encrypted {
+				// A stored entry is already an envelope; the run reuses it as-is.
+				cipherPath := filepath.Join(workDir, "package.sm4")
+				if _, err := copyAuditFileTo(cipherPath, srcPath); err != nil {
+					_ = os.RemoveAll(workDir)
+					if errors.Is(err, errAuditFileNotFound) {
+						writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": errAuditFileNotFound.Error()})
+						return
+					}
+					writeJSON(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": "读取文件区域失败: " + err.Error()})
 					return
 				}
-				writeJSON(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": "读取文件区域失败: " + err.Error()})
-				return
-			}
-			isArchive, err := resource.IsArchiveFile(archivePath)
-			if err != nil {
-				_ = os.RemoveAll(workDir)
-				writeJSON(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": "读取待审计文件失败: " + err.Error()})
-				return
-			}
-			if !isArchive {
-				_ = os.RemoveAll(workDir)
-				writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": "待审计文件必须是 zip、gzip 或 tar 归档"})
-				return
+				archivePath = cipherPath
+				dataKeyCipher = entry.DataKeyCipher
+				size = entry.PlainSize
+			} else {
+				// An entry stored before the workbench encrypted uploads is
+				// plaintext. Sealing it into this run's work directory keeps the
+				// audit on one code path without rewriting the file area.
+				size, err = copyAuditFileTo(archivePath, srcPath)
+				if err != nil {
+					_ = os.RemoveAll(workDir)
+					if errors.Is(err, errAuditFileNotFound) {
+						writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": errAuditFileNotFound.Error()})
+						return
+					}
+					writeJSON(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": "读取文件区域失败: " + err.Error()})
+					return
+				}
+				isArchive, err := resource.IsArchiveFile(archivePath)
+				if err != nil {
+					_ = os.RemoveAll(workDir)
+					writeJSON(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": "读取待审计文件失败: " + err.Error()})
+					return
+				}
+				if !isArchive {
+					_ = os.RemoveAll(workDir)
+					writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": "待审计文件必须是 zip、gzip 或 tar 归档"})
+					return
+				}
+				plaintext, readErr := os.ReadFile(archivePath)
+				if readErr != nil {
+					_ = os.RemoveAll(workDir)
+					writeJSON(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": "读取待审计文件失败: " + readErr.Error()})
+					return
+				}
+				body, wrapped, sealErr := runner.keys.seal(plaintext)
+				if sealErr != nil {
+					_ = os.RemoveAll(workDir)
+					writeJSON(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": sealErr.Error()})
+					return
+				}
+				cipherPath := filepath.Join(workDir, "package.sm4")
+				if writeErr := os.WriteFile(cipherPath, body, 0o600); writeErr != nil {
+					_ = os.RemoveAll(workDir)
+					writeJSON(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": "写入密文失败: " + writeErr.Error()})
+					return
+				}
+				_ = os.Remove(archivePath)
+				archivePath = cipherPath
+				dataKeyCipher = wrapped
 			}
 		}
 
 		runner.jobs.begin(localAuditInstanceKey, requestID, taskID)
 		summary, _ := runner.jobs.summaryForRequest(localAuditInstanceKey, requestID)
 
-		log.Printf("local audit accepted: requestId=%s taskId=%s file=%s size=%d fileId=%s",
-			requestID, taskID, originalName, size, savedID)
+		log.Printf("local audit accepted: requestId=%s taskId=%s file=%s size=%d fileId=%s encrypted=%v",
+			requestID, taskID, originalName, size, savedID, dataKeyCipher != "")
 
 		started = true
-		runner.start(workDir, archivePath, requestID, taskID)
+		runner.start(workDir, archivePath, dataKeyCipher, requestID, taskID)
 
 		writeJSON(w, http.StatusOK, map[string]any{
 			"ok":           true,
@@ -197,7 +277,15 @@ func auditSubmitHandler(runner *localAuditRunner, uploadDir string) http.Handler
 			"size":         size,
 			"stage":        summary.Stage,
 			"stages":       summary.Stages,
-			"message":      "已接收，正在控制台进程内执行审计",
+			// The console shows the envelope it just produced: the scheme and the
+			// key fingerprint, never the key itself. The data-key envelope stays
+			// server-side, which is the split the platform uses on a download URL.
+			"encryption": map[string]any{
+				"mode":           "sm2-sm4gcm",
+				"dataKeyOnSide":  "server",
+				"keyFingerprint": runner.keys.fingerprint(),
+			},
+			"message": "已加密接收，正在控制台进程内执行审计",
 		})
 	}
 }

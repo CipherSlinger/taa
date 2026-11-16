@@ -391,7 +391,7 @@ func TestAuditFileStorePersistsAcrossRestart(t *testing.T) {
 	}
 
 	store := newAuditFileStore(dir)
-	entry, err := store.saveFromFile(src, "sample.zip")
+	entry, err := store.saveFromFile(src, "sample.zip", nil)
 	if err != nil {
 		t.Fatalf("save: %v", err)
 	}

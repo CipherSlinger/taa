@@ -719,11 +719,6 @@
           <p class="audit-login-subtitle">使用管理员账号访问代码安全审计平台</p>
         </div>
 
-        <div class="audit-login-modes" role="tablist" aria-label="登录方式">
-          <button type="button" class="audit-login-mode active" role="tab" aria-selected="true">密码登录</button>
-          <button type="button" class="audit-login-mode" role="tab" aria-selected="false" aria-disabled="true" title="证书登录尚未开放，请使用密码登录">证书登录</button>
-        </div>
-
         <form id="auditLoginForm" class="audit-login-form" onsubmit="return auditConsoleLogin(event)" autocomplete="on">
           <div class="audit-field">
             <label for="auditLoginUser">管理员账号</label>
@@ -805,12 +800,13 @@
         <span class="audit-env-badge">CSV2 机密环境</span>
       </div>
       <div class="audit-topbar-right">
-        <label class="audit-instance-wrap">
-          <span class="audit-instance-label">实例</span>
-          <select id="auditInstanceSelect" class="audit-select audit-select-sm" title="切换审计实例">
-            <option value="">加载实例…</option>
-          </select>
-        </label>
+        <span class="audit-engine-chip" title="审计在控制台进程内执行，不连接 TAA 实例">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <rect x="4" y="4" width="16" height="16" rx="3"></rect>
+            <path d="M9 9h6v6H9z"></path>
+          </svg>
+          本地审计引擎
+        </span>
         <button type="button" id="auditTopRefreshBtn" class="audit-icon-btn" title="刷新当前视图" aria-label="刷新当前视图">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
             <polyline points="23 4 23 10 17 10"></polyline>
@@ -934,7 +930,7 @@
               <div class="audit-card-head">
                 <div>
                   <h3 class="audit-card-title">发起代码审计</h3>
-                  <p class="audit-card-desc">请求标识与任务标识由控制台自动生成，归档在本机解压后执行审计。</p>
+                  <p class="audit-card-desc">上传即用工作台本地生成的 SM2 密钥对加密（SM4-GCM 数据密钥），与 TAA 的解密逻辑一致。</p>
                 </div>
               </div>
 
@@ -949,7 +945,7 @@
                   </svg>
                 </span>
                 <p id="auditDropTitle" class="audit-drop-title">拖拽文件到此处，或点击选择</p>
-                <p class="audit-drop-sub">支持 .zip / .tar / .tar.gz / .tgz / .gz 代码与模型归档，文件大小不限。</p>
+                <p class="audit-drop-sub">支持 .zip / .tar / .tar.gz / .tgz / .gz 代码与模型归档，拖入或选择后立即加密。</p>
                 <button type="button" id="auditFilePickBtn" class="audit-btn audit-btn-ghost audit-btn-sm audit-drop-pick">选择文件</button>
               </div>
 
@@ -976,7 +972,7 @@
                   <span class="audit-file-sub">
                     <span id="auditFileSize" class="audit-file-size">—</span>
                     <span class="audit-file-dot" aria-hidden="true">·</span>
-                    <span id="auditFileTypeText" class="audit-file-type">在本机解压后审计</span>
+                    <span id="auditFileTypeText" class="audit-file-type">上传即加密</span>
                   </span>
                 </span>
                 <button type="button" id="auditFileClearBtn" class="audit-file-clear">移除</button>
@@ -988,9 +984,9 @@
                     <path d="M22 2 11 13"></path>
                     <path d="M22 2 15 22l-4-9-9-4 20-7z"></path>
                   </svg>
-                  <span id="auditSubmitLabel">上传并启动审计</span>
+                  <span id="auditSubmitLabel">加密并启动审计</span>
                 </button>
-                <p id="auditSubmitHint" class="audit-hint">归档在本机解压并执行审计，同一时间只运行一个任务；审计结束后临时目录自动删除。</p>
+                <p id="auditSubmitHint" class="audit-hint">归档加密后存入文件区，审计前再解封；同一时间只运行一个任务，结束后临时目录自动删除。</p>
               </div>
 
               <div id="auditUploadProgress" class="audit-upload" style="display: none;">
@@ -1010,7 +1006,7 @@
               <div class="audit-card-head">
                 <div>
                   <h3 class="audit-card-title">文件区域</h3>
-                  <p class="audit-card-desc">上传过的归档保存在本机；拖拽到上方窗口即可直接重复审计，无需再次上传。</p>
+                  <p class="audit-card-desc">上传过的归档以密文保存在本机；拖拽到上方窗口即可直接重复审计，无需再次上传。</p>
                 </div>
                 <div class="audit-card-tools">
                   <span id="auditFilesCount" class="audit-muted-sm">0 个文件</span>
@@ -1040,15 +1036,15 @@
                 <li class="audit-stepper-step" data-step="receive" data-state="pending">
                   <span class="audit-stepper-dot" aria-hidden="true"></span>
                   <span class="audit-stepper-body">
-                    <span class="audit-stepper-title">接收明文包</span>
-                    <span class="audit-stepper-desc">校验归档并落盘</span>
+                    <span class="audit-stepper-title">接收并加密</span>
+                    <span class="audit-stepper-desc">SM2 封装 SM4 数据密钥，文件区只留密文</span>
                   </span>
                 </li>
                 <li class="audit-stepper-step" data-step="extract" data-state="pending">
                   <span class="audit-stepper-dot" aria-hidden="true"></span>
                   <span class="audit-stepper-body">
-                    <span class="audit-stepper-title">解压归档</span>
-                    <span class="audit-stepper-desc">带路径穿越防护地展开</span>
+                    <span class="audit-stepper-title">解封并解压</span>
+                    <span class="audit-stepper-desc">SM2 解出数据密钥后 SM4-GCM 解密，再带防护展开</span>
                   </span>
                 </li>
                 <li class="audit-stepper-step" data-step="static" data-state="pending">
@@ -1089,8 +1085,12 @@
                   <dt>文件</dt>
                   <dd id="auditRunFile">—</dd>
                 </div>
+                <div class="audit-meta-row">
+                  <dt>加密</dt>
+                  <dd><span id="auditRunCipher" class="audit-meta-mono">SM2 + SM4-GCM</span></dd>
+                </div>
               </dl>
-              <p class="audit-run-note">同一时间只执行一个任务；审计结束后临时目录自动删除。</p>
+              <p class="audit-run-note">同一时间只执行一个任务；密钥对由工作台本地生成，审计结束后临时目录自动删除。</p>
             </aside>
           </div>
 
@@ -1433,13 +1433,13 @@
               <div class="audit-card-head">
                 <div>
                   <h3 class="audit-card-title">实例连接</h3>
-                  <p class="audit-card-desc">控制台访问端点与执行方式；端点来自平台侧配置，控制台只读。</p>
+                  <p class="audit-card-desc">审计在本工作台进程内执行，不连接任何 TAA 实例；下列端点为只读视图。</p>
                 </div>
               </div>
               <dl class="audit-field-list">
                 <div class="audit-field-row">
-                  <dt>TAA 服务端点</dt>
-                  <dd><code id="auditEndpointValue">—</code></dd>
+                  <dt>审计执行位置</dt>
+                  <dd><code>进程内（工作台自身）</code></dd>
                 </div>
                 <div class="audit-field-row">
                   <dt>AI 语义判定端点</dt>
@@ -1450,12 +1450,12 @@
                   <dd id="auditSettingsUser">—</dd>
                 </div>
                 <div class="audit-field-row">
-                  <dt>审计执行位置</dt>
-                  <dd>控制台进程内</dd>
-                </div>
-                <div class="audit-field-row">
                   <dt>执行方式</dt>
                   <dd>单任务串行，提交时互斥</dd>
+                </div>
+                <div class="audit-field-row">
+                  <dt>上传加密</dt>
+                  <dd>SM2 + SM4-GCM（工作台本地密钥对）<span id="auditSettingsKeyFP" class="audit-mono-muted"></span></dd>
                 </div>
                 <div class="audit-field-row">
                   <dt>任务留存</dt>

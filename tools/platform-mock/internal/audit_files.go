@@ -27,11 +27,24 @@ const (
 // auditFileEntry is one saved upload. Name is display metadata only: it never
 // takes part in a path, so a name with slashes or control characters cannot
 // escape the store directory.
+//
+// DataKeyCipher is the SM2 envelope over the SM4 key that encrypts the entry's
+// bytes. It travels with the metadata, not with the file, which is the same
+// split the platform uses when it puts the envelope on a download URL: the
+// stored body is pure ciphertext, and the key that opens it is a small hex
+// string in the index.
 type auditFileEntry struct {
-	ID         string    `json:"id"`
-	Name       string    `json:"name"`
-	Size       int64     `json:"size"`
-	UploadedAt time.Time `json:"uploadedAt"`
+	ID            string    `json:"id"`
+	Name          string    `json:"name"`
+	Size          int64     `json:"size"`
+	UploadedAt    time.Time `json:"uploadedAt"`
+	DataKeyCipher string    `json:"dataKeyCipher,omitempty"`
+	// Encrypted says the bytes on disk are an envelope. An entry written before
+	// the workbench encrypted uploads has none, and is still readable.
+	Encrypted bool `json:"encrypted,omitempty"`
+	// PlainSize is the archive's own size, which differs from Size once an
+	// envelope adds its nonce and tag.
+	PlainSize int64 `json:"plainSize,omitempty"`
 }
 
 // auditFileStore keeps the archives uploaded through the workbench so a run can
@@ -104,7 +117,13 @@ func (s *auditFileStore) list() []auditFileEntry {
 // saveFromFile copies an already staged archive into the store. The copy is
 // what the file area serves from, so deleting the per-audit temp directory does
 // not lose it.
-func (s *auditFileStore) saveFromFile(srcPath, originalName string) (auditFileEntry, error) {
+//
+// When keys is non-nil the stored bytes are an SM4-GCM envelope and the entry
+// carries the SM2 envelope over its data key; the file area then holds nothing
+// but ciphertext. A nil keys store is the plaintext form the tests use, and it
+// is also what an unconfigured workbench falls back to refusing: see the submit
+// handler, which never passes nil in production.
+func (s *auditFileStore) saveFromFile(srcPath, originalName string, keys *workbenchKeys) (auditFileEntry, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -114,6 +133,41 @@ func (s *auditFileStore) saveFromFile(srcPath, originalName string) (auditFileEn
 	}
 	dstPath := filepath.Join(s.dir, id+".bin")
 	tmpPath := dstPath + ".tmp"
+
+	entry := auditFileEntry{
+		ID:         id,
+		Name:       cleanAuditFileName(originalName),
+		UploadedAt: time.Now().UTC(),
+	}
+
+	if keys != nil {
+		plaintext, err := os.ReadFile(srcPath)
+		if err != nil {
+			return auditFileEntry{}, err
+		}
+		body, dataKeyCipher, err := keys.seal(plaintext)
+		if err != nil {
+			return auditFileEntry{}, err
+		}
+		entry.PlainSize = int64(len(plaintext))
+		if err := os.WriteFile(tmpPath, body, 0o600); err != nil {
+			_ = os.Remove(tmpPath)
+			return auditFileEntry{}, err
+		}
+		if err := os.Rename(tmpPath, dstPath); err != nil {
+			_ = os.Remove(tmpPath)
+			return auditFileEntry{}, err
+		}
+		entry.Size = int64(len(body))
+		entry.DataKeyCipher = dataKeyCipher
+		entry.Encrypted = true
+		s.entries = append(s.entries, entry)
+		s.trimLocked()
+		if err := s.persistLocked(); err != nil {
+			log.Printf("audit file store index write failed: %v", err)
+		}
+		return entry, nil
+	}
 
 	src, err := os.Open(srcPath)
 	if err != nil {
@@ -134,12 +188,8 @@ func (s *auditFileStore) saveFromFile(srcPath, originalName string) (auditFileEn
 		return auditFileEntry{}, err
 	}
 
-	entry := auditFileEntry{
-		ID:         id,
-		Name:       cleanAuditFileName(originalName),
-		Size:       size,
-		UploadedAt: time.Now().UTC(),
-	}
+	entry.Size = size
+	entry.PlainSize = size
 	s.entries = append(s.entries, entry)
 	s.trimLocked()
 	if err := s.persistLocked(); err != nil {

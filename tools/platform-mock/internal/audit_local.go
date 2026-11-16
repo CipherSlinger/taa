@@ -38,6 +38,10 @@ type localAuditRunner struct {
 	// files keeps the archives the workbench has been given, so a run can be
 	// repeated from the file area without uploading the bytes again.
 	files *auditFileStore
+	// keys is the workbench's own SM2 pair. Uploads are sealed to it and the
+	// audit opens them with it, which is how the mock reproduces TAA's
+	// ciphertext ingress without a platform or a registered instance.
+	keys *workbenchKeys
 
 	mu     sync.Mutex
 	busy   bool
@@ -59,14 +63,20 @@ func newLocalAuditRunner(jobs *auditJobStore, cfg Config, console *llmConsole) *
 	if abs, err := filepath.Abs(root); err == nil {
 		root = abs
 	}
+	filesDir := filepath.Join(root, "audit-files")
 	return &localAuditRunner{
 		jobs:     jobs,
 		engine:   codeaudit.DefaultEngine(),
 		binary:   codeaudit.DefaultBinaryConfig(),
 		console:  console,
 		workRoot: root,
-		files:    newAuditFileStore(filepath.Join(root, "audit-files")),
-		auditFn:  codeaudit.GenerateAuditReport,
+		files:    newAuditFileStore(filesDir),
+		// The pair lives beside the file area it opens. A workbench with no
+		// writable upload directory still constructs: ready() then reports false
+		// and the submit handler refuses with a clear message instead of
+		// auditing plaintext.
+		keys:    newWorkbenchKeys(filesDir),
+		auditFn: codeaudit.GenerateAuditReport,
 	}
 }
 
@@ -198,10 +208,11 @@ func (r *localAuditRunner) llmConfig() (codeaudit.LLMConfig, codeaudit.LLMClient
 // start runs one audit in the background. The caller has already taken the
 // runner slot and recorded the pending job; ownership of both moves here.
 //
-// workDir is the submission's temporary directory: archivePath is the uploaded
-// archive inside it, and the extracted tree goes to workDir/src. Success and
-// failure both remove workDir, so a refused audit leaves nothing behind.
-func (r *localAuditRunner) start(workDir, archivePath, requestID, taskID string) {
+// workDir is the submission's temporary directory: archivePath is the sealed
+// archive inside it, dataKeyCipher is the SM2 envelope over its SM4 key, and
+// the extracted tree goes to workDir/src. Success and failure both remove
+// workDir, so a refused audit leaves nothing behind.
+func (r *localAuditRunner) start(workDir, archivePath, dataKeyCipher, requestID, taskID string) {
 	r.mu.Lock()
 	ctx, cancel := context.WithCancel(context.Background())
 	r.cancel = cancel
@@ -212,18 +223,32 @@ func (r *localAuditRunner) start(workDir, archivePath, requestID, taskID string)
 		defer r.release()
 		defer os.RemoveAll(workDir)
 
-		r.run(ctx, workDir, archivePath, requestID, taskID)
+		r.run(ctx, workDir, archivePath, dataKeyCipher, requestID, taskID)
 	}()
 }
 
-func (r *localAuditRunner) run(ctx context.Context, workDir, archivePath, requestID, taskID string) {
-	// receive covers the handler's own work: the multipart part is already on
-	// disk and sniffed as an archive by the time this runs.
+func (r *localAuditRunner) run(ctx context.Context, workDir, archivePath, dataKeyCipher, requestID, taskID string) {
+	// receive covers the handler's own work: the archive is sealed and staged by
+	// the time this runs.
 	r.jobs.setStage(localAuditInstanceKey, requestID, "receive", auditStepDone)
 	r.jobs.setStage(localAuditInstanceKey, requestID, "extract", auditStepActive)
 
+	// Opening the envelope is part of extract: same step, same failure handling,
+	// because a key that does not fit the ciphertext is an ingress failure, not
+	// an audit failure.
+	plainPath := archivePath
+	if dataKeyCipher != "" {
+		plainPath = filepath.Join(workDir, "package.plain")
+		if _, err := r.keys.openFile(archivePath, plainPath, dataKeyCipher); err != nil {
+			reason := "解封审计包失败: " + err.Error()
+			log.Printf("local audit %s: %s", requestID, reason)
+			r.jobs.failAt(localAuditInstanceKey, requestID, "extract", reason)
+			return
+		}
+	}
+
 	srcDir := filepath.Join(workDir, "src")
-	if err := resource.ExtractArchiveToDir(srcDir, archivePath); err != nil {
+	if err := resource.ExtractArchiveToDir(srcDir, plainPath); err != nil {
 		reason := "解压归档失败: " + err.Error()
 		log.Printf("local audit %s: %s", requestID, reason)
 		r.jobs.failAt(localAuditInstanceKey, requestID, "extract", reason)

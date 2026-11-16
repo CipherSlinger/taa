@@ -14,7 +14,6 @@
 
   // ── Constants ──
   const USER_KEY = 'pm.audit.user';             // localStorage: remembered username only
-  const DOCKER_KEY = 'pm.audit.dockerId';       // localStorage: last selected instance
   const TAB_KEY = 'pm.audit.tab';               // sessionStorage: last active tab
   const POLL_MS = 5000;                         // job list + gateway status cadence
   const SUBMIT_POLL_MS = 1000;                  // post-submit job discovery cadence
@@ -66,7 +65,7 @@
     // Instances
     dockerId: '',
     instances: [],
-    instanceSignature: '',
+    keyFingerprint: '',
     publicKeys: {},
 
     // Jobs and findings
@@ -879,93 +878,19 @@
     syncPoller(false);
   }
 
-  // ── Instance selection ──
-  function instanceKind(kind) {
-    if (kind === 'tee') return 'TEE';
-    if (kind === 'fhe') return 'FHE';
-    return '未知';
-  }
-
-  function fillInstanceSelect(list, defaultId) {
-    const sel = $('auditInstanceSelect');
-    if (!sel) return;
-
-    const signature = list
-      .map((item) => (item.dockerId || '') + '|' + (item.kind || '') + '|' + (item.accepted ? '1' : '0'))
-      .join(',') + '#' + (defaultId || '');
-
-    if (signature !== state.instanceSignature) {
-      state.instanceSignature = signature;
-      const previous = sel.value || state.dockerId;
-      sel.replaceChildren();
-      if (!list.length) {
-        const opt = document.createElement('option');
-        opt.value = '';
-        opt.textContent = '（暂无已注册实例）';
-        sel.appendChild(opt);
-      } else {
-        list.forEach((item) => {
-          const id = item.dockerId || '';
-          if (!id) return;
-          const opt = document.createElement('option');
-          opt.value = id;
-          opt.textContent = instanceKind(item.kind) + ' · ' + shortId(id);
-          opt.title = id;
-          sel.appendChild(opt);
-        });
-      }
-      if (previous && list.some((item) => item.dockerId === previous)) {
-        sel.value = previous;
-      } else if (defaultId && list.some((item) => item.dockerId === defaultId)) {
-        sel.value = defaultId;
-      }
-    }
-    if (!sel.value && sel.options.length && sel.options[0].value) sel.value = sel.options[0].value;
-    state.dockerId = sel.value || '';
-    updateEndpointDisplay();
-  }
-
-  async function loadInstances() {
-    try {
-      const res = await requestJSON('/api/instances', { timeoutMs: 10000 });
-      if (!res.ok) return;
-      const payload = unwrap(res.data) || {};
-      const list = Array.isArray(payload.instances) ? payload.instances : [];
-      state.instances = list;
-      const stored = storeGet(localStorage, DOCKER_KEY) || '';
-      fillInstanceSelect(list, payload.defaultDockerId || stored || '');
-      if (state.dockerId) storeSet(localStorage, DOCKER_KEY, state.dockerId);
-    } catch (err) {
-      if (err.unauthorized) return;
-      // Transient: the selector keeps its last state.
-    }
+  // ── Engine identity ──
+  // The workbench has one engine, running in this process. There is nothing to
+  // choose between, so the top bar names the engine instead of offering a list
+  // of one. The server ignores ?dockerId=, which keeps a value remembered by an
+  // older build harmless.
+  function loadInstances() {
+    state.instances = [{ dockerId: 'local', kind: 'local', address: '进程内' }];
+    state.dockerId = 'local';
   }
 
   function updateEndpointDisplay() {
-    const current = state.instances.find((item) => item.dockerId === state.dockerId);
-    let address = current ? (current.taaTarget || current.address || '') : '';
-    if (!address && typeof getTaaAddr === 'function') address = getTaaAddr();
-    setText('auditEndpointValue', address || '—');
+    setText('auditEndpointValue', '控制台进程内');
   }
-
-  async function onInstanceChanged() {
-    const sel = $('auditInstanceSelect');
-    state.dockerId = sel ? sel.value : '';
-    if (state.dockerId) storeSet(localStorage, DOCKER_KEY, state.dockerId);
-    updateEndpointDisplay();
-
-    state.selectedJobId = '';
-    state.currentJob = null;
-    state.findings = [];
-    const jobSelect = $('auditFindingsJobSelect');
-    if (jobSelect) delete jobSelect.dataset.sig;
-
-    await refreshJobs(false);
-    if (state.view === 'findings') await refreshFindings(false);
-    if (state.view === 'engine') await refreshEngine();
-    if (state.view === 'settings') await refreshSettings(false);
-  }
-
 
   // ── Jobs ──
   async function refreshJobs(silent) {
@@ -1178,8 +1103,8 @@
   // stepLabel names the step a pending job is on, using the server's `stage`.
   function stepLabel(key) {
     switch (key) {
-      case 'receive': return '接收审计包…';
-      case 'extract': return '解压归档…';
+      case 'receive': return '接收并加密…';
+      case 'extract': return '解封并解压…';
       case 'static': return '静态扫描…';
       case 'binary': return '二进制检查…';
       case 'ai': return 'AI 判定…';
@@ -1357,6 +1282,9 @@
   function renderStepper(job) {
     const host = $('auditStepper');
     if (!host) return;
+    // A new run starts with no submission of its own yet: the rail's cipher row
+    // must not keep the previous run's fingerprint.
+    if (!job) setText('auditRunCipher', 'SM2 + SM4-GCM');
     const steps = host.querySelectorAll('.audit-stepper-step');
     if (!steps.length) return;
 
@@ -1441,7 +1369,7 @@
     if (clearBtn) clearBtn.style.display = '';
     if (drop) drop.classList.add('has-file');
     setText('auditDropTitle', '拖拽其他归档到此，或点击更换');
-    setHint('auditSubmitHint', true, '已选择 ' + picked.name + '，点击「上传并启动审计」开始。');
+    setHint('auditSubmitHint', true, '已选择 ' + picked.name + '，点击「加密并启动审计」开始。');
   }
 
   function hideChosen() {
@@ -1454,7 +1382,7 @@
     setText('auditDropTitle', '拖拽文件到此处，或点击选择');
     setText('auditFileName', '');
     setText('auditFileSize', '');
-    setText('auditFileTypeText', '在本机解压后审计');
+    setText('auditFileTypeText', '上传即加密');
   }
 
   function setChosenFile(file) {
@@ -1746,9 +1674,9 @@
     state.requestId = requestId;
 
     showUploadProgress(true);
-    setUploadProgress(stored ? 0.9 : 0, stored ? '正在启动本地审计…' : '正在上传文件…');
+    setUploadProgress(stored ? 0.9 : 0, stored ? '正在启动本地审计…' : '正在上传并加密…');
     renderStepper(null);
-    setHint('auditSubmitHint', true, stored ? '正在复用文件区域中的归档…' : '正在上传明文归档…');
+    setHint('auditSubmitHint', true, stored ? '正在复用文件区域中的密文归档…' : '正在加密上传，数据密钥仅由本地私钥解出…');
     setText('auditRunFile', picked.name);
 
     try {
@@ -1778,10 +1706,17 @@
         throw new Error(message);
       }
 
-      setUploadProgress(1, '已接收，正在本机执行审计…');
+      setUploadProgress(1, '已加密接收，正在本机执行审计…');
       // The button stays disabled until the run settles, so its label should
       // say what is actually happening instead of offering a second start.
       setText('auditSubmitLabel', '审计执行中…');
+      // The rail names the scheme and the pair that sealed this submission.
+      // The fingerprint is a digest of the public key: enough to tell two runs
+      // apart, and no key material ever reaches the page.
+      const enc = data.encryption || {};
+      const fingerprint = enc.keyFingerprint ? String(enc.keyFingerprint) : '';
+      state.keyFingerprint = fingerprint;
+      setText('auditRunCipher', fingerprint ? 'SM2 + SM4-GCM · ' + fingerprint : 'SM2 + SM4-GCM');
 
       const pending = optimisticPendingJob(data, picked);
       state.jobs = [pending].concat(state.jobs.filter((job) => job.requestId !== pending.requestId));
@@ -1807,7 +1742,7 @@
       toast({ type: 'error', title: '审计任务提交失败', message: reason });
     } finally {
       state.submitBusy = false;
-      setText('auditSubmitLabel', '上传并启动审计');
+      setText('auditSubmitLabel', '加密并启动审计');
       if (btn) btn.disabled = false;
     }
   }
@@ -3005,6 +2940,7 @@
     }
 
     updateEndpointDisplay();
+    setText('auditSettingsKeyFP', state.keyFingerprint ? '· ' + state.keyFingerprint : '');
     setText('auditSettingsHint', SETTINGS_HINT);
   }
 
@@ -3332,11 +3268,6 @@
       await loadInstances();
       await refreshVisibleView();
     });
-
-    const instance = $('auditInstanceSelect');
-    if (instance) {
-      instance.addEventListener('change', onInstanceChanged);
-    }
   }
 
   function wireVisibility() {
