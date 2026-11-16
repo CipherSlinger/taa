@@ -1960,6 +1960,49 @@ body[data-mode="fhe"] .header-badge {
   margin-top: 2px;
 }
 
+.api-tester-keys-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin: 18px 0 10px;
+  padding-top: 16px;
+  border-top: 1px dashed var(--line);
+}
+
+.api-tester-section-label {
+  font-size: 12.5px;
+  font-weight: 650;
+  color: var(--muted);
+  letter-spacing: .02em;
+}
+
+.api-tester-key {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 11.5px;
+  line-height: 1.5;
+}
+
+textarea.api-tester-key {
+  resize: vertical;
+  min-height: 64px;
+  /* The shared textarea rule sets white-space: pre. The hex public key is one
+     unbroken token, so it would scroll sideways and hide which end is being
+     edited; wrapping at any character keeps the whole key visible. */
+  white-space: pre-wrap;
+  word-break: break-all;
+  overflow-wrap: anywhere;
+}
+
+.api-tester-hint {
+  margin: 0;
+  align-self: end;
+  padding-bottom: 2px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.55;
+}
+
 .api-tester-row label {
   margin-bottom: 0;
 }

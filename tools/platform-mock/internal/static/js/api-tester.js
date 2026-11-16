@@ -1,14 +1,16 @@
 // ── API tester ──
 //
-// One dropdown, one editable body and one generated curl command. The command is
-// built from exactly what the console would send: same path, same JSON body, same
-// target address. Bodies are compacted with JSON.stringify so the copied command
-// stays a single line the shell can read.
+// One dropdown, one editable body and one generated curl command. TAA accepts
+// only {dockerId?, cipher, sign}: the business JSON is SM2-sealed and signed,
+// so a plaintext body cannot succeed. The browser cannot run SM2, so the mock
+// seals the body through /api/crypto/envelope and the command carries the
+// finished envelope. The keys doing the sealing are shown and editable, and
+// the request goes straight to the instance's own address - through the mock's
+// /taa proxy the envelope would be sealed a second time.
 //
-// Only platform→TAA business routes are listed. TAA seals every one of them, and
-// the mock's /taa proxy is what makes a plaintext curl possible; the callbacks
-// TAA sends (register, report*, *Log) are sealed envelopes the mock opens with
-// the instance's registered key, so a hand-written body cannot reproduce them.
+// Only platform→TAA business routes are listed. The callbacks TAA sends
+// (register, report*, *Log) are sealed envelopes the mock opens with the
+// instance's registered key, so a hand-written body cannot reproduce them.
 
 const API_TESTER_ENDPOINTS = [
   {
@@ -85,16 +87,22 @@ function apiTesterSelected() {
   return API_TESTER_ENDPOINTS.find((e) => e.path === sel.value) || API_TESTER_ENDPOINTS[0];
 }
 
-// The target address follows the console's target until the operator edits the
-// field; after that it is theirs and the async resolution must not overwrite it.
+// The target address follows the selected instance's direct address until the
+// operator edits the field; after that it is theirs and the async resolution
+// must not overwrite it.
 let apiTesterBaseAuto = true;
 
+// apiTesterDefaultBase is the instance's own TAA address. The console calls TAA
+// through the mock's /taa proxy when one is registered, but a sealed body must
+// not go through it: the proxy seals again, and TAA then opens a double
+// envelope. Falls back to the page host, then to the loopback default.
 function apiTesterDefaultBase() {
-  // The console calls TAA through this mock's /taa proxy whenever an instance is
-  // registered. With none registered there is no address to follow, and the
-  // proxy path is still the only one a plaintext command can use.
-  const target = typeof getTaaAddr === 'function' ? getTaaAddr() : '';
-  return target || location.origin + '/taa';
+  const id = typeof currentDockerId === 'function' ? currentDockerId() : '';
+  const direct = id && typeof instanceTargets !== 'undefined' ? instanceTargets[id] : '';
+  if (direct) return direct.replace(/\/+$/, '');
+  const current = typeof getTaaAddr === 'function' ? getTaaAddr() : '';
+  if (current && !/\/taa$/.test(current)) return current;
+  return typeof defaultTaaAddr === 'function' ? defaultTaaAddr() : location.origin;
 }
 
 function apiTesterOnBaseInput() {
@@ -107,19 +115,12 @@ function apiTesterBaseValue() {
   return (input && input.value ? input.value : '').trim().replace(/\/+$/, '');
 }
 
-// apiTesterUsingProxy reports whether the command goes through the mock's /taa
-// proxy. That path seals plaintext for TAA and is the only one a copied command
-// can use; a direct TAA address would need an envelope the shell cannot build.
 function apiTesterUsingProxy() {
   return /\/taa$/.test(apiTesterBaseValue());
 }
 
 function apiTesterUrl() {
-  const url = apiTesterBaseValue() + apiTesterSelected().path;
-  if (!apiTesterUsingProxy()) return url;
-  const dockerId = typeof currentDockerId === 'function' ? currentDockerId() : '';
-  if (!dockerId) return url;
-  return url + '?dockerId=' + encodeURIComponent(dockerId);
+  return apiTesterBaseValue() + apiTesterSelected().path;
 }
 
 // shellQuote wraps a value in single quotes, closing and reopening around any
@@ -129,42 +130,214 @@ function shellQuote(value) {
   return "'" + String(value).replace(/'/g, "'\\''") + "'";
 }
 
-function apiTesterCurlText() {
+// ── Envelope key boxes ──
+//
+// Both boxes are prefilled from the mock's own key material. An empty side is
+// filled in by the server from the same keystore, so clearing one box does not
+// break the command; clearing both falls back to the mock's registered key,
+// which is exactly what the console itself uses.
+let apiTesterKeysAuto = true;
+
+// apiTesterDockerId is the instance the card is sealing for. The console's own
+// selection resolves asynchronously, so the card reads the instance list once at
+// startup and remembers the default; afterwards the console's selection wins.
+let apiTesterDockerId = '';
+
+function apiTesterSelectedDockerId() {
+  const id = typeof currentDockerId === 'function' ? currentDockerId() : '';
+  return id || apiTesterDockerId;
+}
+
+function apiTesterKeyValue(id) {
+  const el = document.getElementById(id);
+  return el ? el.value : '';
+}
+
+function apiTesterOnKeyInput() {
+  apiTesterKeysAuto = false;
+  apiTesterScheduleSeal();
+}
+
+function apiTesterApplyKeys(result) {
+  const priv = document.getElementById('apiTesterPlatformPriv');
+  const pub = document.getElementById('apiTesterTaaPub');
+  const id = document.getElementById('apiTesterIdentity');
+  if (priv) priv.value = result.platformPrivateKey || '';
+  if (pub) pub.value = result.taaPublicKeyHex || '';
+  if (id) id.value = result.identity || '';
+  apiTesterKeysAuto = true;
+}
+
+async function apiTesterLoadKeys() {
+  const id = apiTesterSelectedDockerId();
+  const url = id ? '/api/crypto/envelope?dockerId=' + encodeURIComponent(id) : '/api/crypto/envelope';
+  try {
+    const res = await fetch(url, { cache: 'no-store' });
+    const payload = await res.json();
+    if (!payload || payload.error !== 0) return;
+    apiTesterApplyKeys(payload.result || {});
+    apiTesterScheduleSeal();
+  } catch (_) {
+    // Leave whatever is in the boxes; the seal call reports the real problem.
+  }
+}
+
+function apiTesterReloadKeys() {
+  apiTesterLoadKeys();
+}
+
+// apiTesterBootstrap resolves the instance this card seals for without waiting
+// for the console's 5s poll. Both the direct target and the TAA key belong to
+// that instance, and until the first poll finishes the console has no selection
+// at all - sealing then would use the legacy key and target the page host.
+async function apiTesterBootstrap() {
+  try {
+    const res = await fetch('/api/instances', { cache: 'no-store' });
+    const payload = await res.json();
+    const result = (payload && payload.result) || {};
+    const list = result.instances || [];
+    list.forEach((item) => {
+      if (item.dockerId) instanceTargets[item.dockerId] = item.taaTarget || '';
+    });
+    const id = result.defaultDockerId || (list[0] && list[0].dockerId) || '';
+    if (id) apiTesterDockerId = id;
+    if (id && apiTesterBaseAuto) {
+      const direct = (instanceTargets[id] || '').replace(/\/+$/, '');
+      const input = document.getElementById('apiTesterBase');
+      if (direct && input) input.value = direct;
+    }
+  } catch (_) {
+    // The console's own poll is the fallback; leave the page-host default.
+  }
+  if (apiTesterKeysAuto) apiTesterLoadKeys();
+}
+
+// ── Sealing ──
+//
+// Sealing is asynchronous and runs on every edit, so its result can arrive
+// after newer input. A sequence number drops stale replies; a short debounce
+// keeps one keystroke from queueing a request.
+let apiTesterSealSeq = 0;
+let apiTesterSealTimer = null;
+let apiTesterSealed = { pending: false, body: '', error: '', usedKeystore: false, partial: false };
+
+// apiTesterOnBodyInput runs on every keystroke: the old envelope no longer
+// matches the visible body, so it is dropped at once (copy goes unavailable)
+// and a debounced seal rebuilds it.
+function apiTesterOnBodyInput() {
+  apiTesterSealed = { pending: true, body: '', error: '', usedKeystore: false, partial: false };
+  apiTesterRender();
+  apiTesterScheduleSeal();
+}
+
+function apiTesterScheduleSeal() {
+  if (apiTesterSealTimer) clearTimeout(apiTesterSealTimer);
+  apiTesterSealTimer = setTimeout(apiTesterSeal, 200);
+}
+
+async function apiTesterSeal() {
+  apiTesterSealTimer = null;
   const bodyEl = document.getElementById('apiTesterBody');
   const raw = bodyEl ? bodyEl.value : '';
-  let body = '{}';
-  let bodyError = false;
-  if (raw.trim() !== '') {
-    try {
-      body = JSON.stringify(JSON.parse(raw));
-    } catch (_) {
-      body = raw.trim();
-      bodyError = true;
+  const seq = ++apiTesterSealSeq;
+
+  if (raw.trim() === '') {
+    apiTesterSealed = { pending: false, body: '', error: '请求体为空', usedKeystore: false, partial: false };
+    apiTesterRender();
+    return;
+  }
+  let plaintext;
+  try {
+    plaintext = JSON.stringify(JSON.parse(raw));
+  } catch (_) {
+    apiTesterSealed = { pending: false, body: '', error: '请求体不是合法 JSON', usedKeystore: false, partial: false };
+    apiTesterRender();
+    return;
+  }
+
+  apiTesterSealed = { pending: true, body: '', error: '', usedKeystore: false, partial: false };
+  apiTesterRender();
+
+  const dockerId = apiTesterSelectedDockerId();
+  const request = {
+    dockerId: dockerId,
+    plaintext: plaintext,
+    platformPrivateKey: apiTesterKeyValue('apiTesterPlatformPriv').trim(),
+    taaPublicKeyHex: apiTesterKeyValue('apiTesterTaaPub').trim(),
+    identity: apiTesterKeyValue('apiTesterIdentity'),
+  };
+  try {
+    const res = await fetch('/api/crypto/envelope', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(request),
+    });
+    const payload = await res.json();
+    if (seq !== apiTesterSealSeq) return;
+    if (!payload || payload.error !== 0) {
+      apiTesterSealed = { pending: false, body: '', error: (payload && payload.msg) || ('HTTP ' + res.status), usedKeystore: false, partial: false };
+    } else {
+      const result = payload.result || {};
+      // One empty box plus one filled box means the server completed the pair
+      // from the keystore; the note must say so rather than claim both keys
+      // came from the form.
+      const partial = !request.platformPrivateKey !== !request.taaPublicKeyHex;
+      apiTesterSealed = { pending: false, body: result.body || '', error: '', usedKeystore: !!result.usedKeystore, partial: partial };
     }
+  } catch (err) {
+    if (seq !== apiTesterSealSeq) return;
+    apiTesterSealed = { pending: false, body: '', error: '封装信封失败: ' + err.message, usedKeystore: false, partial: false };
+  }
+  apiTesterRender();
+}
+
+function apiTesterCurlText() {
+  if (!apiTesterSealed.body) {
+    const why = apiTesterSealed.pending ? '正在封装信封…' : '无法生成信封：' + (apiTesterSealed.error || '未知原因');
+    return { text: '# ' + why, sealed: false };
   }
   const lines = [
     "curl -sS -X POST '" + apiTesterUrl() + "'",
     "  -H 'Content-Type: application/json'",
-    '  --data-raw ' + shellQuote(body),
+    '  --data-raw ' + shellQuote(apiTesterSealed.body),
   ];
-  return { text: lines.join(' \\\n'), bodyError };
+  return { text: lines.join(' \\\n'), sealed: true };
 }
 
 function apiTesterRender() {
   const curl = document.getElementById('apiTesterCurl');
   if (!curl) return;
-  const { text, bodyError } = apiTesterCurlText();
+  const { text, sealed } = apiTesterCurlText();
   curl.textContent = text;
+
+  const copyBtn = document.getElementById('apiTesterCopyBtn');
+  if (copyBtn) {
+    copyBtn.disabled = !sealed;
+    copyBtn.title = sealed ? '' : '信封尚未生成';
+  }
 
   const ep = apiTesterSelected();
   const note = document.getElementById('apiTesterNote');
   if (note) {
-    const seal = apiTesterUsingProxy()
-      ? '当前经 mock 的 /taa 反向代理：代理用该实例注册的 SM2 公钥把明文请求封装成信封，响应也会解封。'
-      : '当前是直连地址：TAA 只接受 SM2/SM4 信封，明文请求会被拒绝（请求缺少 cipher/sign）。改成 ' + location.origin + '/taa 才能直接跑。';
-    const bodyState = bodyError ? ' 请求体不是合法 JSON，已按原样嵌入。' : '';
-    note.textContent = ep.note + ' ' + seal + bodyState;
-    note.classList.toggle('is-warn', bodyError || !apiTesterUsingProxy());
+    const parts = [ep.note];
+    if (sealed) {
+      if (apiTesterSealed.usedKeystore) {
+        parts.push('请求体已用 mock 注册密钥封装成信封（cipher + sign）。');
+      } else if (apiTesterSealed.partial) {
+        parts.push('请求体已封装成信封（cipher + sign）；留空的一侧由 mock 现有密钥补齐。');
+      } else {
+        parts.push('请求体已用上方填写的平台私钥与 TAA 公钥封装成信封（cipher + sign）。');
+      }
+      if (apiTesterUsingProxy()) {
+        parts.push('目标地址是 mock 的 /taa 代理，它会再封装一次——请改成该实例的直连地址。');
+      }
+    } else if (apiTesterSealed.pending) {
+      parts.push('正在封装信封…');
+    } else {
+      parts.push(apiTesterSealed.error || '');
+    }
+    note.textContent = parts.filter(Boolean).join(' ');
+    note.classList.toggle('is-warn', !sealed || apiTesterUsingProxy());
   }
 }
 
@@ -172,14 +345,14 @@ function apiTesterSelectEndpoint() {
   const ep = apiTesterSelected();
   const body = document.getElementById('apiTesterBody');
   if (body) body.value = JSON.stringify(ep.body(), null, 2);
-  apiTesterRender();
+  apiTesterScheduleSeal();
 }
 
 function apiTesterResetBody() {
   apiTesterSelectEndpoint();
 }
 
-function apiTesterUseConsoleTarget() {
+function apiTesterUseDirectTarget() {
   const input = document.getElementById('apiTesterBase');
   if (input) input.value = apiTesterDefaultBase();
   apiTesterBaseAuto = true;
@@ -188,7 +361,7 @@ function apiTesterUseConsoleTarget() {
 
 async function apiTesterCopy() {
   const curl = document.getElementById('apiTesterCurl');
-  if (!curl) return;
+  if (!curl || !apiTesterSealed.body) return;
   const text = curl.textContent || '';
   try {
     await navigator.clipboard.writeText(text);
@@ -228,23 +401,40 @@ function apiTesterInit() {
   const base = document.getElementById('apiTesterBase');
   if (base && !base.value) base.value = apiTesterDefaultBase();
   apiTesterSelectEndpoint();
+  apiTesterBootstrap();
 
   // The console's target resolves after its first status poll, and it changes
   // when another instance is selected. Follow it while the field is untouched.
-  window.addEventListener('taa-addr-change', (event) => {
-    if (!apiTesterBaseAuto) return;
-    const input = document.getElementById('apiTesterBase');
-    if (!input) return;
-    input.value = (event.detail && event.detail.addr) || apiTesterDefaultBase();
+  // Only a change of the resolved direct target reloads the keys: the event
+  // fires on every poll, and the keys only move when an instance registers.
+  let lastAutoBase = apiTesterDefaultBase();
+  window.addEventListener('taa-addr-change', () => {
+    const next = apiTesterDefaultBase();
+    const moved = next !== lastAutoBase;
+    lastAutoBase = next;
+    if (apiTesterBaseAuto) {
+      const input = document.getElementById('apiTesterBase');
+      if (input) input.value = next;
+    }
+    if (moved && apiTesterKeysAuto) apiTesterLoadKeys();
     apiTesterRender();
   });
 
-  // The generated URL carries the selected instance's dockerId, so a selection
-  // change has to regenerate the command.
+  // The envelope is sealed for one instance: its dockerId selects the
+  // registered TAA key, so a selection change reloads the keys and reseals.
+  // Deferred one turn because the selector's own handler updates
+  // currentDockerId, and listener order is not guaranteed.
   const instance = document.getElementById('instanceSelect');
   if (instance) instance.addEventListener('change', () => {
-    if (apiTesterBaseAuto && base) base.value = apiTesterDefaultBase();
-    apiTesterRender();
+    setTimeout(() => {
+      apiTesterDockerId = instance.value;
+      if (apiTesterBaseAuto && base) base.value = apiTesterDefaultBase();
+      if (apiTesterKeysAuto) {
+        apiTesterLoadKeys();
+      } else {
+        apiTesterScheduleSeal();
+      }
+    }, 0);
   });
 }
 

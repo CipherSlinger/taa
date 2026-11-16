@@ -98,6 +98,16 @@ TAA seals every platform message, so the mock does the same and nothing is sent 
   restarted. Deleting `platform-key.json` has the same effect (a fresh pair is generated
   on the next start).
 
+- **Sealing endpoint for hand-run commands**: `GET /api/crypto/envelope?dockerId=...` returns
+  the key material in effect — `platformPrivateKey` (PEM), `platformPublicKeyHex`,
+  `taaPublicKeyHex` (the selected instance's registered key, empty until it registers) and
+  `identity`. `POST` takes `{dockerId?, plaintext, platformPrivateKey?, taaPublicKeyHex?,
+  identity?}` and returns `{body, size, identity, usedKeystore}`, where `body` is the compact
+  `{cipher, sign}` JSON to post at TAA. `plaintext` may be a JSON string (used verbatim) or any
+  other JSON value (compacted). An empty key box is filled from the keystore; both empty means
+  the mock's registered pair. This is what the console's API tester uses, so a copied command
+  is the same envelope the console would send.
+
 ## Web Console
 
 The platform mock provides an embedded single-page Web console accessible by opening `http://localhost:8080` (or the configured `-addr`) in a browser:
@@ -107,14 +117,18 @@ The platform mock provides an embedded single-page Web console accessible by ope
 - **Model Ingress & Audit**: Upload model packages, inspect static AST rule violations, and observe Ollama LLM semantic verification outcomes. The console shows the platform SM2 key pair the mock generated and persisted at startup (the same pair its envelopes use), and the regenerate button rotates that pair and overwrites the key file; loading the page never rotates it.
 - **Real-Time Progress & Logs**: Displays real-time progress bars, streamed terminal logs (`modelLog`), and TAA daemon operational logs (`taaLog`).
 - **Execution Control**: Send graceful stop commands (`/v1/taa/stopTraining`) to interrupt running workloads.
-- **API Tester**: Pick a TAA business endpoint from a dropdown, edit its example JSON body and
-  target address, and the card generates a ready-to-paste `curl` command with a copy button.
-  The address follows the console's own target (the `/taa` proxy once an instance has
-  registered) until it is edited by hand; an explicit 控制台当前地址 button restores that
-  target. The note under the body says which path is in force: TAA only accepts SM2/SM4
-  envelopes, so a direct address is flagged as rejected with `请求缺少 cipher/sign`, while the
-  proxy seals the plaintext command. Callbacks TAA sends to the platform are sealed envelopes
-  and are not in the list, because a hand-written body cannot reproduce them.
+- **API Tester**: Pick a TAA business endpoint from a dropdown, edit its example JSON body,
+  and the card generates a ready-to-paste `curl` command with a copy button. TAA accepts only
+  the `{dockerId?, cipher, sign}` envelope, so the mock seals the body through
+  `POST /api/crypto/envelope` and the command carries the finished envelope; the command
+  targets the instance's own direct address, because through the mock's `/taa` proxy it would
+  be sealed a second time. The 信封密钥 section shows the platform private key and the selected
+  instance's registered TAA public key (with the SM2 identity), both editable; an empty side is
+  filled from the mock's keystore, and clearing both uses the mock's registered pair — the same
+  one the console sends with. The address follows the selected instance's direct address
+  until edited; 实例直连地址 restores it, and a `/taa` target left in the field is flagged,
+  not silently corrected. Callbacks TAA sends to the platform are sealed envelopes and are not in
+  the list, because a hand-written body cannot reproduce them.
 - **Instance-Kind Panels**: the console shows the TEE or FHE panel set for the instance
   selected in the 平台注册 card; there is no separate mode switch. The registration carries
   no explicit server type, so `GET /api/instances` derives `kind` from the report (empty
@@ -211,9 +225,10 @@ flag: instance identity is the registration's `dockerId`.
   (a single fixed address) there.
 - **Selecting an instance**: instance-scoped console endpoints (`/api/dashboard/status`, the
   register/report/progress/modelLog/taaLog `*/status` and `*/reset` routes, `/api/taa/*`,
-  `/api/upload`, `/api/taa-target`, `/api/fhe/submit`) accept `?dockerId=`; absent means the
-  most recently accepted registration. Global endpoints (`/api/instances`, `/api/uploads*`,
-  `/api/crypto/*`, `/api/request-logs/*`) ignore it. `GET /api/instances` returns the instance
+  `/api/upload`, `/api/taa-target`, `/api/fhe/submit`, `/api/crypto/envelope`) accept
+  `?dockerId=`; absent means the most recently accepted registration. Global endpoints
+  (`/api/instances`, `/api/uploads*`, `/api/crypto/generate-key`, `/api/crypto/decrypt`,
+  `/api/request-logs/*`) ignore it. `GET /api/instances` returns the instance
   list, each instance's derived `kind` (`tee` or `fhe`) and `defaultDockerId`. Selecting an
   instance also switches the console panels to that kind.
 - **Removing a stale instance**: `POST /api/instances/delete?dockerId=...` deletes that
@@ -236,6 +251,7 @@ tools/platform-mock/
 │   ├── server_test.go           # HTTP routing, validation, and handler unit tests
 │   ├── handlers_api.go          # Platform mock UI API endpoints (/api/*)
 │   ├── handlers_crypto.go       # Cryptographic utilities and key validation
+│   ├── envelope_api.go          # Envelope sealing for hand-run commands (/api/crypto/envelope)
 │   ├── handlers_taa.go          # TAA callback endpoints (/api/register, /v1/taa/*)
 │   ├── handlers_upload.go       # File upload and static asset serving (/files/*)
 │   ├── audit_jobs.go            # In-memory audit job ring with per-step stage states

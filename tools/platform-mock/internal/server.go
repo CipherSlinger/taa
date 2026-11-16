@@ -209,6 +209,7 @@ func NewServer(cfg Config) *Server {
 	mux.HandleFunc("/api/fhe/submit", fheSubmitHandler(cfg, mgr))
 	mux.HandleFunc("/api/crypto/generate-key", cryptoGenerateKeyHandler)
 	mux.HandleFunc("/api/crypto/decrypt", cryptoDecryptHandler)
+	mux.HandleFunc("/api/crypto/envelope", cryptoEnvelopeHandler)
 	mux.HandleFunc("/api/request-logs/status", requestLogsStatusHandler)
 	mux.HandleFunc("/api/request-logs/reset", requestLogsResetHandler)
 	mux.HandleFunc("/api/taa/status", taaStatusHandler(mgr))

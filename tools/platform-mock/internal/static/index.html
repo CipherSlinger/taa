@@ -440,10 +440,10 @@
     <div class="card-head">
       <div>
         <h2>接口测试</h2>
-        <div class="muted" style="font-size:12.5px; margin-top:4px;">选一个接口，生成可直接粘贴运行的 curl 命令</div>
+        <div class="muted" style="font-size:12.5px; margin-top:4px;">选一个接口，生成已封装成 SM2 信封、可直接粘贴运行的 curl 命令</div>
       </div>
       <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
-        <button type="button" class="secondary btn-sm" onclick="apiTesterUseConsoleTarget()" title="恢复为控制台当前调用的地址">控制台当前地址</button>
+        <button type="button" class="secondary btn-sm" onclick="apiTesterUseDirectTarget()" title="恢复为所选实例的 TAA 直连地址（信封已封装，不能再经 mock 代理）">实例直连地址</button>
       </div>
     </div>
     <div class="api-tester-grid">
@@ -456,11 +456,32 @@
         <input id="apiTesterBase" spellcheck="false" autocomplete="off" oninput="apiTesterOnBaseInput()">
       </div>
     </div>
+    <div class="api-tester-keys-head">
+      <span class="api-tester-section-label">信封密钥</span>
+      <button type="button" class="secondary btn-sm" onclick="apiTesterReloadKeys()" title="重新读取 mock 当前的平台私钥、该实例注册的 TAA 公钥与 SM2 身份">从 mock 读取</button>
+    </div>
+    <div class="api-tester-grid">
+      <div>
+        <label for="apiTesterPlatformPriv">平台私钥（PEM）</label>
+        <textarea id="apiTesterPlatformPriv" rows="5" class="api-tester-key" spellcheck="false" autocomplete="off" oninput="apiTesterOnKeyInput()"></textarea>
+      </div>
+      <div>
+        <label for="apiTesterTaaPub">TAA 公钥（hex）</label>
+        <textarea id="apiTesterTaaPub" rows="3" class="api-tester-key" spellcheck="false" autocomplete="off" oninput="apiTesterOnKeyInput()"></textarea>
+      </div>
+    </div>
+    <div class="api-tester-grid">
+      <div>
+        <label for="apiTesterIdentity">SM2 身份 ID</label>
+        <input id="apiTesterIdentity" class="api-tester-key" spellcheck="false" autocomplete="off" oninput="apiTesterOnKeyInput()">
+      </div>
+      <p class="api-tester-hint">信封用平台私钥签名、TAA 公钥加密（04 开头的 X||Y hex）。留空一侧时由 mock 现有密钥补齐；两侧都留空则完全使用 mock 的注册密钥。</p>
+    </div>
     <div class="api-tester-row">
       <label for="apiTesterBody">请求体</label>
       <button type="button" class="secondary btn-sm" onclick="apiTesterResetBody()">重置示例</button>
     </div>
-    <textarea id="apiTesterBody" rows="7" spellcheck="false" autocomplete="off" oninput="apiTesterRender()"></textarea>
+    <textarea id="apiTesterBody" rows="7" spellcheck="false" autocomplete="off" oninput="apiTesterOnBodyInput()"></textarea>
     <p class="api-tester-note" id="apiTesterNote"></p>
     <div class="api-tester-row api-tester-curl-head">
       <span class="muted" style="font-size:12.5px; font-weight:650;">curl 命令</span>

@@ -51,6 +51,10 @@ let instanceListSignature = null;
 // registration. It is refreshed with the list; the console mode reads it on
 // selection so the panels follow the instance without another request.
 let instanceKinds = {};
+// instanceTargets maps dockerId to the direct TAA address that instance
+// reported. The API tester needs it because a sealed envelope must go straight
+// to TAA; through the mock's /taa proxy it would be sealed a second time.
+let instanceTargets = {};
 
 function instanceKindLabel(kind) {
   if (kind === 'tee') return 'TEE';
@@ -73,10 +77,11 @@ function applyInstanceList(list, defaultId) {
   // when the instance set, a kind or the default actually changed. The kind is
   // part of the signature because a re-registration can change it while the
   // dockerId stays the same.
-  const signature = list.map((item) => (item.dockerId || '') + '|' + (item.accepted ? '1' : '0') + '|' + (item.kind || '')).join(',') + '#' + (defaultId || '');
+  const signature = list.map((item) => (item.dockerId || '') + '|' + (item.accepted ? '1' : '0') + '|' + (item.kind || '') + '|' + (item.taaTarget || '')).join(',') + '#' + (defaultId || '');
   if (signature !== instanceListSignature) {
     instanceListSignature = signature;
     instanceKinds = {};
+    instanceTargets = {};
     const previous = sel.value || currentInstanceDockerId;
     sel.innerHTML = '';
     list.forEach((item) => {
@@ -86,7 +91,10 @@ function applyInstanceList(list, defaultId) {
       const kind = instanceKindLabel(item.kind);
       opt.textContent = (item.accepted ? name : name + ' (未注册)') + (kind ? ' · ' + kind : '');
       sel.appendChild(opt);
-      if (item.dockerId) instanceKinds[item.dockerId] = item.kind || '';
+      if (item.dockerId) {
+        instanceKinds[item.dockerId] = item.kind || '';
+        instanceTargets[item.dockerId] = item.taaTarget || '';
+      }
     });
     if (previous && list.some((item) => (item.dockerId || '') === previous)) {
       sel.value = previous;

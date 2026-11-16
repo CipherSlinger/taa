@@ -186,6 +186,34 @@ func (s *keystore) keyPEMs() (privatePEM, publicPEM, publicHex string, err error
 	return string(privBytes), string(pubBytes), hexValue, nil
 }
 
+// identityString is the SM2 identity the keystore seals and verifies with. The
+// console's envelope builder shows it because a deployment that overrides
+// PLATFORM_SM2_ID needs the same value on both sides, and the envelope cannot be
+// signed with a different one.
+func (s *keystore) identityString() string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return string(s.userID)
+}
+
+// taaPublicHexFor returns the registered TAA public key for dockerID in the
+// 04||X||Y hex form the envelope builder expects. An empty string means no key
+// is registered yet (or it cannot be encoded), which the caller reports as
+// "wait for registration" instead of attempting a seal that cannot verify.
+func (s *keystore) taaPublicHexFor(dockerID string) string {
+	s.mu.RLock()
+	pub := s.taaPubForLocked(dockerID)
+	s.mu.RUnlock()
+	if pub == nil {
+		return ""
+	}
+	hexValue, err := teecrypto.MarshalSM2PublicKeyHex(pub)
+	if err != nil {
+		return ""
+	}
+	return hexValue
+}
+
 // persistLocked writes the current state. Callers must hold mu.
 func (s *keystore) persistLocked() error {
 	if s.priv == nil || s.path == "" {
