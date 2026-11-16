@@ -12,6 +12,8 @@ import (
 	"strings"
 	"sync"
 
+	"gopkg.in/yaml.v3"
+
 	"taa/internal/codeaudit"
 )
 
@@ -68,10 +70,31 @@ type auditEngineFacts struct {
 	CommentSkipped bool     `json:"commentSkipped"`
 }
 
+// auditSemgrepRule is one rule Semgrep will load, as the workbench lists it.
+//
+// Severity, category and description are taken from the canonical TAA rule the
+// YAML's metadata.rule_family names, not from the YAML's own ERROR/WARNING and
+// message: the adapter stamps every finding with the canonical fields, so the
+// listed values are what a report will actually say. Rules that name no known
+// family keep their YAML values and are listed as-is.
+type auditSemgrepRule struct {
+	ID          string   `json:"id"`
+	Family      string   `json:"family,omitempty"`
+	Category    string   `json:"category"`
+	Severity    string   `json:"severity"`
+	Description string   `json:"description"`
+	Languages   []string `json:"languages,omitempty"`
+	File        string   `json:"file,omitempty"`
+}
+
 type auditRulesResponse struct {
 	Engine auditEngineFacts  `json:"engine"`
 	Rules  []auditRuleSpec   `json:"rules"`
 	Binary []auditBinaryRule `json:"binary"`
+	// Semgrep is the rule set the semgrep engine will load. It is populated
+	// only when semgrep is the engine in force; Rules stays the regex table so
+	// a fallback still has something to show.
+	Semgrep []auditSemgrepRule `json:"semgrep,omitempty"`
 }
 
 // auditRuleStore holds the rule set the next scan will use. It starts as the
@@ -195,6 +218,113 @@ func countRuleFiles(path string) int {
 		return nil
 	})
 	return count
+}
+
+// semgrepRuleDoc is the part of a Semgrep rule file the workbench reads. The
+// files only need id, languages, severity, message and the two metadata fields;
+// patterns are left to the CLI.
+type semgrepRuleDoc struct {
+	Rules []struct {
+		ID        string   `yaml:"id"`
+		Languages []string `yaml:"languages"`
+		Severity  string   `yaml:"severity"`
+		Message   string   `yaml:"message"`
+		Metadata  struct {
+			Category   string `yaml:"category"`
+			RuleFamily string `yaml:"rule_family"`
+		} `yaml:"metadata"`
+	} `yaml:"rules"`
+}
+
+// loadSemgrepRules lists the rules under rulesPath in the order Semgrep reads
+// them: YAML files sorted by path, then their declaration order. A file that
+// cannot be read or parsed is skipped rather than failing the card; the scan
+// itself is where a broken rule file must fail loudly, and it does.
+func loadSemgrepRules(rulesPath string) []auditSemgrepRule {
+	if rulesPath == "" {
+		return nil
+	}
+	info, err := os.Stat(rulesPath)
+	if err != nil {
+		return nil
+	}
+	var files []string
+	if info.IsDir() {
+		_ = filepath.WalkDir(rulesPath, func(path string, entry os.DirEntry, err error) error {
+			if err != nil || entry.IsDir() {
+				return nil
+			}
+			switch strings.ToLower(filepath.Ext(entry.Name())) {
+			case ".yml", ".yaml":
+				files = append(files, path)
+			}
+			return nil
+		})
+		sort.Strings(files)
+	} else {
+		files = []string{rulesPath}
+	}
+
+	canonical := make(map[string]codeaudit.Rule)
+	for _, rule := range codeaudit.DefaultRules() {
+		canonical[rule.ID] = rule
+	}
+
+	out := make([]auditSemgrepRule, 0, 128)
+	for _, file := range files {
+		data, err := os.ReadFile(file)
+		if err != nil {
+			continue
+		}
+		var doc semgrepRuleDoc
+		if err := yaml.Unmarshal(data, &doc); err != nil {
+			continue
+		}
+		rel, err := filepath.Rel(rulesPath, file)
+		if err != nil {
+			rel = filepath.Base(file)
+		}
+		for _, entry := range doc.Rules {
+			if entry.ID == "" {
+				continue
+			}
+			rule := auditSemgrepRule{
+				ID:          entry.ID,
+				Family:      entry.Metadata.RuleFamily,
+				Description: entry.Message,
+				Languages:   entry.Languages,
+				File:        rel,
+			}
+			if base, ok := canonical[entry.Metadata.RuleFamily]; ok {
+				rule.Category = base.Category
+				rule.Severity = base.Severity
+				rule.Description = base.Description
+			} else {
+				// No canonical row to align with: show the YAML as written.
+				// Such a rule would make a scan fail ("maps to no TAA rule"), so
+				// the raw values are a diagnostic rather than a verdict.
+				rule.Category = entry.Metadata.Category
+				rule.Severity = semgrepSeverityLabel(entry.Severity)
+			}
+			out = append(out, rule)
+		}
+	}
+	return out
+}
+
+// semgrepSeverityLabel maps Semgrep's severity names onto the three levels the
+// workbench badges use. It is only a display fallback for rules that name no
+// canonical family; report severities never come from here.
+func semgrepSeverityLabel(raw string) string {
+	switch strings.ToUpper(strings.TrimSpace(raw)) {
+	case "ERROR":
+		return codeaudit.SeverityHigh
+	case "WARNING":
+		return codeaudit.SeverityMedium
+	case "INFO":
+		return codeaudit.SeverityLow
+	}
+	return strings.ToUpper(strings.TrimSpace(raw))
 }
 
 func (s *auditRuleStore) resetLocked() {
@@ -420,11 +550,19 @@ func auditRulesHandler(store *auditRuleStore) http.HandlerFunc {
 
 		switch {
 		case path == "" && r.Method == http.MethodGet:
-			writeJSON(w, http.StatusOK, auditRulesResponse{
-				Engine: auditEngineFactsNow(store),
+			facts := auditEngineFactsNow(store)
+			resp := auditRulesResponse{
+				Engine: facts,
 				Rules:  store.specs(),
 				Binary: binaryRules(),
-			})
+			}
+			// Only the engine in force gets its own rule list: when semgrep
+			// falls back to regex, listing rules that will not run would
+			// describe a scan nobody is going to make.
+			if facts.Name == codeaudit.EngineNameSemgrep {
+				resp.Semgrep = loadSemgrepRules(facts.RulesPath)
+			}
+			writeJSON(w, http.StatusOK, resp)
 
 		case path == "reset" && (r.Method == http.MethodPost || r.Method == http.MethodPut):
 			store.reset()

@@ -173,10 +173,15 @@ The platform mock provides an embedded single-page Web console accessible by ope
     `deploy-platform-mock.sh`); the card shows that directory, the YAML file count and the CLI
     path. When the CLI or the rules are missing on the host the workbench falls back to the
     built-in regex engine and the card states the reason plus the configured engine. The
-    13-rule built-in table stays visible with per-rule drawers (severity, description and
-    patterns are editable; saving applies to the next regex scan, and 恢复内置规则 puts the
-    table back); it does not take part in a semgrep scan and is read-only while semgrep is
-    active. The 10 binary-channel rules are always read-only. The card also reports scanned
+    source tab follows whichever engine is active. Under semgrep it lists the rules actually
+    loaded from the rule directory (rule id, family, category, severity, description,
+    languages and file) and is read-only: each finding's category, severity and description
+    come from the canonical 13-family table keyed by the rule's `metadata.rule_family`, not
+    from the YAML's own `severity` and `message`, so changing them means editing and
+    redeploying the YAML. Under regex it shows the built-in table with per-rule drawers
+    (severity, description and patterns are editable; saving applies to the next regex scan,
+    and 恢复内置规则 puts the table back). The 10 binary-channel rules are always read-only.
+    The card also reports scanned
     extensions, the finding cap and skipped directories, plus the AI semantic module's gateway
     status, CSV attestation and TEE-TLS handshake evidence (measurement, public-key binding,
     certificate subject, elapsed time), a prompt self-check and the polled gateway logs.

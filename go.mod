@@ -8,6 +8,7 @@ require (
 	github.com/google/uuid v1.6.0
 	github.com/tjfoc/gmsm v1.4.1
 	github.com/xuri/excelize/v2 v2.8.1
+	gopkg.in/yaml.v3 v3.0.1
 	modernc.org/sqlite v1.30.1
 )
 

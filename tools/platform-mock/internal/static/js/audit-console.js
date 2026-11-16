@@ -2592,13 +2592,15 @@
   }
 
   function renderRules(data) {
-    const source = Array.isArray(data.rules) ? data.rules : [];
     const binary = Array.isArray(data.binary) ? data.binary : [];
     const engine = data.engine || {};
-    // Semgrep scans the YAML rule directory, not this table. The table stays
-    // visible as the regex fallback's rule set and is not editable while it is
-    // out of the scan.
+    // Semgrep scans its YAML directory, not the regex table. While it is in
+    // force the source tab lists the rules Semgrep will actually load; the
+    // regex table only comes back when the engine falls back.
     const semgrepActive = engine.name === 'semgrep';
+    const semgrepRules = Array.isArray(data.semgrep) ? data.semgrep : [];
+    const source = semgrepActive ? semgrepRules : (Array.isArray(data.rules) ? data.rules : []);
+    setText('engineSourceTabLabel', semgrepActive ? 'Semgrep 规则' : '源码规则');
     setText('engineSourceRuleCount', String(source.length));
     setText('engineBinaryRuleCount', String(binary.length));
     document.querySelectorAll('.audit-rules-tab').forEach((tab) => {
@@ -2606,13 +2608,17 @@
       tab.classList.toggle('is-active', on);
       tab.setAttribute('aria-selected', on ? 'true' : 'false');
     });
-    const readOnly = rulesSource === 'binary' || semgrepActive;
-    renderRuleRows(rulesSource === 'binary' ? binary : source, readOnly,
-      rulesSource === 'binary' ? '没有二进制通道规则。' : '没有源码规则。');
+    // The mode decides both the button and the drawer: 'binary' explains the
+    // evidence readers, 'semgrep' points at the rule file, 'edit' opens the
+    // regex editor. Collapsing them into one read-only flag was what made
+    // every Semgrep-era rule claim it belonged to the binary channel.
+    const mode = rulesSource === 'binary' ? 'binary' : (semgrepActive ? 'semgrep' : 'edit');
+    renderRuleRows(rulesSource === 'binary' ? binary : source, mode,
+      rulesSource === 'binary' ? '没有二进制通道规则。' : (semgrepActive ? 'Semgrep 规则目录中没有规则。' : '没有源码规则。'));
     const desc = $('engineRulesDesc');
     if (desc) {
       desc.textContent = semgrepActive
-        ? '当前静态引擎是 Semgrep CLI：扫描使用下方规则目录中的 YAML 规则，本卡片的内置规则表只作为 regex 回退使用，不参与本次扫描。'
+        ? '当前静态引擎是 Semgrep CLI：下表列出规则目录中实际加载的规则，级别、类别与说明按 rule_family 对齐 TAA 的规范规则表；规则只读，修改需改 YAML 后重新部署。'
         : '引擎自带的规则集合。源码规则逐条可查看与编辑，保存后在下一次扫描生效；二进制通道的规则由证据读取器固定，只读。';
     }
     const reset = $('engineRulesResetBtn');
@@ -2625,12 +2631,13 @@
       note.textContent = rulesSource === 'binary'
         ? '二进制通道的规则由证据读取器固定：证据来自动态符号表、依赖库、字符串、pickle 目标与熵测量，改规则等于改判定边界，因此只读。'
         : semgrepActive
-          ? 'Semgrep 按规则文件判断命中，规则的顺序不影响归属；规则目录在「安全引擎」卡片中显示。切回 regex 后本表恢复可编辑。'
+          ? '这些规则来自 Semgrep 规则目录，按语言分文件；一条 finding 的规则系列由 YAML 的 metadata.rule_family 决定。切回 regex 后本卡片恢复可编辑的 13 条内置规则。'
           : '规则的顺序就是扫描顺序：一行命中多条规则时，只有排在前面的那条上报。点「编辑」修改模式、级别与说明，保存后在下一次扫描生效。';
     }
   }
 
-  function renderRuleRows(rows, readOnly, emptyText) {
+  function renderRuleRows(rows, mode, emptyText) {
+    const editable = mode === 'edit';
     const body = $('engineRuleRows');
     if (!body) return;
     body.replaceChildren();
@@ -2639,7 +2646,7 @@
       tr.className = 'audit-table-empty';
       const td = document.createElement('td');
       td.colSpan = 5;
-      td.textContent = emptyText || (readOnly ? '没有二进制通道规则。' : '没有源码规则。');
+      td.textContent = emptyText || '没有规则。';
       tr.appendChild(td);
       body.appendChild(tr);
       return;
@@ -2670,8 +2677,8 @@
       const open = document.createElement('button');
       open.type = 'button';
       open.className = 'audit-btn audit-btn-ghost audit-btn-sm';
-      open.textContent = readOnly ? '查看' : '编辑';
-      open.addEventListener('click', () => openRuleDetail(rule, readOnly));
+      open.textContent = editable ? '编辑' : '查看';
+      open.addEventListener('click', () => openRuleDetail(rule, mode));
       actionCell.appendChild(open);
       tr.appendChild(actionCell);
 
@@ -2679,15 +2686,16 @@
     });
   }
 
-  function openRuleDetail(rule, readOnly) {
+  function openRuleDetail(rule, mode) {
     const panel = $('auditRuleDetail');
     if (!panel) return;
+    const readOnly = mode !== 'edit';
     setText('auditRuleDetailTitle', (rule.id || '规则') + (readOnly ? ' · 只读' : ''));
 
     const body = $('auditRuleDetailBody');
     if (body) {
       body.replaceChildren();
-      body.appendChild(buildRuleDetailBody(rule, readOnly));
+      body.appendChild(buildRuleDetailBody(rule, mode));
     }
 
     const backdrop = $('auditRuleBackdrop');
@@ -2707,11 +2715,11 @@
     if (backdrop) backdrop.hidden = true;
   }
 
-  function buildRuleDetailBody(rule, readOnly) {
+  function buildRuleDetailBody(rule, mode) {
     const wrap = document.createElement('div');
     wrap.className = 'audit-rule-detail';
 
-    if (readOnly) {
+    if (mode === 'binary') {
       wrap.appendChild(buildDetailGrid([
         ['规则', rule.id || '—', { mono: true }],
         ['类别', rule.category || '—'],
@@ -2721,6 +2729,25 @@
       const note = document.createElement('p');
       note.className = 'audit-help';
       note.textContent = '该规则属于二进制通道，证据来自文件的符号表、依赖、字符串、pickle 目标或熵测量，不能在这里修改。';
+      wrap.appendChild(note);
+      return wrap;
+    }
+
+    if (mode === 'semgrep') {
+      const languages = Array.isArray(rule.languages) && rule.languages.length
+        ? rule.languages.join(' / ') : '—';
+      wrap.appendChild(buildDetailGrid([
+        ['规则', rule.id || '—', { mono: true }],
+        ['规则族', rule.family ? rule.family + '（TAA 规范规则）' : '未声明 rule_family'],
+        ['类别', rule.category || '—'],
+        ['级别', badge(riskLabel(rule.severity), riskTone(rule.severity))],
+        ['说明', rule.description || '—', { wide: true }],
+        ['语言', languages],
+        ['规则文件', rule.file || '—', { mono: true }],
+      ]));
+      const note = document.createElement('p');
+      note.className = 'audit-help';
+      note.textContent = '该规则由 Semgrep CLI 从规则目录加载；级别、类别与说明按 metadata.rule_family 取自 TAA 的规范规则表。修改需编辑对应的 YAML 规则文件后重新部署，不能在这里编辑。';
       wrap.appendChild(note);
       return wrap;
     }

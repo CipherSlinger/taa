@@ -122,6 +122,88 @@ func TestAuditEngineRefusesUnknownName(t *testing.T) {
 	}
 }
 
+// The source tab in semgrep mode must list the rules Semgrep will load, with
+// the canonical TAA fields the adapter stamps onto findings. The YAML's own
+// ERROR/WARNING and message are not what a report says, so they must not leak
+// into the displayed severity/description.
+func TestAuditRulesHandlerListsSemgrepRules(t *testing.T) {
+	writeFakeSemgrep(t)
+	rulesPath := t.TempDir()
+	doc := `rules:
+  - id: taa-cmd-exec-python
+    languages: [python]
+    severity: ERROR
+    message: "yaml message that must not be displayed"
+    metadata:
+      category: execution
+      rule_family: CMD_001
+  - id: custom-unmapped
+    languages: [go]
+    severity: WARNING
+    message: "unmapped rule message"
+    metadata:
+      category: custom
+`
+	if err := os.WriteFile(filepath.Join(rulesPath, "rules.yaml"), []byte(doc), 0o644); err != nil {
+		t.Fatalf("write rules: %v", err)
+	}
+	store := newAuditRuleStore()
+	store.useEngine(codeaudit.EngineNameSemgrep, rulesPath)
+
+	rec := httptest.NewRecorder()
+	auditRulesHandler(store)(rec, httptest.NewRequest(http.MethodGet, "/api/audit/console/rules", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d", rec.Code)
+	}
+	var resp auditRulesResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp.Engine.Name != codeaudit.EngineNameSemgrep {
+		t.Fatalf("engine = %q", resp.Engine.Name)
+	}
+	if len(resp.Semgrep) != 2 {
+		t.Fatalf("semgrep rules = %d, want 2", len(resp.Semgrep))
+	}
+
+	var canonical codeaudit.Rule
+	for _, rule := range codeaudit.DefaultRules() {
+		if rule.ID == "CMD_001" {
+			canonical = rule
+		}
+	}
+	got := resp.Semgrep[0]
+	if got.ID != "taa-cmd-exec-python" || got.Family != "CMD_001" {
+		t.Fatalf("first rule = %+v", got)
+	}
+	if got.Severity != canonical.Severity || got.Category != canonical.Category || got.Description != canonical.Description {
+		t.Fatalf("first rule fields = %+v, want canonical %+v", got, canonical)
+	}
+	if len(got.Languages) != 1 || got.Languages[0] != "python" || got.File != "rules.yaml" {
+		t.Fatalf("first rule source = %+v", got)
+	}
+
+	// An unmapped rule is still listed, but with its YAML values mapped onto
+	// the three display levels: it is a diagnostic, not a verdict.
+	if unmapped := resp.Semgrep[1]; unmapped.Severity != codeaudit.SeverityMedium || unmapped.Category != "custom" {
+		t.Fatalf("unmapped rule = %+v", unmapped)
+	}
+}
+
+// In regex mode there is no semgrep list to show: the regex table is what runs.
+func TestAuditRulesHandlerOmitsSemgrepRulesInRegexMode(t *testing.T) {
+	store := newAuditRuleStore()
+	rec := httptest.NewRecorder()
+	auditRulesHandler(store)(rec, httptest.NewRequest(http.MethodGet, "/api/audit/console/rules", nil))
+	var resp auditRulesResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(resp.Semgrep) != 0 {
+		t.Fatalf("semgrep rules = %d, want none in regex mode", len(resp.Semgrep))
+	}
+}
+
 // The built-in table must arrive intact: an editor that shows a truncated rule
 // set would let an operator "fix" a rule by deleting what never loaded.
 func TestAuditRuleStoreStartsFromBuiltin(t *testing.T) {
