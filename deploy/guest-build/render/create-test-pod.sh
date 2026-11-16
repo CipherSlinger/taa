@@ -15,8 +15,11 @@
 # Usage: sudo bash test/create-test-pod.sh
 #
 # Environment overrides:
-#   MEASURE_SMP   vCPU count for the expected kernel command line
-#                 (default: the Kata config's default_vcpus)
+#   MEASURE_SMP        vCPU count for the expected kernel command line
+#                      (default: the Kata config's default_vcpus)
+#   POD_READY_TIMEOUT  how long to wait for Ready (default 600s; the guest pulls
+#                      and unpacks the container image itself, and a cold cache
+#                      on the ~7 GiB DCU image takes minutes, not seconds)
 set -euo pipefail
 
 pkg_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -711,8 +714,9 @@ kubectl apply -f "$pod_manifest"
 
 echo
 echo "== 2. 等待测试 Pod Ready =="
-if ! kubectl wait --for=condition=Ready "pod/$TEST_POD_NAME" --timeout=180s; then
-  echo "error: test Pod did not become Ready within 180s; status and events follow" >&2
+ready_timeout="${POD_READY_TIMEOUT:-600}"
+if ! kubectl wait --for=condition=Ready "pod/$TEST_POD_NAME" --timeout="${ready_timeout}s"; then
+  echo "error: test Pod did not become Ready within ${ready_timeout}s; status and events follow" >&2
   kubectl get pod "$TEST_POD_NAME" -o wide >&2 || true
   kubectl describe pod "$TEST_POD_NAME" 2>&1 | sed -n '/Events:/,$p' >&2 || true
   exit 1
