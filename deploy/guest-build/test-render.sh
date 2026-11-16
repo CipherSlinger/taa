@@ -1024,8 +1024,10 @@ check_contains "create script: the Ready wait outlasts a cold image pull" \
 # Exercise the helper itself against a fake sysfs/procfs. The paths are the only
 # part of it that can be wrong silently: a mistyped link target makes the scan
 # find nothing, and every run then looks like "already released".
+# The helper block runs from the first path default through the three functions
+# it defines: the group scan, the quiet period, and the vfio release wait.
 extract_vfio_wait() {
-  awk '/^SYSFS_PCI_DIR=/{f=1} f{print} f&&/^\}$/{exit}' "$1"
+  awk '/^SYSFS_PCI_DIR=/{f=1} f{print} f&&/^\}$/{n++; if (n == 3) exit}' "$1"
 }
 vfio_root="$tmp_dir/vfio"
 mkdir -p "$vfio_root/sys/0000:02:00.0" "$vfio_root/kernel/iommu_groups/69" \
@@ -1052,6 +1054,35 @@ check "a released vfio group returns 0" "0" "$vfio_rc"
 vfio_out="$(SYSFS_PCI_DIR="$tmp_dir/vfio/no-dcu" PROC_ROOT="$vfio_root/proc" \
   bash -c "$vfio_body"$'\n''wait_dcu_vfio_release' 2>&1)"
 check_contains "a host without a DCU is not an error" 'no Hygon DCU' "$vfio_out"
+
+# The quiet period: a card that was computing when its VM is killed keeps state
+# nothing resets, and the next VM wedges. Both scripts wait, so both are tested.
+quiesce_body="$(extract_vfio_wait "$pkg/test/delete-test-pod.sh")"
+del_quiesce_line="$(grep -n '^quiesce_dcu$' "$pkg/test/delete-test-pod.sh" | cut -d: -f1 | head -1)"
+del_delete_line="$(grep -n '^kubectl delete pod' "$pkg/test/delete-test-pod.sh" | cut -d: -f1 | head -1)"
+check "delete script: the quiet period sits before the delete" "yes" \
+  "$([[ -n "$del_quiesce_line" && -n "$del_delete_line" \
+       && "$del_quiesce_line" -lt "$del_delete_line" ]] && echo yes || echo no)"
+quiesce_out="$(SYSFS_PCI_DIR="$vfio_root/sys" PROC_ROOT="$vfio_root/proc" \
+  DCU_QUIESCE_SECONDS=0 bash -c "$quiesce_body"$'\n''quiesce_dcu' 2>&1)"
+check_contains "a zero quiet period is honoured, with a warning" 'without a quiet period' "$quiesce_out"
+quiesce_out="$(SYSFS_PCI_DIR="$tmp_dir/vfio/no-dcu" PROC_ROOT="$vfio_root/proc" \
+  bash -c "$quiesce_body"$'\n''quiesce_dcu' 2>&1)"
+check_contains "a host without a DCU skips the quiet period" 'no quiet period needed' "$quiesce_out"
+check_contains "delete script: defaults the quiet period to 90s" \
+  'DCU_QUIESCE_SECONDS:-90' "$(cat "$pkg/test/delete-test-pod.sh")"
+check_contains "create script: defaults the quiet period to 90s" \
+  'DCU_QUIESCE_SECONDS:-90' "$(cat "$pkg/test/create-test-pod.sh")"
+# A first create has no guest whose card state could be left behind, so the
+# quiet period must stay inside the "a Pod exists" branch. A stray call would
+# add 90 s to every fresh install.
+create_quiesce_line="$(grep -n '^  quiesce_dcu$' "$pkg/test/create-test-pod.sh" | cut -d: -f1 | head -1)"
+create_guard_line="$(grep -n '^if kubectl get pod "\$TEST_POD_NAME"' "$pkg/test/create-test-pod.sh" | cut -d: -f1 | head -1)"
+create_wait_line="$(grep -n '^kubectl delete pod' "$pkg/test/create-test-pod.sh" | cut -d: -f1 | head -1)"
+check "create script: the quiet period runs only when a Pod exists" "yes" \
+  "$([[ -n "$create_guard_line" && -n "$create_quiesce_line" && -n "$create_wait_line" \
+       && "$create_guard_line" -lt "$create_quiesce_line" \
+       && "$create_quiesce_line" -lt "$create_wait_line" ]] && echo yes || echo no)"
 check_contains "install.sh: verifies the package first" 'sha256sum -c --quiet SHA256SUMS' "$(cat "$pkg/install.sh")"
 check_contains "install.sh: preflights the prospective config" \
   '预检通过' "$(cat "$pkg/install.sh")"

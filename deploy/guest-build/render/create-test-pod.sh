@@ -48,8 +48,8 @@ done
 # taa-init's fixtures; production always uses the defaults.
 SYSFS_PCI_DIR="${SYSFS_PCI_DIR:-/sys/bus/pci/devices}"
 PROC_ROOT="${PROC_ROOT:-/proc}"
-wait_dcu_vfio_release() {
-  local timeout="${DCU_VFIO_RELEASE_TIMEOUT:-120}" waited=0 group holder groups dev
+dcu_iommu_groups() {
+  local groups group dev
   groups=""
   for dev in "$SYSFS_PCI_DIR"/*; do
     [ -r "$dev/vendor" ] || continue
@@ -67,7 +67,34 @@ wait_dcu_vfio_release() {
     group="${group##*/}"
     [ -n "$group" ] && groups="$groups $group"
   done
-  groups="$(printf '%s\n' $groups | sort -u)"
+  printf '%s\n' $groups | sort -u
+}
+
+# Give the card time to drain before an existing test Pod is deleted. A DCU that
+# was computing when its VM is killed keeps live queues and translations, has no
+# reset to clear them (the fixup module sets NO_BUS_RESET, and the function has
+# no FLR), and wedges the next VM: IOMMU invalidations time out and the driver
+# never probes. Measured on this hardware, 90 s of idleness after the last
+# command is enough. See delete-test-pod.sh for the same wait on the standalone
+# delete path.
+quiesce_dcu() {
+  local seconds="${DCU_QUIESCE_SECONDS:-90}" groups
+  groups="$(dcu_iommu_groups)"
+  if [[ -z "$groups" ]]; then
+    echo "no Hygon DCU on this host; no quiet period needed"
+    return 0
+  fi
+  if (( seconds <= 0 )); then
+    echo "warning: DCU_QUIESCE_SECONDS=$seconds; deleting without a quiet period" >&2
+    return 0
+  fi
+  echo "giving the DCU ${seconds}s of quiet before replacing the Pod (DCU_QUIESCE_SECONDS=0 skips)"
+  sleep "$seconds"
+}
+
+wait_dcu_vfio_release() {
+  local timeout="${DCU_VFIO_RELEASE_TIMEOUT:-120}" waited=0 group holder groups
+  groups="$(dcu_iommu_groups)"
   if [[ -z "$groups" ]]; then
     echo "no Hygon DCU on this host; nothing to wait for"
     return 0
@@ -708,6 +735,11 @@ PY
 fi
 
 echo "pod: $TEST_POD_NAME  handler: $RUNTIME_HANDLER"
+# The quiet period is only meaningful when there is a Pod to replace; a first
+# create has no guest whose card state could be left behind.
+if kubectl get pod "$TEST_POD_NAME" >/dev/null 2>&1; then
+  quiesce_dcu
+fi
 kubectl delete pod "$TEST_POD_NAME" --ignore-not-found --wait=true
 wait_dcu_vfio_release
 kubectl apply -f "$pod_manifest"
