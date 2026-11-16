@@ -232,6 +232,147 @@ supervise_taa() {
   done
 }
 
+# ---- Hygon DCU compute manager --------------------------------------------
+#
+# /dev/mkfd alone lets hy-smi read temperatures and power: that path only needs
+# CREATE_HYUDS_CONN, and the driver answers it. HIP/ROCR is different: libhsa's
+# hsaKmtOpenKFD() also creates a hyuds connection, and the driver refuses with
+# -EBADF ("MKFD file descriptor not valid in this process") until some process
+# has registered a hyuds space. Only the vendor's hymgr issues that ioctl
+# (MKFD_IOC_REGISTER_HYUDS_SPACE). The registration is a single global slot in
+# the driver and the socket is created inside the registering process's netns,
+# while the returned connection works from any netns -- so one manager here in
+# the guest serves containers in every network namespace.
+#
+# The driver is loaded by the prestart CDI hook, not by this script, so the loop
+# waits for /dev/kfd rather than loading anything. It is backgrounded before the
+# final exec so it outlives this script; PID 1 must never wait for it. If the
+# manager exits, the loop restarts it: a dead hymgr unregisters the space and
+# every later HIP call in the guest fails until a new one registers.
+HYCU_HYHAL_DIR="${HYCU_HYHAL_DIR:-/opt/hyhal}"
+HYCU_MANAGER_BIN="${HYCU_MANAGER_BIN:-$HYCU_HYHAL_DIR/bin/hymgr}"
+HYCU_KFD_DEV="${HYCU_KFD_DEV:-/dev/kfd}"
+HYCU_MANAGER_LOG="${HYCU_MANAGER_LOG:-/tmp/hymgr.log}"
+# Seconds between checks once the manager is up, and the grace period after a
+# launch before the next check (hymgr takes a moment to appear in /proc).
+HYCU_MANAGER_POLL="${HYCU_MANAGER_POLL:-2}"
+HYCU_MANAGER_START_WAIT="${HYCU_MANAGER_START_WAIT:-10}"
+# One previous generation is kept, as for TAA's own log. /tmp is the guest's
+# tmpfs, so an unbounded log from a crash loop is guest RAM.
+HYCU_MANAGER_LOG_MAX_BYTES="${HYCU_MANAGER_LOG_MAX_BYTES:-1048576}"
+# Overridable for the same reason as CSV_MISC_FILE: the helper is tested with a
+# fixture directory instead of the live /proc.
+HYCU_PROC_DIR="${HYCU_PROC_DIR:-/proc}"
+
+# The same arithmetic trap as in sanitize_restart_settings, checked here because
+# these variables are defined after that function has already run: a non-numeric
+# value reaches `[ "$size" -gt ... ]` in rotate_manager_log, which dash treats as
+# fatal.
+case "$HYCU_MANAGER_LOG_MAX_BYTES" in
+  ''|*[!0-9]*)
+    log "WARNING: HYCU_MANAGER_LOG_MAX_BYTES='$HYCU_MANAGER_LOG_MAX_BYTES' is not a non-negative integer; using 1048576"
+    HYCU_MANAGER_LOG_MAX_BYTES=1048576 ;;
+esac
+
+# True when a process named hymgr exists. comm, not cmdline: the kernel sets it
+# to the executable's basename, which is what the driver logs too.
+hycu_manager_running() {
+  local comm
+  for comm in "$HYCU_PROC_DIR"/[0-9]*/comm; do
+    [ -r "$comm" ] || continue
+    case "$(cat "$comm" 2>/dev/null)" in
+      hymgr) return 0 ;;
+    esac
+  done
+  return 1
+}
+
+# True while the last launch still exists (init running, or not yet reaped).
+# /proc/<pid>/stat's third field is the state; Z means the process exited and
+# only the parent's wait is missing. Without this, a manager slower to appear
+# than HYCU_MANAGER_START_WAIT would be started a second time while the first
+# was still initialising, and two managers would fight over the driver's single
+# hyuds slot.
+hycu_manager_launch_alive() {
+  local stat
+  [ -n "${manager_pid:-}" ] || return 1
+  stat="$HYCU_PROC_DIR/$manager_pid/stat"
+  [ -r "$stat" ] || return 1
+  case "$(cut -d' ' -f3 "$stat" 2>/dev/null)" in
+    ''|Z) return 1 ;;
+  esac
+  return 0
+}
+
+# Same shape as rotate_taa_log, for the manager's own log.
+rotate_manager_log() {
+  local size
+  [ -f "$HYCU_MANAGER_LOG" ] || return 0
+  size="$(wc -c <"$HYCU_MANAGER_LOG" 2>/dev/null || echo 0)"
+  case "$size" in
+    ''|*[!0-9]*) size=0 ;;
+  esac
+  [ "$size" -gt "$HYCU_MANAGER_LOG_MAX_BYTES" ] || return 0
+  if ! mv -f "$HYCU_MANAGER_LOG" "$HYCU_MANAGER_LOG.1" 2>/dev/null; then
+    : >"$HYCU_MANAGER_LOG" 2>/dev/null || true
+  fi
+  return 0
+}
+
+supervise_hycu_manager() {
+  local waited
+  # Initrd builds for non-DCU roles carry no vendor userland; nothing to do.
+  [ -x "$HYCU_MANAGER_BIN" ] || return 0
+  trap 'log "WARNING: hymgr supervisor exited; the DCU will stay unusable"' EXIT
+  # The vendor unit mounts empty tmpfs over both directories. Empty ordinary
+  # directories are equivalent here and survive the manager's writes.
+  mkdir -p /etc/hymgr /var/log/hymgr 2>/dev/null || true
+  manager_pid=""
+  while :; do
+    if ! hycu_manager_running && [ -e "$HYCU_KFD_DEV" ]; then
+      if hycu_manager_launch_alive; then
+        log "hymgr ($manager_pid) is still starting; not launching another"
+      else
+        rotate_manager_log
+        log "starting $HYCU_MANAGER_BIN (registers the hyuds space HIP needs)"
+        (
+          export LD_LIBRARY_PATH="$HYCU_HYHAL_DIR/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+          # hymgr refuses to start where it detects a container unless this is 0.
+          # The check exists to keep it out of docker; in this guest it is the
+          # only manager and has to run.
+          export HYCONTAINER_ENV=0
+          exec "$HYCU_MANAGER_BIN"
+        ) >>"$HYCU_MANAGER_LOG" 2>&1 </dev/null &
+        manager_pid="$!"
+        waited=0
+        while [ "$waited" -lt "$HYCU_MANAGER_START_WAIT" ] &&
+              ! hycu_manager_running && hycu_manager_launch_alive; do
+          sleep 1
+          waited=$((waited + 1))
+        done
+        if hycu_manager_running; then
+          log "hymgr is up; hyuds registration follows"
+        elif hycu_manager_launch_alive; then
+          # Slow, not failed: the next iteration must not start a second one.
+          log "WARNING: hymgr ($manager_pid) has not appeared after ${HYCU_MANAGER_START_WAIT}s; leaving it to finish"
+        else
+          log "WARNING: hymgr did not stay up; see $HYCU_MANAGER_LOG (the DCU will not compute)"
+          # Without this the console only says "did not stay up" and the reason
+          # (a missing library, a refused container check) stays on tmpfs.
+          tail -n 3 "$HYCU_MANAGER_LOG" 2>/dev/null | while IFS= read -r line; do
+            log "hymgr: $line"
+          done
+          # Reap it, so the next launch replaces a dead child instead of
+          # accumulating zombies and leaving a stale pid to test.
+          wait "$manager_pid" 2>/dev/null || true
+          manager_pid=""
+        fi
+      fi
+    fi
+    sleep "$HYCU_MANAGER_POLL"
+  done
+}
+
 # ===== main flow (local tests source only the part above this line) =====
 
 # Read the build-time /etc/default/taa.env. It carries the wrapper switch
@@ -306,6 +447,14 @@ if [ -r "$TAA_CONFIG" ]; then
 else
   log "WARNING: missing $TAA_CONFIG; not starting TAA"
 fi
+
+# 3b) Start the Hygon DCU compute manager. The guest cannot compute on the card
+#     without it (see supervise_hycu_manager), and it is the only process that
+#     registers the hyuds space. Non-DCU initrds have no hymgr and the function
+#     returns immediately. Like the TAA supervisor it has to be backgrounded
+#     before the final exec, and it waits for the prestart hook to load the
+#     driver rather than loading anything itself.
+supervise_hycu_manager &
 
 # 4) Record how the guest can power itself off, because an orderly power-off is
 #    the only path that calls the driver's shutdown callback before QEMU exits.

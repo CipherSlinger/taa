@@ -4,9 +4,18 @@
 # The hycu driver modules and their firmware are not installed on the host as
 # files: they exist only inside the DCU guest image's rootfs. This script mounts
 # that image read-only, resolves the module release that carries hycu, and writes
-# the module tree, the matching firmware tree and kmod to stdout as a
-# zstd-compressed tar. Nothing is written to the host: the loop device and the
-# mount are torn down by the EXIT trap.
+# the module tree, the matching firmware tree, kmod and the vendor HYCU userland
+# to stdout as a zstd-compressed tar. Nothing is written to the host: the loop
+# device and the mount are torn down by the EXIT trap.
+#
+# The vendor userland (/usr/local/hyhal) matters for compute, not just for
+# monitoring: /dev/mkfd by itself only lets hy-smi read sensors, while HIP/ROCR
+# (rocminfo, torch) needs a running `hymgr` that registers the hyuds space the
+# driver forwards KFD connections through. Shipping the same tree at the same
+# paths as the vendor guest also lets the CDI hook bind-mount /opt/hyhal into
+# the container, which is where the container's HSA runtime looks for it.
+# Static archives (lib/*.a) are development leftovers and are skipped; so are
+# firmware/vbios, which are only used for flashing.
 #
 # Every progress line goes to stderr, because stdout is the archive.
 #
@@ -69,6 +78,34 @@ kmod="$mount_point/usr/bin/kmod"
 
 paths=("usr/lib/modules/$release" "usr/bin/kmod")
 [[ -d "$firmware" ]] && paths+=("usr/lib/firmware/$release")
+
+# Vendor HYCU userland. The exact paths are kept because they are the contract:
+# hymgr and the container clients resolve /opt/hyhal, and the CDI hook mounts
+# that path from the guest. Only files a compute client needs are packed.
+hyhal="usr/local/hyhal"
+if [[ -x "$mount_point/$hyhal/bin/hymgr" ]]; then
+    for bin in hymgr rocminfo hy-smi; do
+        [[ -x "$mount_point/$hyhal/bin/$bin" ]] && paths+=("$hyhal/bin/$bin")
+    done
+    for dir in asic_bin bitcode share hsa; do
+        [[ -d "$mount_point/$hyhal/$dir" ]] && paths+=("$hyhal/$dir")
+    done
+    if [[ -d "$mount_point/$hyhal/lib" ]]; then
+        for entry in "$mount_point/$hyhal/lib"/*; do
+            name="$(basename "$entry")"
+            case "$name" in
+                *.a|cmake|criu|pkgconfig) continue ;;
+            esac
+            paths+=("$hyhal/lib/$name")
+        done
+    fi
+    # /opt/hyhal is a symlink to the tree above in the vendor guest; the CDI
+    # hook and the container's RUNPATH both use that name.
+    [[ -L "$mount_point/opt/hyhal" ]] && paths+=("opt/hyhal")
+    echo "vendor userland: $hyhal -> /opt/hyhal" >&2
+else
+    echo "warning: no $hyhal/bin/hymgr in $image; HIP will not find the GPU" >&2
+fi
 
 echo "release=$release" >&2
 echo "packing ${paths[*]}" >&2

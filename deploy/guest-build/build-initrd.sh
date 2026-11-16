@@ -874,6 +874,16 @@ check_build_inputs() {
       echo "hint: FORCE_DCU_PAYLOAD=1 $0 fetch-base 重新提取" >&2
       exit 1
     fi
+    # Without the vendor userland the guest can read the card's sensors but not
+    # compute on it: the HSA runtime needs hymgr to register the hyuds space,
+    # and the container needs the same tree at /opt/hyhal.
+    if [[ ! -x "$DCU_PAYLOAD_DIR/rootfs/usr/local/hyhal/bin/hymgr" ]] ||
+      [[ ! -e "$DCU_PAYLOAD_DIR/rootfs/usr/local/hyhal/lib/libhsa-runtime64.so.1" ]] ||
+      [[ ! -L "$DCU_PAYLOAD_DIR/rootfs/opt/hyhal" ]]; then
+      echo "error: DCU 载荷缺少 vendor 用户态（/opt/hyhal 链接、hymgr 或 libhsa）: $DCU_PAYLOAD_DIR" >&2
+      echo "hint: FORCE_DCU_PAYLOAD=1 $0 fetch-base 重新提取" >&2
+      exit 1
+    fi
   fi
 }
 
@@ -901,8 +911,9 @@ stage_semgrep_payload() {
 }
 
 # Copy the DCU driver tree into the staging tree. The payload mirrors the guest
-# rootfs (usr/lib/modules, usr/lib/firmware, usr/bin/kmod), so this is one copy
-# plus the two kmod applet links the guest image has and the payload does not.
+# rootfs (usr/lib/modules, usr/lib/firmware, usr/bin/kmod, usr/local/hyhal and
+# opt/hyhal -> /usr/local/hyhal), so this is one copy plus the two kmod applet
+# links the guest image has and the payload does not.
 stage_dcu_payload() {
   local stage_dir="$1"
   echo "注入 DCU 驱动载荷"
@@ -1500,7 +1511,11 @@ fetch_dcu_payload() {
   require_cmd sha256sum
   require_cmd sed
 
-  if [[ -s "$dst/SOURCE" && -d "$tree/usr/lib/modules" && "${FORCE_DCU_PAYLOAD:-0}" != "1" ]]; then
+  # A payload fetched before the vendor userland was added has the module tree
+  # but no hymgr; reusing it would produce a guest where HIP still sees no GPU.
+  if [[ -s "$dst/SOURCE" && -d "$tree/usr/lib/modules" ]] &&
+    [[ -x "$tree/usr/local/hyhal/bin/hymgr" ]] && [[ -L "$tree/opt/hyhal" ]] &&
+    [[ "${FORCE_DCU_PAYLOAD:-0}" != "1" ]]; then
     echo "复用 DCU 驱动载荷: $dst（FORCE_DCU_PAYLOAD=1 可强制重新提取）"
     return 0
   fi
@@ -1531,6 +1546,15 @@ fetch_dcu_payload() {
   fi
   rm -f "$archive"
 
+  # /opt/hyhal is how every consumer names the tree: taa-init's manager path,
+  # the CDI hook's bind mount and the container's RUNPATH. Write it here rather
+  # than trusting the vendor image's own symlink, so a payload assembled from a
+  # slightly different image still boots into a working manager. The target is
+  # absolute, as in the vendor guest; inside the initrd root it resolves.
+  rm -rf "$tree/opt/hyhal"
+  mkdir -p "$tree/opt"
+  ln -s /usr/local/hyhal "$tree/opt/hyhal"
+
   local release="" candidate
   for candidate in "$tree"/usr/lib/modules/*; do
     [[ -d "$candidate" ]] || continue
@@ -1544,10 +1568,15 @@ fetch_dcu_payload() {
     exit 1
   fi
 
+  if [[ ! -x "$tree/usr/local/hyhal/bin/hymgr" ]]; then
+    echo "warning: DCU 载荷不含 vendor 用户态（usr/local/hyhal/bin/hymgr）；HIP 将看不到 GPU" >&2
+  fi
+
   {
     printf 'image=%s\n' "$DCU_REMOTE_IMAGE"
     printf 'image_sha256=%s\n' "$image_sha"
     printf 'release=%s\n' "$release"
+    printf 'hyhal=%s\n' "$( [[ -x "$tree/usr/local/hyhal/bin/hymgr" ]] && echo present || echo missing )"
     printf 'fetched=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   } >"$dst/SOURCE"
 

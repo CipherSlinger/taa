@@ -96,6 +96,8 @@ run_generator() {
     DEV_DIR="$root/dev" \
     CDI_DIR="$root/cdi" \
     HYHAL_DIR="${HYHAL_DIR:-$root/opt/hyhal}" \
+    HYCU_MANAGER="${HYCU_MANAGER:-$root/opt/hyhal/bin/hymgr}" \
+    HYCU_MANAGER_WAIT_SECONDS="${HYCU_MANAGER_WAIT_SECONDS:-20}" \
     HYCU_CDI_WAIT_SECONDS="${WAIT:-0}" \
     CMDLINE_FILE="${CMDLINE_FILE:-$root/proc/cmdline}" \
     MODPROBE_BIN="${MODPROBE_BIN:-/usr/sbin/modprobe}" \
@@ -154,13 +156,68 @@ check_absent "no DTK mount when the guest has none" '"mounts"' "$spec"
 check_contains "device 0 survives without the mount" '"name": "0"' "$spec"
 check_contains "the skip is logged" 'skip '"$root"'/opt/hyhal bind mount' "$out"
 
+echo "== hycu manager wait =="
+# taa-init owns the manager's lifecycle; the hook only waits, so a second
+# instance cannot race the supervisor. The wait still has to be bounded: a
+# missing manager must not hold container creation until the CDI timeout.
+# Only the run that creates the spec waits: the registration is guest-wide and
+# outlives the spec, so a later container in the same guest must not pay the
+# wait and settle delay at every start.
+manager_wait_line="$(grep -n '^wait_for_hycu_manager$' "$GENERATOR" | cut -d: -f1 | head -1)"
+spec_exit_line="$(grep -n 'spec already exists' "$GENERATOR" | cut -d: -f1 | head -1)"
+check "waits for the manager only on the spec-creating path" "yes" \
+  "$([[ -n "$manager_wait_line" && -n "$spec_exit_line" && "$manager_wait_line" -gt "$spec_exit_line" ]] && echo yes || echo no)"
+check_absent "does not launch the manager itself" 'bin/hymgr" &' "$(cat "$GENERATOR")"
+check_contains "the wait is bounded and reports the timeout" \
+  'hymgr is not running after' "$(cat "$GENERATOR")"
+check_contains "a short settle covers the registration ioctl" \
+  'HYCU_MANAGER_SETTLE_SECONDS' "$(cat "$GENERATOR")"
+
+# Functional timeout path: the manager binary exists but no process by that
+# name does, so the hook must give up after the configured second and continue
+# writing the spec instead of failing.
+root="$tmp_dir/manager-missing"
+make_fixture "$root" 1 0
+mkdir -p "$root/opt/hyhal/bin"
+: >"$root/opt/hyhal/bin/hymgr"
+chmod +x "$root/opt/hyhal/bin/hymgr"
+out="$(run_generator "$root" HYCU_MANAGER="$root/opt/hyhal/bin/hymgr" \
+  HYCU_MANAGER_WAIT_SECONDS=1 HYCU_MANAGER_SETTLE_SECONDS=0 2>&1)"
+check "a manager that never appears still yields a spec" "yes" \
+  "$([[ -e "$root/cdi/hygon.cn-hycu.json" ]] && echo yes || echo no)"
+check_contains "the timeout is logged, not fatal" 'hymgr is not running after 1s' "$out"
+
 echo "== existing spec is left alone =="
 root="$tmp_dir/existing"
 make_fixture "$root" 1 0
 echo '{"sentinel": true}' >"$root/cdi/hygon.cn-hycu.json"
-out="$(run_generator "$root" 2>&1)"
+# The manager binary exists but no process by that name does. If the hook waited
+# on this path it would log the timeout after a second; skipping the wait is the
+# observable difference.
+mkdir -p "$root/opt/hyhal/bin"
+: >"$root/opt/hyhal/bin/hymgr"
+chmod +x "$root/opt/hyhal/bin/hymgr"
+out="$(run_generator "$root" HYCU_MANAGER="$root/opt/hyhal/bin/hymgr" \
+  HYCU_MANAGER_WAIT_SECONDS=1 2>&1)"
 check "the existing spec is not rewritten" '{"sentinel": true}' "$(cat "$root/cdi/hygon.cn-hycu.json")"
 check_contains "the skip is logged" 'spec already exists' "$out"
+check_absent "does not wait for the manager once the spec exists" \
+  'hymgr is not running' "$out"
+
+echo "== manager wait knobs are validated =="
+# A non-numeric override would make dash's `[` error, and an erroring test is
+# false: the wait would never time out and container creation would hang. The
+# hook has to fall back to its defaults and say so.
+root="$tmp_dir/manager-bad-knobs"
+make_fixture "$root" 1 0
+out="$(run_generator "$root" HYCU_MANAGER="$root/missing/hymgr" \
+  HYCU_MANAGER_WAIT_SECONDS=abc HYCU_MANAGER_SETTLE_SECONDS=3s 2>&1)"
+check "a non-numeric wait still yields a spec" "yes" \
+  "$([[ -e "$root/cdi/hygon.cn-hycu.json" ]] && echo yes || echo no)"
+check_contains "the bad wait is logged" \
+  "HYCU_MANAGER_WAIT_SECONDS='abc' is not a non-negative integer; using 20" "$out"
+check_contains "the bad settle is logged" \
+  "HYCU_MANAGER_SETTLE_SECONDS='3s' is not a non-negative integer; using 3" "$out"
 
 echo "== device never bound =="
 root="$tmp_dir/unbound"

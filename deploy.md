@@ -582,6 +582,19 @@ display/co-processor，再用 `/sys/class/drm` 的 readlink 把 BDF 与 `cardN`/
 设备节点和 `/opt/hyhal` 绑定挂载只在 guest 路径存在时才写入（缺节点的 CDI spec 会让注入
 以另一个错误失败）；脚本恒退出 0，不写 spec 时仍由 agent 自己的超时报错。
 
+DCU 载荷同时带上 vendor 计算用户态（`usr/local/hyhal` 与 `opt/hyhal -> /usr/local/hyhal`，
+去掉 `lib/*.a`、`firmware`、`vbios`），原因不在监控而在计算：只有 `/dev/mkfd` 时
+`hy-smi` 能读到温度/功耗，但 HIP/ROCR（`rocminfo`、torch）走 `hsaKmtOpenKFD()` →
+`CREATE_HYUDS_CONN`，驱动在没有任何进程注册 hyuds space 时返回 `-EBADF`（用户态把它印成
+`MKFD file descriptor not valid in this process`），而只有 vendor 的 `hymgr` 会发
+`MKFD_IOC_REGISTER_HYUDS_SPACE`。因此 `taa-init` 在后台守护 `hymgr`：等 prestart hook
+把 `/dev/kfd` 建出来再启动，带上 vendor 的 `LD_LIBRARY_PATH` 和 `HYCONTAINER_ENV=0`
+（不设它 hymgr 会拒绝在容器环境启动），退出就重启（注册随它关闭 `/dev/mkfd` 失效）。
+注册是驱动里的单一全局槽，监听 socket 建在 manager 自己的 netns 里、返回的连接在任何
+netns 都能用，所以 guest 侧一个 manager 就够所有容器用；CDI hook 在建容器前等它就绪，
+并留 3 秒给注册 ioctl。容器内实测：`rocminfo` 出 `Device Type: HCU`（gfx928 / K100_AI）、
+`torch.cuda.is_available()` 为 True、4×4 matmul 得 64.0、`hy-smi` 无 MKFD 报错。
+
 **基座自带**
 
 - kata-agent：`usr/sbin/init`（19 MB Rust 二进制，`/init -> /sbin/init` 即 `rdinit`/`init` 入口）；

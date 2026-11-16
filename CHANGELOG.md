@@ -9,6 +9,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 ## [Unreleased]
 
 ### Added
+- **The DCU Initrd Ships The Vendor HYCU Userland And Starts `hymgr`**: a DCU guest loaded the
+  driver and created `/dev/mkfd`, so `hy-smi` could read temperature and power, but HIP/ROCR
+  enumerated zero GPUs. `libhsa`'s `hsaKmtOpenKFD()` issues the driver's `CREATE_HYUDS_CONN`
+  ioctl, and the driver answers `-EBADF` (surfaced as the misleading `MKFD file descriptor not
+  valid in this process`) until some process has registered a hyuds space with
+  `MKFD_IOC_REGISTER_HYUDS_SPACE`; only the vendor's `hymgr` issues that ioctl. `fetch-base` now
+  also extracts the vendor compute userland from the DCU guest image — `usr/local/hyhal` plus the
+  `opt/hyhal` symlink, without static archives or flashing firmware — into the same payload, so
+  the CDI hook's existing `/opt/hyhal` bind mount reaches the container, and `taa-init` supervises
+  `hymgr` in the guest: it waits for the prestart hook to create `/dev/kfd`, starts the manager
+  with the vendor `LD_LIBRARY_PATH` and `HYCONTAINER_ENV=0` (without which it refuses to run),
+  and restarts it if it exits, because the registration lives only as long as the manager holds
+  `/dev/mkfd`. Registration is one global slot and the listening socket is created in the
+  manager's netns while the returned connection works from any netns, so one guest-side manager
+  serves every container; the CDI hook now waits for it before the container starts and allows a
+  short settle for the registration ioctl. Measured inside a container on a passthrough card:
+  `rocminfo` reports `Device Type: HCU` (gfx928 / K100_AI), `torch.cuda.is_available()` is true, a
+  4×4 matmul returns 64.0 and `hy-smi` reads 65 °C/121 W with no MKFD error. `taa-init.sh` is
+  measured code, so the change reaches a guest only after the package is rebuilt and redeployed.
 - **HYCU CDI Generator In The DCU Initrd**: the DCU roles' initrd is built from the plain Kata
   image, which carries no CDI spec generator. The shim still translates the Pod's
   `cdi.k8s.io/hycu` annotation into a container annotation (`hygon.cn/hycu=0`), and the guest

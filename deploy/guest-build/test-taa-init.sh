@@ -234,6 +234,72 @@ check "rotates an oversized daemon log to .1" "yes" \
 check "removes the oversized current log" "yes" \
   "$([[ ! -e "$taa_log" ]] && echo yes || echo no)"
 
+echo "== Hygon DCU manager supervision =="
+
+# HYCu compute needs the vendor hymgr to register the driver's single hyuds
+# space. The helper decides whether it is already up; a wrong answer spawns a
+# second manager or none at all, and in both cases HIP silently reports zero
+# GPUs instead of an error.
+dcu_proc="$WORK_DIR/proc"
+mkdir -p "$dcu_proc/100" "$dcu_proc/200"
+printf 'taa\n' >"$dcu_proc/100/comm"
+printf 'hymgr\n' >"$dcu_proc/200/comm"
+check "does not report a manager before one exists" "absent" \
+  "$(HYCU_PROC_DIR="$WORK_DIR/proc-empty" hycu_manager_running >/dev/null 2>&1 && echo present || echo absent)"
+check "recognises a running hymgr by comm" "present" \
+  "$(HYCU_PROC_DIR="$dcu_proc" hycu_manager_running >/dev/null 2>&1 && echo present || echo absent)"
+# A command line that merely mentions hymgr is not the manager.
+sed -i 's/^hymgr$/sh/' "$dcu_proc/200/comm"
+check "matches comm, not a command line" "absent" \
+  "$(HYCU_PROC_DIR="$dcu_proc" hycu_manager_running >/dev/null 2>&1 && echo present || echo absent)"
+
+# Every non-DCU initrd carries no vendor userland: the supervisor has to return
+# immediately instead of looping forever on a missing binary.
+set +e
+HYCU_MANAGER_BIN="$WORK_DIR/no-such-hymgr" supervise_hycu_manager >/dev/null 2>&1
+rc=$?
+set -e
+check "a missing manager is a no-op, not a loop" "0" "$rc"
+
+manager_body="$(awk '/^supervise_hycu_manager\(\) \{/{f=1} f{print} f&&/^\}/{exit}' "$TAA_INIT")"
+check "waits for the driver node instead of loading a module" "yes" \
+  "$(grep -qF 'HYCU_KFD_DEV' <<<"$manager_body" && echo yes || echo no)"
+check "restarts the manager when it exits" "yes" \
+  "$(grep -qF 'hycu_manager_running' <<<"$manager_body" && echo yes || echo no)"
+check "runs hymgr with the container check disabled" "yes" \
+  "$(grep -qF 'HYCONTAINER_ENV=0' <<<"$manager_body" && echo yes || echo no)"
+check "keeps the manager's library path on the vendor tree" "yes" \
+  "$(grep -qF 'LD_LIBRARY_PATH="$HYCU_HYHAL_DIR/lib' <<<"$manager_body" && echo yes || echo no)"
+
+# A manager that is alive but slow must not be launched a second time: the
+# driver has one global hyuds slot, and two managers would fight over it. The
+# liveness test is the pid's /proc state, not its absence from a comm scan.
+mkdir -p "$dcu_proc/300" "$dcu_proc/400"
+printf '300 (hymgr) S 1 300 300 0 -1 0 0 0 0 0 0 0 0 0 20 0 1 0 0 0 0 0\n' >"$dcu_proc/300/stat"
+printf '400 (hymgr) Z 1 400 400 0 -1 0 0 0 0 0 0 0 0 0 20 0 1 0 0 0 0 0\n' >"$dcu_proc/400/stat"
+check "leaves a still-starting manager alone" "yes" \
+  "$(HYCU_PROC_DIR="$dcu_proc" manager_pid=300 hycu_manager_launch_alive && echo yes || echo no)"
+check "recognises an exited, unreaped manager" "no" \
+  "$(HYCU_PROC_DIR="$dcu_proc" manager_pid=400 hycu_manager_launch_alive && echo yes || echo no)"
+check "recognises a missing pid" "no" \
+  "$(HYCU_PROC_DIR="$dcu_proc" manager_pid=999 hycu_manager_launch_alive && echo yes || echo no)"
+check "the supervisor consults the liveness test" "yes" \
+  "$(grep -qF 'hycu_manager_launch_alive' <<<"$manager_body" && echo yes || echo no)"
+
+# /tmp is the guest's tmpfs: an unrotated log from a restart loop is guest RAM.
+manager_log="$WORK_DIR/hymgr.log"
+check "does not rotate a small manager log" "no" \
+  "$(printf 'small\n' >"$manager_log"; HYCU_MANAGER_LOG="$manager_log" HYCU_MANAGER_LOG_MAX_BYTES=16 rotate_manager_log; [[ -e "$manager_log.1" ]] && echo yes || echo no)"
+check "rotates an oversized manager log" "yes" \
+  "$(head -c 64 /dev/zero | tr '\0' x >"$manager_log"; HYCU_MANAGER_LOG="$manager_log" HYCU_MANAGER_LOG_MAX_BYTES=16 rotate_manager_log; [[ -e "$manager_log.1" ]] && echo yes || echo no)"
+
+manager_line="$(grep -n '^supervise_hycu_manager &' "$TAA_INIT" | cut -d: -f1 | head -1)"
+exec_line="$(grep -n '^exec /sbin/init' "$TAA_INIT" | cut -d: -f1 | head -1)"
+check "backgrounds the manager supervisor so PID 1 can exec" "yes" \
+  "$([[ -n "$manager_line" ]] && echo yes || echo no)"
+check "starts the manager before exec'ing kata-agent" "yes" \
+  "$([[ -n "$manager_line" && -n "$exec_line" && "$manager_line" -lt "$exec_line" ]] && echo yes || echo no)"
+
 echo "== main flow invariants =="
 
 # The PATH extension is a side effect on the environment, so it lives in the main

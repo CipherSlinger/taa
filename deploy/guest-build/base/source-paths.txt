@@ -49,4 +49,14 @@ configuration-qemu-hygon-dcu-csv2.toml           sha256 f6652974f5057c12bacb7e06
 #   usr/lib/modules/6.6.0-hycu-confidential-csv+/   127.7 MiB / 116 files (modules.dep present)
 #   usr/lib/firmware/6.6.0-hycu-confidential-csv+/
 #   usr/bin/kmod
+#
+# 2026-11-16: the payload also carries the vendor compute userland, because the
+# driver alone only serves hy-smi sensor reads; HIP/ROCR needs hymgr's hyuds
+# registration, and the container needs the same tree at /opt/hyhal:
+#   usr/local/hyhal/bin/{hymgr,rocminfo,hy-smi}
+#   usr/local/hyhal/lib/*.so*        (runtime libraries; lib/*.a, cmake, criu and
+#                                     pkgconfig are skipped)
+#   usr/local/hyhal/{asic_bin,bitcode,share,hsa}
+#   opt/hyhal -> /usr/local/hyhal
+# firmware/ and vbios/ are flashing payloads and are not extracted.
 dcu-image                                        sha256 e9af0c1e89a1dfebad911cda05342884607a5f8622f6c705494a3ddbc8d56e56  release 6.6.0-hycu-confidential-csv+  fetched 2026-11-10

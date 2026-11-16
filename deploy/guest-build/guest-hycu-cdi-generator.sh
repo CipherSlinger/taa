@@ -43,15 +43,44 @@ CMDLINE_FILE=${CMDLINE_FILE:-/proc/cmdline}
 MODPROBE_BIN=${MODPROBE_BIN:-/usr/sbin/modprobe}
 DEPMOD_BIN=${DEPMOD_BIN:-/usr/sbin/depmod}
 MODULES_DIR=${MODULES_DIR:-/lib/modules}
+HYCU_MANAGER=${HYCU_MANAGER:-/opt/hyhal/bin/hymgr}
 # The vendor waits up to 240 s for the card's DRM nodes; its hook runs beside a
 # driver that udev loads on device discovery. Here the same hook is what loads
 # the driver (see load_kernel_modules), so the wait has to cover firmware load
 # and probe as well, not just node creation.
 WAIT_SECONDS_MAX=${HYCU_CDI_WAIT_SECONDS:-240}
+# taa-init starts hymgr as soon as /dev/kfd exists; this wait only closes the
+# gap before the container that needs the card is created.
+HYCU_MANAGER_WAIT_SECONDS=${HYCU_MANAGER_WAIT_SECONDS:-20}
+# Being in /proc is not the same as having registered. hymgr creates its
+# listening socket first and issues MKFD_IOC_REGISTER_HYUDS_SPACE a few steps
+# later, so a short settle keeps the container's first HIP call from landing in
+# between and getting -EBADF.
+HYCU_MANAGER_SETTLE_SECONDS=${HYCU_MANAGER_SETTLE_SECONDS:-3}
 
 log() {
   printf '%s: %s\n' "$LOG_TAG" "$*"
 }
+
+# A non-numeric override makes dash's `[` exit 2 ("Illegal number"), and a test
+# that errors is false: the wait's timeout branch would never fire and container
+# creation would hang instead of proceeding. Fall back to the documented default
+# and say so, the same way taa-init does for its numeric knobs.
+sanitize_seconds() {
+  local name="$1" value="$2" fallback="$3"
+  case "$value" in
+    ''|*[!0-9]*)
+      # stderr, not log(): the caller captures stdout, and a warning inside the
+      # capture would become the variable's value.
+      printf '%s: WARNING: %s=%s is not a non-negative integer; using %s\n' \
+        "$LOG_TAG" "$name" "'$value'" "$fallback" >&2
+      printf '%s\n' "$fallback" ;;
+    *) printf '%s\n' "$value" ;;
+  esac
+}
+
+HYCU_MANAGER_WAIT_SECONDS="$(sanitize_seconds HYCU_MANAGER_WAIT_SECONDS "$HYCU_MANAGER_WAIT_SECONDS" 20)"
+HYCU_MANAGER_SETTLE_SECONDS="$(sanitize_seconds HYCU_MANAGER_SETTLE_SECONDS "$HYCU_MANAGER_SETTLE_SECONDS" 3)"
 
 # Print the value of taa.taa_modules= from the kernel command line, which is
 # also what build-initrd renders and what taa-init used to consume itself.
@@ -109,6 +138,44 @@ load_kernel_modules() {
   return 0
 }
 
+# True when taa-init's supervisor has hymgr up. The supervisor owns the start;
+# this hook only waits, so there is exactly one launch point and no duplicate
+# instance race.
+hycu_manager_running() {
+  for comm in /proc/[0-9]*/comm; do
+    [ -r "$comm" ] || continue
+    case "$(cat "$comm" 2>/dev/null)" in
+      hymgr) return 0 ;;
+    esac
+  done
+  return 1
+}
+
+# hymgr must be up before the first container starts, because the first HIP call
+# inside it fails with -EBADF until the hyuds space is registered. The manager
+# is launched by taa-init once the driver above has created /dev/kfd; waiting
+# here keeps the container's first second from racing that launch without
+# adding a second starter.
+#
+# Only the call that creates the spec needs this: the registration is guest-wide
+# and does not go away with the spec, so later containers in the same guest skip
+# both this wait and its settle delay.
+wait_for_hycu_manager() {
+  [ -x "$HYCU_MANAGER" ] || return 0
+  waited=0
+  while ! hycu_manager_running; do
+    if [ "$waited" -ge "$HYCU_MANAGER_WAIT_SECONDS" ]; then
+      log "WARNING: hymgr is not running after ${waited}s; HIP in the container will not find the GPU"
+      return 0
+    fi
+    sleep 1
+    waited=$((waited + 1))
+  done
+  log "hymgr is up; allowing ${HYCU_MANAGER_SETTLE_SECONDS}s for the hyuds registration"
+  sleep "$HYCU_MANAGER_SETTLE_SECONDS"
+  return 0
+}
+
 # Print the DRM node name (card0, renderD128) whose sysfs entry resolves to the
 # given BDF. Connector entries (card0-DP-1) are skipped; they share the card's
 # prefix but are not device nodes.
@@ -159,6 +226,11 @@ if [ -e "$CDI_SPEC_PATH" ]; then
   log "spec already exists at $CDI_SPEC_PATH; nothing to do"
   exit 0
 fi
+
+# The card is present and the spec is about to be created for the first
+# container of this guest. taa-init starts hymgr as soon as the driver creates
+# /dev/kfd; make sure it is up before that container runs its first HIP call.
+wait_for_hycu_manager
 
 mkdir -p "$CDI_DIR" || {
   log "cannot create $CDI_DIR; leaving no CDI spec"
@@ -226,10 +298,11 @@ for node in kfd mkfd; do
   fi
 done
 
-# The vendor spec bind-mounts the DTK tree from the guest. This initrd has no
-# /opt/hyhal (the container image carries its own stack), so the mount is
-# emitted only when the guest path exists; otherwise the container would get an
-# empty directory over its own runtime tree.
+# The vendor spec bind-mounts the HYCU userland from the guest. The DCU payload
+# ships it at /usr/local/hyhal with the same /opt/hyhal symlink the vendor guest
+# has; the mount is still emitted only when the path exists, because a container
+# that gets an empty directory over its own runtime tree fails with an unrelated
+# error.
 mounts=
 if [ -d "$HYHAL_DIR" ]; then
   mounts="[{\"hostPath\": \"$HYHAL_DIR\", \"containerPath\": \"$HYHAL_DIR\", \"type\": \"bind\", \"options\": [\"rbind\", \"ro\", \"rprivate\"]}]"
