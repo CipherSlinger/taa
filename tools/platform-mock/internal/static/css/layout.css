@@ -110,12 +110,20 @@ p {
 @media (max-width: 1200px) {
   .three-col-layout {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+    /* With an odd third card alone on the second row, stretching only matched
+       the two cards that share a row (530 / 530 / 472). Equal implicit rows
+       make the lone card take the same height as the pair above it. The
+       single-column layout below is left alone: stacking three cards at the
+       tallest one's height would only add empty space on a phone. */
+    grid-auto-rows: 1fr;
   }
 }
 
 @media (max-width: 768px) {
   .three-col-layout {
     grid-template-columns: 1fr;
+    /* Drop the equal-row rule carried in from the two-column breakpoint. */
+    grid-auto-rows: auto;
   }
 }
 
