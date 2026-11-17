@@ -956,37 +956,33 @@ function renderRegister(data) {
   const dot = document.getElementById('dot');
   const pill = document.getElementById('registerPill');
   if (dot) dot.className = 'dot';
-  const pubKeyBtn = document.getElementById('taaPublicKeyBtn');
   const publicKeyField = document.getElementById('registerPublicKey');
+  const keyModal = document.getElementById('taaPublicKeyModal');
+  const keyModalOpen = !!(keyModal && keyModal.classList.contains('open'));
   if (!data || !data.received) {
     if (pill) pill.className = 'status-pill pending';
     text('statusText', '未注册');
-    const regBtn = document.getElementById('registerBodyBtn');
-    if (regBtn) regBtn.disabled = true;
-    if (pubKeyBtn) pubKeyBtn.disabled = true;
-    if (publicKeyField) publicKeyField.value = '';
+    if (publicKeyField && !keyModalOpen) publicKeyField.value = '';
     return;
   }
   if (dot) dot.className = 'dot ' + (data.accepted ? 'ok status-pill ok' : 'bad status-pill bad');
   if (pill) pill.className = 'status-pill ' + (data.accepted ? 'ok' : 'bad');
   text('statusText', data.accepted ? '已注册' : '注册失败');
-  const regBtn = document.getElementById('registerBodyBtn');
-  if (regBtn) regBtn.disabled = false;
   const publicKey = data.accepted ? String(data.taaPublicKey || '').trim() : '';
-  if (publicKey) {
-    if (pubKeyBtn) pubKeyBtn.disabled = false;
-    if (publicKeyField) publicKeyField.value = publicKey;
-  } else {
-    if (pubKeyBtn) pubKeyBtn.disabled = true;
-    if (publicKeyField) publicKeyField.value = '';
-  }
+  // The modal may be showing another row's key; the poll must not overwrite it
+  // while it is open.
+  if (publicKeyField && !keyModalOpen) publicKeyField.value = publicKey;
 }
 
-function openTaaPublicKeyModal() {
+// openTaaPublicKeyModal shows one instance's registration key. The list passes
+// the key it read itself, so the modal never depends on which instance the page
+// happens to have selected.
+function openTaaPublicKeyModal(key, dockerId) {
   const modal = document.getElementById('taaPublicKeyModal');
   if (!modal) return;
   const pubKeyField = document.getElementById('registerPublicKey');
-  if (!pubKeyField || !pubKeyField.value) {
+  const value = String(key || (pubKeyField ? pubKeyField.value : '') || '').trim();
+  if (!value) {
     if (typeof showToast === 'function') {
       showToast({ type: 'warning', title: '提示', message: '暂无 TAA 注册公钥' });
     } else {
@@ -994,6 +990,9 @@ function openTaaPublicKeyModal() {
     }
     return;
   }
+  if (pubKeyField) pubKeyField.value = value;
+  const title = document.getElementById('taaPublicKeyModalTitle');
+  if (title) title.textContent = dockerId ? 'TAA 注册公钥 · ' + dockerId : 'TAA 注册公钥';
   modal.classList.add('open');
   modal.setAttribute('aria-hidden', 'false');
 }
@@ -1009,7 +1008,22 @@ function closeTaaPublicKeyModal() {
 window.openTaaPublicKeyModal = openTaaPublicKeyModal;
 window.closeTaaPublicKeyModal = closeTaaPublicKeyModal;
 
-function openRegisterBodyModal() {
+// openRegisterBodyModal shows a registration record. A list row passes the
+// record it read for its own dockerId; without one the selected instance's last
+// record is used, which is what the old toolbar button relied on.
+function openRegisterBodyModal(reg, dockerId) {
+  if (reg) {
+    recordInteraction('register', {
+      title: dockerId ? '平台注册详情 · ' + dockerId : '平台注册详情',
+      primaryLabel: '上报内容 (TAA请求体)',
+      secondaryLabel: '平台应答',
+      primaryContent: reg,
+      secondaryContent: { code: 0, msg: 'ok', result: { accepted: Boolean(reg && reg.accepted) } },
+      endpoint: '/v1/taa/register',
+    });
+    openInteractionDrawer('register', 'primary');
+    return;
+  }
   if (lastRegisterModalTitle && lastRegisterModalTitle.includes('/v1/taa/getAttestation')) {
     openInteractionDrawer('attestation', 'primary');
     return;

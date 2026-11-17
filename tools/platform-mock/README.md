@@ -251,6 +251,11 @@ flag: instance identity is the registration's `dockerId`.
   `/api/request-logs/*`) ignore it. `GET /api/instances` returns the instance
   list, each instance's derived `kind` (`tee` or `fhe`) and `defaultDockerId`. Selecting an
   instance also switches the console panels to that kind.
+- **Instance list**: the flow console renders that list as rows grouped by kind. Each row shows
+  its own connection state — `已连接` once the platform accepted the registration, `注册失败` when
+  the report was rejected, `未注册` while the record has nothing yet — and carries its own actions
+  (公钥, 注册返回, 获取证明报告 for TEE, 删除). Those buttons address their row's `dockerId`
+  directly; only the address/health detail row below follows the selected instance.
 - **Removing a stale instance**: `POST /api/instances/delete?dockerId=...` deletes that
   instance's state directory and its stored TAA public key. The console's 删除实例 button
   calls it. A Pod that has been deleted sends nothing, so this is the only way a stale entry

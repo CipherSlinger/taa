@@ -452,12 +452,12 @@ function apiTesterInit() {
 
   // The envelope is sealed for one instance: its dockerId selects the
   // registered TAA key, so a selection change reloads the keys and reseals.
-  // Deferred one turn because the selector's own handler updates
-  // currentDockerId, and listener order is not guaranteed.
-  const instance = document.getElementById('instanceSelect');
-  if (instance) instance.addEventListener('change', () => {
+  // The instance list is not a <select>, so the console announces every
+  // selection move as an event instead.
+  window.addEventListener('pm-instance-change', (event) => {
+    const id = (event && event.detail && event.detail.dockerId) || '';
     setTimeout(() => {
-      apiTesterDockerId = instance.value;
+      apiTesterDockerId = id;
       if (apiTesterBaseAuto && base) base.value = apiTesterDefaultBase();
       if (apiTesterKeysAuto) {
         apiTesterLoadKeys();

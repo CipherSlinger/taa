@@ -139,6 +139,9 @@ async function copyRegisterPublicKey(btnEl) {
 
 let _lastAttestationBase64 = null;
 let _lastAttestationValues = null;
+// The instance the held report belongs to. The report is one value in the page,
+// so only that row may offer to save or inspect it.
+let _lastAttestationOwner = '';
 
 function base64ToUint8Array(b64) {
   const binary = atob(b64);
@@ -158,10 +161,9 @@ async function testGetAttestation() {
   if (statusEl) statusEl.textContent = '正在获取远程证明报告...';
   const dot = document.getElementById('dot');
   if (dot) dot.className = 'dot';
-  const saveBtn = document.getElementById('saveReportBtn');
-  if (saveBtn) saveBtn.disabled = true;
   _lastAttestationBase64 = null;
   _lastAttestationValues = null;
+  _lastAttestationOwner = '';
   const reqIdEl = document.getElementById('attestRequestId');
   const body = { requestId: reqIdEl ? reqIdEl.value : 'req-mock-attest-001' };
 
@@ -199,20 +201,14 @@ async function testGetAttestation() {
     if (ok) {
       _lastAttestationBase64 = attB64;
       _lastAttestationValues = attValues;
-      // The card hides the result actions until there is a report to act on.
-      if (saveBtn) {
-        saveBtn.disabled = false;
-        saveBtn.style.display = 'inline-flex';
-      }
+      // The report belongs to the instance that answered, so its row is the one
+      // that gains 保存报告 / 查看返回.
+      _lastAttestationOwner = typeof currentDockerId === 'function' ? currentDockerId() : '';
     }
     if (typeof lastRegisterModalTitle !== 'undefined') {
       lastRegisterModalTitle = '/v1/taa/getAttestation 返回 body';
       lastRegisterModalBody = displayText;
     }
-    const regBodyBtn = document.getElementById('registerBodyBtn');
-    if (regBodyBtn) regBodyBtn.disabled = false;
-    const attestBtn = document.getElementById('attestationBodyBtn');
-    if (attestBtn) attestBtn.style.display = 'inline-flex';
     if (statusEl) statusEl.textContent = ok ? '已获取远程证明报告 (HTTP ' + res.status + ')' : '获取远程证明报告失败';
     if (dot) dot.className = 'dot ' + (ok ? 'ok' : 'bad');
     if (typeof recordInteraction === 'function') {
@@ -238,10 +234,6 @@ async function testGetAttestation() {
       lastRegisterModalTitle = '/v1/taa/getAttestation 请求失败';
       lastRegisterModalBody = msg;
     }
-    const regBodyBtn = document.getElementById('registerBodyBtn');
-    if (regBodyBtn) regBodyBtn.disabled = false;
-    const attestBtn = document.getElementById('attestationBodyBtn');
-    if (attestBtn) attestBtn.style.display = 'inline-flex';
     if (statusEl) statusEl.textContent = '获取远程证明报告失败';
     if (dot) dot.className = 'dot bad';
     if (typeof recordInteraction === 'function') {
@@ -255,6 +247,8 @@ async function testGetAttestation() {
       showResult('attestationResult', false, msg);
     }
   }
+  // The owning row gains or loses 保存报告 / 查看返回 with this result.
+  if (typeof renderInstanceList === 'function') renderInstanceList();
 }
 
 function saveAttestationReport() {

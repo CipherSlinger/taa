@@ -2046,32 +2046,44 @@ func TestHealthCheckIntegratedIntoRegistration(t *testing.T) {
 		t.Fatal("statusText should default to 未注册")
 	}
 
-	// The registration and attestation buttons act on the selected instance, so the
-	// selector leads the card and both button groups share one toolbar below the
-	// address row instead of sitting in the card corners.
-	selectorIdx := strings.Index(indexHTML, `id="instanceSelect"`)
-	pubKeyBtnIdx := strings.Index(indexHTML, `id="taaPublicKeyBtn"`)
-	attestBtnIdx := strings.Index(indexHTML, `testGetAttestation()`)
-	if selectorIdx == -1 || pubKeyBtnIdx == -1 || attestBtnIdx == -1 {
-		t.Fatalf("instance actions missing: selector=%d pubkey=%d attest=%d", selectorIdx, pubKeyBtnIdx, attestBtnIdx)
+	// Instance management is a list, not a dropdown: the rows carry the
+	// connection state and the actions for the instance they name, and the
+	// address row below is the detail view of the selected row.
+	listIdx := strings.Index(indexHTML, `id="instanceList"`)
+	if listIdx == -1 {
+		t.Fatal(`indexHTML missing id="instanceList"`)
 	}
-	if selectorIdx > targetPillIdx {
-		t.Fatal("instance selector should lead the card, above the service address row")
+	if listIdx > targetPillIdx {
+		t.Fatal("instance list should lead the card, above the service address row")
 	}
-	if pubKeyBtnIdx < targetPillIdx || attestBtnIdx < pubKeyBtnIdx {
-		t.Fatal("registration and attestation actions should share one toolbar below the address row")
+	if strings.Contains(indexHTML, `id="instanceSelect"`) {
+		t.Fatal("the instance dropdown is still in the markup")
 	}
-	if !strings.Contains(indexHTML, `<div class="action-group" data-console="tee">`) {
-		t.Fatal("the attestation action group should stay TEE-only")
-	}
-	// Result actions stay hidden until the card has a result to act on.
+	// The rows and their buttons are built by the list renderer; these strings
+	// are what makes each row self-describing.
 	for _, want := range []string{
-		`style="display:none;" disabled>查看结果`,
-		`style="display:none;" disabled>保存报告`,
+		"function renderInstanceList(",
+		"function buildInstanceRow(",
+		"function selectInstance(",
+		"function deleteInstance(",
+		"INSTANCE_GROUPS",
+		"instance-row-actions",
+		"instance-row-main",
+		"instance-state-dot",
+		"openInstancePublicKey(",
+		"openInstanceRegisterBody(",
+		"runInstanceAttestation(",
+		"if (item.kind === 'tee')",
+		"_lastAttestationOwner === id",
+		"pm-instance-change",
 	} {
-		if !strings.Contains(indexHTML, want) {
-			t.Fatalf("indexHTML missing hidden-until-ready action %q", want)
+		if !strings.Contains(frontendBundle, want) {
+			t.Errorf("frontendBundle missing %q, so the instance list cannot render its rows", want)
 		}
+	}
+	// The health result still stays hidden until there is a result to act on.
+	if !strings.Contains(indexHTML, `style="display:none;" disabled>查看结果`) {
+		t.Fatal("indexHTML missing hidden-until-ready health result action")
 	}
 }
 
@@ -2529,8 +2541,10 @@ func TestAdvancedUIPolishVisualDashboardAndStepperComponents(t *testing.T) {
 		".id-inputs-cols",
 		".id-input-col",
 		".id-field-value",
-		".instance-action-bar",
-		".action-group-label",
+		".instance-list",
+		".instance-group-head",
+		".instance-row-main",
+		".instance-row-actions",
 		"button.btn-sm",
 		".llm-meta-grid",
 		".llm-panel-body",
@@ -2552,7 +2566,7 @@ func TestAdvancedUIPolishVisualDashboardAndStepperComponents(t *testing.T) {
 		`class="log-filter-group"`,
 		`id="terminalSearchInput"`,
 		`id="searchMatchCount"`,
-		`id="taaPublicKeyBtn"`,
+		`id="instanceList"`,
 		`id="taaPublicKeyModal"`,
 		`id="copyPubKeyBtn"`,
 	}
@@ -2612,12 +2626,16 @@ func TestUILayoutKeyModalAndSideBySideInputs(t *testing.T) {
 		t.Fatal("indexHTML should not contain id=\"pipelineStepper\"")
 	}
 
-	// 2. Verify TAA public key button and modal structure
-	if !strings.Contains(indexHTML, `id="taaPublicKeyBtn"`) {
-		t.Fatal("indexHTML missing id=\"taaPublicKeyBtn\"")
+	// 2. Verify TAA public key modal structure. The trigger is a per-instance row
+	// button built by the list renderer, so the markup check is the list itself
+	// and the JS check is the handler that opens it for one dockerId.
+	if !strings.Contains(indexHTML, `id="instanceList"`) {
+		t.Fatal("indexHTML missing id=\"instanceList\"")
 	}
-	if !strings.Contains(indexHTML, `onclick="openTaaPublicKeyModal()"`) {
-		t.Fatal("indexHTML missing openTaaPublicKeyModal() trigger on button")
+	for _, want := range []string{"openInstancePublicKey(", "openTaaPublicKeyModal(key, dockerId)"} {
+		if !strings.Contains(frontendBundle, want) {
+			t.Fatalf("frontendBundle missing %q, so no row can open the key modal", want)
+		}
 	}
 	if !strings.Contains(indexHTML, `id="taaPublicKeyModal"`) {
 		t.Fatal("indexHTML missing id=\"taaPublicKeyModal\"")
@@ -2973,22 +2991,23 @@ func TestConsoleModeFollowsTheSelectedInstance(t *testing.T) {
 
 func TestFrontendInstanceSelector(t *testing.T) {
 	for _, want := range []string{
-		`id="instanceSelect"`,
-		`id="instanceSelectLabel"`,
-		`id="instanceDeleteBtn"`,
+		`id="instanceList"`,
 		"function currentDockerId()",
 		"function withDockerId(url)",
 		"function mockFetch(url, opts)",
 		"function loadInstances()",
 		"function initInstanceSelector()",
 		"function deleteSelectedInstance()",
+		"function deleteInstance(id)",
+		"function renderInstanceList()",
+		"function setInstanceSelectorVisibility(show)",
 		"/api/instances/delete?dockerId=",
 		"initInstanceSelector();",
 		"fetch('/api/instances'",
-		"sel.addEventListener('change'",
+		"window.addEventListener('pm-instance-change'",
+		"notifyInstanceChange(",
 		"target.endsWith('/taa')",
-		"instanceSelect').style.display",
-		"list.length > 0",
+		"setInstanceSelectorVisibility(list.length > 0)",
 		"encodeURIComponent(id)",
 		"withDockerId('/api/upload')",
 		"dockerId=",

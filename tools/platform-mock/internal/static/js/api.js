@@ -47,6 +47,10 @@ function mockFetch(url, opts) {
 }
 
 let instanceListSignature = null;
+// instanceCache is the last /api/instances payload. renderInstanceList() reads
+// it, so a selection change repaints the list without another request.
+let instanceCache = [];
+let instanceRenderedSelection = '';
 // instanceKinds maps dockerId to the kind the mock derived from that instance's
 // registration. It is refreshed with the list; the console mode reads it on
 // selection so the panels follow the instance without another request.
@@ -56,58 +60,291 @@ let instanceKinds = {};
 // to TAA; through the mock's /taa proxy it would be sealed a second time.
 let instanceTargets = {};
 
+// INSTANCE_GROUPS is the fixed display order of the list. A kind the mock does
+// not infer (a record that never registered) still gets a section rather than
+// disappearing from the management view.
+const INSTANCE_GROUPS = [
+  { kind: 'tee', label: 'TEE 实例 · CSV 机密 VM' },
+  { kind: 'fhe', label: 'FHE 实例 · GPU 宿主机' },
+  { kind: '', label: '未识别类型' },
+];
+
 function instanceKindLabel(kind) {
   if (kind === 'tee') return 'TEE';
   if (kind === 'fhe') return 'FHE';
   return '';
 }
 
+// instanceConnectionState is the per-row connection badge. The mock does not
+// probe instances, so the honest signal is what the platform itself knows: an
+// accepted registration means the instance is connected, a report that the
+// platform rejected is a failed registration, and silence is "never registered".
+function instanceConnectionState(item) {
+  if (item.accepted) return { label: '已连接', tone: 'ok', hint: '平台已接受该实例的注册' };
+  if (item.received) return { label: '注册失败', tone: 'bad', hint: '实例已上报，但平台未接受' };
+  return { label: '未注册', tone: 'pending', hint: '尚未收到该实例的注册请求' };
+}
+
+function instanceClock(at) {
+  if (!at) return '';
+  const d = new Date(at);
+  if (isNaN(d.getTime())) return at;
+  const pad = (n) => String(n).padStart(2, '0');
+  return pad(d.getHours()) + ':' + pad(d.getMinutes()) + ':' + pad(d.getSeconds());
+}
+
 function setInstanceSelectorVisibility(show) {
-  document.getElementById('instanceSelect').style.display = show ? '' : 'none';
-  const label = document.getElementById('instanceSelectLabel');
-  if (label) label.style.display = show ? '' : 'none';
-  const del = document.getElementById('instanceDeleteBtn');
-  if (del) del.style.display = show ? '' : 'none';
+  const list = document.getElementById('instanceList');
+  if (list) list.style.display = show ? '' : 'none';
+}
+
+function notifyInstanceChange(id) {
+  window.dispatchEvent(new CustomEvent('pm-instance-change', { detail: { dockerId: id } }));
+}
+
+function instanceWarning(message) {
+  if (typeof showToast === 'function') {
+    showToast({ type: 'warning', title: '提示', message: message });
+    return;
+  }
+  alert(message);
 }
 
 function applyInstanceList(list, defaultId) {
-  const sel = document.getElementById('instanceSelect');
-  if (!sel) return;
-  // Rebuilding identical options closes an open dropdown, so only touch the DOM
-  // when the instance set, a kind or the default actually changed. The kind is
-  // part of the signature because a re-registration can change it while the
-  // dockerId stays the same.
-  const signature = list.map((item) => (item.dockerId || '') + '|' + (item.accepted ? '1' : '0') + '|' + (item.kind || '') + '|' + (item.taaTarget || '')).join(',') + '#' + (defaultId || '');
-  if (signature !== instanceListSignature) {
-    instanceListSignature = signature;
-    instanceKinds = {};
-    instanceTargets = {};
-    const previous = sel.value || currentInstanceDockerId;
-    sel.innerHTML = '';
-    list.forEach((item) => {
-      const opt = document.createElement('option');
-      opt.value = item.dockerId || '';
-      const name = item.dockerId || '(legacy)';
-      const kind = instanceKindLabel(item.kind);
-      opt.textContent = (item.accepted ? name : name + ' (未注册)') + (kind ? ' · ' + kind : '');
-      sel.appendChild(opt);
-      if (item.dockerId) {
-        instanceKinds[item.dockerId] = item.kind || '';
-        instanceTargets[item.dockerId] = item.taaTarget || '';
-      }
-    });
-    if (previous && list.some((item) => (item.dockerId || '') === previous)) {
-      sel.value = previous;
-    } else {
-      sel.value = defaultId || '';
-    }
-  } else if (!sel.value) {
-    sel.value = defaultId || '';
+  const container = document.getElementById('instanceList');
+  if (!container) return;
+  instanceCache = list;
+  // The signature covers everything a row renders, so the poll only repaints
+  // when the payload actually changed (and never mid-click otherwise).
+  const signature = list.map((item) => [
+    item.dockerId || '',
+    item.accepted ? '1' : '0',
+    item.received ? '1' : '0',
+    item.kind || '',
+    item.taaTarget || '',
+    item.lastReportAt || '',
+    item.default ? '1' : '0',
+  ].join('|')).join(',') + '#' + (defaultId || '');
+  const previous = currentInstanceDockerId;
+  let next = previous;
+  if (!list.some((item) => (item.dockerId || '') === next)) {
+    next = defaultId || (list[0] && list[0].dockerId) || '';
   }
-  currentInstanceDockerId = sel.value;
+  currentInstanceDockerId = next;
+  instanceKinds = {};
+  instanceTargets = {};
+  list.forEach((item) => {
+    if (!item.dockerId) return;
+    instanceKinds[item.dockerId] = item.kind || '';
+    instanceTargets[item.dockerId] = item.taaTarget || '';
+  });
+  updateInstanceSummary(list);
+  if (signature !== instanceListSignature || next !== instanceRenderedSelection) {
+    instanceListSignature = signature;
+    renderInstanceList();
+  }
   applySelectedInstanceKind();
+  if (previous !== next) notifyInstanceChange(next);
   setInstanceSelectorVisibility(list.length > 0);
 }
+
+function updateInstanceSummary(list) {
+  const el = document.getElementById('instanceSummary');
+  if (!el) return;
+  if (!list.length) {
+    el.textContent = '暂无已注册实例';
+    return;
+  }
+  const connected = list.filter((item) => item.accepted).length;
+  el.textContent = '共 ' + list.length + ' 个实例，' + connected + ' 个已连接';
+}
+
+// renderInstanceList paints one section per kind from instanceCache. Rows are
+// built with DOM calls rather than innerHTML because a dockerId is host input:
+// a registration can carry any string, and it must stay text.
+function renderInstanceList() {
+  const container = document.getElementById('instanceList');
+  if (!container) return;
+  container.textContent = '';
+  if (!instanceCache.length) {
+    const empty = document.createElement('div');
+    empty.className = 'instance-empty';
+    empty.textContent = '暂无已注册实例。TAA 启动后会向平台注册，列表每 5 秒刷新一次。';
+    container.appendChild(empty);
+    instanceRenderedSelection = '';
+    return;
+  }
+  INSTANCE_GROUPS.forEach((group) => {
+    const items = instanceCache.filter((item) => (item.kind || '') === group.kind);
+    if (!items.length) return;
+    const section = document.createElement('div');
+    section.className = 'instance-group';
+    const head = document.createElement('div');
+    head.className = 'instance-group-head';
+    const label = document.createElement('span');
+    label.textContent = group.label;
+    const count = document.createElement('span');
+    count.className = 'instance-group-count';
+    count.textContent = items.length + ' 个';
+    head.appendChild(label);
+    head.appendChild(count);
+    section.appendChild(head);
+    items.forEach((item) => section.appendChild(buildInstanceRow(item)));
+    container.appendChild(section);
+  });
+  instanceRenderedSelection = currentInstanceDockerId;
+}
+
+// buildInstanceRow is one instance: a select button carrying its identity and
+// connection state, plus actions bound to this dockerId only. The actions do
+// not read the selection, so a click can never be sent to a neighbouring row.
+function buildInstanceRow(item) {
+  const id = item.dockerId || '';
+  const selected = id === currentInstanceDockerId;
+  const state = instanceConnectionState(item);
+  const row = document.createElement('div');
+  row.className = 'instance-row' + (selected ? ' selected' : '');
+  row.dataset.dockerId = id;
+
+  const main = document.createElement('button');
+  main.type = 'button';
+  main.className = 'instance-row-main';
+  main.setAttribute('aria-pressed', selected ? 'true' : 'false');
+  main.title = state.hint + (item.taaTarget ? '\nTAA 地址 ' + item.taaTarget : '');
+  main.addEventListener('click', () => selectInstance(id));
+
+  const dot = document.createElement('span');
+  dot.className = 'instance-state-dot ' + state.tone;
+  const name = document.createElement('span');
+  name.className = 'instance-name';
+  name.textContent = id || '(legacy)';
+  main.appendChild(dot);
+  main.appendChild(name);
+  const kind = instanceKindLabel(item.kind);
+  if (kind) {
+    const tag = document.createElement('span');
+    tag.className = 'instance-kind-tag';
+    tag.textContent = kind;
+    main.appendChild(tag);
+  }
+  if (item.default) {
+    const tag = document.createElement('span');
+    tag.className = 'instance-default-tag';
+    tag.textContent = '默认';
+    main.appendChild(tag);
+  }
+  const stateText = document.createElement('span');
+  stateText.className = 'instance-state-text ' + state.tone;
+  stateText.textContent = state.label;
+  main.appendChild(stateText);
+  const meta = document.createElement('span');
+  meta.className = 'instance-meta';
+  const at = instanceClock(item.lastReportAt);
+  meta.textContent = at ? '最近上报 ' + at : '无上报记录';
+  if (item.taaTarget) meta.title = item.taaTarget;
+  main.appendChild(meta);
+
+  const actions = document.createElement('div');
+  actions.className = 'instance-row-actions';
+  actions.appendChild(instanceActionButton('公钥', () => openInstancePublicKey(id), !item.accepted, '查看该实例上报的 TAA 注册公钥'));
+  actions.appendChild(instanceActionButton('注册返回', () => openInstanceRegisterBody(id), !item.received, '查看该实例的注册请求与平台返回'));
+  if (item.kind === 'tee') {
+    actions.appendChild(instanceActionButton('获取证明报告', () => runInstanceAttestation(id), false, '获取该实例的 CSV 远程证明报告'));
+    // The report blob is one value in the page, so these two only exist on the
+    // row that produced it.
+    if (typeof _lastAttestationOwner !== 'undefined' && _lastAttestationOwner === id) {
+      actions.appendChild(instanceActionButton('保存报告', () => saveAttestationReport(), false, '保存刚获取的证明报告'));
+      actions.appendChild(instanceActionButton('查看返回', () => openInteractionModal('attestation', 'primary'), false, '查看证明接口的请求与返回'));
+    }
+  }
+  const del = instanceActionButton('删除', () => deleteInstance(id), false, '删除该实例的本地记录（Pod 已删除后清理）');
+  del.classList.add('danger');
+  actions.appendChild(del);
+
+  row.appendChild(main);
+  row.appendChild(actions);
+  return row;
+}
+
+function instanceActionButton(label, handler, disabled, title) {
+  const btn = document.createElement('button');
+  btn.type = 'button';
+  btn.className = 'secondary btn-sm';
+  btn.textContent = label;
+  btn.disabled = !!disabled;
+  if (title) btn.title = title;
+  btn.addEventListener('click', handler);
+  return btn;
+}
+
+// selectInstance moves the detail view (address, registration pill, health and
+// the flow panels) to one instance. A row action selects first so the request
+// it sends is addressed to the row the operator clicked.
+function selectInstance(id) {
+  if (!id) return;
+  if (id === currentInstanceDockerId) {
+    renderInstanceList();
+    return;
+  }
+  currentInstanceDockerId = id;
+  applySelectedInstanceKind();
+  renderInstanceList();
+  notifyInstanceChange(id);
+  refreshInstancePanels();
+}
+
+// fetchInstanceRegister reads one instance's registration without moving the
+// selection: the list buttons act on their own row.
+async function fetchInstanceRegister(id) {
+  const res = await fetch('/api/dashboard/status?dockerId=' + encodeURIComponent(id), { cache: 'no-store' });
+  const data = await res.json().catch(() => ({}));
+  const payload = (data && data.result) || {};
+  return payload.register || {};
+}
+
+async function openInstancePublicKey(id) {
+  let reg = null;
+  try {
+    reg = await fetchInstanceRegister(id);
+  } catch (_) {
+    instanceWarning('读取实例 ' + id + ' 的注册信息失败');
+    return;
+  }
+  const key = String((reg && reg.taaPublicKey) || '').trim();
+  if (!key) {
+    instanceWarning('实例 ' + id + ' 尚未上报 TAA 注册公钥');
+    return;
+  }
+  openTaaPublicKeyModal(key, id);
+}
+
+async function openInstanceRegisterBody(id) {
+  let reg = null;
+  try {
+    reg = await fetchInstanceRegister(id);
+  } catch (_) {
+    instanceWarning('读取实例 ' + id + ' 的注册信息失败');
+    return;
+  }
+  if (!reg || !reg.received) {
+    instanceWarning('实例 ' + id + ' 尚未上报注册请求');
+    return;
+  }
+  openRegisterBodyModal(reg, id);
+}
+
+// runInstanceAttestation switches the target to the clicked row before the
+// request, because taaFetch reads the selected instance's address.
+async function runInstanceAttestation(id) {
+  selectInstance(id);
+  try {
+    if (typeof detectTAAProxy === 'function') await detectTAAProxy();
+    await testGetAttestation();
+  } finally {
+    renderInstanceList();
+  }
+}
+
 
 // applySelectedInstanceKind drives the panel set from the selected instance.
 function applySelectedInstanceKind() {
@@ -153,16 +390,6 @@ function maybeAutoDetectTAAAddr(result) {
 }
 
 function initInstanceSelector() {
-  const sel = document.getElementById('instanceSelect');
-  if (sel) {
-    sel.addEventListener('change', () => {
-      currentInstanceDockerId = sel.value;
-      // The selected instance's kind decides which panels apply, before the
-      // refreshes below run.
-      applySelectedInstanceKind();
-      refreshInstancePanels();
-    });
-  }
   loadInstances();
   setInterval(loadInstances, 5000);
 }
@@ -187,11 +414,10 @@ function refreshInstancePanels() {
   }
 }
 
-// deleteSelectedInstance removes the selected instance's local records after
-// its Pod is gone. A deleted Pod sends nothing, so without this the selector
-// would keep offering an instance that can never answer again.
-async function deleteSelectedInstance() {
-  const id = currentDockerId();
+// deleteInstance removes one instance's local records after its Pod is gone. A
+// deleted Pod sends nothing, so without this the list would keep offering an
+// instance that can never answer again.
+async function deleteInstance(id) {
   if (!id) return;
   if (!confirm('删除实例 ' + id + ' 的本地记录？\n这不会影响 Pod，只清理平台模拟器保存的注册与上报数据。')) {
     return;
@@ -204,15 +430,21 @@ async function deleteSelectedInstance() {
       return;
     }
     // The selection itself must move to whatever remains before the refreshes
-    // run, and the list signature is reset so the options are rebuilt even if
+    // run, and the list signature is reset so the rows are rebuilt even if
     // another poll is already in flight.
-    currentInstanceDockerId = '';
+    if (id === currentInstanceDockerId) currentInstanceDockerId = '';
     instanceListSignature = null;
     await loadInstances();
     refreshInstancePanels();
   } catch (err) {
     alert('删除失败: ' + err.message);
   }
+}
+
+// deleteSelectedInstance survives as the console's instance-agnostic entry
+// point; the row buttons call deleteInstance(id) directly.
+function deleteSelectedInstance() {
+  return deleteInstance(currentDockerId());
 }
 
 function formatResp(r) {
