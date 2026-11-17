@@ -1903,3 +1903,74 @@ document.addEventListener('DOMContentLoaded', () => {
   // Start unified Visibility-aware Polling Manager
   PollingManager.start();
 });
+
+// ── Workspace tabs ──
+//
+// The page carries two workspaces: the flow simulator and the API tester. Only
+// one is mounted at a time; the other keeps its state but is hidden, so switching
+// back does not re-seal an envelope or re-read the instance list.
+const WORKSPACE_TABS = ['flow', 'api'];
+const WORKSPACE_STORAGE_KEY = 'pm.workspace';
+
+function workspaceStoreGet() {
+  try {
+    return localStorage.getItem(WORKSPACE_STORAGE_KEY);
+  } catch (_) {
+    return null;
+  }
+}
+
+function workspaceStoreSet(value) {
+  try {
+    localStorage.setItem(WORKSPACE_STORAGE_KEY, value);
+  } catch (_) {
+    // Remembering the tab is a convenience; a refused write changes nothing.
+  }
+}
+
+function selectWorkspaceTab(tab) {
+  const target = WORKSPACE_TABS.includes(tab) ? tab : 'flow';
+  WORKSPACE_TABS.forEach((name) => {
+    const btn = document.getElementById(name === 'flow' ? 'tabBtnFlow' : 'tabBtnApi');
+    const panel = document.getElementById(name === 'flow' ? 'workspaceFlow' : 'workspaceApi');
+    const active = name === target;
+    if (btn) {
+      btn.classList.toggle('active', active);
+      btn.setAttribute('aria-selected', active ? 'true' : 'false');
+    }
+    if (panel) panel.style.display = active ? '' : 'none';
+  });
+  workspaceStoreSet(target);
+  // The hash follows the tab so the current view survives a reload and can be
+  // linked to. #audit is left untouched: it selects the workbench page.
+  if (location.hash !== '#audit') {
+    const nextHash = target === 'api' ? '#api' : '';
+    const url = location.pathname + location.search + nextHash;
+    if (location.pathname + location.search + location.hash !== url) {
+      history.replaceState(null, '', url);
+    }
+  }
+  return target;
+}
+
+// workspaceFromHash lets a link open the API tester directly. Only #api is
+// claimed here; every other hash (notably #audit, which selects the whole page)
+// belongs to somebody else and is left alone.
+function workspaceFromHash() {
+  return location.hash === '#api' ? 'api' : '';
+}
+
+function initWorkspaceTabs() {
+  if (!document.getElementById('workspaceApi')) return;
+  selectWorkspaceTab(workspaceFromHash() || workspaceStoreGet() || 'flow');
+  window.addEventListener('hashchange', () => {
+    const wanted = workspaceFromHash();
+    if (wanted) selectWorkspaceTab(wanted);
+  });
+}
+
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', initWorkspaceTabs);
+} else {
+  initWorkspaceTabs();
+}

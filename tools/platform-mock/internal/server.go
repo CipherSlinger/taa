@@ -40,12 +40,14 @@ func init() {
 
 	jsFiles := []string{
 		"static/js/toast.js",
+		"static/js/host.js",
 		"static/js/drawer.js",
 		"static/js/api.js",
 		"static/js/crypto.js",
 		"static/js/tree.js",
 		"static/js/logs.js",
 		"static/js/app.js",
+		"static/js/api-tester.js",
 		"static/js/audit-console.js",
 	}
 	for _, f := range jsFiles {
@@ -65,6 +67,7 @@ type Server struct {
 	llmPoller   *llmPoller
 	auditJobs   *auditJobStore
 	localAudits *localAuditRunner
+	hostStatus  *hostStatusCache
 }
 
 // NewServer builds a Server from cfg: it prepares the state/upload directories,
@@ -202,6 +205,12 @@ func NewServer(cfg Config) *Server {
 	mux.HandleFunc("/api/taaLog/status", taaLogStatusHandler(mgr))
 	mux.HandleFunc("/api/taaLog/reset", taaLogResetHandler(mgr))
 	mux.HandleFunc("/api/taa-target", taaTargetHandler(mgr))
+	mux.HandleFunc("/api/taa/open-response", taOpenResponseHandler)
+	// The host panel reads the machine the mock runs on: its address, the memory
+	// left and the Pods that exist. kubectl is behind a short TTL because every
+	// open console tab polls it.
+	hostStatus := newHostStatusCache("", hostStatusTTL)
+	mux.HandleFunc("/api/host/status", hostStatusHandler(hostStatus))
 	mux.HandleFunc("/api/upload", uploadHandler(cfg.Addr, uploadDir, mgr))
 	registerUploadDeleteRoutes(mux, uploadDir)
 	mux.HandleFunc("/api/uploads", uploadListHandler(cfg.Addr, uploadDir))
@@ -234,6 +243,7 @@ func NewServer(cfg Config) *Server {
 		llmPoller:   llmPoller,
 		auditJobs:   auditJobs,
 		localAudits: localAudits,
+		hostStatus:  hostStatus,
 	}
 }
 

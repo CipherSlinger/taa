@@ -4,12 +4,18 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"strings"
 
 	"taa/internal/platform/envelope"
 	"taa/pkg/crypto"
 )
+
+// maxOpenResponseBytes bounds the sealed body the open-response route reads. A
+// TAA response envelope carries one business JSON object; the ceiling is generous
+// enough for the export index and small enough to refuse a stray file upload.
+const maxOpenResponseBytes = 8 << 20
 
 // envelopeRequest is the console's seal request. Either both keys are supplied
 // (an operator-built envelope) or neither is (seal with the mock's own key
@@ -172,4 +178,115 @@ func envelopePlaintext(raw json.RawMessage) ([]byte, error) {
 		return nil, errors.New("待封装请求体为空")
 	}
 	return compact.Bytes(), nil
+}
+
+// openResponseRequest is the body of POST /api/taa/open-response: the sealed
+// response TAA returned, verbatim.
+//
+// It takes the envelope as the request body itself rather than as a field, so a
+// curl command can forward what it saved with --data-binary @file and no jq step
+// in between.
+type openResponseRequest struct {
+	DockerID string `json:"dockerId"`
+}
+
+// taOpenResponseHandler unseals a TAA response for a hand-written curl.
+//
+// TAA seals every JSON response on these routes, so a direct call returns
+// {dockerId?, cipher, sign} and the business answer stays inside cipher. The
+// browser never sees that shape because the mock's reverse proxy opens it on the
+// way back; a command line has no such proxy, so it has to come here.
+//
+// Verification is the same as on the proxy path - decrypt with the platform
+// private key, then verify the signature with the TAA public key registered for
+// the instance - and a body that fails either check is refused rather than
+// returned. Nothing is trusted because it "looks like" a response.
+func taOpenResponseHandler(w http.ResponseWriter, r *http.Request) {
+	setCORS(w)
+	if !requireMethod(w, r, http.MethodPost) {
+		return
+	}
+	ks := currentPlatformKeys()
+	if ks == nil {
+		writeEnvelope(w, http.StatusInternalServerError, "平台密钥对不可用", nil, http.StatusInternalServerError)
+		return
+	}
+	raw, err := io.ReadAll(io.LimitReader(r.Body, maxOpenResponseBytes+1))
+	if err != nil {
+		writeEnvelope(w, http.StatusBadRequest, "读取请求体失败: "+err.Error(), nil, http.StatusBadRequest)
+		return
+	}
+	if len(raw) > maxOpenResponseBytes {
+		writeEnvelope(w, http.StatusRequestEntityTooLarge, "请求体过大：这看起来不是 TAA 的单个响应信封", nil, http.StatusRequestEntityTooLarge)
+		return
+	}
+	env, err := envelope.Parse(bytes.TrimSpace(raw))
+	if err != nil {
+		// Not an envelope at all is the common case here: a plaintext error page,
+		// a 405 from a wrong method, or an empty file from a failed call. Those
+		// are printed as they are, because they are the whole answer.
+		writeOpenResult(w, r, false, strings.TrimSpace(string(raw)), http.StatusOK)
+		return
+	}
+
+	dockerID := strings.TrimSpace(requestedDockerID(r))
+	if dockerID == "" {
+		dockerID = strings.TrimSpace(env.DockerID)
+	}
+	plaintext, err := ks.openFromTAAResponseFor(dockerID, env)
+	if err != nil {
+		// A refusal is the answer the operator needs: it says why the response
+		// could not be trusted (wrong instance key, wrong SM2 identity, tampered
+		// body), which is not something the sealed bytes can convey.
+		if isRawOpenResponse(r) {
+			writeRawText(w, http.StatusBadRequest, "解封 TAA 响应失败: "+err.Error())
+			return
+		}
+		writeEnvelope(w, http.StatusBadRequest, "解封 TAA 响应失败: "+err.Error(), nil, http.StatusBadRequest)
+		return
+	}
+	writeOpenResult(w, r, true, string(plaintext), http.StatusOK)
+}
+
+// isRawOpenResponse reports whether the caller asked for the plaintext alone.
+// A generated curl command uses raw so the terminal shows the business JSON
+// instead of an envelope wrapper around it; tooling can leave it off and read
+// the structured answer.
+func isRawOpenResponse(r *http.Request) bool {
+	if r == nil || r.URL == nil {
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(r.URL.Query().Get("raw"))) {
+	case "1", "true", "yes":
+		return true
+	}
+	return false
+}
+
+func writeOpenResult(w http.ResponseWriter, r *http.Request, sealed bool, plaintext string, status int) {
+	if isRawOpenResponse(r) {
+		writeRawText(w, status, plaintext)
+		return
+	}
+	writeEnvelope(w, status, "success", map[string]any{
+		"sealed":    sealed,
+		"dockerId":  requestedDockerID(r),
+		"plaintext": plaintext,
+		"size":      len(plaintext),
+	}, 0)
+}
+
+// writeRawText writes the plaintext bytes with a content type that matches what
+// they look like, so a terminal shows JSON as JSON and an error page as text.
+func writeRawText(w http.ResponseWriter, status int, body string) {
+	contentType := "text/plain; charset=utf-8"
+	if trimmed := strings.TrimSpace(body); strings.HasPrefix(trimmed, "{") || strings.HasPrefix(trimmed, "[") {
+		contentType = "application/json; charset=utf-8"
+	}
+	w.Header().Set("Content-Type", contentType)
+	w.WriteHeader(status)
+	_, _ = io.WriteString(w, body)
+	if !strings.HasSuffix(body, "\n") {
+		_, _ = io.WriteString(w, "\n")
+	}
 }

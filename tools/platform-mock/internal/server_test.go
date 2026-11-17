@@ -3021,3 +3021,53 @@ func TestFrontendInstanceSelector(t *testing.T) {
 		t.Fatal("a register status call still bypasses mockFetch")
 	}
 }
+
+// TestHostBarAndWorkspaceTabs pins the console structure the host panel and the
+// two workspaces depend on: the bar exists, the API tester lives in its own tab
+// rather than under the flow, and the generated curl is the two-step form that
+// unseals the response.
+func TestHostBarAndWorkspaceTabs(t *testing.T) {
+	for _, want := range []string{
+		`id="card-host"`,
+		`id="hostIpInput"`,
+		`id="hostMemoryText"`,
+		`id="hostPodRows"`,
+		`src="/static/js/host.js"`,
+		`id="tabBtnFlow"`,
+		`id="tabBtnApi"`,
+		`id="workspaceFlow"`,
+		`id="workspaceApi"`,
+		"refreshHostStatus",
+		"selectWorkspaceTab",
+		"/api/host/status",
+		"/api/taa/open-response",
+	} {
+		if !strings.Contains(frontendBundle, want) {
+			t.Errorf("frontendBundle missing %q", want)
+		}
+	}
+
+	// The API tester is its own workspace: the card must sit inside the API
+	// panel, not in the flow panel where it used to be buried under the logs.
+	apiPanel := strings.Index(indexHTML, `id="workspaceApi"`)
+	flowClose := strings.Index(indexHTML, `/#workspaceFlow`)
+	cardIdx := strings.Index(indexHTML, `id="card-apiTester"`)
+	if apiPanel == -1 || flowClose == -1 || cardIdx == -1 {
+		t.Fatalf("panel markers missing: api=%d flowClose=%d card=%d", apiPanel, flowClose, cardIdx)
+	}
+	if !(flowClose < apiPanel && apiPanel < cardIdx) {
+		t.Fatalf("card-apiTester must be inside #workspaceApi: flowClose=%d apiPanel=%d card=%d", flowClose, apiPanel, cardIdx)
+	}
+
+	// The generated command carries the status line and the unseal step: the
+	// first call returns a sealed envelope, so printing its body shows ciphertext.
+	for _, want := range []string{
+		`-o /tmp/taa-response.json`,
+		`HTTP %{http_code}`,
+		`--data-binary @/tmp/taa-response.json`,
+	} {
+		if !strings.Contains(frontendBundle, want) {
+			t.Errorf("generated curl missing %q", want)
+		}
+	}
+}

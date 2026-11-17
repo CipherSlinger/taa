@@ -16,14 +16,68 @@
      on-page switch between them, so the two never share state. -->
 <div id="tabPanelPlatform" class="llc-panel">
 <main>
-  <header style="margin-bottom: 22px;">
+  <header style="margin-bottom: 18px;">
     <div style="display:flex; align-items:center; justify-content:space-between; gap:16px; flex-wrap:wrap; margin-bottom: 6px;">
       <h1>
         TAA 平台模拟器
         <span class="header-badge" id="consoleBadge">TEE Enclave Console</span>
       </h1>
+      <div class="workspace-tabs" role="tablist" aria-label="模拟器工作区">
+        <button type="button" class="workspace-tab active" id="tabBtnFlow" role="tab" aria-selected="true"
+                aria-controls="workspaceFlow" data-workspace="flow" onclick="selectWorkspaceTab('flow')">流程测试</button>
+        <button type="button" class="workspace-tab" id="tabBtnApi" role="tab" aria-selected="false"
+                aria-controls="workspaceApi" data-workspace="api" onclick="selectWorkspaceTab('api')">接口测试</button>
+      </div>
     </div>
   </header>
+
+  <div id="workspaceFlow" class="workspace-panel" role="tabpanel" aria-labelledby="tabBtnFlow">
+
+  <!-- The machine the mock itself runs on. This is the host an operator logs into
+       and the host TAA must be told about (PLATFORM_IP), so its address leads the
+       page. The address is detected and remembered per browser: retyping it
+       affects what the page shows and what the copy actions hand out, never how
+       the mock addresses TAA - that stays derived from each instance. -->
+  <section class="card host-bar" id="card-host">
+    <div class="host-bar-head">
+      <span class="host-bar-title">远程海光服务器</span>
+      <label for="hostIpInput" class="host-bar-label">IP</label>
+      <input id="hostIpInput" class="host-bar-ip" spellcheck="false" autocomplete="off"
+             onchange="onHostIpEdit(this.value)" placeholder="检测中…">
+      <span id="hostDetectedHint" class="muted host-bar-hint"></span>
+      <span class="host-bar-sep"></span>
+      <span class="host-bar-label">内存余量</span>
+      <span id="hostMemoryText" class="host-bar-mem">—</span>
+      <span id="hostMemoryPill" class="status-pill pending"><span class="pill-dot"></span><span id="hostMemoryLabel">未读取</span></span>
+    </div>
+    <div class="host-bar-track" title="宿主机物理内存占用">
+      <div id="hostMemoryBar" class="progress-bar-inner" style="width:0%;"></div>
+    </div>
+    <div class="host-pod-head">
+      <span class="host-bar-title">宿主机 Pod</span>
+      <span id="hostPodCount" class="muted host-bar-hint">—</span>
+      <button type="button" class="secondary btn-sm" id="hostPodToggleBtn" onclick="toggleHostPodTable()">收起</button>
+    </div>
+    <div id="hostPodError" class="host-bar-error" style="display:none;"></div>
+    <div id="hostPodWrap" class="host-pod-wrap">
+      <table class="host-pod-table">
+        <thead>
+          <tr>
+            <th scope="col">名称</th>
+            <th scope="col">命名空间</th>
+            <th scope="col">阶段</th>
+            <th scope="col">就绪</th>
+            <th scope="col">Pod IP</th>
+            <th scope="col">续跑</th>
+            <th scope="col">运行时长</th>
+          </tr>
+        </thead>
+        <tbody id="hostPodRows">
+          <tr><td colspan="7" class="host-pod-empty">正在读取…</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
 
   <!-- Top: Unified platform registration and service connection control panel -->
   <section class="card" id="card-attestation" style="display:flex; flex-direction:column; margin-bottom:24px;">
@@ -431,65 +485,6 @@
     </section>
   </div>
 
-  <!-- ─── API tester ─── -->
-  <!-- The console calls TAA through the mock's own /taa proxy, which seals each
-       plain JSON body with the registered instance's public key. That proxy is
-       also the only path a hand-written curl can use: TAA rejects plaintext on
-       every business route, and the callbacks it sends are sealed envelopes too. -->
-  <section class="card" id="card-apiTester" style="margin-bottom:24px;">
-    <div class="card-head">
-      <div>
-        <h2>接口测试</h2>
-        <div class="muted" style="font-size:12.5px; margin-top:4px;">选一个接口，生成已封装成 SM2 信封、可直接粘贴运行的 curl 命令</div>
-      </div>
-      <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
-        <button type="button" class="secondary btn-sm" onclick="apiTesterUseDirectTarget()" title="恢复为所选实例的 TAA 直连地址（信封已封装，不能再经 mock 代理）">实例直连地址</button>
-      </div>
-    </div>
-    <div class="api-tester-grid">
-      <div>
-        <label for="apiTesterEndpoint">接口</label>
-        <select id="apiTesterEndpoint" onchange="apiTesterSelectEndpoint()"></select>
-      </div>
-      <div>
-        <label for="apiTesterBase">目标地址</label>
-        <input id="apiTesterBase" spellcheck="false" autocomplete="off" oninput="apiTesterOnBaseInput()">
-      </div>
-    </div>
-    <div class="api-tester-keys-head">
-      <span class="api-tester-section-label">信封密钥</span>
-      <button type="button" class="secondary btn-sm" onclick="apiTesterReloadKeys()" title="重新读取 mock 当前的平台私钥、该实例注册的 TAA 公钥与 SM2 身份">从 mock 读取</button>
-    </div>
-    <div class="api-tester-grid">
-      <div>
-        <label for="apiTesterPlatformPriv">平台私钥（PEM）</label>
-        <textarea id="apiTesterPlatformPriv" rows="5" class="api-tester-key" spellcheck="false" autocomplete="off" oninput="apiTesterOnKeyInput()"></textarea>
-      </div>
-      <div>
-        <label for="apiTesterTaaPub">TAA 公钥（hex）</label>
-        <textarea id="apiTesterTaaPub" rows="3" class="api-tester-key" spellcheck="false" autocomplete="off" oninput="apiTesterOnKeyInput()"></textarea>
-      </div>
-    </div>
-    <div class="api-tester-grid">
-      <div>
-        <label for="apiTesterIdentity">SM2 身份 ID</label>
-        <input id="apiTesterIdentity" class="api-tester-key" spellcheck="false" autocomplete="off" oninput="apiTesterOnKeyInput()">
-      </div>
-      <p class="api-tester-hint">信封用平台私钥签名、TAA 公钥加密（04 开头的 X||Y hex）。留空一侧时由 mock 现有密钥补齐；两侧都留空则完全使用 mock 的注册密钥。</p>
-    </div>
-    <div class="api-tester-row">
-      <label for="apiTesterBody">请求体</label>
-      <button type="button" class="secondary btn-sm" onclick="apiTesterResetBody()">重置示例</button>
-    </div>
-    <textarea id="apiTesterBody" rows="7" spellcheck="false" autocomplete="off" oninput="apiTesterOnBodyInput()"></textarea>
-    <p class="api-tester-note" id="apiTesterNote"></p>
-    <div class="api-tester-row api-tester-curl-head">
-      <span class="muted" style="font-size:12.5px; font-weight:650;">curl 命令</span>
-      <button type="button" class="btn-sm" id="apiTesterCopyBtn" onclick="apiTesterCopy()">复制命令</button>
-    </div>
-    <pre id="apiTesterCurl" class="api-tester-curl"></pre>
-  </section>
-
   <!-- ─── FHE 任务下发 ─── -->
   <!-- FHE only. This is the step the TEE console has no equivalent of: the platform
        hands the FHE service an evaluation key and a data package, and TAA starts and
@@ -633,6 +628,71 @@
       </section>
     </div>
   </div>
+
+  </div><!-- /#workspaceFlow -->
+  <div id="workspaceApi" class="workspace-panel" role="tabpanel" aria-labelledby="tabBtnApi" style="display:none;">
+
+  <!-- ─── API tester ─── -->
+  <!-- The console calls TAA through the mock's own /taa proxy, which seals each
+       plain JSON body with the registered instance's public key. That proxy is
+       also the only path a hand-written curl can use: TAA rejects plaintext on
+       every business route, and the callbacks it sends are sealed envelopes too. -->
+  <section class="card" id="card-apiTester" style="margin-bottom:24px;">
+    <div class="card-head">
+      <div>
+        <h2>接口测试</h2>
+        <div class="muted" style="font-size:12.5px; margin-top:4px;">选一个接口，生成已封装成 SM2 信封、可直接粘贴运行的 curl 命令</div>
+      </div>
+      <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+        <button type="button" class="secondary btn-sm" onclick="apiTesterUseDirectTarget()" title="恢复为所选实例的 TAA 直连地址（信封已封装，不能再经 mock 代理）">实例直连地址</button>
+      </div>
+    </div>
+    <div class="api-tester-grid">
+      <div>
+        <label for="apiTesterEndpoint">接口</label>
+        <select id="apiTesterEndpoint" onchange="apiTesterSelectEndpoint()"></select>
+      </div>
+      <div>
+        <label for="apiTesterBase">目标地址</label>
+        <input id="apiTesterBase" spellcheck="false" autocomplete="off" oninput="apiTesterOnBaseInput()">
+      </div>
+    </div>
+    <div class="api-tester-keys-head">
+      <span class="api-tester-section-label">信封密钥</span>
+      <button type="button" class="secondary btn-sm" onclick="apiTesterReloadKeys()" title="重新读取 mock 当前的平台私钥、该实例注册的 TAA 公钥与 SM2 身份">从 mock 读取</button>
+    </div>
+    <div class="api-tester-grid">
+      <div>
+        <label for="apiTesterPlatformPriv">平台私钥（PEM）</label>
+        <textarea id="apiTesterPlatformPriv" rows="5" class="api-tester-key" spellcheck="false" autocomplete="off" oninput="apiTesterOnKeyInput()"></textarea>
+      </div>
+      <div>
+        <label for="apiTesterTaaPub">TAA 公钥（hex）</label>
+        <textarea id="apiTesterTaaPub" rows="3" class="api-tester-key" spellcheck="false" autocomplete="off" oninput="apiTesterOnKeyInput()"></textarea>
+      </div>
+    </div>
+    <div class="api-tester-grid">
+      <div>
+        <label for="apiTesterIdentity">SM2 身份 ID</label>
+        <input id="apiTesterIdentity" class="api-tester-key" spellcheck="false" autocomplete="off" oninput="apiTesterOnKeyInput()">
+      </div>
+      <p class="api-tester-hint">信封用平台私钥签名、TAA 公钥加密（04 开头的 X||Y hex）。留空一侧时由 mock 现有密钥补齐；两侧都留空则完全使用 mock 的注册密钥。</p>
+    </div>
+    <div class="api-tester-row">
+      <label for="apiTesterBody">请求体</label>
+      <button type="button" class="secondary btn-sm" onclick="apiTesterResetBody()">重置示例</button>
+    </div>
+    <textarea id="apiTesterBody" rows="7" spellcheck="false" autocomplete="off" oninput="apiTesterOnBodyInput()"></textarea>
+    <p class="api-tester-note" id="apiTesterNote"></p>
+    <div class="api-tester-row api-tester-curl-head">
+      <span class="muted" style="font-size:12.5px; font-weight:650;">curl 命令</span>
+      <button type="button" class="btn-sm" id="apiTesterCopyBtn" onclick="apiTesterCopy()">复制命令</button>
+    </div>
+    <pre id="apiTesterCurl" class="api-tester-curl"></pre>
+  </section>
+
+  </div><!-- /#workspaceApi -->
+
 </main>
 </div><!-- /#tabPanelPlatform -->
 
@@ -1746,6 +1806,7 @@
 <div id="toastContainer" class="toast-container" aria-live="polite"></div>
 
 <script src="/static/js/toast.js"></script>
+<script src="/static/js/host.js"></script>
 <script src="/static/js/drawer.js"></script>
 <script src="/static/js/api.js"></script>
 <script src="/static/js/crypto.js"></script>

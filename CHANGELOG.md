@@ -9,6 +9,27 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 ## [Unreleased]
 
 ### Added
+- **The platform-mock Console Shows Its Host, Splits Into Workspace Tabs, And Prints The Sealed Answer
+  A curl Call Could Not Show**: an operator copied the console's generated `curl` for a TAA route and
+  saw no result at all. The cause is the protocol, not the command: TAA seals every JSON response with
+  SM2/SM3, so a direct call returns an envelope (`{dockerId, cipher, sign}`) whose business content is
+  inside `cipher` — the console only reads plaintext because it calls through the mock's `/taa` proxy,
+  which unseals. The generated command is now two steps: the first goes to TAA itself, saving the sealed
+  body to `/tmp/taa-response.json` and printing only `HTTP <code>` (the one readable signal a sealed
+  response offers), and the second posts that file to the new `POST /api/taa/open-response`, which opens
+  it with the instance's registered TAA key and prints the business JSON — or, when the body is not an
+  envelope at all — no Envelope because the call never reached TAA — prints it verbatim, because an
+  `无法解封` wrapper would hide the only useful line. The page also gains a host bar above the flow
+  card, fed by `GET /api/host/status`: the machine the mock runs on, its address detected and ranked
+  (172.16/12 first, Tailscale's CGNAT range last) and editable per browser, physical memory from
+  `/proc/meminfo` (`MemAvailable`, not `MemFree` — the page cache counts), and the Pods `kubectl get
+  pods -A` reports, behind a 4-second cache so several open tabs do not fork a `kubectl` per poll.
+  The edited address changes only what the page displays and copies; TAA is still addressed from each
+  instance's registration. A missing `kubectl` or an unreadable `/proc` degrades one row with the
+  command's own stderr rather than failing the endpoint, since an empty table and a broken cluster look
+  identical otherwise. Finally the console splits into two tabs — 流程测试 for the simulator and 接口测试
+  for the API tester — kept in `localStorage` and mirrored into `#api` so the view survives a reload and
+  can be linked; `#audit` still selects the whole workbench page and is never overwritten.
 - **The DCU Initrd Ships The Vendor HYCU Userland And Starts `hymgr`**: a DCU guest loaded the
   driver and created `/dev/mkfd`, so `hy-smi` could read temperature and power, but HIP/ROCR
   enumerated zero GPUs. `libhsa`'s `hsaKmtOpenKFD()` issues the driver's `CREATE_HYUDS_CONN`

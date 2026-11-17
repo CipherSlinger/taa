@@ -291,17 +291,36 @@ async function apiTesterSeal() {
   apiTesterRender();
 }
 
+// apiTesterOpenResponseUrl is the mock endpoint that unseals one TAA response.
+// The generated command is deliberately two steps rather than one: the first
+// call goes to TAA itself, so the command in the terminal is the request the
+// platform actually makes, and the second only translates the answer back to
+// business JSON. A one-step relay would hide the real call.
+function apiTesterOpenResponseUrl() {
+  const id = apiTesterSelectedDockerId();
+  const query = id ? '?dockerId=' + encodeURIComponent(id) + '&raw=1' : '?raw=1';
+  return location.origin + '/api/taa/open-response' + query;
+}
+
 function apiTesterCurlText() {
   if (!apiTesterSealed.body) {
     const why = apiTesterSealed.pending ? '正在封装信封…' : '无法生成信封：' + (apiTesterSealed.error || '未知原因');
     return { text: '# ' + why, sealed: false };
   }
+  // -o keeps the sealed response off the terminal and -w prints the status: on
+  // these routes an HTTP 200 and an HTTP 400 both carry a body, and the body is
+  // sealed either way, so the status code is the only readable signal until the
+  // second step runs.
   const lines = [
-    "curl -sS -X POST '" + apiTesterUrl() + "'",
-    "  -H 'Content-Type: application/json'",
-    '  --data-raw ' + shellQuote(apiTesterSealed.body),
+    "curl -sS -o /tmp/taa-response.json -w 'HTTP %{http_code}\\n' \\",
+    "  -X POST '" + apiTesterUrl() + "' \\",
+    "  -H 'Content-Type: application/json' \\",
+    '  --data-raw ' + shellQuote(apiTesterSealed.body) + ' \\',
+    '&& curl -sS -X POST ' + shellQuote(apiTesterOpenResponseUrl()) + ' \\',
+    "  -H 'Content-Type: application/json' \\",
+    '  --data-binary @/tmp/taa-response.json',
   ];
-  return { text: lines.join(' \\\n'), sealed: true };
+  return { text: lines.join('\\\n'), sealed: true };
 }
 
 function apiTesterRender() {
@@ -331,6 +350,7 @@ function apiTesterRender() {
       if (apiTesterUsingProxy()) {
         parts.push('目标地址是 mock 的 /taa 代理，它会再封装一次——请改成该实例的直连地址。');
       }
+      parts.push('TAA 的响应也是信封：第一条命令只打印 HTTP 状态码并把密文存到 /tmp/taa-response.json，第二条命令交给 mock 解封并打印明文。');
     } else if (apiTesterSealed.pending) {
       parts.push('正在封装信封…');
     } else {
