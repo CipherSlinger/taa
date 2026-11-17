@@ -221,6 +221,11 @@ let apiTesterSealSeq = 0;
 let apiTesterSealTimer = null;
 let apiTesterSealed = { pending: false, body: '', error: '', usedKeystore: false, partial: false };
 
+// SHELL_CONTINUE is what joins the generated command's lines: a space and one
+// backslash before the newline. It lives in one place so no line of the command
+// carries a second one.
+const SHELL_CONTINUE = ' \\\n';
+
 // apiTesterOnBodyInput runs on every keystroke: the old envelope no longer
 // matches the visible body, so it is dropped at once (copy goes unavailable)
 // and a debounced seal rebuilds it.
@@ -311,16 +316,21 @@ function apiTesterCurlText() {
   // these routes an HTTP 200 and an HTTP 400 both carry a body, and the body is
   // sealed either way, so the status code is the only readable signal until the
   // second step runs.
+  //
+  // SHELL_CONTINUE is the only line continuation written: the array entries
+  // carry none of their own. Writing one in both places put two at every line
+  // end, and the shell read the second as an escaped backslash, so the command
+  // ended at the first line with "URL rejected: Bad hostname".
   const lines = [
-    "curl -sS -o /tmp/taa-response.json -w 'HTTP %{http_code}\\n' \\",
-    "  -X POST '" + apiTesterUrl() + "' \\",
-    "  -H 'Content-Type: application/json' \\",
-    '  --data-raw ' + shellQuote(apiTesterSealed.body) + ' \\',
-    '&& curl -sS -X POST ' + shellQuote(apiTesterOpenResponseUrl()) + ' \\',
-    "  -H 'Content-Type: application/json' \\",
+    "curl -sS -o /tmp/taa-response.json -w 'HTTP %{http_code}\\n'",
+    "  -X POST '" + apiTesterUrl() + "'",
+    "  -H 'Content-Type: application/json'",
+    '  --data-raw ' + shellQuote(apiTesterSealed.body),
+    '&& curl -sS -X POST ' + shellQuote(apiTesterOpenResponseUrl()),
+    "  -H 'Content-Type: application/json'",
     '  --data-binary @/tmp/taa-response.json',
   ];
-  return { text: lines.join('\\\n'), sealed: true };
+  return { text: lines.join(SHELL_CONTINUE), sealed: true };
 }
 
 function apiTesterRender() {

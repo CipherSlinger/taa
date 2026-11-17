@@ -3071,3 +3071,33 @@ func TestHostBarAndWorkspaceTabs(t *testing.T) {
 		}
 	}
 }
+
+// TestGeneratedCurlHasOneContinuationPerLine guards a bug that shipped and was
+// reported from a terminal: each entry of the command's line array ended with a
+// backslash AND the join added one, so every line ended with two. The shell read
+// the second as an escaped backslash and stopped at the first line, and the
+// operator saw "URL rejected: Bad hostname" followed by "-X: command not found".
+//
+// The bundler concatenates the JS files, so this reads the source rather than
+// the joined output: a line entry ending in a literal backslash is the defect
+// itself, whatever the separator does.
+func TestGeneratedCurlHasOneContinuationPerLine(t *testing.T) {
+	start := strings.Index(frontendBundle, "function apiTesterCurlText()")
+	if start == -1 {
+		t.Fatal("apiTesterCurlText is not in the bundle")
+	}
+	body := frontendBundle[start:]
+	if end := strings.Index(body, "\n}"); end != -1 {
+		body = body[:end]
+	}
+	// A line entry that ends with a backslash (the JS source for a shell
+	// continuation inside a string literal) leaves two once joined.
+	for _, bad := range []string{`\\",`, `\\',`} {
+		if strings.Contains(body, bad) {
+			t.Errorf("a generated-command line ends with its own continuation (%s); join supplies the only one", bad)
+		}
+	}
+	if !strings.Contains(body, "lines.join(SHELL_CONTINUE)") {
+		t.Error("the command must join on SHELL_CONTINUE so the continuation has one definition")
+	}
+}
