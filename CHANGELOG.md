@@ -18,8 +18,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
   `probe failed with error -110` — and with no `/dev/dri` the CDI hook writes no spec and creation
   dies in the 100-second CDI timeout. The only recovery from that state is a host reboot. The guest
   side does have a reset path (`reset_method` is `bus`, and the driver exposes its recovery entry at
-  `/sys/kernel/debug/dri/<minor>/gpu_recover`, which is what `hy-smi --hcureset` writes), so the DCU
+  `/sys/kernel/debug/dri/<minor>/gpu_recover`, which is what `hy-smi --hcureset` uses), so the DCU
   roles now ship a second guest hook at `usr/share/oci/hooks/poststop/guest-hycu-dcu-reset.sh`.
+  Reading that entry is what triggers the reset, not writing: the driver registers it with `seq_read`
+  and no write method at all, and its show callback calls `gpu_request_reset`, which queues the reset
+  work and flushes it, so the read blocks until the driver is done. A write returns EINVAL and does
+  nothing. The hook reads it through `cat`, and reflects the same path `hy-smi` takes (`rsmi_dev_gpu_reset`
+  -> `Device::readDevInfo` -> an ifstream).
   poststop is the one in-guest point that runs after the container's own processes are gone and before
   the VM is destroyed, which is exactly the ordering the driver's recovery expects: it kills every
   process holding the card (`kfd_kill_all_process_on!`, `kill process(pid:name)`), waits for them to

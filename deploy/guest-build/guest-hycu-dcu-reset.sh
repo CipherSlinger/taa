@@ -14,10 +14,11 @@
 #
 # The guest side does have a reset path: `reset_method` is `bus` on the guest's
 # PCI device, and the driver exposes its recovery entry at
-# /sys/kernel/debug/dri/<N>/gpu_recover, which is what `hy-smi --hcureset` writes
-# to. Writing it runs the driver's GPU recovery: it kills every process holding
-# the device (`kfd_kill_all_process_on!`, `kill process(pid:name)`), waits for
-# them to leave (`wait all process gone ...`), and then performs a BACO reset.
+# /sys/kernel/debug/dri/<N>/gpu_recover, which is what `hy-smi --hcureset` uses.
+# Reading that file runs the driver's GPU recovery: it kills every process
+# holding the device (`kfd_kill_all_process_on!`, `kill process(pid:name)`),
+# waits for them to leave (`wait all process gone ...`), and then performs a
+# BACO reset.
 #
 # A poststop hook is the right place for it because it runs after the container
 # process is already gone and before the VM is destroyed. That ordering is what
@@ -145,19 +146,18 @@ drm_minor_for() {
 #
 # Two ways to ask the driver, in the order of how directly they hit it:
 #
-#   1. write the debugfs recovery entry. This is what `hy-smi --hcureset` ends up
-#      doing (its binary carries `/sys/kernel/debug/dri/` and `gpu_recover`), and
-#      it is one write with no process of our own in the way.
+#   1. read the debugfs recovery entry. Reading is the trigger, not writing --
+#      see reset_one for the file_operations this comes from. It is what
+#      `hy-smi --hcureset` ends up doing, minus the binary.
 #   2. fall back to `hy-smi --hcureset <n>` if that entry is absent. The payload
 #      ships the binary, and it may reach the driver through a path this script
 #      does not know about.
 #
-# Neither is wrapped in `timeout`: this initrd carries a small coreutils set and
-# a missing binary inside a poststop hook would leave the reset silently unrun.
+# Both are wrapped in `timeout` when the applet exists, because the read blocks
+# until the driver's reset finishes and a teardown that hangs keeps the VM alive.
 # The guarantee that matters (no process left holding the card) comes from
 # poststop's own ordering, and the driver bounds its own kill-and-wait
-# (queue_preemption_timeout_ms). HYCU_RESET_TIMEOUT is applied only when the
-# `timeout` applet happens to exist.
+# (queue_preemption_timeout_ms).
 reset_one() {
   index=$1
   bdf=$2
@@ -167,14 +167,21 @@ reset_one() {
   }
   recover="$DEBUGFS_DIR/dri/$minor/gpu_recover"
   if [ -e "$recover" ]; then
-    log "$bdf (minor $minor): resetting the HCU via $recover"
-    # The subshell keeps a failed redirect (EPERM, read-only debugfs) from
-    # killing the hook before it can log why, and keeps the fallback reachable.
-    if (printf '1\n' >"$recover") 2>/dev/null; then
-      log "$bdf: reset request accepted by the driver"
+    log "$bdf (minor $minor): resetting the HCU by reading $recover"
+    # Reading the file is what triggers the reset. The driver registers this
+    # entry with seq_read and no write method at all (file_operations: open =
+    # gpu_debugfs_gpu_recover_open, read = seq_read, release = single_release),
+    # and its show callback calls gpu_request_reset, which queues the reset work
+    # and flushes it -- so the read blocks until the driver is done. Writing to
+    # it fails with EINVAL. This is the same shape as AMD's
+    # amdgpu_gpu_recover, and it is also what hy-smi does: rsmi_dev_gpu_reset
+    # opens the path through Device::readDevInfo -> readDebugInfoStr, which uses
+    # an ifstream.
+    if run_bounded cat "$recover" >/dev/null 2>&1; then
+      log "$bdf: the driver completed the reset"
       return 0
     fi
-    log "WARNING: $bdf: writing $recover failed"
+    log "WARNING: $bdf: reading $recover failed"
   else
     log "$bdf (minor $minor): $recover is absent"
   fi

@@ -79,6 +79,21 @@ make_fixture() {
     mkdir -p "$root/sys/kernel/debug/dri/$minor"
     : >"$root/sys/kernel/debug/dri/$minor/gpu_recover"
   fi
+
+  # Reading the recovery entry is what asks the driver for a reset; writing does
+  # nothing (the entry has no write method). A plain file accepts both, so the
+  # difference is invisible without help: this `cat` records that the entry was
+  # read and passes everything else through to the real one. A hook that writes
+  # leaves the log empty and fails the assertion.
+  mkdir -p "$root/fakebin"
+  cat >"$root/fakebin/cat" <<EOF
+#!/bin/sh
+case "\$*" in
+  *gpu_recover*) printf '%s\n' "\$*" >>"$root/readlog"; exit 0 ;;
+esac
+exec $(command -v cat) "\$@"
+EOF
+  chmod +x "$root/fakebin/cat"
 }
 
 # Run the hook against a fixture. The mount binary is stubbed so a test never
@@ -88,6 +103,7 @@ make_fixture() {
 # debugfs tree would try to create the real one.
 run_hook() {
   local root="$1"; shift
+  PATH="$root/fakebin:$PATH" \
   MOUNT_BIN=/nonexistent/mount \
   DEBUGFS_DIR="$root/sys/kernel/debug" \
   DEBUGFS_MOUNT_POINT="$root/sys/kernel/debug" \
@@ -110,10 +126,16 @@ echo "== reset through the debugfs recovery entry =="
 root="$tmp_dir/basic"
 make_fixture "$root" 1 card0 0
 out="$(run_hook "$root" env)"
-check_contains "the write is attempted" \
-  "resetting the HCU via $root/sys/kernel/debug/dri/0/gpu_recover" "$out"
-check_contains "a successful write is reported" \
-  "reset request accepted by the driver" "$out"
+check_contains "the reset is attempted" \
+  "resetting the HCU by reading $root/sys/kernel/debug/dri/0/gpu_recover" "$out"
+# The load-bearing assertion. The driver registers this entry with seq_read and
+# no write method, so a write is a no-op that also fails: the hook has to read
+# it. If someone "fixes" this back to `echo 1 >`, this check goes red while the
+# hook still logs a successful reset -- which is exactly the trap this bug was.
+check "the hook reads the entry rather than writing to it" "1" \
+  "$(wc -l <"$root/readlog" 2>/dev/null | tr -d ' ')"
+check_contains "the completed reset is reported" \
+  "the driver completed the reset" "$out"
 
 echo "== the minor comes from the card node =="
 
@@ -121,7 +143,7 @@ root="$tmp_dir/minor"
 make_fixture "$root" 1 card1 1
 out="$(run_hook "$root" env)"
 check_contains "card1 maps to debugfs dri/1" \
-  "resetting the HCU via $root/sys/kernel/debug/dri/1/gpu_recover" "$out"
+  "resetting the HCU by reading $root/sys/kernel/debug/dri/1/gpu_recover" "$out"
 
 # A device that is present in sysfs but never bound a driver has no DRM node, so
 # there is no index to write to. The hook has to skip it and say so rather than
@@ -140,7 +162,7 @@ make_fixture "$root" 1 card0 0
 mkdir -p "$root/sys/bus/pci/devices/0000:02:00.0/drm/card0-DP-1"
 out="$(run_hook "$root" env)"
 check_contains "the connector does not change the minor" \
-  "resetting the HCU via $root/sys/kernel/debug/dri/0/gpu_recover" "$out"
+  "resetting the HCU by reading $root/sys/kernel/debug/dri/0/gpu_recover" "$out"
 
 echo "== no recovery entry: fall back to hy-smi =="
 
@@ -182,17 +204,25 @@ check_contains "the unavailable mount point is reported" \
   "debugfs" "$out"
 check_absent "no reset is claimed" "reset request accepted" "$out"
 
-echo "== a failed write does not stop the hook =="
+echo "== a failed read does not stop the hook =="
 
-root="$tmp_dir/write-fails"
+root="$tmp_dir/read-fails"
 make_fixture "$root" 1 card0 0
-# A directory in place of the entry makes the redirect fail without needing a
-# read-only filesystem.
-rm -f "$root/sys/kernel/debug/dri/0/gpu_recover"
-mkdir -p "$root/sys/kernel/debug/dri/0/gpu_recover"
+# A fake `cat` that fails on the entry stands in for a driver that refuses the
+# reset (already in reset, recovery disabled). The hook has to log it and keep
+# going rather than abort the teardown.
+cat >"$root/fakebin/cat" <<'EOF'
+#!/bin/sh
+case "$*" in
+  *gpu_recover*) echo "simulated driver refusal" >&2; exit 1 ;;
+esac
+exec /bin/cat "$@"
+EOF
+chmod +x "$root/fakebin/cat"
 out="$(run_hook "$root" env)"
-check_contains "the failed write is reported" "writing" "$out"
-check_contains "the hook still reaches its summary" "WARNING" "$out"
+check_contains "the failed read is reported" "reading" "$out"
+check_contains "the failure is a warning" "WARNING" "$out"
+check_absent "no completed reset is claimed" "the driver completed the reset" "$out"
 
 echo "== the hook never fails the teardown =="
 
