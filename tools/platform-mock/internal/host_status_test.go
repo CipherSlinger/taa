@@ -157,6 +157,40 @@ func TestOpenResponseOpensWhatTheRegisteredTAASigned(t *testing.T) {
 	}
 }
 
+func TestOpenResponseFindsTheKeyWhenTheCallerNamesNoInstance(t *testing.T) {
+	// This is the hand-written curl case: a terminal has no instance selector,
+	// and TAA does not put its dockerId in the response envelope, so the only
+	// way in is to try the registered keys.
+	ks, err := newMemoryKeystore(nil)
+	if err != nil {
+		t.Fatalf("keystore: %v", err)
+	}
+	prev := currentPlatformKeys()
+	setPlatformKeys(ks)
+	defer setPlatformKeys(prev)
+	// Registered under an id, not as the legacy key: the multi-instance shape.
+	if err := ks.setTaaPublicKeyFor("kata-csv2-taa-test-0001", &testTAAKey(t).PublicKey); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+
+	sealed := sealAsTAA(t, `{"msg":"阶段切换成功","error":0}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/taa/open-response", strings.NewReader(string(sealed)))
+	w := httptest.NewRecorder()
+	taOpenResponseHandler(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", w.Code, w.Body.String())
+	}
+	body := w.Body.String()
+	if !strings.Contains(body, `\"阶段切换成功\"`) {
+		t.Fatalf("body = %s", body)
+	}
+	// The structured answer names the instance the key search matched, so an
+	// operator can see which one answered.
+	if !strings.Contains(body, `"dockerId":"kata-csv2-taa-test-0001"`) {
+		t.Fatalf("body does not name the matched instance: %s", body)
+	}
+}
+
 // ── test plumbing ───────────────────────────────────────────────────────
 
 var timeFixed = timeMustParse("2026-11-17T10:00:00Z")

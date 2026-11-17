@@ -18,18 +18,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
   body to `/tmp/taa-response.json` and printing only `HTTP <code>` (the one readable signal a sealed
   response offers), and the second posts that file to the new `POST /api/taa/open-response`, which opens
   it with the instance's registered TAA key and prints the business JSON — or, when the body is not an
-  envelope at all — no Envelope because the call never reached TAA — prints it verbatim, because an
-  `无法解封` wrapper would hide the only useful line. The page also gains a host bar above the flow
-  card, fed by `GET /api/host/status`: the machine the mock runs on, its address detected and ranked
-  (172.16/12 first, Tailscale's CGNAT range last) and editable per browser, physical memory from
-  `/proc/meminfo` (`MemAvailable`, not `MemFree` — the page cache counts), and the Pods `kubectl get
-  pods -A` reports, behind a 4-second cache so several open tabs do not fork a `kubectl` per poll.
-  The edited address changes only what the page displays and copies; TAA is still addressed from each
-  instance's registration. A missing `kubectl` or an unreadable `/proc` degrades one row with the
-  command's own stderr rather than failing the endpoint, since an empty table and a broken cluster look
-  identical otherwise. Finally the console splits into two tabs — 流程测试 for the simulator and 接口测试
-  for the API tester — kept in `localStorage` and mirrored into `#api` so the view survives a reload and
-  can be linked; `#audit` still selects the whole workbench page and is never overwritten.
+  envelope at all (the call never reached TAA), prints it verbatim, because an `无法解封` wrapper would
+  hide the only useful line. The endpoint also works for a hand-written command that names no instance:
+  TAA does not put its `dockerId` in the response envelope, so with no `dockerId` query parameter every
+  registered key is tried and the first that verifies wins — the ciphertext still has to open under the
+  platform's own private key and the signature still has to verify under a key some instance registered,
+  so the match names the instance rather than trusting it. A wrong `dockerId` given explicitly is still
+  refused. Verified live against the Pod at `10.244.0.135`: `health` returned `HTTP 400` with the
+  business answer `请求缺少 cipher/sign` after the second step.
+- **The platform-mock Console Gains A Host Bar And Workspace Tabs**: the page shows the machine the mock
+  runs on, fed by `GET /api/host/status`: the address detected and ranked (172.16/12 first, Tailscale's
+  CGNAT range last) and editable per browser, physical memory from `/proc/meminfo` (`MemAvailable`, not
+  `MemFree` — the page cache counts), and the Pods `kubectl get pods -A` reports, behind a 4-second
+  cache so several open tabs do not fork a `kubectl` per poll. The edited address changes only what the
+  page displays and copies; TAA is still addressed from each instance's registration. A missing
+  `kubectl` or an unreadable `/proc` degrades one row with the command's own stderr rather than failing
+  the endpoint, since an empty table and a broken cluster look identical otherwise. The console also
+  splits into two tabs — 流程测试 for the simulator and 接口测试 for the API tester — kept in
+  `localStorage` and mirrored into `#api` so the view survives a reload and can be linked; `#audit`
+  still selects the whole workbench page and is never overwritten.
 - **The DCU Initrd Ships The Vendor HYCU Userland And Starts `hymgr`**: a DCU guest loaded the
   driver and created `/dev/mkfd`, so `hy-smi` could read temperature and power, but HIP/ROCR
   enumerated zero GPUs. `libhsa`'s `hsaKmtOpenKFD()` issues the driver's `CREATE_HYUDS_CONN`

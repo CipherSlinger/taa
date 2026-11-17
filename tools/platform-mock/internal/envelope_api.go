@@ -225,7 +225,7 @@ func taOpenResponseHandler(w http.ResponseWriter, r *http.Request) {
 		// Not an envelope at all is the common case here: a plaintext error page,
 		// a 405 from a wrong method, or an empty file from a failed call. Those
 		// are printed as they are, because they are the whole answer.
-		writeOpenResult(w, r, false, strings.TrimSpace(string(raw)), http.StatusOK)
+		writeOpenResult(w, r, false, strings.TrimSpace(requestedDockerID(r)), strings.TrimSpace(string(raw)), http.StatusOK)
 		return
 	}
 
@@ -233,19 +233,27 @@ func taOpenResponseHandler(w http.ResponseWriter, r *http.Request) {
 	if dockerID == "" {
 		dockerID = strings.TrimSpace(env.DockerID)
 	}
-	plaintext, err := ks.openFromTAAResponseFor(dockerID, env)
-	if err != nil {
+	var plaintext []byte
+	var openErr error
+	if dockerID == "" {
+		// A hand-written curl knows neither the instance nor that the response
+		// carries no dockerId, so the key is found by trying the registered ones.
+		plaintext, dockerID, openErr = ks.openFromTAAResponseWithoutHint(env)
+	} else {
+		plaintext, openErr = ks.openFromTAAResponseFor(dockerID, env)
+	}
+	if openErr != nil {
 		// A refusal is the answer the operator needs: it says why the response
 		// could not be trusted (wrong instance key, wrong SM2 identity, tampered
 		// body), which is not something the sealed bytes can convey.
 		if isRawOpenResponse(r) {
-			writeRawText(w, http.StatusBadRequest, "解封 TAA 响应失败: "+err.Error())
+			writeRawText(w, http.StatusBadRequest, "解封 TAA 响应失败: "+openErr.Error())
 			return
 		}
-		writeEnvelope(w, http.StatusBadRequest, "解封 TAA 响应失败: "+err.Error(), nil, http.StatusBadRequest)
+		writeEnvelope(w, http.StatusBadRequest, "解封 TAA 响应失败: "+openErr.Error(), nil, http.StatusBadRequest)
 		return
 	}
-	writeOpenResult(w, r, true, string(plaintext), http.StatusOK)
+	writeOpenResult(w, r, true, dockerID, string(plaintext), http.StatusOK)
 }
 
 // isRawOpenResponse reports whether the caller asked for the plaintext alone.
@@ -263,14 +271,14 @@ func isRawOpenResponse(r *http.Request) bool {
 	return false
 }
 
-func writeOpenResult(w http.ResponseWriter, r *http.Request, sealed bool, plaintext string, status int) {
+func writeOpenResult(w http.ResponseWriter, r *http.Request, sealed bool, dockerID, plaintext string, status int) {
 	if isRawOpenResponse(r) {
 		writeRawText(w, status, plaintext)
 		return
 	}
 	writeEnvelope(w, status, "success", map[string]any{
 		"sealed":    sealed,
-		"dockerId":  requestedDockerID(r),
+		"dockerId":  dockerID,
 		"plaintext": plaintext,
 		"size":      len(plaintext),
 	}, 0)

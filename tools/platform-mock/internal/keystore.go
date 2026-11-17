@@ -526,6 +526,54 @@ func (s *keystore) openFromTAAResponseFor(dockerID string, env *envelope.Envelop
 	return envelope.OpenFromPlatform(priv, taaPub, userID, env)
 }
 
+// openFromTAAResponseWithoutHint opens a response that names no instance, which
+// is what a hand-written curl has: TAA does not put its dockerId in the response
+// envelope, and the person pasting the command has no reason to know it.
+//
+// Every registered key is tried in turn and the first one that verifies wins.
+// This trusts nothing extra: the ciphertext still has to open under the
+// platform's own private key, and the signature still has to verify under a key
+// that some instance registered - exactly one instance can have produced it, so
+// a match also names the instance.
+func (s *keystore) openFromTAAResponseWithoutHint(env *envelope.Envelope) ([]byte, string, error) {
+	s.mu.RLock()
+	priv := s.priv
+	userID := s.userID
+	keys := make(map[string]*teecrypto.SM2PublicKey, len(s.taaPubs))
+	for id, pub := range s.taaPubs {
+		keys[id] = pub
+	}
+	legacy := s.legacyTaaPub
+	s.mu.RUnlock()
+	if priv == nil {
+		return nil, "", fmt.Errorf("platform SM2 private key is not available")
+	}
+
+	var lastErr error
+	for id, pub := range keys {
+		plaintext, err := envelope.OpenFromPlatform(priv, pub, userID, env)
+		if err == nil {
+			return plaintext, id, nil
+		}
+		lastErr = err
+	}
+	if legacy != nil {
+		plaintext, err := envelope.OpenFromPlatform(priv, legacy, userID, env)
+		if err == nil {
+			return plaintext, "", nil
+		}
+		lastErr = err
+	}
+	if lastErr == nil {
+		return nil, "", fmt.Errorf("no TAA public key registered yet: wait for TAA to register first")
+	}
+	tried := len(keys)
+	if legacy != nil {
+		tried++
+	}
+	return nil, "", fmt.Errorf("没有已注册的 TAA 公钥能验证这个响应（已试 %d 个实例）: %v", tried, lastErr)
+}
+
 // userIDOrProtocolDefault resolves nil/empty to the protocol identity without
 // copying; the envelope package copies where it stores.
 func userIDOrProtocolDefault(id []byte) []byte {
