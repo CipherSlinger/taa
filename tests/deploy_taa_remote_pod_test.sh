@@ -199,6 +199,7 @@ run_deploy() {
   # operator takes, and every case here would otherwise stop proving that.
   output="$(PATH="$MOCK_BIN:$PATH" env -u TARGET_POD -u TAA_POD_NAME -u TAA_IMAGE \
     -u PLATFORM_PUBLIC_KEY -u TAA_POD_PLATFORM_PUBLIC_KEY -u TAA_POD_CC_INIT_DATA \
+    TAA_DCU_QUIESCE_SECONDS=0 \
     "${RUN_ENV[@]}" \
     TAA_READY_TIMEOUT=2 \
     TAA_READY_INTERVAL=1 \
@@ -257,6 +258,16 @@ grep -q "^  restartPolicy: Always$" "$APPLIED" \
   || fail "the manifest does not keep the Pod restartable in place"
 grep -q "^      image: $DEFAULT_IMAGE$" "$APPLIED" \
   || fail "the manifest does not use the default TAA image"
+# The Pod waits out a DCU quiet period in preStop before its VM is killed, and the grace period
+# has to outlast that wait: a preStop has no timeout of its own and is bounded only by the grace
+# period, so a 30s grace period with a 90s wait would SIGKILL the guest mid-wait, which is the
+# dirty-handover path the wait exists to avoid.
+grep -q "^  terminationGracePeriodSeconds: 120$" "$APPLIED" \
+  || fail "the grace period does not outlast the preStop DCU quiet period"
+grep -q '^                sleep 90$' "$APPLIED" \
+  || fail "the manifest does not wait the DCU quiet period in preStop"
+grep -q '"0x1d94"' "$APPLIED" \
+  || fail "the preStop wait is not gated on the card, so every Pod would delay its teardown"
 # An explicitly pinned image is not rebuilt, so it keeps the cheaper IfNotPresent policy.
 grep -q "^      imagePullPolicy: IfNotPresent$" "$APPLIED" \
   || fail "a pinned image does not keep IfNotPresent"
@@ -389,6 +400,20 @@ tail -n +"$((before + 1))" "$MOCK_LOG" > "$TMP_DIR/delete.log"
 grep -q "KUBECTL delete pod $POD_NAME" "$TMP_DIR/delete.log" \
   || fail "delete did not remove the deployment-owned Pod"
 grep -q "TAA Pod '$POD_NAME' deleted" <<<"$output" || fail "the deletion was not reported"
+# Every case here runs with the quiet period disabled, so a suite on a host that has a DCU cannot
+# stall for 90s per delete. The default is asserted from the script, not by sleeping it.
+grep -q 'TAA_DCU_QUIESCE_SECONDS:-90' "$REPO/deploy.sh" \
+  || fail "the DCU quiet period does not default to 90s"
+grep -q "deleting without a DCU quiet period" <<<"$output" \
+  || fail "TAA_DCU_QUIESCE_SECONDS=0 did not skip the DCU quiet period"
+# The wait must precede the delete. A wait placed after it would come too late to matter.
+python3 - "$REPO/deploy.sh" <<'PY' || fail "the DCU quiet period does not run before the delete"
+import sys
+
+src = open(sys.argv[1]).read()
+body = src.split("delete_taa_pod() {", 1)[1].split("\n}\n", 1)[0]
+sys.exit(0 if body.index("dcu_quiet_before_delete") < body.index("kubectl $K_NS delete pod") else 1)
+PY
 
 # ── 6. stop leaves the Pod in place; delete refuses an explicitly named Pod ──
 

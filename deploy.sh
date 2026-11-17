@@ -134,6 +134,17 @@ TAA_POD_CONTRACT_TYPE="${TAA_POD_CONTRACT_TYPE:-1}"
 # A fresh CSV2 Pod boots its guest before it can pull the image inside it, so this is longer than
 # the 120s readiness timeout the deployment uses once the Pod already exists.
 TAA_POD_READY_TIMEOUT="${TAA_POD_READY_TIMEOUT:-600}"
+# How long to let the card sit idle before the Pod's VM is killed. A DCU that was computing when
+# its guest went away can leave state the next guest's probe cannot recover from: the card has no
+# reset (the fixup module sets NO_BUS_RESET and the function reports FLReset-), so the next guest
+# fails in `gfx_v9_0_hw_init` (`RLC ucode load fail`, probe -110), the driver never initialises,
+# the CDI hook writes no spec and the Pod dies in "failed to inject devices after CDI timeout of
+# 100 seconds" while the card itself is fine. Measured on 172.16.10.178: a Pod deleted 111s after
+# its last matmul handed the card over cleanly, one deleted 18s after its last matmul wedged the
+# next guest. 90 is therefore a choice between two measured points, not a threshold. The host has
+# no signal for "the card is still computing" (the guest's MSI is delivered through irqbypass and
+# never reaches the host), so a fixed wait is all that is available. 0 skips the wait.
+TAA_DCU_QUIESCE_SECONDS="${TAA_DCU_QUIESCE_SECONDS:-90}"
 # Optional escape hatch for hosts with no CoCo Pod to copy the annotation from; leave empty to
 # derive it from a running Pod (see derive_cc_init_data).
 TAA_POD_CC_INIT_DATA="${TAA_POD_CC_INIT_DATA:-}"
@@ -752,16 +763,50 @@ create_taa_pod() {
   info "TAA Pod created and Ready: $TARGET_POD"
 }
 
+# Gives the DCU a quiet period before the Pod's VM is killed. See TAA_DCU_QUIESCE_SECONDS for the
+# failure it avoids and the measured points behind the default. The check is remote because the
+# card may not be local to the host running this script; only the display/co-processor functions
+# count, since Hygon root complexes and bridges share the vendor id.
+#
+# This wait is the one that actually runs on the deploy.sh path. The Pod template carries a
+# preStop hook that waits the same amount again, for teardowns that do not go through this script
+# (the platform's CRD, a bare kubectl delete); the two are additive, which is deliberate because
+# a preStop is a kubelet exec and has not been verified to run in this Kata guest.
+dcu_quiet_before_delete() {
+  local seconds="$TAA_DCU_QUIESCE_SECONDS" card
+  if (( seconds <= 0 )); then
+    warn "TAA_DCU_QUIESCE_SECONDS=$seconds; deleting without a DCU quiet period"
+    return 0
+  fi
+  card="$(remote_ssh 'for dev in /sys/bus/pci/devices/*; do
+    [ "$(cat "$dev/vendor" 2>/dev/null)" = "0x1d94" ] || continue
+    case "$(cat "$dev/class" 2>/dev/null)" in
+      0x03*|0x0b40*) echo "$dev"; break ;;
+    esac
+  done' 2>/dev/null || true)"
+  if [[ -z "$card" ]]; then
+    info "no Hygon DCU on the remote host; deleting without a quiet period"
+    return 0
+  fi
+  step "giving the DCU ${seconds}s of quiet before its VM is killed"
+  remote_ssh "sleep $seconds"
+}
+
 # Deletes the deployment-owned TAA Pod. Destructive by design: the guest's writable layer -- the
 # data, keys and models the deployment put there -- goes with it, which is why this only runs when
 # the Pod is one this deployment created (--pod was not given).
 delete_taa_pod() {
   step "deleting the deployment-owned TAA Pod ($TARGET_POD in $TARGET_NAMESPACE)"
-  remote_ssh "kubectl $K_NS delete pod '$TARGET_POD' --ignore-not-found --wait=true --timeout=90s" || true
+  dcu_quiet_before_delete
+  # The timeout covers two waits: the quiet period above and the Pod's own preStop quiet period
+  # (90s in the template), plus a margin for the guest to actually shut down. A shorter timeout
+  # would fall into the forced delete below and kill the VM before the preStop finished, which is
+  # the one path this whole mechanism exists to avoid.
+  remote_ssh "kubectl $K_NS delete pod '$TARGET_POD' --ignore-not-found --wait=true --timeout=210s" || true
   # A VM-backed Pod whose guest is wedged will not answer a graceful delete; fall back to force so
   # a broken Pod cannot block the teardown. Its memory is host-resident, so leaving it costs GiB.
   if remote_pod_exists; then
-    warn "Pod '$TARGET_POD' did not exit within 90s; forcing deletion"
+    warn "Pod '$TARGET_POD' did not exit within 210s; forcing deletion"
     remote_ssh "kubectl $K_NS delete pod '$TARGET_POD' --force --grace-period=0" || true
   fi
   if remote_pod_exists; then
@@ -1111,6 +1156,11 @@ Environment overrides:
       新建 Pod 的 CPU/内存 limits（默认 3 / 98Gi；CSV2 加密内存按 limits 常驻）。
   TAA_POD_READY_TIMEOUT=${TAA_POD_READY_TIMEOUT}
       等待新建 Pod Ready 的秒数（默认 600）。
+  TAA_DCU_QUIESCE_SECONDS=${TAA_DCU_QUIESCE_SECONDS}
+      删除 Pod 前让 DCU 静默的秒数（默认 90）。DCU 在计算中被销毁 VM 后无法复位，会弄脏卡、
+      导致下一个 guest 探测失败（RLC ucode load fail / -110）；实测 111s 后删干净、18s 后删弄脏，
+      90 是两点之间的取值而非阈值。宿主看不到卡是否在计算（MSI 走 irqbypass），只能定时等待。
+      置 0 跳过；宿主上无 DCU 时自动跳过。Pod 模板另有等长的 preStop 兜底，两者叠加。
   TAA_POD_CC_INIT_DATA=<base64>
       cc_init_data 注解；置空时先取宿主上已有 CoCo Pod 的注解，取不到再用 TAA_POD_INITDATA_FILE
       渲染（与厂商 Pod 模板同一做法），都拿不到才报错。

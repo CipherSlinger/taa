@@ -71,7 +71,9 @@ spec:
   nodeSelector:
     katacontainers.io/kata-runtime: "true"
   restartPolicy: Always
-  terminationGracePeriodSeconds: 30
+  # Must outlast the preStop quiet period below (90s) with room for the guest to shut
+  # down. A preStop has no timeout of its own; this grace period is what bounds it.
+  terminationGracePeriodSeconds: 120
   containers:
     - name: taa
       image: __IMAGE__
@@ -141,6 +143,34 @@ spec:
                   echo "csv guest device info missing, skip init in postStart" >&2
                 fi
                 exit 0
+        # A DCU that was computing when its VM is killed can leave state the next VM's
+        # probe cannot recover from: the card has no reset (the fixup module sets
+        # NO_BUS_RESET and the function reports FLReset-), so the next guest fails in
+        # `gfx_v9_0_hw_init` (`RLC ucode load fail`, probe -110) and the driver never
+        # initialises. Measured on 172.16.10.178: a VM deleted 111s after its last
+        # matmul handed the card over cleanly, one deleted 18s after its last matmul
+        # wedged the next guest; 90s is a choice between the two, not a threshold. The
+        # host cannot tell whether the card is computing (the guest's MSI goes through
+        # irqbypass), so this is a fixed wait. It is the same wait deploy.sh performs
+        # before it deletes a Pod itself; this hook covers teardowns that do not go
+        # through that script, and the two are additive. Only a Pod that actually has
+        # the card waits: without it the hook exits immediately.
+        preStop:
+          exec:
+            command:
+              - /bin/sh
+              - -c
+              - |
+                found=0
+                for dev in /sys/bus/pci/devices/*; do
+                  [ "$(cat "$dev/vendor" 2>/dev/null)" = "0x1d94" ] || continue
+                  case "$(cat "$dev/class" 2>/dev/null)" in
+                    0x03*|0x0b40*) found=1; break ;;
+                  esac
+                done
+                [ "$found" = 1 ] || exit 0
+                echo "giving the DCU 90s of quiet before the VM is torn down"
+                sleep 90
       resources:
         # Kata sizes the guest from the limits (default_memory + limits.memory,
         # default_vcpus + limits.cpu). Requests equal the limits because CSV2
