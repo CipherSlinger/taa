@@ -137,7 +137,8 @@
             <span id="healthLabel" style="font-size:12px;">未检查</span>
           </span>
         </div>
-        <button type="button" class="btn-sm" onclick="testHealth()" title="GET /v1/taa/health">检查连通性</button>
+        <!-- 检查连通性 lives on each list row now; this row shows the result its
+             button produced for the selected instance. -->
         <button type="button" id="healthResultBtn" class="secondary btn-sm" onclick="openHealthResultModal()" style="display:none;" disabled>查看结果</button>
       </div>
     </div>
@@ -148,12 +149,13 @@
       <input type="hidden" id="attestRequestId" value="req-mock-attest-001">
       <div id="attestationResult" class="test-result" style="display:none;"></div>
     </div>
-  </section>
 
-  <!-- TEE-LLM: a separate instance kind. The platform calls it; it never reports
-       out, so this panel renders what the mock's poller learned. Independent of
-       the TAA instance selector. TEE only: the FHE path runs no code audit. -->
-  <section class="card" id="card-llm" data-console="tee" style="display:flex; flex-direction:column; margin-bottom:24px;">
+    <!-- TEE-LLM: the other endpoint the platform talks to. It never registers or
+         reports out, so this panel renders what the mock's poller learned; it
+         lives in this card because it belongs to the same platform side of the
+         picture as the registered TAA instances above. TEE only: the FHE path
+         runs no code audit. -->
+    <div id="card-llm" class="instance-llm-panel" data-console="tee">
     <div class="card-head" style="margin-bottom:12px; padding-bottom:10px; flex-wrap:wrap; gap:12px;">
       <div style="display:flex; align-items:center; gap:12px; flex-wrap:wrap;">
         <h2 style="margin:0;">TEE-LLM 实例</h2>
@@ -228,6 +230,7 @@
         <div id="llmLogOutput" class="llm-log-output"></div>
       </div>
     </details>
+    </div>
   </section>
 
   <!-- ─── 训练流程（平台 → TAA）接口测试 ─── -->

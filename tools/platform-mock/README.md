@@ -219,7 +219,8 @@ The platform mock provides an embedded single-page Web console accessible by ope
   exposes `/api/llm/console/*`, and `TEELLM_TLS_ENDPOINT` (or the settings page) selects the
   secure listener when it is not derivable from `-llm-target`.
 - **TEE-LLM Instance**: the mock polls the instance's plaintext `/v1/llm/*` routes, so the console
-  gives it a dedicated card (TEE mode only): the address it polls — the host address
+  gives it a block (TEE mode only) inside the 平台注册 card, since it is the other endpoint the
+  platform talks to: the address it polls — the host address
   `http://<host>:16001` by default (`--llm-target` / `LLM_TARGET`), which is the host port the
   TEE-LLM Pod publishes and therefore survives recreating the Pod; `--llm-pod` / `--llm-ns` /
   `--llm-port` opt back into kubectl Pod-IP discovery — the instance's per-process
@@ -254,8 +255,9 @@ flag: instance identity is the registration's `dockerId`.
 - **Instance list**: the flow console renders that list as rows grouped by kind. Each row shows
   its own connection state — `已连接` once the platform accepted the registration, `注册失败` when
   the report was rejected, `未注册` while the record has nothing yet — and carries its own actions
-  (公钥, 注册返回, 获取证明报告 for TEE, 删除). Those buttons address their row's `dockerId`
-  directly; only the address/health detail row below follows the selected instance.
+  (公钥, 注册返回, 检查连通性, 获取证明报告 for TEE, 删除). Those buttons address their row's
+  `dockerId` directly — `检查连通性` selects its row and writes the outcome into the detail row's
+  环境状态; only that address/health detail row follows the selected instance.
 - **Removing a stale instance**: `POST /api/instances/delete?dockerId=...` deletes that
   instance's state directory and its stored TAA public key. The console's 删除实例 button
   calls it. A Pod that has been deleted sends nothing, so this is the only way a stale entry

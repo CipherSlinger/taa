@@ -158,6 +158,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
   "the card is still computing".
 
 ### Changed
+- **The Platform-Mock Pod Table Opens On `default`, And The Registration Card Absorbs The TEE-LLM
+  Panel**: three follow-ups to the instance list. The host Pod table filtered from `''` (all
+  namespaces), so a fresh browser opened on 27 system Pods and the TAA Pod — which lives in
+  `default` — was somewhere in the middle; it now defaults to `default`, and the per-browser store
+  distinguishes "never chosen" (`null` → default) from an explicit 全部命名空间 (saved `''`), so the
+  operator's own choice still survives a reload. `检查连通性` moved out of the card's detail bar into
+  each instance row (`runInstanceHealth` selects the row, then runs the same `GET /v1/taa/health`),
+  because every other per-instance action already bound its own `dockerId` and the detail bar's
+  button silently targeted whatever the selection was; the detail bar keeps only `查看结果`, which
+  shows the report the selected instance's check produced. The TEE-LLM card became `#card-llm.instance-llm-panel`,
+  an inner block of `#card-attestation` behind a rule — both describe an endpoint the platform talks
+  to, and two sibling cards made them look like unrelated subjects. Verified live on 178: the table
+  opens at `default (2)` / `2 / 全部 27 个`, a real row's buttons read `公钥 · 注册返回 · 检查连通性 ·
+  获取证明报告 · 删除`, the row check reports `连通正常` and reveals `查看结果`, and the TEE-LLM block
+  is inside the registration card and visible at both 1600 and 760 px. The old sibling card's
+  `margin-bottom:24px` inline style is gone with it, since the block is no longer a card row.
 - **The Platform-Mock Registration Card Manages Instances As A List, Not A Dropdown**: the mock serves
   several TAA instances at once, but the console showed them in a `<select>` and kept one set of
   buttons whose target was whatever that dropdown held — so the page could not show whether an

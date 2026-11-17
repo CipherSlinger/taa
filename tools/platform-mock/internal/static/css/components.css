@@ -492,6 +492,17 @@ button.secondary.btn-icon:hover:not(:disabled) {
   white-space: nowrap;
 }
 
+/* The TEE-LLM panel is the other endpoint the platform talks to, so it sits
+   inside the registration card as a separated block: one card for the platform
+   side, instead of two cards that both describe an endpoint. */
+.instance-llm-panel {
+  display: flex;
+  flex-direction: column;
+  margin-top: 16px;
+  padding-top: 14px;
+  border-top: 1px solid var(--line);
+}
+
 /* TEE-LLM card. The poller's snapshot is a grid of label/value pairs rather than
    one run-on line, and the two collapsible sections share one panel look, so the
    card reads the same way as the registration card above it. */

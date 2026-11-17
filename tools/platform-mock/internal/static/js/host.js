@@ -18,9 +18,12 @@ const HOST_POLL_MS = 5000;
 let hostStatusLast = null;
 let hostPodTableCollapsed = false;
 let hostPollTimer = null;
-// hostNamespace is the namespace the Pod table is filtered to. Empty means all;
-// it is remembered per browser so a reload reopens the same view.
-let hostNamespace = '';
+// hostNamespace is the namespace the Pod table is filtered to. The table opens
+// on `default`, because that is where the TAA and DCU test Pods live and the
+// cluster-wide list is 27 rows of system Pods; an empty value means all, and the
+// choice is remembered per browser so a reload reopens the same view.
+const HOST_NS_DEFAULT = 'default';
+let hostNamespace = HOST_NS_DEFAULT;
 
 function hostStoreGet(key) {
   try {
@@ -270,7 +273,10 @@ function initHostBar() {
   const saved = (hostStoreGet(HOST_IP_STORAGE_KEY) || '').trim();
   const input = document.getElementById('hostIpInput');
   if (input && saved) input.value = saved;
-  hostNamespace = (hostStoreGet(HOST_NS_STORAGE_KEY) || '').trim();
+  // A saved empty string is a real choice (全部命名空间); only the absence of a
+  // saved value falls back to the default namespace.
+  const savedNS = hostStoreGet(HOST_NS_STORAGE_KEY);
+  hostNamespace = savedNS === null ? HOST_NS_DEFAULT : savedNS.trim();
   refreshHostStatus();
   if (hostPollTimer) clearInterval(hostPollTimer);
   hostPollTimer = setInterval(() => {

@@ -248,6 +248,7 @@ function buildInstanceRow(item) {
   actions.className = 'instance-row-actions';
   actions.appendChild(instanceActionButton('公钥', () => openInstancePublicKey(id), !item.accepted, '查看该实例上报的 TAA 注册公钥'));
   actions.appendChild(instanceActionButton('注册返回', () => openInstanceRegisterBody(id), !item.received, '查看该实例的注册请求与平台返回'));
+  actions.appendChild(instanceActionButton('检查连通性', () => runInstanceHealth(id), false, 'GET /v1/taa/health，结果写回下方的环境状态'));
   if (item.kind === 'tee') {
     actions.appendChild(instanceActionButton('获取证明报告', () => runInstanceAttestation(id), false, '获取该实例的 CSV 远程证明报告'));
     // The report blob is one value in the page, so these two only exist on the
@@ -340,6 +341,18 @@ async function runInstanceAttestation(id) {
   try {
     if (typeof detectTAAProxy === 'function') await detectTAAProxy();
     await testGetAttestation();
+  } finally {
+    renderInstanceList();
+  }
+}
+
+// runInstanceHealth does the same for the health check: the result is written
+// into the detail row's 环境状态 pill, which follows the selected instance.
+async function runInstanceHealth(id) {
+  selectInstance(id);
+  try {
+    if (typeof detectTAAProxy === 'function') await detectTAAProxy();
+    await testHealth();
   } finally {
     renderInstanceList();
   }

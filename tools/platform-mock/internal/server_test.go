@@ -2081,9 +2081,23 @@ func TestHealthCheckIntegratedIntoRegistration(t *testing.T) {
 			t.Errorf("frontendBundle missing %q, so the instance list cannot render its rows", want)
 		}
 	}
+	// The health check button is one of the per-row actions now.
+	if strings.Contains(indexHTML, `onclick="testHealth()"`) {
+		t.Fatal("the health check button should be rendered per row, not in the card's detail bar")
+	}
 	// The health result still stays hidden until there is a result to act on.
 	if !strings.Contains(indexHTML, `style="display:none;" disabled>查看结果`) {
 		t.Fatal("indexHTML missing hidden-until-ready health result action")
+	}
+	// The TEE-LLM panel is the other platform-facing endpoint, so it is an inner
+	// block of the registration card rather than the sibling card it used to be.
+	attestationIdx := strings.Index(indexHTML, `id="card-attestation"`)
+	llmIdx := strings.Index(indexHTML, `id="card-llm"`)
+	if attestationIdx == -1 || llmIdx == -1 || llmIdx < attestationIdx {
+		t.Fatalf("TEE-LLM panel should sit inside the registration card (attestation=%d llm=%d)", attestationIdx, llmIdx)
+	}
+	if !strings.Contains(indexHTML, `id="card-llm" class="instance-llm-panel"`) {
+		t.Fatal("TEE-LLM panel should be marked as an inner block of the registration card")
 	}
 }
 
@@ -2545,6 +2559,7 @@ func TestAdvancedUIPolishVisualDashboardAndStepperComponents(t *testing.T) {
 		".instance-group-head",
 		".instance-row-main",
 		".instance-row-actions",
+		".instance-llm-panel",
 		"button.btn-sm",
 		".llm-meta-grid",
 		".llm-panel-body",
@@ -2976,6 +2991,7 @@ func TestConsoleModeFollowsTheSelectedInstance(t *testing.T) {
 		"function applyConsoleKind(",
 		"applySelectedInstanceKind();",
 		"applyConsoleKind(instanceKinds[currentInstanceDockerId])",
+		"runInstanceHealth(",
 	} {
 		if !strings.Contains(frontendBundle, want) {
 			t.Errorf("frontendBundle missing %q, so the selected instance never sets the mode", want)
@@ -3054,6 +3070,7 @@ func TestHostBarAndWorkspaceTabs(t *testing.T) {
 		`id="hostPodNamespace"`,
 		`onHostPodNamespaceChange`,
 		`src="/static/js/host.js"`,
+		"const HOST_NS_DEFAULT = 'default'",
 		`id="tabBtnFlow"`,
 		`id="tabBtnApi"`,
 		`id="workspaceFlow"`,
