@@ -477,19 +477,30 @@ button.secondary.btn-icon:hover:not(:disabled) {
   }
 }
 
-/* The detected target is an address, often longer than the row: keep it on one
-   line and ellipsize inside the pill instead of spilling past its border. The
-   full value is on the badge's title. */
-#taaTargetPill {
-  max-width: 100%;
+/* The two facts that used to live in a detail row under the list. The target is
+   an address, often longer than the row, so it ellipsizes inside its chip and
+   keeps the full value on the title; the health chip is the last check's outcome
+   for that instance, so it is a fixed-width pill rather than free text. */
+.instance-target {
+  flex: 0 1 auto;
   min-width: 0;
-}
-
-#taaProxyBadge {
-  min-width: 0;
+  max-width: 260px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  padding: 1px 7px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--panel-sub);
+  color: var(--muted);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 11px;
+}
+
+.instance-health {
+  flex: 0 0 auto;
+  padding: 1px 8px;
+  font-size: 11px;
 }
 
 /* The TEE-LLM panel is the other endpoint the platform talks to, so it sits
@@ -2507,30 +2518,6 @@ textarea.api-tester-key {
   line-height: 1.55;
 }
 
-/* The panel toggles the form with the hidden attribute, so the display rule for
-   the form must not win over it. */
-.host-terminal-login[hidden] { display: none; }
-
-.host-terminal-login {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex-wrap: wrap;
-  margin-top: 10px;
-}
-
-.host-terminal-login input {
-  flex: 1 1 140px;
-  min-width: 0;
-  margin: 0;
-}
-
-.host-terminal-error {
-  font-size: 12px;
-  color: #b91c1c;
-  flex: 1 1 100%;
-}
-
 .host-terminal-screen {
   margin-top: 10px;
   height: 320px;
@@ -2552,24 +2539,8 @@ textarea.api-tester-key {
   .host-terminal-state[data-state="ok"] { color: #4ade80; }
   .host-terminal-state[data-state="loading"] { color: #fbbf24; }
   .host-terminal-state[data-state="error"] { color: #f87171; }
-  .host-terminal-error { color: #f87171; }
 }
 
 @media (max-width: 768px) {
   .host-terminal-screen { height: 260px; }
-}
-
-/* The note under the terminal's login form. It exists because the panel lives
-   next to a command that runs on the host, so "登录" reads like a host login;
-   the credential is the console account and saying so here is cheaper than
-   explaining a rejected password later. */
-.host-terminal-error-note {
-  flex: 1 1 100%;
-  font-size: 11.5px;
-  line-height: 1.5;
-  color: var(--muted);
-}
-
-.host-terminal-login input::placeholder {
-  font-size: 12px;
 }

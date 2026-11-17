@@ -23,14 +23,14 @@ import (
 //
 // The mock already runs on that host, so the shell does not cross SSH: it is a
 // child of this process, attached to a real PTY so interactive programs (an
-// editor, `top`, a pager) behave. A browser never sends a password: the console
-// session cookie authenticated the operator, and that is the only gate.
+// editor, `top`, a pager) behave. The panel has no console login of its own —
+// it is a block of the console page, and connecting is one click.
 //
-// That gate is load-bearing. Anything reachable here is reachable by anyone who
-// can sign in to the console, and the shell runs as whatever user started the
-// mock (root on the deployed host). The route is mounted behind requireSession,
-// and the origin check below stops another page from opening the socket with a
-// cookie the browser already holds.
+// The origin check below is the remaining gate: it stops a page on another
+// origin from opening a socket in the operator's browser. It does not stop a
+// non-browser client that can reach this port, and the shell runs as whatever
+// user started the mock (root on the deployed host), so the mock is meant for a
+// trusted network.
 const (
 	terminalMaxSessions = 4
 	// terminalIdleTimeout closes a shell whose browser stopped sending. A tab

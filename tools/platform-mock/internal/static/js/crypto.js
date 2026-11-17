@@ -157,10 +157,6 @@ async function testGetAttestation() {
   if (typeof showResultRunning === 'function') {
     showResultRunning('attestationResult', '正在请求远程证明报告（helper 可能需要数秒）...');
   }
-  const statusEl = document.getElementById('statusText');
-  if (statusEl) statusEl.textContent = '正在获取远程证明报告...';
-  const dot = document.getElementById('dot');
-  if (dot) dot.className = 'dot';
   _lastAttestationBase64 = null;
   _lastAttestationValues = null;
   _lastAttestationOwner = '';

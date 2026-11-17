@@ -81,6 +81,11 @@ p {
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 14px;
   align-items: stretch;
+  /* The cards drop their own bottom margin so their boxes match; without this
+     the grid would end exactly where the next section starts, and the flow row
+     and the log panels would read as one block. Wider than the 16px card rhythm
+     because these are two different kinds of panel, not two cards in a list. */
+  margin-bottom: 32px;
 }
 
 .three-col-layout > .card {

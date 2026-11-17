@@ -236,7 +236,10 @@ func NewServer(cfg Config) *Server {
 
 	// The host terminal runs a shell on this machine, so it is gated by the same
 	// console session as the TEE-LLM and audit tabs: one sign-in covers all three.
-	mux.HandleFunc("/api/host/terminal", console.requireSession(hostTerminalHandler(newTerminalSessions(), cfg.TerminalShell)))
+	// The terminal has no console login of its own: it is part of the console page
+	// the operator already has open. The origin check inside the handler is what
+	// keeps another page from opening a shell in that browser.
+	mux.HandleFunc("/api/host/terminal", hostTerminalHandler(newTerminalSessions(), cfg.TerminalShell))
 
 	return &Server{
 		cfg: cfg,

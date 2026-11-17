@@ -2,8 +2,8 @@
 
 // The address console calls are sent to. It has no input: the mock detects the
 // TAA target from the registration and either routes through its own reverse
-// proxy (location.origin + '/taa') or calls the service directly. The pill in
-// the platform-registration card shows which one is in force.
+// proxy (location.origin + '/taa') or calls the service directly. The address
+// itself is shown on each instance row.
 let taaAddrCurrent = defaultTaaAddr();
 
 // defaultTaaAddr is the direct-TAA fallback: the host this page was opened from
@@ -59,6 +59,32 @@ let instanceKinds = {};
 // reported. The API tester needs it because a sealed envelope must go straight
 // to TAA; through the mock's /taa proxy it would be sealed a second time.
 let instanceTargets = {};
+
+// instanceHealthState is the last health check each row produced. Health is an
+// action, not a polled fact, so it is not part of /api/instances: the row shows
+// what its own 检查连通性 learned, and 查看结果 exists only where that result is
+// still the one `lastHealthData` holds.
+const instanceHealthState = {};
+let lastHealthOwner = '';
+
+function recordInstanceHealth(id, tone, label, title) {
+  if (!id) return;
+  instanceHealthState[id] = {
+    tone: tone === 'ok' || tone === 'bad' || tone === 'running' ? tone : 'pending',
+    label: label || '未检查',
+    title: title || '',
+  };
+  if (tone === 'ok' || tone === 'bad') lastHealthOwner = id;
+  renderInstanceList();
+}
+
+function instanceHealthFor(id) {
+  return instanceHealthState[id] || {
+    tone: 'pending',
+    label: '未检查',
+    title: '尚未对该实例执行连通性检查',
+  };
+}
 
 // INSTANCE_GROUPS is the fixed display order of the list. A kind the mock does
 // not infer (a record that never registered) still gets a section rather than
@@ -233,6 +259,26 @@ function buildInstanceRow(item) {
     tag.textContent = '默认';
     main.appendChild(tag);
   }
+  // The two facts that used to sit in a detail row under the list: the address
+  // the console posts to, and the outcome of the last health check.
+  const target = document.createElement('span');
+  target.className = 'instance-target';
+  target.textContent = item.taaTarget ? 'TAA ' + item.taaTarget : 'TAA 地址未上报';
+  if (item.taaTarget) target.title = 'TAA 服务地址 ' + item.taaTarget;
+  main.appendChild(target);
+
+  const health = instanceHealthFor(id);
+  const healthChip = document.createElement('span');
+  healthChip.className = 'instance-health status-pill ' + health.tone;
+  const healthDot = document.createElement('span');
+  healthDot.className = 'pill-dot';
+  const healthText = document.createElement('span');
+  healthText.textContent = '环境 ' + health.label;
+  healthChip.appendChild(healthDot);
+  healthChip.appendChild(healthText);
+  if (health.title) healthChip.title = health.title;
+  main.appendChild(healthChip);
+
   const stateText = document.createElement('span');
   stateText.className = 'instance-state-text ' + state.tone;
   stateText.textContent = state.label;
@@ -248,7 +294,10 @@ function buildInstanceRow(item) {
   actions.className = 'instance-row-actions';
   actions.appendChild(instanceActionButton('公钥', () => openInstancePublicKey(id), !item.accepted, '查看该实例上报的 TAA 注册公钥'));
   actions.appendChild(instanceActionButton('注册返回', () => openInstanceRegisterBody(id), !item.received, '查看该实例的注册请求与平台返回'));
-  actions.appendChild(instanceActionButton('检查连通性', () => runInstanceHealth(id), false, 'GET /v1/taa/health，结果写回下方的环境状态'));
+  actions.appendChild(instanceActionButton('检查连通性', () => runInstanceHealth(id), false, 'GET /v1/taa/health，结果写回该行的环境状态'));
+  if (lastHealthOwner === id && typeof lastHealthData !== 'undefined' && lastHealthData) {
+    actions.appendChild(instanceActionButton('查看结果', () => { selectInstance(id); openHealthResultModal(); }, false, '查看该实例最近一次连通性检查的返回'));
+  }
   if (item.kind === 'tee') {
     actions.appendChild(instanceActionButton('获取证明报告', () => runInstanceAttestation(id), false, '获取该实例的 CSV 远程证明报告'));
     // The report blob is one value in the page, so these two only exist on the
@@ -347,7 +396,7 @@ async function runInstanceAttestation(id) {
 }
 
 // runInstanceHealth does the same for the health check: the result is written
-// into the detail row's 环境状态 pill, which follows the selected instance.
+// into that row's 环境状态 chip, where the row's own 查看结果 then reads it.
 async function runInstanceHealth(id) {
   selectInstance(id);
   try {

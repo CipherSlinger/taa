@@ -831,29 +831,12 @@ function showResultRunning(elId, text) {
   }
 }
 
-function setHealthState(className, title, labelText, labelColor) {
-  const dot = document.getElementById('healthDot');
-  const label = document.getElementById('healthLabel');
-  const pill = document.getElementById('healthPill');
-  if (dot) {
-    dot.className = className;
-    dot.title = title;
-  }
-  if (label) {
-    label.textContent = labelText;
-    label.style.color = labelColor || '';
-  }
-  if (pill) {
-    if (className.includes('ok')) {
-      pill.className = 'status-pill ok';
-    } else if (className.includes('bad')) {
-      pill.className = 'status-pill bad';
-    } else if (className.includes('running')) {
-      pill.className = 'status-pill running';
-    } else {
-      pill.className = 'status-pill pending';
-    }
-  }
+// setHealthState records the outcome on the row that ran the check. There is no
+// shared detail row any more: the state is keyed by the selected instance and
+// painted by renderInstanceList() when the row is rebuilt.
+function setHealthState(tone, title, labelText) {
+  const id = typeof currentDockerId === 'function' ? currentDockerId() : '';
+  if (typeof recordInstanceHealth === 'function') recordInstanceHealth(id, tone, labelText, title);
 }
 
 // ── Dynamic Command & Env Rows ──
@@ -953,21 +936,15 @@ function renderRegister(data) {
     secondaryContent: { code: 0, msg: 'ok', result: { accepted: Boolean(data && data.accepted) } },
     endpoint: '/v1/taa/register',
   });
-  const dot = document.getElementById('dot');
-  const pill = document.getElementById('registerPill');
-  if (dot) dot.className = 'dot';
+  // The registration outcome is a fact of the instance row, so there is no
+  // shared pill here to repaint; only the key field this modal reads is kept.
   const publicKeyField = document.getElementById('registerPublicKey');
   const keyModal = document.getElementById('taaPublicKeyModal');
   const keyModalOpen = !!(keyModal && keyModal.classList.contains('open'));
   if (!data || !data.received) {
-    if (pill) pill.className = 'status-pill pending';
-    text('statusText', '未注册');
     if (publicKeyField && !keyModalOpen) publicKeyField.value = '';
     return;
   }
-  if (dot) dot.className = 'dot ' + (data.accepted ? 'ok status-pill ok' : 'bad status-pill bad');
-  if (pill) pill.className = 'status-pill ' + (data.accepted ? 'ok' : 'bad');
-  text('statusText', data.accepted ? '已注册' : '注册失败');
   const publicKey = data.accepted ? String(data.taaPublicKey || '').trim() : '';
   // The modal may be showing another row's key; the poll must not overwrite it
   // while it is open.
@@ -1048,7 +1025,6 @@ async function refreshStatus() {
     const data = await res.json();
     renderRegister(responseResult(data));
   } catch (err) {
-    text('statusText', '刷新状态失败');
     text('message', String(err));
   }
 }
@@ -1603,9 +1579,7 @@ window.refreshDashboardStatus = refreshDashboardStatus;
 
 // ── TAA API Triggers ──
 async function testHealth() {
-  const btn = document.getElementById('healthResultBtn');
-  if (btn) btn.disabled = true;
-  setHealthState('dot status-pill running', '检查中', '检查中...', '');
+  setHealthState('running', '检查中', '检查中...');
   recordInteraction('health', {
     title: '健康检查 (GET /v1/taa/health)',
     primaryLabel: '返回内容',
@@ -1619,7 +1593,7 @@ async function testHealth() {
     const r = await postToTAA('/v1/taa/health', {}, 10000);
     const ok = r.status === 200 && r.data && r.data.error === 0;
     lastHealthData = r.data != null ? r.data : { status: r.status, raw: r };
-    setHealthState('dot ' + (ok ? 'ok status-pill ok' : 'bad status-pill bad'), ok ? '连通正常' : '连通异常', ok ? '连通正常' : 'HTTP ' + r.status, ok ? 'var(--ok)' : 'var(--bad)');
+    setHealthState(ok ? 'ok' : 'bad', ok ? '连通正常' : '连通异常', ok ? '连通正常' : 'HTTP ' + r.status);
     recordInteraction('health', { primaryContent: lastHealthData, respBody: lastHealthData, statusCode: r.status });
   } catch (e) {
     const msg = e.name === 'AbortError'
@@ -1630,14 +1604,11 @@ async function testHealth() {
       msg: e.message || '网络请求异常',
       detail: msg,
     };
-    setHealthState('dot bad status-pill bad', '不可达', '不可达', 'var(--bad)');
+    setHealthState('bad', '不可达', '不可达');
     recordInteraction('health', { primaryContent: lastHealthData, respBody: lastHealthData, statusCode: 500 });
   } finally {
-    if (btn) {
-      btn.disabled = false;
-      // The card hides 查看结果 until a check has produced a result.
-      btn.style.display = 'inline-flex';
-    }
+    // The row is rebuilt so 查看结果 appears next to this instance's 检查连通性.
+    renderInstanceList();
   }
 }
 
@@ -1852,41 +1823,18 @@ async function testSwitch(phase) {
 }
 
 async function detectTAAProxy() {
-  const badge = document.getElementById('taaProxyBadge');
-  const pill = document.getElementById('taaTargetPill');
   // When nothing is detected, default to the host this page was loaded from rather than a
   // hardcoded loopback: the UI is routinely opened from another machine, and 127.0.0.1 would
-  // then point at the reader's own computer instead of the TAA service.
+  // then point at the reader's own computer instead of the TAA service. The address itself is
+  // shown on each instance row, so this only decides where console calls are sent.
   const fallbackAddr = defaultTaaAddr();
   try {
     const res = await mockFetch('/api/taa-target', { cache: 'no-store' });
     const data = await res.json();
     const payload = responseResult(data);
-    if (payload.taaTarget) {
-      setTaaAddr(location.origin + '/taa');
-      if (pill) pill.className = 'status-pill ok';
-      if (badge) {
-        badge.textContent = '代理 ' + payload.taaTarget;
-        badge.title = badge.textContent;
-        badge.style.color = 'var(--ok)';
-      }
-    } else {
-      setTaaAddr(fallbackAddr);
-      if (pill) pill.className = 'status-pill pending';
-      if (badge) {
-        badge.textContent = '未检测到 TAA Pod，直连 ' + fallbackAddr;
-        badge.title = badge.textContent;
-        badge.style.color = 'var(--bad)';
-      }
-    }
+    setTaaAddr(payload.taaTarget ? location.origin + '/taa' : fallbackAddr);
   } catch {
     setTaaAddr(fallbackAddr);
-    if (pill) pill.className = 'status-pill bad';
-    if (badge) {
-      badge.textContent = '检测失败，直连 ' + fallbackAddr;
-      badge.title = badge.textContent;
-      badge.style.color = 'var(--bad)';
-    }
   }
 }
 

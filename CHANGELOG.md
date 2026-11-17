@@ -158,6 +158,28 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
   "the card is still computing".
 
 ### Changed
+- **The Platform-Mock Registration Detail Row Is Gone, The Flow And Log Rows Are Separated, And The
+  Host Terminal Drops Its Console Login**: the instance list still had a detail row under it —
+  `TAA 服务地址`, a 已注册 pill and `环境状态` — that described only the selected instance and
+  duplicated the row's own connection state, so the list never read as a list. Each row now carries
+  the facts itself: a monospace chip with that instance's registered `taaTarget` (ellipsized, full
+  value on the title), and a 环境 chip with the last health check's outcome. Health is an action, not
+  a polled fact, so the state is page-local, keyed by `dockerId` (`recordInstanceHealth`), and
+  `查看结果` is appended to the row that produced the result the drawer still holds
+  (`lastHealthOwner`); the shared `#taaTargetPill`, `#registerPill`, `#healthPill`/`#healthDot`/
+  `#healthLabel` and the static `#healthResultBtn` are deleted, along with the register pill writes in
+  `renderRegister` and the attestation path. The flow row's cards lose their bottom margin so the
+  three heights match, which had left the row ending exactly where the log panels begin; the grid now
+  carries a 32px `margin-bottom` (wider than the 16px card rhythm) so the pipeline and the logs read as
+  two sections. The API-tester host terminal no longer asks for a console login: the panel is a block
+  of the page the operator already has open, so the form, `sessionIsLive`, `hostTerminalLogin` and the
+  `requireSession` wrapper on `/api/host/terminal` are removed, and 连接 opens the socket directly. The
+  origin check is now the only gate — it still refuses a page from another origin, but a non-browser
+  client that can reach the port is not stopped by it, and the shell runs as the mock's user (root on
+  the deployed host), so this suits a trusted network. Verified live on 178: the detail row's ids are
+  absent, the row reads `TAA http://10.244.0.135:6001` + `环境 未检查`, a row check flips it to
+  `环境 连通正常` and adds `查看结果`, the flow/log gap measures 32px at 1600 and 760, and the terminal
+  reaches `已连接` with no login form present.
 - **The Platform-Mock Pod Table Opens On `default`, And The Registration Card Absorbs The TEE-LLM
   Panel**: three follow-ups to the instance list. The host Pod table filtered from `''` (all
   namespaces), so a fresh browser opened on 27 system Pods and the TAA Pod — which lives in

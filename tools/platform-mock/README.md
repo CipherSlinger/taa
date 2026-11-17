@@ -77,7 +77,7 @@ up in its command line. Run `./deploy-platform-mock.sh --help` for the full list
 | `-platform-key-file` | `<state-dir>/platform-key.json` (or `$PLATFORM_KEY_FILE`) | Where the platform SM2 key pair (and the last registered TAA public key) is persisted. Generated on first use; a restart reuses the same pair. |
 | `-console-user` | `admin` (or `$CONSOLE_USER`) | Login name for the code audit workbench. |
 | `-console-password` | `teellm@2026` (or `$CONSOLE_PASSWORD`) | Login password for the code audit workbench. |
-| `-terminal-shell` | `/bin/bash` (or `$TERMINAL_SHELL`) | Shell the API tester's host terminal starts. It runs as the user that started the mock, on the same host, behind the console session. |
+| `-terminal-shell` | `/bin/bash` (or `$TERMINAL_SHELL`) | Shell the API tester's host terminal starts. It runs as the user that started the mock, on the same host, with no console login of its own — the page's origin check is the only gate. |
 
 ## SM2 Envelope
 
@@ -254,10 +254,11 @@ flag: instance identity is the registration's `dockerId`.
   instance also switches the console panels to that kind.
 - **Instance list**: the flow console renders that list as rows grouped by kind. Each row shows
   its own connection state — `已连接` once the platform accepted the registration, `注册失败` when
-  the report was rejected, `未注册` while the record has nothing yet — and carries its own actions
-  (公钥, 注册返回, 检查连通性, 获取证明报告 for TEE, 删除). Those buttons address their row's
-  `dockerId` directly — `检查连通性` selects its row and writes the outcome into the detail row's
-  环境状态; only that address/health detail row follows the selected instance.
+  the report was rejected, `未注册` while the record has nothing yet — its registered TAA address,
+  and a 环境 chip with the last health check's outcome. It carries its own actions (公钥, 注册返回,
+  检查连通性, 查看结果 for the row whose check produced the held result, 获取证明报告 for TEE, 删除).
+  Those buttons address their row's `dockerId` directly; there is no separate detail row under the
+  list.
 - **Removing a stale instance**: `POST /api/instances/delete?dockerId=...` deletes that
   instance's state directory and its stored TAA public key. The console's 删除实例 button
   calls it. A Pod that has been deleted sends nothing, so this is the only way a stale entry

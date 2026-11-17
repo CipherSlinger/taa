@@ -2016,45 +2016,46 @@ func TestHealthCheckIntegratedIntoRegistration(t *testing.T) {
 	// Integrated elements and functions should be present
 	for _, want := range []string{
 		`id="card-attestation"`,
-		// The service address is no longer a field anyone types into: the
-		// detected target and its reachability are shown there instead.
-		`id="taaTargetPill"`,
-		`id="taaProxyBadge"`,
-		`id="healthDot"`,
-		`id="healthLabel"`,
 		"testHealth()",
-		`id="healthResultBtn"`,
 		"openHealthResultModal",
 		"lastHealthData",
+		// The address and health state moved into the rows themselves.
+		"recordInstanceHealth(",
+		"instanceHealthFor(",
+		"instance-target",
+		"instance-health",
+		"lastHealthOwner",
 	} {
 		if !strings.Contains(frontendBundle, want) {
 			t.Fatalf("frontendBundle missing integrated element or function %q", want)
 		}
 	}
 
-	// The registration outcome sits to the right of the service address, not in
-	// the card heading, so both facts about the instance are read together.
-	targetPillIdx := strings.Index(indexHTML, `id="taaTargetPill"`)
-	registerPillIdx := strings.Index(indexHTML, `id="registerPill"`)
-	if targetPillIdx == -1 || registerPillIdx == -1 {
-		t.Fatalf("registration pills missing: target=%d register=%d", targetPillIdx, registerPillIdx)
-	}
-	if registerPillIdx < targetPillIdx {
-		t.Fatal("registerPill must follow taaTargetPill")
-	}
-	if !strings.Contains(indexHTML, `<span id="statusText">未注册</span>`) {
-		t.Fatal("statusText should default to 未注册")
+	// The detail row under the list is gone: every fact it held is now on the
+	// row of the instance it describes.
+	for _, gone := range []string{
+		`id="taaTargetPill"`,
+		`id="taaProxyBadge"`,
+		`id="registerPill"`,
+		`id="healthPill"`,
+		`id="healthDot"`,
+		`id="healthLabel"`,
+		`id="healthResultBtn"`,
+	} {
+		if strings.Contains(indexHTML, gone) {
+			t.Fatalf("indexHTML still contains the removed detail-row element %q", gone)
+		}
 	}
 
 	// Instance management is a list, not a dropdown: the rows carry the
-	// connection state and the actions for the instance they name, and the
-	// address row below is the detail view of the selected row.
+	// connection state, the address, the health state and the actions for the
+	// instance they name.
 	listIdx := strings.Index(indexHTML, `id="instanceList"`)
 	if listIdx == -1 {
 		t.Fatal(`indexHTML missing id="instanceList"`)
 	}
-	if listIdx > targetPillIdx {
-		t.Fatal("instance list should lead the card, above the service address row")
+	if resultIdx := strings.Index(indexHTML, `id="attestationResult"`); resultIdx == -1 || listIdx > resultIdx {
+		t.Fatal("instance list should lead the card's remaining blocks")
 	}
 	if strings.Contains(indexHTML, `id="instanceSelect"`) {
 		t.Fatal("the instance dropdown is still in the markup")
@@ -2081,13 +2082,12 @@ func TestHealthCheckIntegratedIntoRegistration(t *testing.T) {
 			t.Errorf("frontendBundle missing %q, so the instance list cannot render its rows", want)
 		}
 	}
-	// The health check button is one of the per-row actions now.
+	// The health check button and its result viewer are per-row actions now.
 	if strings.Contains(indexHTML, `onclick="testHealth()"`) {
 		t.Fatal("the health check button should be rendered per row, not in the card's detail bar")
 	}
-	// The health result still stays hidden until there is a result to act on.
-	if !strings.Contains(indexHTML, `style="display:none;" disabled>查看结果`) {
-		t.Fatal("indexHTML missing hidden-until-ready health result action")
+	if !strings.Contains(frontendBundle, `instanceActionButton('查看结果'`) {
+		t.Fatal("frontendBundle missing the per-row 查看结果 action")
 	}
 	// The TEE-LLM panel is the other platform-facing endpoint, so it is an inner
 	// block of the registration card rather than the sibling card it used to be.
@@ -2488,9 +2488,7 @@ func TestUIPolishStatusPillsAndDrawerComponents(t *testing.T) {
 
 	// 2. Verify index.html structure
 	htmlPatterns := []string{
-		`id="healthPill"`,
-		`id="healthDot"`,
-		`id="healthLabel"`,
+		`id="instanceList"`,
 		`id="reportModelImportPill"`,
 		`id="reportAuditPill"`,
 		`id="reportProgressBar"`,

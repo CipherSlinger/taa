@@ -3,24 +3,21 @@
 // The mock runs on the host that can reach the TAA Pod, so "run the curl
 // command" means "run it there". This panel opens a shell on that machine over
 // a WebSocket and renders it with xterm.js. The shell is a child of the mock
-// process, not an SSH session, and it is gated by the same console session as
-// the audit and TEE-LLM tabs — so an expired session asks for the password here
-// instead of failing as a bare socket error.
+// process, not an SSH session, and it has no console login of its own: the tab
+// is already part of the page the operator is using, so connecting is one click.
 //
-// Everything here is presentation: the server owns the PTY, the process tree and
-// the session check.
+// Everything here is presentation: the server owns the PTY and the process tree.
 (function () {
   'use strict';
 
   var TERMINAL_PATH = '/api/host/terminal';
-  var FAILED_CLOSE = new Set([1006, 1008, 1011]);
+  var FAILED_CLOSE = new Set([1006, 1011]);
   var state = {
     term: null,
     fit: null,
     socket: null,
     opened: false,
     resizing: false,
-    loginBusy: false,
   };
 
   function byId(id) { return document.getElementById(id); }
@@ -35,17 +32,6 @@
   function setHint(text) {
     var el = byId('hostTerminalHint');
     if (el) el.textContent = text || '';
-  }
-
-  function showLoginForm(show, message) {
-    var form = byId('hostTerminalLoginForm');
-    if (form) form.hidden = !show;
-    var err = byId('hostTerminalLoginError');
-    if (err) err.textContent = message || '';
-    if (show) {
-      var pwd = byId('hostTerminalPassword');
-      if (pwd) { pwd.value = ''; pwd.focus(); }
-    }
   }
 
   function syncButtons() {
@@ -139,35 +125,12 @@
     return scheme + '//' + location.host + TERMINAL_PATH;
   }
 
-  // sessionIsLive asks the console whether the cookie still works. A WebSocket
-  // handshake that fails with 401 cannot be read from the browser, so the only
-  // honest way to distinguish "signed out" from "server down" is to ask first.
-  function sessionIsLive() {
-    return fetch('/api/console/session', { credentials: 'same-origin', cache: 'no-store' })
-      .then(function (res) { return res.json().catch(function () { return null; }); })
-      .then(function (data) {
-        var payload = data && (data.result || data);
-        return !!(payload && payload.authenticated);
-      })
-      .catch(function () { return false; });
-  }
-
   function hostTerminalConnect() {
     if (state.socket) return;
     if (!ensureTerminal()) return;
     setStatus('连接中…', 'loading');
     setHint('正在连接宿主机 shell…');
-    showLoginForm(false);
-
-    sessionIsLive().then(function (live) {
-      if (!live) {
-        setStatus('未登录', 'error');
-        setHint('宿主机终端需要控制台登录后才能打开。');
-        showLoginForm(true, '');
-        return;
-      }
-      openSocket();
-    });
+    openSocket();
   }
 
   function openSocket() {
@@ -205,7 +168,6 @@
         writeLine('\r\n[终端已退出，退出码 ' + code + ']');
         if (msg.message) writeLine('\r\n' + msg.message);
         setStatus('已退出', 'idle');
-        showLoginForm(false);
       }
     };
 
@@ -218,11 +180,6 @@
       state.socket = null;
       state.opened = false;
       syncButtons();
-      if (event && event.code === 1008) {
-        setStatus('未登录', 'error');
-        showLoginForm(true, '会话已过期，请重新登录');
-        return;
-      }
       if (event && FAILED_CLOSE.has(event.code)) {
         setStatus('连接中断', 'error');
         setHint('与宿主机终端的连接已断开（' + event.code + '）。可点“连接”重试。');
@@ -244,61 +201,6 @@
     if (state.term) state.term.clear();
   }
 
-  // hostTerminalLogin reuses the console's own login endpoint: the terminal has
-  // no credentials of its own, and a second password store would be one more
-  // thing to keep in sync with the console.
-  function hostTerminalLogin(event) {
-    if (event && event.preventDefault) event.preventDefault();
-    if (state.loginBusy) return;
-    var userEl = byId('hostTerminalUser');
-    var pwdEl = byId('hostTerminalPassword');
-    var username = userEl ? userEl.value.trim() : '';
-    var password = pwdEl ? pwdEl.value : '';
-    if (!username || !password) {
-      showLoginForm(true, '请输入用户名和口令');
-      return;
-    }
-    state.loginBusy = true;
-    var btn = byId('hostTerminalLoginBtn');
-    if (btn) btn.disabled = true;
-
-    fetch('/api/console/login', {
-      method: 'POST',
-      credentials: 'same-origin',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ username: username, password: password }),
-    })
-      .then(function (res) {
-        return res.json().catch(function () { return null; }).then(function (data) {
-          return { ok: res.ok, status: res.status, data: data };
-        });
-      })
-      .then(function (res) {
-        if (res.ok) {
-          if (pwdEl) pwdEl.value = '';
-          showLoginForm(false);
-          setHint('登录成功，正在连接宿主机 shell…');
-          openSocket();
-          return;
-        }
-        var payload = res.data || {};
-        var msg = payload.error || payload.msg || ('登录失败（HTTP ' + res.status + '）');
-        if (res.status === 401) {
-          // The console account, not a host login — a rejected password here
-          // most often means the operator typed the host's root password.
-          msg = '控制台账号或口令不正确（默认 admin / teellm@2026，不是宿主机 SSH 口令）';
-        }
-        showLoginForm(true, msg);
-      })
-      .catch(function () {
-        showLoginForm(true, '无法连接服务器，请稍后重试');
-      })
-      .finally(function () {
-        state.loginBusy = false;
-        if (btn) btn.disabled = false;
-      });
-  }
-
   // The terminal is created lazily, so a first visit that never opens it costs
   // nothing. When the API tab is selected the container has a size, and the
   // size has to be pushed then rather than at creation time.
@@ -313,7 +215,6 @@
   window.hostTerminalConnect = hostTerminalConnect;
   window.hostTerminalDisconnect = hostTerminalDisconnect;
   window.hostTerminalClear = hostTerminalClear;
-  window.hostTerminalLogin = hostTerminalLogin;
   window.hostTerminalOnTabShown = hostTerminalOnTabShown;
 
   if (document.readyState === 'loading') {

@@ -53,12 +53,16 @@ func TestTerminalSessionsCap(t *testing.T) {
 	}
 }
 
-func TestHostTerminalRequiresSession(t *testing.T) {
-	rig := newConsoleTestRig(t, "")
-	handler := rig.console.requireSession(hostTerminalHandler(newTerminalSessions(), ""))
-	rec := rig.call(handler, http.MethodGet, "/api/host/terminal", "", nil)
-	if rec.Code != http.StatusUnauthorized {
-		t.Fatalf("status = %d, want 401", rec.Code)
+// TestHostTerminalNeedsNoConsoleSession pins the removal of the login gate: the
+// panel is part of the console page, so the socket must not answer 401 when no
+// session cookie is present.
+func TestHostTerminalNeedsNoConsoleSession(t *testing.T) {
+	handler := hostTerminalHandler(newTerminalSessions(), "")
+	req := httptest.NewRequest(http.MethodGet, "/api/host/terminal", nil)
+	rec := httptest.NewRecorder()
+	handler(rec, req)
+	if rec.Code == http.StatusUnauthorized {
+		t.Fatal("the terminal still requires a console session")
 	}
 }
 
@@ -68,12 +72,9 @@ func TestHostTerminalRefusesAForeignOrigin(t *testing.T) {
 	if runtime.GOOS != "linux" {
 		t.Skip("the terminal needs a Linux PTY")
 	}
-	rig := newConsoleTestRig(t, "")
-	cookie := rig.loginCookie(t)
-	server := httptest.NewServer(rig.console.requireSession(hostTerminalHandler(newTerminalSessions(), "/bin/sh")))
+	server := httptest.NewServer(hostTerminalHandler(newTerminalSessions(), "/bin/sh"))
 
 	header := http.Header{}
-	header.Set("Cookie", cookie.String())
 	header.Set("Origin", "http://evil.example")
 	_, resp, err := websocket.DefaultDialer.Dial(wsURL(server.URL), header)
 	if err == nil {
@@ -88,20 +89,17 @@ func TestHostTerminalRefusesAForeignOrigin(t *testing.T) {
 	}
 }
 
-// TestHostTerminalRunsAShellOnThisHost is the end-to-end check: a signed-in
-// socket sends a command and receives its output, which is what the panel does.
+// TestHostTerminalRunsAShellOnThisHost is the end-to-end check: a socket with
+// no cookie at all sends a command and receives its output, which is what the
+// panel does.
 func TestHostTerminalRunsAShellOnThisHost(t *testing.T) {
 	if runtime.GOOS != "linux" {
 		t.Skip("the terminal needs a Linux PTY")
 	}
-	rig := newConsoleTestRig(t, "")
-	cookie := rig.loginCookie(t)
-	server := httptest.NewServer(rig.console.requireSession(hostTerminalHandler(newTerminalSessions(), "/bin/sh")))
+	server := httptest.NewServer(hostTerminalHandler(newTerminalSessions(), "/bin/sh"))
 	defer server.Close()
 
-	header := http.Header{}
-	header.Set("Cookie", cookie.String())
-	conn, _, err := websocket.DefaultDialer.Dial(wsURL(server.URL), header)
+	conn, _, err := websocket.DefaultDialer.Dial(wsURL(server.URL), http.Header{})
 	if err != nil {
 		t.Fatalf("dial: %v", err)
 	}
@@ -230,20 +228,27 @@ func TestHostTerminalIsMountedInTheAPITester(t *testing.T) {
 			t.Errorf("host-terminal.js missing the %q frame handling", frame)
 		}
 	}
+	// No console login: the panel is a block of the page, not a second sign-in.
+	for _, gone := range []string{
+		`id="hostTerminalLoginForm"`,
+		`id="hostTerminalPassword"`,
+		`hostTerminalLogin(`,
+		`sessionIsLive(`,
+	} {
+		if strings.Contains(indexHTML, gone) || strings.Contains(frontendBundle, gone) {
+			t.Errorf("the terminal still carries the console login: %q", gone)
+		}
+	}
 }
 
 func TestHostTerminalRejectsMalformedFrames(t *testing.T) {
 	if runtime.GOOS != "linux" {
 		t.Skip("the terminal needs a Linux PTY")
 	}
-	rig := newConsoleTestRig(t, "")
-	cookie := rig.loginCookie(t)
-	server := httptest.NewServer(rig.console.requireSession(hostTerminalHandler(newTerminalSessions(), "/bin/sh")))
+	server := httptest.NewServer(hostTerminalHandler(newTerminalSessions(), "/bin/sh"))
 	defer server.Close()
 
-	header := http.Header{}
-	header.Set("Cookie", cookie.String())
-	conn, _, err := websocket.DefaultDialer.Dial(wsURL(server.URL), header)
+	conn, _, err := websocket.DefaultDialer.Dial(wsURL(server.URL), http.Header{})
 	if err != nil {
 		t.Fatalf("dial: %v", err)
 	}
@@ -281,14 +286,10 @@ func TestHostTerminalStopsBackgroundJobsOnClose(t *testing.T) {
 	if runtime.GOOS != "linux" {
 		t.Skip("the terminal needs a Linux PTY")
 	}
-	rig := newConsoleTestRig(t, "")
-	cookie := rig.loginCookie(t)
-	server := httptest.NewServer(rig.console.requireSession(hostTerminalHandler(newTerminalSessions(), "/bin/bash")))
+	server := httptest.NewServer(hostTerminalHandler(newTerminalSessions(), "/bin/bash"))
 	defer server.Close()
 
-	header := http.Header{}
-	header.Set("Cookie", cookie.String())
-	conn, _, err := websocket.DefaultDialer.Dial(wsURL(server.URL), header)
+	conn, _, err := websocket.DefaultDialer.Dial(wsURL(server.URL), http.Header{})
 	if err != nil {
 		t.Fatalf("dial: %v", err)
 	}

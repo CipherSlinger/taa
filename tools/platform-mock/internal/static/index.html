@@ -110,41 +110,9 @@
       <div class="instance-empty">正在读取实例…</div>
     </div>
 
-    <!-- Row 2: TAA service address and health check toolbar. These describe the
-         selected instance, so they act as the detail view of the list above. -->
-    <div style="display:flex; align-items:center; justify-content:space-between; gap:12px; background:var(--panel-sub); border:1px solid var(--line); border-radius:10px; padding:9px 14px; margin-bottom:12px; flex-wrap:wrap;">
-      <div style="display:flex; align-items:center; gap:10px; flex:1; min-width:280px; flex-wrap:wrap;">
-        <span style="font-size:13px; font-weight:650; white-space:nowrap;">TAA 服务地址</span>
-        <!-- Not an input any more: the address is detected from the registration and the
-             console calls whichever target that produced, so the field was a value nobody
-             should have typed over. The pill shows the target and its reachability. -->
-        <span id="taaTargetPill" class="status-pill pending" style="display:inline-flex; font-size:12px; font-family:ui-monospace,SFMono-Regular,Menlo,monospace;">
-          <span class="pill-dot"></span>
-          <span id="taaProxyBadge">自动检测中...</span>
-        </span>
-        <!-- Registration outcome sits beside the service address so both facts about
-             this instance are read in one place. -->
-        <div id="registerPill" class="status-pill pending" style="display:inline-flex; font-size:12px;">
-          <span id="dot" class="dot pill-dot pending"></span>
-          <span id="statusText">未注册</span>
-        </div>
-      </div>
-      <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
-        <div style="display:flex; align-items:center; gap:8px;">
-          <span style="font-size:13px; font-weight:650;">环境状态</span>
-          <span id="healthPill" class="status-pill pending">
-            <span id="healthDot" class="dot pill-dot pending" title="未检查"></span>
-            <span id="healthLabel" style="font-size:12px;">未检查</span>
-          </span>
-        </div>
-        <!-- 检查连通性 lives on each list row now; this row shows the result its
-             button produced for the selected instance. -->
-        <button type="button" id="healthResultBtn" class="secondary btn-sm" onclick="openHealthResultModal()" style="display:none;" disabled>查看结果</button>
-      </div>
-    </div>
-
-    <!-- The instance actions live in the list rows now; only the report this
-         fetch produced stays here, under the detail row it describes. -->
+    <!-- The service address, registration outcome and health state all live on
+         the list rows, so this card has no detail row under the list: every fact
+         belongs to one instance and is read in that instance's row. -->
     <div class="card-compact" data-console="tee" style="min-height:auto; margin-top:10px;">
       <input type="hidden" id="attestRequestId" value="req-mock-attest-001">
       <div id="attestationResult" class="test-result" style="display:none;"></div>
@@ -688,8 +656,8 @@
     <!-- The shell sits under the command because that is where it is used: the
          generated curl only works from the host that can reach the Pod, so the
          operator runs it here instead of copying it to another window. This is
-         the mock's own machine, reached through the console session — not an
-         SSH hop, and not a sandbox. -->
+         the mock's own machine: not an SSH hop, not a sandbox, and no separate
+         console login — it is the same page the operator is already using. -->
     <section class="host-terminal" id="hostTerminalPanel">
       <div class="host-terminal-head">
         <div class="host-terminal-title">
@@ -703,18 +671,8 @@
         </div>
       </div>
       <p class="host-terminal-hint" id="hostTerminalHint">
-        在 mock 所在机器上开一个 shell（当前用户即启动 mock 的用户），用来直接运行上方的 curl 命令。这里不走 SSH，也不需要宿主机的登录口令。
+        在 mock 所在机器上开一个 shell（当前用户即启动 mock 的用户），用来直接运行上方的 curl 命令。这里不走 SSH，也不需要宿主机的登录口令，点“连接”即可。
       </p>
-      <form class="host-terminal-login" id="hostTerminalLoginForm" hidden onsubmit="hostTerminalLogin(event)">
-        <!-- This is the platform console account, not a host login: the shell is
-             a child process of the mock, so the only credential involved is the
-             one that already guards the audit and TEE-LLM tabs. -->
-        <input id="hostTerminalUser" type="text" autocomplete="username" placeholder="控制台账号（默认 admin）">
-        <input id="hostTerminalPassword" type="password" autocomplete="current-password" placeholder="控制台口令（默认 teellm@2026）">
-        <button type="submit" class="btn-sm" id="hostTerminalLoginBtn">登录</button>
-        <span class="host-terminal-error" id="hostTerminalLoginError"></span>
-        <span class="host-terminal-error-note" id="hostTerminalLoginNote">用的是平台控制台账号（默认 admin / teellm@2026，与审计工作台同一账号），不是宿主机的 SSH 口令。</span>
-      </form>
       <div class="host-terminal-screen" id="hostTerminalScreen"></div>
     </section>
   </section>
