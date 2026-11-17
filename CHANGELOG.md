@@ -9,6 +9,28 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 ## [Unreleased]
 
 ### Added
+- **The DCU Guest Resets The Card On The Way Out**: the host has no reset path for the K100_AI
+  (`reset_method` is empty, the device does not advertise FLReset, and QEMU logs `vfio: Cannot reset
+  device 0000:c3:00.0, no available reset mechanism` at both attach and detach), so every guest
+  inherits whatever the previous one left in the chip. A guest that was computing and was then
+  destroyed without a driver-level reset leaves the card in a state the next guest's probe cannot
+  recover from — `gfx_v9_0_hw_init`, `RLC ucode load fail`, `ring kiq_2.1.0 test failed (-110)`,
+  `probe failed with error -110` — and with no `/dev/dri` the CDI hook writes no spec and creation
+  dies in the 100-second CDI timeout. The only recovery from that state is a host reboot. The guest
+  side does have a reset path (`reset_method` is `bus`, and the driver exposes its recovery entry at
+  `/sys/kernel/debug/dri/<minor>/gpu_recover`, which is what `hy-smi --hcureset` writes), so the DCU
+  roles now ship a second guest hook at `usr/share/oci/hooks/poststop/guest-hycu-dcu-reset.sh`.
+  poststop is the one in-guest point that runs after the container's own processes are gone and before
+  the VM is destroyed, which is exactly the ordering the driver's recovery expects: it kills every
+  process holding the card (`kfd_kill_all_process_on!`, `kill process(pid:name)`), waits for them to
+  leave (`wait all process gone ...`), then performs a BACO reset. Two things had to be fixed for that
+  to work at all: `taa-init` mounted only proc and sysfs, so debugfs (and with it the recovery entry)
+  did not exist — it is now mounted at boot, and the hook mounts it itself as a fallback — and the
+  device minor is read from the card's own DRM node rather than assumed from `cardN`, so a guest with
+  a display function in front of the DCU does not write to the wrong device. Scope is stated up front
+  because it is narrower than "the card is now safe": the hook fires on the normal delete path only (a
+  force-deleted Pod, a crashed shim, or a killed hypervisor skips it), and whether a successful reset
+  leaves the card clean enough for the next guest has not been proven on hardware.
 - **The platform-mock API Tab Gains A Terminal On The Host That Runs It**: the generated `curl` only
   works from the machine that can reach the TAA Pod, so the command and the shell that runs it now sit
   on the same page — a shell under the command block, rendered with xterm.js and carried over a

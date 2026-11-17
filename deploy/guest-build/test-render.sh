@@ -776,6 +776,20 @@ check_absent "dcu: the CPU test Pod requests no card" 'hygon.cn/k100_ai' \
 check_absent "dcu: the CPU test Pod carries no cold-plug annotation" 'cdi.k8s.io/hycu' \
   "$(cat "$pkg/test/test-pod.yaml")"
 
+# The guest installs two hooks for a DCU role, at the two points that matter:
+# prestart makes the card addressable (`hygon.cn/hycu=0` resolves to a CDI spec),
+# poststop resets it before the VM is destroyed. Missing the second one is not
+# visible in this Pod at all -- the card is already gone -- so it is asserted
+# here rather than left to the next Pod on the same host.
+for hook in prestart/guest-hycu-cdi-generator.sh poststop/guest-hycu-dcu-reset.sh; do
+  if grep -qF "usr/share/oci/hooks/$hook" "$BUILD"; then
+    echo "ok   dcu: the build installs the $hook guest hook"
+  else
+    echo "FAIL dcu: the build does not install usr/share/oci/hooks/$hook" >&2
+    failures=$((failures + 1))
+  fi
+done
+
 # ── 5c. expected MEASUREMENT ───────────────────────────────────────────────
 MEASURE="$SCRIPT_DIR/render/measure.py"
 expected_cmdline="tsc=reliable no_timer_check rcupdate.rcu_expedited=1 i8042.direct=1 i8042.dumbkbd=1 i8042.nopnp=1 i8042.noaux=1 noreplace-smp reboot=k cryptomgr.notests net.ifnames=0 pci=lastbus=0 console=hvc0 console=hvc1 debug panic=1 nr_cpus=3 selinux=0 scsi_mod.scan=none agent.log=debug agent.debug_console agent.debug_console_vport=1026 rdinit=/usr/local/bin/taa-init console=ttyS0 quiet $identity_params"

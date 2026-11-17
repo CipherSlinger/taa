@@ -392,9 +392,22 @@ TAA_ADDR="${TAA_ADDR:-0.0.0.0:6001}"
 
 # 1) Mount /proc and /sys. This script runs before kata-agent, so both are still
 #    empty (mounting them is init's job) and the minor lookup below needs them.
-mkdir -p /proc /sys 2>/dev/null || true
+#
+#    debugfs is mounted here too, not only by the poststop reset hook: the hook
+#    is a fallback that has to work on its own, but mounting it once at boot
+#    means the reset path exists for the whole life of the guest, and a failure
+#    to mount is logged at a point where the boot log is still readable. It is
+#    also what makes the driver's gpu_recover entry inspectable during a run,
+#    which is how "does this guest have a reset path at all?" gets answered
+#    without speculating.
+mkdir -p /proc /sys /sys/kernel/debug 2>/dev/null || true
 mount -t proc  proc  /proc >/dev/null 2>&1 || true
 mount -t sysfs sysfs /sys  >/dev/null 2>&1 || true
+if mount -t debugfs debugfs /sys/kernel/debug >/dev/null 2>&1; then
+  log "mounted debugfs at /sys/kernel/debug"
+else
+  log "WARNING: mount -t debugfs failed; the DCU reset path will be unavailable"
+fi
 
 # 1b) Identity from the kernel command line, overriding the env file read above.
 #     Must run after /proc is mounted: /proc/cmdline is the only copy of it.
@@ -456,18 +469,21 @@ fi
 #     driver rather than loading anything itself.
 supervise_hycu_manager &
 
-# 4) Record how the guest can power itself off, because an orderly power-off is
-#    the only path that calls the driver's shutdown callback before QEMU exits.
+# 4) Record whether this guest can power itself off in order. Nothing here acts
+#    on it; the line exists so the question can be answered from the boot log
+#    instead of guessed at after a card turns up dirty.
 #
-#    kata-agent's Linux guest shutdown writes 'o' to /proc/sysrq-trigger (the
-#    path is in the agent binary), but this kernel is built without
-#    CONFIG_MAGIC_SYSRQ -- verified from the config embedded in
-#    vmlinuz-hycu-confidential-csv.container -- so that file does not exist and
-#    no userspace action can create it. What is left is reboot(2), which the
-#    agent uses only if its own code carries that fallback. Nothing here can
-#    change either; the line below puts the fact on the console next to the
-#    teardown evidence, so "did this VM power off in order?" can be answered
-#    from the log instead of guessed.
+#    The teardown path that matters for the DCU is not the guest's own shutdown
+#    call, though. The card is reset by the poststop hook
+#    (usr/share/oci/hooks/poststop/guest-hycu-dcu-reset.sh), which runs when the
+#    container stops and before the VM is destroyed. An earlier version of this
+#    comment claimed kata-agent powers the guest off by writing 'o' to
+#    /proc/sysrq-trigger; that is wrong. The path does appear in the agent
+#    binary, but only inside its /proc masking list, and the kernel is built
+#    without CONFIG_MAGIC_SYSRQ (verified from the config embedded in
+#    vmlinuz-hycu-confidential-csv.container), so the file does not exist and no
+#    userspace action can create it. The shim's `system_powerdown` QMP command
+#    is not an ACPI path this guest subscribes to either.
 if [ -e /proc/sysrq-trigger ]; then
   log "shutdown path: /proc/sysrq-trigger present"
 else

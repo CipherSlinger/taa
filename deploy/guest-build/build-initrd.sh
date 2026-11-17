@@ -1373,6 +1373,21 @@ build_initrd() {
     install -d -m 0755 "$stage/usr/share/oci/hooks/prestart"
     install -m 0755 "$SCRIPT_DIR/guest-hycu-cdi-generator.sh" \
       "$stage/usr/share/oci/hooks/prestart/guest-hycu-cdi-generator.sh"
+
+    # The poststop hook resets the card before the guest is destroyed. The host
+    # has no reset path for the DCU (reset_method is empty, no FLReset, QEMU
+    # reports "Cannot reset device"), so a guest that was computing leaves state
+    # the next guest's probe cannot recover from -- and the only fix is a host
+    # reboot. The guest side does have one: the driver's recovery entry under
+    # /sys/kernel/debug/dri/<minor>/gpu_recover, which is what
+    # `hy-smi --hcureset` writes. poststop is the only in-guest point that runs
+    # after the container's own processes are gone and before the VM is torn
+    # down, which is exactly the ordering the driver's kill-then-reset recovery
+    # expects. See the script's header for what this does and does not cover.
+    echo "注入 DCU poststop reset hook"
+    install -d -m 0755 "$stage/usr/share/oci/hooks/poststop"
+    install -m 0755 "$SCRIPT_DIR/guest-hycu-dcu-reset.sh" \
+      "$stage/usr/share/oci/hooks/poststop/guest-hycu-dcu-reset.sh"
   fi
 
   # The `python`/`python3` names are not added here: the semgrep payload ships
