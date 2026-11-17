@@ -1296,8 +1296,8 @@
   width: var(--aud-nav-w);
   display: flex;
   flex-direction: column;
-  gap: 4px;
-  padding: 10px;
+  gap: 2px;
+  padding: 12px 10px;
   background: var(--aud-surface);
   border: 1px solid var(--aud-border);
   border-radius: 16px;
@@ -1307,20 +1307,26 @@
 /* A quiet section label and a footer caption keep the rail from reading as a
    bare list of four buttons. */
 .audit-nav-label {
-  padding: 4px 12px 6px;
+  padding: 2px 10px 8px;
   font-size: 10.5px;
   font-weight: 700;
-  letter-spacing: 0.14em;
+  letter-spacing: 0.16em;
   color: var(--aud-muted);
   text-transform: uppercase;
 }
 
+/* The five labels differ in length, so each row keeps a fixed height and a
+   fixed icon column: the text edges line up through the rail instead of
+   stepping in and out with the label width. */
 .audit-nav-item {
+  position: relative;
   display: flex;
   align-items: center;
-  gap: 10px;
+  justify-content: flex-start;
+  gap: 11px;
   width: 100%;
-  padding: 10px 12px;
+  min-height: 42px;
+  padding: 0 12px;
   border: 1px solid transparent;
   border-radius: 10px;
   background: transparent;
@@ -1328,10 +1334,41 @@
   font-family: inherit;
   font-size: 13px;
   font-weight: 600;
+  letter-spacing: 0.01em;
   line-height: 1.2;
   text-align: left;
   cursor: pointer;
   transition: background-color 0.16s ease, color 0.16s ease, border-color 0.16s ease;
+}
+
+.audit-nav-item > span {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+/* The active row is marked by a slim bar inside the pill as well as the fill,
+   so the current tab is legible before the tints are read. The bar stays in the
+   layout of every row and is only faded in, which keeps the switch animated
+   without a stray tick beside the inactive rows. */
+.audit-nav-item::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 50%;
+  width: 3px;
+  height: 20px;
+  border-radius: 0 3px 3px 0;
+  background: var(--aud-accent);
+  opacity: 0;
+  transform: translateY(-50%) scaleY(0.35);
+  transition: opacity 0.16s ease, transform 0.16s ease;
+}
+
+.audit-nav-item.active::before {
+  opacity: 1;
+  transform: translateY(-50%) scaleY(1);
 }
 
 .audit-nav-item svg {
@@ -1347,6 +1384,10 @@
   box-shadow: none;
 }
 
+.audit-nav-item:hover:not(:disabled) svg {
+  color: var(--aud-text-2);
+}
+
 .audit-nav-item.active {
   background: var(--aud-accent-soft);
   color: var(--aud-accent);
@@ -1360,6 +1401,14 @@
 .audit-nav-item:focus-visible {
   outline: none;
   box-shadow: 0 0 0 3px var(--aud-accent-ring);
+}
+
+/* Workspace settings sit outside the audit flow, and the hairline says so. */
+.audit-nav-divider {
+  display: block;
+  height: 1px;
+  margin: 7px 10px 9px;
+  background: var(--aud-border);
 }
 
 .audit-content {
@@ -3966,8 +4015,29 @@
   .audit-nav-item {
     width: auto;
     flex: none;
+    min-height: 38px;
     white-space: nowrap;
-    padding: 9px 12px;
+    padding: 0 12px;
+  }
+
+  /* The horizontal rail puts the marker under the label instead of beside it,
+     and the section rule is meaningless once the rail is a row. */
+  .audit-nav-item::before {
+    left: 50%;
+    top: auto;
+    bottom: 4px;
+    width: 20px;
+    height: 3px;
+    border-radius: 3px;
+    transform: translateX(-50%) scaleX(0.35);
+  }
+
+  .audit-nav-item.active::before {
+    transform: translateX(-50%) scaleX(1);
+  }
+
+  .audit-nav-divider {
+    display: none;
   }
 
   /* The horizontal rail has no room for the caption block. */
@@ -4090,7 +4160,8 @@
     padding: 12px 12px 44px;
   }
 
-  /* Four tabs as a tidy 2×2 grid instead of a ragged wrapped strip. */
+  /* Five tabs as a 2×2 grid plus a full-width settings row, instead of a
+     ragged wrapped strip. */
   .audit-nav {
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -4101,6 +4172,14 @@
   .audit-nav-item {
     width: 100%;
     justify-content: center;
+  }
+
+  .audit-nav-item:last-child {
+    grid-column: 1 / -1;
+  }
+
+  .audit-nav-divider {
+    display: none;
   }
 
   .audit-nav-item span {
