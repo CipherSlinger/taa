@@ -3138,9 +3138,7 @@
   async function runAttestation() {
     if (!state.user || attestBusy) return;
     attestBusy = true;
-    const verifyBtn = $('engineVerifyTLSBtn');
     const fetchBtn = $('engineFetchAttestBtn');
-    if (verifyBtn) verifyBtn.disabled = true;
     if (fetchBtn) fetchBtn.disabled = true;
 
     try {
@@ -3160,7 +3158,7 @@
       renderAttestation(result, hs);
 
       if (res.ok) {
-        toast({ type: 'success', title: '已获取证据', message: '平台只展示证据，不强制校验' });
+        toast({ type: 'success', title: '已获取证明与握手', message: '平台只展示证据，不强制校验' });
       } else {
         toast({
           type: 'warning',
@@ -3175,7 +3173,6 @@
       }
     } finally {
       attestBusy = false;
-      if (verifyBtn) verifyBtn.disabled = false;
       if (fetchBtn) fetchBtn.disabled = false;
     }
   }
@@ -3838,7 +3835,6 @@
   }
 
   function wireEngine() {
-    bindIfNoInline('engineVerifyTLSBtn', runAttestation);
     bindIfNoInline('engineFetchAttestBtn', runAttestation);
     bindIfNoInline('engineRulesResetBtn', resetRules);
     bindIfNoInline('auditRuleDetailClose', closeRuleDetail);

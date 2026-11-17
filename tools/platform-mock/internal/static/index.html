@@ -1411,10 +1411,6 @@
                 </tbody>
               </table>
             </div>
-            <div class="audit-btn-row">
-              <button type="button" id="engineFetchAttestBtn" class="audit-btn audit-btn-primary audit-btn-sm">获取证明报告</button>
-              <button type="button" id="engineVerifyTLSBtn" class="audit-btn audit-btn-ghost audit-btn-sm">校验 TEE-TLS 握手</button>
-            </div>
           </div>
 
           <div class="audit-card">
@@ -1423,6 +1419,7 @@
                 <h3 class="audit-card-title">远程证明与握手</h3>
                 <p class="audit-card-desc">展示安全模块所在 CSV 虚拟机的证明字段，以及本次连接的握手信息。</p>
               </div>
+              <button type="button" id="engineFetchAttestBtn" class="audit-btn audit-btn-primary audit-btn-sm">获取证明与握手</button>
             </div>
             <div class="audit-grid-2">
               <div class="audit-subcard">
@@ -1442,7 +1439,7 @@
                             <path d="M12 3 4 6v6c0 5 3.5 7.5 8 9 4.5-1.5 8-4 8-9V6l-8-3z"></path>
                             <path d="m9 12 2 2 4-4"></path>
                           </svg>
-                          <span>尚未获取，点击「获取证明报告」后显示字段。</span>
+                          <span>尚未获取，点击「获取证明与握手」后显示字段。</span>
                         </div>
                       </td></tr>
                     </tbody>
@@ -1466,7 +1463,7 @@
                             <rect x="5" y="11" width="14" height="10" rx="2"></rect>
                             <path d="M8 11V7a4 4 0 0 1 8 0v4"></path>
                           </svg>
-                          <span>尚未握手，点击「校验 TEE-TLS 握手」后显示字段。</span>
+                          <span>尚未获取，点击「获取证明与握手」后显示字段。</span>
                         </div>
                       </td></tr>
                     </tbody>

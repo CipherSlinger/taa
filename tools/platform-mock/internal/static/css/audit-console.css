@@ -2008,13 +2008,25 @@
   display: grid;
   grid-template-columns: minmax(0, 1.72fr) minmax(320px, 1fr);
   gap: 16px;
-  align-items: start;
+  /* Stretch so the launch card and the live rail share one bottom edge. */
+  align-items: stretch;
 }
 
 .audit-workbench-main {
   display: grid;
   gap: 16px;
   min-width: 0;
+}
+
+/* The single card fills the stretched column; the drop zone absorbs the
+   leftover height instead of leaving a blank strip under the actions. */
+.audit-workbench-main > .audit-card {
+  display: flex;
+  flex-direction: column;
+}
+
+.audit-workbench-main .audit-drop {
+  flex: 1 1 auto;
 }
 
 .audit-workbench-side {
