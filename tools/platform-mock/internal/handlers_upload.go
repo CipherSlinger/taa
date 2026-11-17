@@ -494,11 +494,22 @@ func uploadHandler(addr, uploadDir string, mgr *instanceManager) http.HandlerFun
 			return
 		}
 
+		// Logged before the body is read, with the declared length: an upload that
+		// stalls in the browser leaves no trace after this point, so the presence
+		// or absence of this line is what separates "the request never arrived"
+		// from "it arrived and the bytes stalled".
+		log.Printf("upload start: from=%s dockerId=%q contentLength=%d contentType=%q",
+			r.RemoteAddr, b.dockerID, r.ContentLength, r.Header.Get("Content-Type"))
+		uploadStarted := time.Now()
+
 		// Parse multipart form (max 128MB)
 		if err := r.ParseMultipartForm(128 << 20); err != nil {
+			log.Printf("upload parse failed after %s: %v", time.Since(uploadStarted).Round(time.Millisecond), err)
 			writeEnvelope(w, http.StatusBadRequest, "解析 multipart/form-data 失败: "+err.Error(), nil, http.StatusBadRequest)
 			return
 		}
+		log.Printf("upload body received in %s: contentLength=%d",
+			time.Since(uploadStarted).Round(time.Millisecond), r.ContentLength)
 
 		// Get uploaded file
 		file, header, err := r.FormFile("file")
@@ -532,7 +543,8 @@ func uploadHandler(addr, uploadDir string, mgr *instanceManager) http.HandlerFun
 			return
 		}
 
-		log.Printf("file uploaded: %s → %s (mode=%s)", uploaded.OriginalName, uploaded.URL, encryptMode)
+		log.Printf("file uploaded: %s → %s (mode=%s, total %s)",
+			uploaded.OriginalName, uploaded.URL, encryptMode, time.Since(uploadStarted).Round(time.Millisecond))
 
 		writeEnvelope(w, http.StatusOK, "文件上传成功", map[string]any{
 			"filename":      uploaded.Filename,

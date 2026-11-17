@@ -28,10 +28,15 @@ import (
 const (
 	hostStatusTTL      = 4 * time.Second
 	hostKubectlTimeout = 8 * time.Second
-	// hostPodTableLimit bounds the table. A host running more Pods than this has
-	// a console panel that is already unusable, and an unbounded payload on a
+	// hostPodTableLimit bounds one response. A host running more Pods than this
+	// has a console panel that is already unusable, and an unbounded payload on a
 	// 5-second poll is worse than a truncated list.
 	hostPodTableLimit = 200
+	// hostPodCollectLimit bounds what the cache holds. It is deliberately far
+	// above the display limit: the table is filtered by namespace per request, and
+	// truncating before filtering would drop a namespace entirely just because
+	// other namespaces filled the first 200 rows.
+	hostPodCollectLimit = 5000
 )
 
 // hostPod is one Pod as the cluster reports it. Only fields the panel renders
@@ -57,16 +62,45 @@ type hostMemory struct {
 	UsedPercent    float64 `json:"usedPercent"`
 }
 
+// hostPodNamespace is one row of the namespace filter: what to show in the
+// dropdown and how many Pods it holds.
+type hostPodNamespace struct {
+	Name  string `json:"name"`
+	Count int    `json:"count"`
+}
+
 // hostStatus is one poll's answer about the host.
+//
+// PodCount and Namespaces describe the whole cluster, while Pods and
+// PodsTruncated describe the current filter. Splitting them is what lets the
+// table shrink to one namespace without the counts changing.
 type hostStatus struct {
-	HostIP      string     `json:"hostIp"`
-	HostIPs     []string   `json:"hostIps"`
-	Hostname    string     `json:"hostname"`
-	Memory      hostMemory `json:"memory"`
-	MemoryError string     `json:"memoryError,omitempty"`
-	Pods        []hostPod  `json:"pods"`
-	PodsError   string     `json:"podsError,omitempty"`
-	CollectedAt string     `json:"collectedAt"`
+	HostIP        string             `json:"hostIp"`
+	HostIPs       []string           `json:"hostIps"`
+	Hostname      string             `json:"hostname"`
+	Memory        hostMemory         `json:"memory"`
+	MemoryError   string             `json:"memoryError,omitempty"`
+	Pods          []hostPod          `json:"pods"`
+	PodsError     string             `json:"podsError,omitempty"`
+	PodsTruncated bool               `json:"podsTruncated,omitempty"`
+	PodCount      int                `json:"podCount"`
+	Namespaces    []hostPodNamespace `json:"namespaces"`
+	Namespace     string             `json:"namespace,omitempty"`
+	CollectedAt   string             `json:"collectedAt"`
+}
+
+// hostSnapshot is what the cache holds: the whole cluster, unfiltered. The
+// namespace filter is applied per request on top of it, so switching namespaces
+// costs no kubectl call.
+type hostSnapshot struct {
+	HostIP      string
+	HostIPs     []string
+	Hostname    string
+	Memory      hostMemory
+	MemoryError string
+	Pods        []hostPod
+	PodsError   string
+	CollectedAt string
 }
 
 // hostStatusCache keeps kubectl off the polling path. The console polls every
@@ -77,7 +111,7 @@ type hostStatusCache struct {
 	namespace string
 	ttl       time.Duration
 	at        time.Time
-	last      hostStatus
+	last      hostSnapshot
 	now       func() time.Time
 }
 
@@ -85,53 +119,124 @@ func newHostStatusCache(namespace string, ttl time.Duration) *hostStatusCache {
 	return &hostStatusCache{namespace: namespace, ttl: ttl, now: time.Now}
 }
 
-func (c *hostStatusCache) get() hostStatus {
+func (c *hostStatusCache) get() hostSnapshot {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	now := c.now()
 	if !c.at.IsZero() && now.Sub(c.at) < c.ttl {
 		return c.last
 	}
-	c.last = collectHostStatus(c.namespace)
+	c.last = collectHostSnapshot(c.namespace)
 	c.at = now
 	return c.last
 }
 
 // hostStatusHandler serves the host panel. It is a plain console endpoint, not
 // a TAA route: nothing here is addressed to an instance.
+//
+// ?namespace=<name> narrows the Pod table. Filtering here rather than in the
+// browser keeps every workspace's counts consistent and stops a 5000-row cluster
+// from being serialized on every 5-second poll of every open tab.
 func hostStatusHandler(cache *hostStatusCache) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		setCORS(w)
 		if !requireMethod(w, r, http.MethodGet) {
 			return
 		}
-		writeEnvelope(w, http.StatusOK, "success", cache.get(), 0)
+		namespace := strings.TrimSpace(r.URL.Query().Get("namespace"))
+		writeEnvelope(w, http.StatusOK, "success", cache.get().forNamespace(namespace), 0)
 	}
 }
 
-func collectHostStatus(namespace string) hostStatus {
+// forNamespace projects the snapshot onto one namespace. An empty or unknown
+// namespace means "all", which is what an operator gets before choosing one and
+// what a remembered namespace falls back to once its Pods are gone.
+func (s hostSnapshot) forNamespace(namespace string) hostStatus {
 	status := hostStatus{
+		HostIP:      s.HostIP,
+		HostIPs:     s.HostIPs,
+		Hostname:    s.Hostname,
+		Memory:      s.Memory,
+		MemoryError: s.MemoryError,
+		PodsError:   s.PodsError,
+		PodCount:    len(s.Pods),
+		Namespace:   namespace,
+		CollectedAt: s.CollectedAt,
+	}
+	status.Namespaces = namespaceCounts(s.Pods)
+	if namespace != "" {
+		known := false
+		for _, ns := range status.Namespaces {
+			if ns.Name == namespace {
+				known = true
+				break
+			}
+		}
+		// A remembered namespace whose Pods have all gone falls back to all, so
+		// the panel never shows "0 个" while the host is plainly busy.
+		if !known {
+			status.Namespace = ""
+			namespace = ""
+		}
+	}
+
+	filtered := make([]hostPod, 0, len(s.Pods))
+	for _, pod := range s.Pods {
+		if namespace == "" || pod.Namespace == namespace {
+			filtered = append(filtered, pod)
+		}
+	}
+	if len(filtered) > hostPodTableLimit {
+		filtered = filtered[:hostPodTableLimit]
+		status.PodsTruncated = true
+	}
+	status.Pods = filtered
+	return status
+}
+
+// namespaceCounts lists the namespaces present, largest first, then by name.
+// The largest first because the filter's first use is "show me the busy one".
+func namespaceCounts(pods []hostPod) []hostPodNamespace {
+	counts := make(map[string]int)
+	for _, pod := range pods {
+		counts[pod.Namespace]++
+	}
+	out := make([]hostPodNamespace, 0, len(counts))
+	for name, count := range counts {
+		out = append(out, hostPodNamespace{Name: name, Count: count})
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Count != out[j].Count {
+			return out[i].Count > out[j].Count
+		}
+		return out[i].Name < out[j].Name
+	})
+	return out
+}
+
+func collectHostSnapshot(namespace string) hostSnapshot {
+	snapshot := hostSnapshot{
 		HostIPs:     hostIPs(),
 		CollectedAt: time.Now().Format(time.RFC3339),
 	}
-	if len(status.HostIPs) > 0 {
-		status.HostIP = status.HostIPs[0]
+	if len(snapshot.HostIPs) > 0 {
+		snapshot.HostIP = snapshot.HostIPs[0]
 	}
 	if name, err := os.Hostname(); err == nil {
-		status.Hostname = name
+		snapshot.Hostname = name
 	}
 	mem, err := readHostMemory()
 	if err != nil {
-		status.MemoryError = err.Error()
+		snapshot.MemoryError = err.Error()
 	} else {
-		status.Memory = mem
+		snapshot.Memory = mem
 	}
 	pods, err := listHostPods(namespace, hostKubectlTimeout)
 	if err != nil {
-		status.PodsError = err.Error()
+		snapshot.PodsError = err.Error()
 	}
-	status.Pods = pods
-	return status
+	snapshot.Pods = pods
+	return snapshot
 }
 
 // hostIPs returns the host's non-loopback IPv4 addresses, best first.
@@ -310,8 +415,8 @@ func parseKubePods(raw []byte) ([]hostPod, error) {
 		}
 		return pods[i].Name < pods[j].Name
 	})
-	if len(pods) > hostPodTableLimit {
-		pods = pods[:hostPodTableLimit]
+	if len(pods) > hostPodCollectLimit {
+		pods = pods[:hostPodCollectLimit]
 	}
 	return pods, nil
 }

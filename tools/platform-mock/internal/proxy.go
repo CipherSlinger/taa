@@ -383,6 +383,23 @@ func (p *proxyPool) forTarget(target string) (*httputil.ReverseProxy, error) {
 		return nil, fmt.Errorf("invalid TAA target %q: missing scheme or host", target)
 	}
 	proxy := httputil.NewSingleHostReverseProxy(u)
+	// NewSingleHostReverseProxy leaves Transport nil, which means http.DefaultTransport
+	// and its complete absence of timeouts. A target that has stopped answering then
+	// holds the client connection open indefinitely: measured against a dead Pod, the
+	// call never returned and the console's browser kept every poll pending against it.
+	proxy.Transport = &http.Transport{
+		Proxy:               http.ProxyFromEnvironment,
+		DialContext:         (&net.Dialer{Timeout: 5 * time.Second, KeepAlive: 30 * time.Second}).DialContext,
+		MaxIdleConns:        100,
+		MaxIdleConnsPerHost: 8,
+		IdleConnTimeout:     90 * time.Second,
+		// The header timeout bounds "connected but not answering". The overall
+		// timeout is deliberately absent: TAA legitimately holds a request open for
+		// an import or a model run, and a fixed ceiling there would abort work that
+		// is still progressing.
+		ResponseHeaderTimeout: 60 * time.Second,
+		ExpectContinueTimeout: 1 * time.Second,
+	}
 	proxy.ErrorHandler = func(w http.ResponseWriter, r *http.Request, err error) {
 		log.Printf("TAA proxy error: %s %s → %v", r.Method, r.URL.Path, err)
 		writeEnvelope(w, http.StatusBadGateway, "TAA proxy error: "+err.Error(), nil, http.StatusBadGateway)

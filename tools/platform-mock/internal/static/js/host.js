@@ -12,11 +12,15 @@
 // addresses TAA from each instance's registration, never from this field.
 
 const HOST_IP_STORAGE_KEY = 'pm.host.ip';
+const HOST_NS_STORAGE_KEY = 'pm.host.namespace';
 const HOST_POLL_MS = 5000;
 
 let hostStatusLast = null;
 let hostPodTableCollapsed = false;
 let hostPollTimer = null;
+// hostNamespace is the namespace the Pod table is filtered to. Empty means all;
+// it is remembered per browser so a reload reopens the same view.
+let hostNamespace = '';
 
 function hostStoreGet(key) {
   try {
@@ -116,6 +120,30 @@ function renderHostStatus(status) {
   renderHostPods(status);
 }
 
+// renderHostNamespaces fills the filter from the cluster-wide counts. The
+// selection is restored from the server's answer rather than from the local
+// value, because the server resolves an unknown namespace back to "all".
+function renderHostNamespaces(status) {
+  const select = document.getElementById('hostPodNamespace');
+  if (!select) return;
+  const namespaces = Array.isArray(status.namespaces) ? status.namespaces : [];
+  const current = status.namespace || '';
+
+  const wanted = namespaces.map((ns) => ns.name).join('\n') + '\u0000' + current;
+  if (select.dataset.signature !== wanted) {
+    select.dataset.signature = wanted;
+    while (select.options.length > 1) select.remove(1);
+    namespaces.forEach((ns) => {
+      const option = document.createElement('option');
+      option.value = ns.name;
+      option.textContent = ns.name + ' (' + ns.count + ')';
+      select.appendChild(option);
+    });
+  }
+  select.value = current;
+  hostNamespace = current;
+}
+
 function renderHostPods(status) {
   const rows = document.getElementById('hostPodRows');
   const count = document.getElementById('hostPodCount');
@@ -131,9 +159,18 @@ function renderHostPods(status) {
     }
   }
 
+  renderHostNamespaces(status);
+
   const pods = Array.isArray(status.pods) ? status.pods : [];
   if (count) {
-    count.textContent = status.podsError ? '不可用' : pods.length + ' 个';
+    const total = Number(status.podCount) || 0;
+    if (status.podsError) {
+      count.textContent = '不可用';
+    } else if (status.namespace) {
+      count.textContent = pods.length + ' / 全部 ' + total + ' 个';
+    } else {
+      count.textContent = total + ' 个';
+    }
   }
   if (pods.length === 0) {
     rows.innerHTML = '';
@@ -141,7 +178,11 @@ function renderHostPods(status) {
     tr.className = 'host-pod-empty';
     const td = document.createElement('td');
     td.colSpan = 7;
-    td.textContent = status.podsError ? '无法读取 Pod 列表' : '宿主机上没有运行中的 Pod';
+    td.textContent = status.podsError
+      ? '无法读取 Pod 列表'
+      : status.namespace
+        ? '命名空间 ' + status.namespace + ' 中没有 Pod'
+        : '宿主机上没有运行中的 Pod';
     tr.appendChild(td);
     rows.appendChild(tr);
     return;
@@ -201,9 +242,19 @@ function onHostIpEdit(value) {
   }
 }
 
+// onHostPodNamespaceChange records the operator's filter and repaints at once:
+// the server filters, so the table cannot be updated from what is already on the
+// page.
+function onHostPodNamespaceChange(value) {
+  hostNamespace = String(value || '').trim();
+  hostStoreSet(HOST_NS_STORAGE_KEY, hostNamespace);
+  refreshHostStatus();
+}
+
 async function refreshHostStatus() {
   try {
-    const res = await fetch('/api/host/status', { cache: 'no-store' });
+    const query = hostNamespace ? '?namespace=' + encodeURIComponent(hostNamespace) : '';
+    const res = await fetch('/api/host/status' + query, { cache: 'no-store' });
     const payload = await res.json();
     if (!payload || payload.error !== 0) return;
     hostStatusLast = payload.result || {};
@@ -219,6 +270,7 @@ function initHostBar() {
   const saved = (hostStoreGet(HOST_IP_STORAGE_KEY) || '').trim();
   const input = document.getElementById('hostIpInput');
   if (input && saved) input.value = saved;
+  hostNamespace = (hostStoreGet(HOST_NS_STORAGE_KEY) || '').trim();
   refreshHostStatus();
   if (hostPollTimer) clearInterval(hostPollTimer);
   hostPollTimer = setInterval(() => {

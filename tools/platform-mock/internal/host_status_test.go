@@ -73,7 +73,7 @@ func TestDescribeKubectlErrorKeepsTheUsefulLine(t *testing.T) {
 func TestHostStatusHandlerAnswersWithTheEnvelopeShape(t *testing.T) {
 	cache := newHostStatusCache("", hostStatusTTL)
 	cache.now = func() time.Time { return timeFixed }
-	cache.last = hostStatus{HostIP: "10.0.0.9"}
+	cache.last = hostSnapshot{HostIP: "10.0.0.9"}
 	cache.at = timeFixed
 
 	req := httptest.NewRequest(http.MethodGet, "/api/host/status", nil)
@@ -84,6 +84,64 @@ func TestHostStatusHandlerAnswersWithTheEnvelopeShape(t *testing.T) {
 	}
 	if !strings.Contains(w.Body.String(), `"hostIp":"10.0.0.9"`) {
 		t.Fatalf("body = %s", w.Body.String())
+	}
+}
+
+// The table is filtered by namespace because the whole cluster is too long to
+// read. The counts stay cluster-wide while the rows narrow, and a namespace
+// whose Pods are gone resolves back to "all" instead of an empty panel.
+func TestHostStatusFiltersPodsByNamespace(t *testing.T) {
+	snapshot := hostSnapshot{
+		HostIP: "10.0.0.9",
+		Pods: []hostPod{
+			{Name: "a", Namespace: "osr"},
+			{Name: "b", Namespace: "osr"},
+			{Name: "c", Namespace: "default"},
+		},
+	}
+
+	all := snapshot.forNamespace("")
+	if len(all.Pods) != 3 || all.PodCount != 3 || all.Namespace != "" {
+		t.Fatalf("all = %+v", all)
+	}
+	if len(all.Namespaces) != 2 || all.Namespaces[0].Name != "osr" || all.Namespaces[0].Count != 2 {
+		t.Fatalf("namespaces = %+v", all.Namespaces)
+	}
+
+	one := snapshot.forNamespace("osr")
+	if len(one.Pods) != 2 || one.Namespace != "osr" {
+		t.Fatalf("osr = %+v", one)
+	}
+	// PodCount stays the cluster total: it is what the header compares against.
+	if one.PodCount != 3 {
+		t.Fatalf("podCount = %d, want the cluster total 3", one.PodCount)
+	}
+
+	// A remembered namespace that no longer exists falls back to all, so the
+	// panel is never empty while the host is plainly running Pods.
+	gone := snapshot.forNamespace("deleted-ns")
+	if gone.Namespace != "" || len(gone.Pods) != 3 {
+		t.Fatalf("unknown namespace = %+v", gone)
+	}
+}
+
+// A cluster larger than one response must not lose a namespace: the collect cap
+// is applied before filtering, the display cap after.
+func TestHostStatusFiltersBeforeTruncating(t *testing.T) {
+	pods := make([]hostPod, 0, hostPodTableLimit+10)
+	for i := 0; i < hostPodTableLimit; i++ {
+		pods = append(pods, hostPod{Name: "filler", Namespace: "bulk"})
+	}
+	pods = append(pods, hostPod{Name: "needle", Namespace: "osr"})
+
+	got := hostSnapshot{Pods: pods}.forNamespace("osr")
+	if len(got.Pods) != 1 || got.Pods[0].Name != "needle" {
+		t.Fatalf("a namespace after the display cap was dropped: %+v", got.Pods)
+	}
+
+	all := hostSnapshot{Pods: pods}.forNamespace("")
+	if len(all.Pods) != hostPodTableLimit || !all.PodsTruncated {
+		t.Fatalf("unfiltered view: %d pods, truncated=%v", len(all.Pods), all.PodsTruncated)
 	}
 }
 

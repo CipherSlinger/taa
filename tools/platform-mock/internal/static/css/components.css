@@ -2161,6 +2161,23 @@ textarea.api-tester-key {
   margin-right: auto;
 }
 
+/* The namespace filter sits with the Pod title, not at the card edge: it narrows
+   that table only, and a control there reads as belonging to the whole bar. */
+.host-pod-select {
+  padding: 3px 8px;
+  font-size: 12px;
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  max-width: 260px;
+}
+
+.host-pod-select:focus {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
 .host-pod-wrap {
   overflow-x: auto;
   border: 1px solid var(--line);

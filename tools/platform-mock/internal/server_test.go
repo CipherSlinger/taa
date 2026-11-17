@@ -3032,6 +3032,8 @@ func TestHostBarAndWorkspaceTabs(t *testing.T) {
 		`id="hostIpInput"`,
 		`id="hostMemoryText"`,
 		`id="hostPodRows"`,
+		`id="hostPodNamespace"`,
+		`onHostPodNamespaceChange`,
 		`src="/static/js/host.js"`,
 		`id="tabBtnFlow"`,
 		`id="tabBtnApi"`,
