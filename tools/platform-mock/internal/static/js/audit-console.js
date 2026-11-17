@@ -3096,13 +3096,13 @@
     try {
       const res = await requestJSON('/api/llm/console/overview', { timeoutMs: REQUEST_TIMEOUT_MS });
       if (!res.ok) {
-        if (!silent) toast({ type: 'warning', title: '安全引擎状态刷新失败', message: 'HTTP ' + res.status });
+        if (!silent) toast({ type: 'warning', title: 'AI 语义模块状态刷新失败', message: 'HTTP ' + res.status });
         return;
       }
       renderLLMOverview(unwrap(res.data) || {});
     } catch (err) {
       if (err.unauthorized || silent) return;
-      toast({ type: 'warning', title: '安全引擎状态刷新失败', message: err.message });
+      toast({ type: 'warning', title: 'AI 语义模块状态刷新失败', message: err.message });
     }
   }
 
