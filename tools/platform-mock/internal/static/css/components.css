@@ -2413,3 +2413,18 @@ textarea.api-tester-key {
 @media (max-width: 768px) {
   .host-terminal-screen { height: 260px; }
 }
+
+/* The note under the terminal's login form. It exists because the panel lives
+   next to a command that runs on the host, so "登录" reads like a host login;
+   the credential is the console account and saying so here is cheaper than
+   explaining a rejected password later. */
+.host-terminal-error-note {
+  flex: 1 1 100%;
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--muted);
+}
+
+.host-terminal-login input::placeholder {
+  font-size: 12px;
+}

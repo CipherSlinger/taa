@@ -295,7 +295,10 @@
   <!-- Training flow: three-column layout -->
   <div class="three-col-layout">
     <!-- Column 1: File upload -->
-    <section class="card" id="card-upload" style="display:flex; flex-direction:column;">
+    <!-- The file list is the only part that grows without bound, so it takes the
+         card's leftover height and scrolls inside it: the three flow cards share
+         one height, and a long upload history must not stretch the row. -->
+    <section class="card flow-column" id="card-upload">
       <div class="card-head">
         <div>
           <h2>① 文件上传</h2>
@@ -335,7 +338,7 @@
         </div>
       </div>
       <div id="uploadResult" style="display:none;"></div>
-      <div class="upload-history">
+      <div class="upload-history upload-history-scroll">
         <div id="uploadClearBar" style="display:none; justify-content:flex-end; margin-bottom:4px;">
           <span id="uploadedFilesCount" style="display:none;"></span>
           <button type="button" class="danger" onclick="clearUploadedFiles()" style="padding:3px 8px; font-size:11.5px;">清空所有上传文件</button>
@@ -345,7 +348,7 @@
     </section>
 
     <!-- Column 2: Import model -->
-    <section class="card" id="card-importModel" style="display:flex; flex-direction:column;">
+    <section class="card flow-column" id="card-importModel">
       <div class="card-head">
         <div class="card-title-group">
           <h2>② 下发模型</h2>
@@ -418,7 +421,7 @@
     </section>
 
     <!-- Column 3: Import data / Training result report -->
-    <section class="card drop-zone-card" id="card-import" style="display:flex; flex-direction:column;">
+    <section class="card flow-column drop-zone-card" id="card-import">
       <div class="card-head">
         <div>
           <h2>② 下发数据 / 结果上报</h2>
@@ -713,13 +716,17 @@
         </div>
       </div>
       <p class="host-terminal-hint" id="hostTerminalHint">
-        在 mock 所在机器上开一个 shell（当前用户即启动 mock 的用户），用来直接运行上方的 curl 命令。
+        在 mock 所在机器上开一个 shell（当前用户即启动 mock 的用户），用来直接运行上方的 curl 命令。这里不走 SSH，也不需要宿主机的登录口令。
       </p>
       <form class="host-terminal-login" id="hostTerminalLoginForm" hidden onsubmit="hostTerminalLogin(event)">
-        <input id="hostTerminalUser" type="text" autocomplete="username" placeholder="控制台用户名">
-        <input id="hostTerminalPassword" type="password" autocomplete="current-password" placeholder="口令">
+        <!-- This is the platform console account, not a host login: the shell is
+             a child process of the mock, so the only credential involved is the
+             one that already guards the audit and TEE-LLM tabs. -->
+        <input id="hostTerminalUser" type="text" autocomplete="username" placeholder="控制台账号（默认 admin）">
+        <input id="hostTerminalPassword" type="password" autocomplete="current-password" placeholder="控制台口令（默认 teellm@2026）">
         <button type="submit" class="btn-sm" id="hostTerminalLoginBtn">登录</button>
         <span class="host-terminal-error" id="hostTerminalLoginError"></span>
+        <span class="host-terminal-error-note" id="hostTerminalLoginNote">用的是平台控制台账号（默认 admin / teellm@2026，与审计工作台同一账号），不是宿主机的 SSH 口令。</span>
       </form>
       <div class="host-terminal-screen" id="hostTerminalScreen"></div>
     </section>

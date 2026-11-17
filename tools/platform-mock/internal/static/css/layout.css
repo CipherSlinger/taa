@@ -71,11 +71,40 @@ p {
   margin: 20px 0;
 }
 
+/* The three flow steps are read top to bottom as one pipeline, so their cards
+   share one height: a row of cards that each end where their own content ends
+   makes the eye read three unrelated panels. Each card already lays out as a
+   column, so stretching only has to hand the leftover space to the part that can
+   absorb it (the file list, below). */
 .three-col-layout {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 14px;
-  align-items: start;
+  align-items: stretch;
+}
+
+.three-col-layout > .card {
+  margin-bottom: 0;
+}
+
+/* A flow column is a normal block that also happens to stretch, so it keeps the
+   plain column layout the inline style used to provide. */
+.three-col-layout > .flow-column {
+  display: flex;
+  flex-direction: column;
+}
+
+/* The upload history is what makes column ① taller than its neighbours, so it
+   is the part that gets a fixed height: the box scrolls instead of the row
+   growing. min-height keeps the empty state from collapsing once the card is
+   stretched by a taller sibling. */
+.upload-history-scroll {
+  flex: 0 0 auto;
+  height: 220px;
+  min-height: 220px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
 }
 
 @media (max-width: 1200px) {
@@ -97,11 +126,39 @@ p {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 0 20px;
-  align-items: start;
+  /* Both cards stretch, and every column of the grid resolves to one row
+     height, so the pair is identical by construction rather than by luck: with
+     `start` each card stopped at its own content height (measured 11px apart,
+     from a toolbar that wraps in one of them). */
+  align-items: stretch;
+  grid-auto-rows: 1fr;
 }
 
 .log-panels-col {
   min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+/* The two log cards are compared line by line, so they end at the same place.
+   The window absorbs the difference: it is the only part with a flexible
+   height, and a shorter stream then has the same dark area to scroll in rather
+   than a card that stops early. */
+.log-panels-grid > .log-panels-col > .card {
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  margin-bottom: 0;
+}
+
+.log-panels-col .terminal-shell {
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+}
+
+.log-panels-col .log-window {
+  flex: 1 1 auto;
 }
 
 @media (max-width: 1100px) {

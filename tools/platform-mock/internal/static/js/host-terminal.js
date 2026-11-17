@@ -283,6 +283,11 @@
         }
         var payload = res.data || {};
         var msg = payload.error || payload.msg || ('登录失败（HTTP ' + res.status + '）');
+        if (res.status === 401) {
+          // The console account, not a host login — a rejected password here
+          // most often means the operator typed the host's root password.
+          msg = '控制台账号或口令不正确（默认 admin / teellm@2026，不是宿主机 SSH 口令）';
+        }
         showLoginForm(true, msg);
       })
       .catch(function () {
