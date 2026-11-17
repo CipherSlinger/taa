@@ -17,9 +17,12 @@
 # Environment overrides:
 #   MEASURE_SMP        vCPU count for the expected kernel command line
 #                      (default: the Kata config's default_vcpus)
-#   POD_READY_TIMEOUT  how long to wait for Ready (default 600s; the guest pulls
-#                      and unpacks the container image itself, and a cold cache
-#                      on the ~7 GiB DCU image takes minutes, not seconds)
+#   POD_READY_TIMEOUT  how long to wait for Ready (default 1800s; the guest pulls
+#                      and unpacks the container image itself, and measured on
+#                      172.16.10.178 a healthy first boot of the 6.66 GiB DCU
+#                      image took ~20 min: 13 min host-side pull plus ~5.5 min
+#                      guest-side pull and unpack. 600s failed a Pod that went on
+#                      to become Ready ten minutes after the wait expired)
 set -euo pipefail
 
 pkg_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -749,7 +752,7 @@ kubectl apply -f "$pod_manifest"
 
 echo
 echo "== 2. 等待测试 Pod Ready =="
-ready_timeout="${POD_READY_TIMEOUT:-600}"
+ready_timeout="${POD_READY_TIMEOUT:-1800}"
 if ! kubectl wait --for=condition=Ready "pod/$TEST_POD_NAME" --timeout="${ready_timeout}s"; then
   echo "error: test Pod did not become Ready within ${ready_timeout}s; status and events follow" >&2
   kubectl get pod "$TEST_POD_NAME" -o wide >&2 || true

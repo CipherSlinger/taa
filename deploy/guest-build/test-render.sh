@@ -1017,9 +1017,11 @@ check "create script: the wait sits between delete and apply" "yes" \
      && echo yes || echo no)"
 
 # The guest pulls and unpacks its image itself. With a cold cache the DCU image
-# takes minutes, so a short Ready wait fails healthy first boots.
+# takes minutes, so a short Ready wait fails healthy first boots. Measured on
+# 172.16.10.178: 6.66 GiB took ~20 min end to end, and 600s declared failure on a
+# Pod that became Ready ten minutes later.
 check_contains "create script: the Ready wait outlasts a cold image pull" \
-  'POD_READY_TIMEOUT:-600' "$(cat "$pkg/test/create-test-pod.sh")"
+  'POD_READY_TIMEOUT:-1800' "$(cat "$pkg/test/create-test-pod.sh")"
 
 # Exercise the helper itself against a fake sysfs/procfs. The paths are the only
 # part of it that can be wrong silently: a mistyped link target makes the scan
