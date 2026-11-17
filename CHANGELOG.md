@@ -9,6 +9,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 ## [Unreleased]
 
 ### Added
+- **The platform-mock API Tab Gains A Terminal On The Host That Runs It**: the generated `curl` only
+  works from the machine that can reach the TAA Pod, so the command and the shell that runs it now sit
+  on the same page — a shell under the command block, rendered with xterm.js and carried over a
+  WebSocket at `/api/host/terminal`. There is no SSH hop: the mock already runs on that host, so the
+  panel starts a child shell on a real `/dev/ptmx` PTY, which is also what makes an editor, `top` and
+  a pager behave and lets a window resize reach the program through `TIOCSWINSZ`. The gate is the
+  console session the TEE-LLM and audit tabs already use — signed out, the panel asks for the password
+  inline and reuses `POST /api/console/login` rather than holding a second credential — because
+  everything typed there runs as the user that started the mock, root on the deployed host. The
+  WebSocket also refuses a foreign `Origin`, caps concurrent shells at 4, and closes an idle one after
+  30 minutes, so a forgotten tab is not an unbounded root shell. Closing the socket stops the whole
+  session, not just its process group: `cmd &` puts a background job in its own group, so a group kill
+  left a measured `sleep` running after the tab closed; session membership is inherited by every
+  descendant and survives the leader, which is what the cleanup walks via `/proc`. Verified live:
+  keystrokes echo, `whoami` answers as the mock's own user, `stty size` reports the browser's geometry,
+  the fifth connection is refused with 429, and a wrong password is rejected while the right one
+  connects.
 - **The platform-mock Console Shows Its Host, Splits Into Workspace Tabs, And Prints The Sealed Answer
   A curl Call Could Not Show**: an operator copied the console's generated `curl` for a TAA route and
   saw no result at all. The cause is the protocol, not the command: TAA seals every JSON response with

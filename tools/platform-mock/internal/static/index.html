@@ -3,11 +3,12 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>TAA 平台模拟器</title>
+  <title>基于大模型与机密计算的代码安全审计软件</title>
   <link rel="stylesheet" href="/static/css/variables.css">
   <link rel="stylesheet" href="/static/css/layout.css">
   <link rel="stylesheet" href="/static/css/components.css">
   <link rel="stylesheet" href="/static/css/audit-console.css">
+  <link rel="stylesheet" href="/static/vendor/xterm/xterm.min.css">
 </head>
 <body data-mode="tee">
 <!-- Two panels live in this document. The bare URL opens the simulator
@@ -693,6 +694,35 @@
       <button type="button" class="btn-sm" id="apiTesterCopyBtn" onclick="apiTesterCopy()">复制命令</button>
     </div>
     <pre id="apiTesterCurl" class="api-tester-curl"></pre>
+
+    <!-- The shell sits under the command because that is where it is used: the
+         generated curl only works from the host that can reach the Pod, so the
+         operator runs it here instead of copying it to another window. This is
+         the mock's own machine, reached through the console session — not an
+         SSH hop, and not a sandbox. -->
+    <section class="host-terminal" id="hostTerminalPanel">
+      <div class="host-terminal-head">
+        <div class="host-terminal-title">
+          <span class="host-terminal-label">宿主机终端</span>
+          <span class="host-terminal-state" id="hostTerminalState" data-state="idle">未连接</span>
+        </div>
+        <div class="host-terminal-actions">
+          <button type="button" class="btn-sm" id="hostTerminalConnectBtn" onclick="hostTerminalConnect()">连接</button>
+          <button type="button" class="secondary btn-sm" id="hostTerminalDisconnectBtn" onclick="hostTerminalDisconnect()" disabled>断开</button>
+          <button type="button" class="secondary btn-sm" onclick="hostTerminalClear()" title="清空屏幕，不断开连接">清屏</button>
+        </div>
+      </div>
+      <p class="host-terminal-hint" id="hostTerminalHint">
+        在 mock 所在机器上开一个 shell（当前用户即启动 mock 的用户），用来直接运行上方的 curl 命令。
+      </p>
+      <form class="host-terminal-login" id="hostTerminalLoginForm" hidden onsubmit="hostTerminalLogin(event)">
+        <input id="hostTerminalUser" type="text" autocomplete="username" placeholder="控制台用户名">
+        <input id="hostTerminalPassword" type="password" autocomplete="current-password" placeholder="口令">
+        <button type="submit" class="btn-sm" id="hostTerminalLoginBtn">登录</button>
+        <span class="host-terminal-error" id="hostTerminalLoginError"></span>
+      </form>
+      <div class="host-terminal-screen" id="hostTerminalScreen"></div>
+    </section>
   </section>
 
   </div><!-- /#workspaceApi -->
@@ -741,9 +771,9 @@
             <path d="M24 4 7 11v12c0 10.5 7.1 18.6 17 21 9.9-2.4 17-10.5 17-21V11L24 4z"></path>
             <path d="M17.5 24.5 22 29l9-10"></path>
           </svg>
-          <span class="audit-brand-mark-text">OSR AUDIT</span>
+          <span class="audit-brand-mark-text">CODE AUDIT</span>
         </div>
-        <h1 class="audit-brand-title">代码安全审计平台</h1>
+        <h1 class="audit-brand-title">基于大模型与机密计算的<br>代码安全审计软件</h1>
         <p class="audit-brand-subtitle">密文交付 · 静态扫描 · AI 语义判定 · 可解释报告</p>
 
         <ul class="audit-brand-points">
@@ -797,7 +827,7 @@
           </li>
         </ul>
 
-        <p class="audit-brand-version">版本 V1.0 · 海光 CSV 机密计算 · 纽创信安 OSR</p>
+        <p class="audit-brand-version">版本 V1.0 · 海光 CSV 机密计算</p>
       </section>
 
       <section class="audit-login-card" aria-labelledby="auditLoginTitle">
@@ -810,7 +840,7 @@
             </svg>
           </div>
           <h2 id="auditLoginTitle" class="audit-login-title">登录工作台</h2>
-          <p class="audit-login-subtitle">使用管理员账号访问代码安全审计平台</p>
+          <p class="audit-login-subtitle">使用管理员账号访问基于大模型与机密计算的代码安全审计软件</p>
         </div>
 
         <form id="auditLoginForm" class="audit-login-form" onsubmit="return auditConsoleLogin(event)" autocomplete="on">
@@ -872,7 +902,7 @@
         </form>
 
         <p id="auditLoginHint" class="audit-login-hint">默认账号 admin，初始口令 teellm@2026；可用启动参数 <code>-console-user</code> / <code>-console-password</code> 覆盖。</p>
-        <p id="auditLoginFooter" class="audit-login-footer">© 2026 纽创信安 OSR · 代码安全审计平台 V1.0 · 仅限授权运维使用</p>
+        <p id="auditLoginFooter" class="audit-login-footer">© 2026 ××× · 仅限授权运维使用</p>
       </section>
     </div>
   </div><!-- /#auditLoginView -->
@@ -888,7 +918,7 @@
           </svg>
         </span>
         <div class="audit-topbar-name">
-          <strong>代码安全审计平台</strong>
+          <strong>基于大模型与机密计算的代码安全审计软件</strong>
           <span>密文交付 · 静态扫描 · AI 语义判定 · 可解释报告</span>
         </div>
         <span class="audit-env-badge">CSV2 机密环境</span>
@@ -1817,7 +1847,10 @@
 <script src="/static/js/logs.js"></script>
 <script src="/static/js/llm.js"></script>
 <script src="/static/js/app.js"></script>
+<script src="/static/vendor/xterm/xterm.min.js"></script>
+<script src="/static/vendor/xterm/addon-fit.min.js"></script>
 <script src="/static/js/api-tester.js"></script>
+<script src="/static/js/host-terminal.js"></script>
 <script src="/static/js/audit-console.js"></script>
 </body>
 </html>

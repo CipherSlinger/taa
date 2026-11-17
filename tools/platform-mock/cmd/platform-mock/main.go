@@ -31,6 +31,7 @@ func main() {
 	flag.StringVar(&cfg.ConsolePassword, "console-password", cfg.ConsolePassword, "TEE-LLM console password")
 	flag.StringVar(&cfg.AuditEngine, "audit-engine", cfg.AuditEngine, "audit workbench static engine: semgrep or regex")
 	flag.StringVar(&cfg.SemgrepRules, "semgrep-rules", cfg.SemgrepRules, "semgrep rules file or directory")
+	flag.StringVar(&cfg.TerminalShell, "terminal-shell", cfg.TerminalShell, "shell the API tester's host terminal starts")
 	flag.Parse()
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()

@@ -1941,6 +1941,11 @@ function selectWorkspaceTab(tab) {
     if (panel) panel.style.display = active ? '' : 'none';
   });
   workspaceStoreSet(target);
+  // The host terminal can only measure itself while its tab is visible; a
+  // terminal laid out inside a hidden panel reports zero cells.
+  if (target === 'api' && typeof hostTerminalOnTabShown === 'function') {
+    hostTerminalOnTabShown();
+  }
   // The hash follows the tab so the current view survives a reload and can be
   // linked to. #audit is left untouched: it selects the workbench page.
   if (location.hash !== '#audit') {

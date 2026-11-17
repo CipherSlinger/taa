@@ -48,6 +48,7 @@ func init() {
 		"static/js/logs.js",
 		"static/js/app.js",
 		"static/js/api-tester.js",
+		"static/js/host-terminal.js",
 		"static/js/audit-console.js",
 	}
 	for _, f := range jsFiles {
@@ -232,6 +233,10 @@ func NewServer(cfg Config) *Server {
 	// made before any instance registered gets an explained 502 instead of a
 	// route that does not exist.
 	mux.Handle("/taa/", loggingReverseProxyHandler(http.StripPrefix("/taa", dynamicTAAProxyHandler(mgr, newProxyPool()))))
+
+	// The host terminal runs a shell on this machine, so it is gated by the same
+	// console session as the TEE-LLM and audit tabs: one sign-in covers all three.
+	mux.HandleFunc("/api/host/terminal", console.requireSession(hostTerminalHandler(newTerminalSessions(), cfg.TerminalShell)))
 
 	return &Server{
 		cfg: cfg,

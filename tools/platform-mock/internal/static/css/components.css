@@ -2269,3 +2269,147 @@ textarea.api-tester-key {
 .workspace-panel {
   display: block;
 }
+
+/* ── Host terminal ── */
+/* The shell under the generated curl command. It is the mock's own machine, so
+   the panel is framed as an in-place tool rather than another page: a dark
+   screen matching the command block above it, with the connection state always
+   visible so an operator knows whether anything they type will run. */
+.host-terminal {
+  margin-top: 16px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--panel-sub);
+  padding: 12px 14px 14px;
+}
+
+.host-terminal-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.host-terminal-title {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.host-terminal-label {
+  font-size: 12.5px;
+  font-weight: 650;
+  color: var(--muted);
+  letter-spacing: .02em;
+}
+
+.host-terminal-state {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11.5px;
+  font-weight: 600;
+  padding: 2px 9px;
+  border-radius: 9999px;
+  border: 1px solid var(--line);
+  background: var(--panel);
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.host-terminal-state::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-radius: 9999px;
+  background: currentColor;
+  opacity: .55;
+}
+
+.host-terminal-state[data-state="ok"] {
+  border-color: rgba(34, 197, 94, .4);
+  background: rgba(34, 197, 94, .1);
+  color: #15803d;
+}
+
+.host-terminal-state[data-state="ok"]::before { opacity: 1; }
+
+.host-terminal-state[data-state="loading"] {
+  border-color: rgba(245, 158, 11, .4);
+  background: rgba(245, 158, 11, .1);
+  color: #b45309;
+}
+
+.host-terminal-state[data-state="error"] {
+  border-color: rgba(220, 38, 38, .4);
+  background: rgba(220, 38, 38, .1);
+  color: #b91c1c;
+}
+
+.host-terminal-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.host-terminal-hint {
+  margin: 8px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+/* The panel toggles the form with the hidden attribute, so the display rule for
+   the form must not win over it. */
+.host-terminal-login[hidden] { display: none; }
+
+.host-terminal-login {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 10px;
+}
+
+.host-terminal-login input {
+  flex: 1 1 140px;
+  min-width: 0;
+  margin: 0;
+}
+
+.host-terminal-error {
+  font-size: 12px;
+  color: #b91c1c;
+  flex: 1 1 100%;
+}
+
+.host-terminal-screen {
+  margin-top: 10px;
+  height: 320px;
+  border: 1px solid #1e293b;
+  border-radius: 8px;
+  background: #090d16;
+  padding: 8px;
+  overflow: hidden;
+}
+
+/* xterm sizes itself from its container. The 100% height is what makes the fit
+   addon's row calculation match what the panel actually shows. */
+.host-terminal-screen .xterm,
+.host-terminal-screen .xterm-viewport {
+  height: 100%;
+}
+
+@media (prefers-color-scheme: dark) {
+  .host-terminal-state[data-state="ok"] { color: #4ade80; }
+  .host-terminal-state[data-state="loading"] { color: #fbbf24; }
+  .host-terminal-state[data-state="error"] { color: #f87171; }
+  .host-terminal-error { color: #f87171; }
+}
+
+@media (max-width: 768px) {
+  .host-terminal-screen { height: 260px; }
+}

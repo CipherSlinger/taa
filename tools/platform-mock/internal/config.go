@@ -23,6 +23,9 @@ const (
 	// usable without configuration; CONSOLE_USER / CONSOLE_PASSWORD override it.
 	defaultConsoleUser     = "admin"
 	defaultConsolePassword = "teellm@2026"
+	// defaultTerminalShell is the shell the host terminal panel starts. bash is
+	// present everywhere the mock is deployed and carries the operator's PATH.
+	defaultTerminalShell = "/bin/bash"
 )
 
 // Config carries the runtime configuration for the platform mock service.
@@ -95,6 +98,12 @@ type Config struct {
 	// of them. Empty means <StateDir>/semgrep-rules, which is where
 	// deploy-platform-mock.sh uploads the repository's rule set.
 	SemgrepRules string
+	// TerminalShell is the shell the host terminal panel starts. It runs as the
+	// user that started the mock, on the same machine, behind the console
+	// session — so it is the operator's own shell, not a sandbox. Empty means
+	// /bin/bash. TERMINAL_SHELL overrides it; an empty value on a non-Linux
+	// build only changes the error the panel reports.
+	TerminalShell string
 }
 
 func (c Config) withDefaults() Config {
@@ -134,6 +143,9 @@ func (c Config) withDefaults() Config {
 	if c.SemgrepRules == "" {
 		c.SemgrepRules = filepath.Join(c.StateDir, "semgrep-rules")
 	}
+	if c.TerminalShell == "" {
+		c.TerminalShell = defaultTerminalShell
+	}
 	return c
 }
 
@@ -164,7 +176,7 @@ func envIntOrDefault(key string, fallback int) int {
 // resolving values from environment variables where applicable (STATE_DIR,
 // UPLOAD_DIR, TAA_POD, TAA_NS, TAA_PORT, LLM_POD, LLM_NS, LLM_PORT,
 // LLM_TARGET, LLM_POLL_SECONDS, PLATFORM_SM2_ID, PLATFORM_KEY_FILE,
-// CONSOLE_USER, CONSOLE_PASSWORD, TEELLM_TLS_ENDPOINT).
+// CONSOLE_USER, CONSOLE_PASSWORD, TEELLM_TLS_ENDPOINT, TERMINAL_SHELL).
 // PLATFORM_SM2_ID is deliberately the same variable TAA reads, so one exported
 // value configures both ends.
 func DefaultConfig() Config {
@@ -186,5 +198,6 @@ func DefaultConfig() Config {
 		ConsoleTLSHost:  envOrDefault("TEELLM_TLS_ENDPOINT", ""),
 		AuditEngine:     envOrDefault("AUDIT_ENGINE", ""),
 		SemgrepRules:    envOrDefault("SEMGREP_RULES", ""),
+		TerminalShell:   envOrDefault("TERMINAL_SHELL", ""),
 	}.withDefaults()
 }

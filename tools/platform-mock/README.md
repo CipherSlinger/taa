@@ -77,6 +77,7 @@ up in its command line. Run `./deploy-platform-mock.sh --help` for the full list
 | `-platform-key-file` | `<state-dir>/platform-key.json` (or `$PLATFORM_KEY_FILE`) | Where the platform SM2 key pair (and the last registered TAA public key) is persisted. Generated on first use; a restart reuses the same pair. |
 | `-console-user` | `admin` (or `$CONSOLE_USER`) | Login name for the code audit workbench. |
 | `-console-password` | `teellm@2026` (or `$CONSOLE_PASSWORD`) | Login password for the code audit workbench. |
+| `-terminal-shell` | `/bin/bash` (or `$TERMINAL_SHELL`) | Shell the API tester's host terminal starts. It runs as the user that started the mock, on the same host, behind the console session. |
 
 ## SM2 Envelope
 
