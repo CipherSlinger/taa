@@ -120,11 +120,15 @@ func (c *trainingControl) Finish() {
 	c.finish()
 }
 
+// finish releases anyone waiting on done. A cancelled task that never started a
+// process finishes here too, so a stop answered with no process to kill does not
+// leave requestStop's cancel context unreleased.
 func (c *trainingControl) finish() {
 	if c == nil {
 		return
 	}
 	c.finishOnce.Do(func() {
+		c.cancel()
 		close(c.done)
 	})
 }

@@ -66,11 +66,43 @@ func (s *TAAState) processImportedResourceFHE(req importRequest, phase int, isMo
 	}
 	defer s.setCurrentOp("idle")
 
+	// The FHE task id is only published to the stop path once the run is about to
+	// be submitted (see executeFHETask), so a stop that arrived during the
+	// download or the decryption has nothing to cancel at the service. It is
+	// caught here instead of being carried into a submission the platform already
+	// ended.
+	if stopped, err := s.cancelStoppedFHEImport(req, phase, isModel); stopped {
+		s.Logs.Add(LogInfo, "fhe", "任务已停止，不再提交 FHE 任务: taskId=%s, err=%v", req.TaskID, err)
+		return
+	}
+
 	if isModel {
 		s.importFHEModel(req, phase, plaintextPath, startedAt, runner)
 		return
 	}
 	s.executeFHETask(req, phase, plaintextPath, startedAt, runner)
+}
+
+// cancelStoppedFHEImport reports whether the import was stopped before it could
+// reach the service, cancelling the FHE task first when one was already
+// published.
+func (s *TAAState) cancelStoppedFHEImport(req importRequest, phase int, isModel bool) (bool, error) {
+	if !s.taskCancelled() {
+		return false, nil
+	}
+	// Reached through the branch's own runner rather than through the handler's,
+	// because this path knows an FHE runner is set.
+	runner := s.fheRunner()
+	var cancelErr error
+	if runner != nil {
+		if taskID := s.fheActiveTask(); taskID != "" {
+			cancelErr = runner.Cancel(context.Background(), taskID)
+		}
+	}
+	if isModel {
+		s.clearModelImportedFlag()
+	}
+	return true, cancelErr
 }
 
 // importFHEModel stages a model package into the shared directory and activates it.
@@ -127,6 +159,15 @@ func (s *TAAState) importFHEModel(req importRequest, phase int, plaintextPath st
 		return
 	}
 	s.Logs.Add(LogInfo, "importModel", "FHE 模型已落盘: modelId=%s, dir=%s", hash, modelDir)
+
+	// A stop that landed while the package was being staged ends the import here:
+	// reporting it as imported and activating it would finish an import the
+	// platform already ended. The staged directory stays where it is - it is
+	// content-addressed and the next delivery of the same package reuses it.
+	if stopped, cancelErr := s.cancelStoppedFHEImport(req, phase, true); stopped {
+		s.Logs.Add(LogInfo, "importModel", "任务已停止，FHE 模型不再上报与激活: taskId=%s, err=%v", req.TaskID, cancelErr)
+		return
+	}
 
 	s.reportModelImportAsync(req.RequestID, req.TaskID, 0, "模型导入成功", map[string]any{
 		"size": size, "algorithm": "sm3", "value": hash,
@@ -191,6 +232,13 @@ func (s *TAAState) executeFHETask(req importRequest, phase int, plaintextPath st
 		InputZipPath: plaintextPath,
 	}
 
+	// Last point before the run becomes cancellable at the service: a stop that
+	// arrived during the input staging must not turn into a submission the
+	// platform already ended.
+	if stopped, cancelErr := s.cancelStoppedFHEImport(req, phase, false); stopped {
+		s.Logs.Add(LogInfo, "fhe", "任务已停止，不再提交 FHE 任务: taskId=%s, err=%v", req.TaskID, cancelErr)
+		return
+	}
 	s.setFHEActiveTask(req.TaskID)
 	// The defer is the backstop, and clearing twice is harmless: clearFHEActiveTask
 	// is a no-op unless the id still matches. Nothing below returns early before
@@ -220,6 +268,11 @@ func (s *TAAState) executeFHETask(req importRequest, phase int, plaintextPath st
 	// fact succeeded. Cleared here, that stop falls through to the handler's
 	// "不存在训练任务", which is the truth.
 	s.clearFHEActiveTask(req.TaskID)
+	// The run is over and its result exists; the stop handle goes with it, so a
+	// stop arriving during the result landing keeps the no-task reply instead of
+	// claiming to end a run that already finished. The import task itself keeps
+	// running and is released by its own release().
+	s.detachStopHandle()
 
 	status, failureReason, code, msg := "succeeded", "", 0, ""
 	if execErr != nil {

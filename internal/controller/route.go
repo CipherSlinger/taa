@@ -175,11 +175,19 @@ type TAAState struct {
 	pendingAudit *AuditPendingSnapshot
 	// pendingReports is the durable outbox of terminal platform reports. It is
 	// sealed with the rest of the state and drained by reportOutbox.
-	pendingReports  []PendingReportSnapshot
-	outboxMu        sync.Mutex
-	outbox          *reportOutbox
-	trainingControl *trainingControl // 当前训练任务的中止控制对象
-	stateStore      *StateStore      // 持久化密封存储
+	pendingReports []PendingReportSnapshot
+	outboxMu       sync.Mutex
+	outbox         *reportOutbox
+	// trainingControl is the stop handle of the task currently in flight. It is
+	// created by tryAcquireTask for a task that stopTraining may cancel, so the
+	// stop reaches the download and the staging, not only the model process;
+	// promoteCurrentTaskToTraining reuses it rather than creating a second one,
+	// because a handle replaced at that point would be a handle a stop already
+	// sent to the old one could no longer reach. Guarded by mu, and cleared on
+	// every path that ends the task, so a stop that finds it can tell a live task
+	// from a finished one.
+	trainingControl *trainingControl
+	stateStore      *StateStore // 持久化密封存储
 	importIndex     *ImportIndexStore
 	importIndexErr  error
 
@@ -968,6 +976,22 @@ func (s *TAAState) tryAcquireTask(taskID, requestID, initialOp string, isModel b
 		StartedAt:        time.Now().UTC(),
 		RecoveryAttempts: 0,
 	}
+	// The stop handle exists from the moment the task does, not from the moment
+	// the model process starts. A stop that arrives during the download, the
+	// decryption or the extraction has to reach this task; without the handle it
+	// would be answered "不存在训练任务" (nothing is training yet) while the
+	// pipeline ran on to training. promoteCurrentTaskToTraining later promotes
+	// this same handle rather than replacing it, so the stop does not have to be
+	// re-sent to a new one at the handover.
+	//
+	// A handle can still be replaced here, by the model/data pair of one task
+	// acquiring twice; the old one is finished so its context is released even
+	// though no release() will ever reach it (the token gate makes the first
+	// release a no-op).
+	if s.trainingControl != nil {
+		s.trainingControl.finish()
+	}
+	s.trainingControl = newTrainingControl()
 	if err := s.sealStateLocked(); err != nil {
 		s.Logs.Add(LogError, "task", "持久化在飞任务快照失败: %v", err)
 	}
@@ -1000,19 +1024,93 @@ func (s *TAAState) tryAcquireTask(taskID, requestID, initialOp string, isModel b
 	return release, nil
 }
 
+// activeControl returns the stop handle of the task in flight, or nil when no
+// task holds one. The handle is created by tryAcquireTask, so it exists for the
+// whole task, not only while the model process runs.
+func (s *TAAState) activeControl() *trainingControl {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.trainingControl
+}
+
+// activeTaskContext is the cancellation context of the task in flight. Long
+// steps that accept a context (the download) run under it, so a stop does not
+// have to wait for them to finish on their own.
+func (s *TAAState) activeTaskContext() context.Context {
+	if control := s.activeControl(); control != nil {
+		return control.Ctx()
+	}
+	return context.Background()
+}
+
+// taskCancelled reports whether the task in flight has been asked to stop. The
+// import pipeline checks it at every step boundary: decryption and extraction
+// cannot be interrupted mid-way, so a boundary is the earliest point at which a
+// cancelled task can be answered.
+func (s *TAAState) taskCancelled() bool {
+	control := s.activeControl()
+	return control != nil && control.isCancelled()
+}
+
+// isInFlight reports whether control is still the stop handle of a task that has
+// not finished. The handle is cleared under the state lock when the task is
+// released, detached or recovered from a panic, and finished on that same path,
+// so a handler holding it can tell a live task from one that ended before the
+// stop arrived.
+func (s *TAAState) isInFlight(control *trainingControl) bool {
+	if control == nil {
+		return false
+	}
+	s.mu.RLock()
+	current := s.trainingControl
+	s.mu.RUnlock()
+	if current != control {
+		return false
+	}
+	select {
+	case <-control.done:
+		return false
+	default:
+		return true
+	}
+}
+
+// detachStopHandle retires the in-flight task's stop handle while the task keeps
+// running. The FHE path uses it when the run has reached its terminal state and
+// only the result landing is left: nothing is cancellable any more, so a stop
+// arriving there has to keep answering the no-task reply instead of claiming it
+// ended a run that already finished.
+func (s *TAAState) detachStopHandle() {
+	s.mu.Lock()
+	control := s.trainingControl
+	s.trainingControl = nil
+	s.mu.Unlock()
+	if control != nil {
+		control.finish()
+	}
+}
+
 // promoteCurrentTaskToTraining 将当前处于飞行的导入任务状态提升为独占训练状态
 func (s *TAAState) promoteCurrentTaskToTraining() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.TrainingRunning || s.trainingControl != nil {
+	if s.TrainingRunning {
 		return pkgerrors.New(pkgerrors.CodeConflict, "当前已有训练任务正在执行中，请等待完成后再提交")
+	}
+	// The control was created by tryAcquireTask and is the handle the stop path
+	// already holds. Replacing it here would split one task into two handles: a
+	// stop delivered in between would cancel the old one, and the training that
+	// follows would run under the new one, uncancelled. It is only created here
+	// for the callers that reach training without acquiring a task first (tests
+	// drive executeTraining directly).
+	if s.trainingControl == nil {
+		s.trainingControl = newTrainingControl()
 	}
 	s.TrainingRunning = true
 	s.CurrentOp = "training"
 	if s.activeTask != nil {
 		s.activeTask.Type = "training"
 	}
-	s.trainingControl = newTrainingControl()
 	return s.sealStateLocked()
 }
 
@@ -1084,6 +1182,11 @@ func (s *TAAState) handleAsyncPanic(name string, r any) {
 	platformIP := s.PlatformIP
 	dockerID := s.DockerID
 
+	// The stop handle goes with the task it belongs to. Left behind, it would be
+	// the handle of a task that no longer exists, and the next task's stop could
+	// land on it instead of its own.
+	control := s.trainingControl
+	s.trainingControl = nil
 	s.activeTask = nil
 	s.ActiveTaskID = ""
 	s.ActiveRequestID = ""
@@ -1094,6 +1197,9 @@ func (s *TAAState) handleAsyncPanic(name string, r any) {
 		s.Logs.Add(LogError, "panic", "清除在飞任务并持久化状态失败: %v", err)
 	}
 	s.mu.Unlock()
+	if control != nil {
+		control.finish()
+	}
 
 	// 2. 构建规约 11 标准崩溃失败报告 (exit_code: 137, status: "failed")
 	finishedAt := time.Now().UTC()

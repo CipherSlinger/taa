@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"sort"
 	"strings"
 	"time"
@@ -103,9 +104,11 @@ func (r *importRequest) UnmarshalJSON(data []byte) error {
 func (s *TAAState) stopTrainingHandler(w http.ResponseWriter, r *http.Request) {
 	// An FHE task is cancelled through the service's own endpoint: there is no
 	// local process group to kill, and the worker is the only thing that can stop
-	// the run. This branch comes first because an FHE task never sets
-	// trainingControl, so the training check below would report one that is
-	// running as "不存在训练任务" and leave the GPU busy.
+	// the run. This branch comes first because once the run is submitted the
+	// service is the only thing that can stop it - cancelling the local handle
+	// instead would answer 200 for a task the worker is still running. A task
+	// still in its download/staging phase publishes no FHE task id yet, so it
+	// falls through to the handle below, which ends it before submission.
 	if runner := s.fheRunner(); runner != nil {
 		if taskID := s.fheActiveTask(); taskID != "" {
 			switch err := runner.Cancel(r.Context(), taskID); {
@@ -128,12 +131,23 @@ func (s *TAAState) stopTrainingHandler(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	s.mu.RLock()
-	control := s.trainingControl
-	isTraining := s.TrainingRunning && s.activeTask != nil && s.activeTask.Type == "training"
-	s.mu.RUnlock()
+	// The handle is created when the task is acquired, not when the model process
+	// starts: an import that is still downloading, decrypting or extracting is a
+	// task the platform can stop. The training flags below only decide the reply,
+	// because a stop that lands before training has no process to kill - it ends
+	// the task by reaching the pipeline, which checks this same handle at each
+	// step boundary.
+	control := s.activeControl()
+	if control == nil {
+		writeEnvelope(w, http.StatusOK, "不存在训练任务", nil, 0)
+		return
+	}
 
-	if control == nil || !isTraining {
+	// The task can finish in the window between reading the handle and using it:
+	// it is released, an FHE run detaches its handle once the result exists, or
+	// panic recovery clears it. Answering success there would claim a stop that
+	// never happened.
+	if !s.isInFlight(control) {
 		writeEnvelope(w, http.StatusOK, "不存在训练任务", nil, 0)
 		return
 	}
@@ -145,9 +159,28 @@ func (s *TAAState) stopTrainingHandler(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	s.mu.RLock()
+	isTraining := s.TrainingRunning && s.activeTask != nil && s.activeTask.Type == "training"
+	s.mu.RUnlock()
+
+	var msg string
+	if isTraining {
+		msg = "训练任务已中止"
+	} else {
+		msg = "任务已中止"
+	}
+
+	// No process means nothing to wait for: the cancellation is set, and the
+	// pipeline observes it at its next step boundary. Waiting here would only
+	// turn a stop that arrived mid-decryption into a timeout.
+	if cmd == nil {
+		writeEnvelope(w, http.StatusOK, msg, nil, 0)
+		return
+	}
+
 	select {
 	case <-control.done:
-		writeEnvelope(w, http.StatusOK, "训练任务已中止", nil, 0)
+		writeEnvelope(w, http.StatusOK, msg, nil, 0)
 	case <-time.After(5 * time.Second):
 		s.Logs.Add(LogError, "stopTraining", "等待训练任务中止超时 (5s)")
 		writeError(w, http.StatusInternalServerError, "中止训练任务超时")
@@ -262,15 +295,38 @@ func (s *TAAState) importHandler(w http.ResponseWriter, r *http.Request) {
 	msg := "资源已接收，下载处理中"
 	s.setCurrentOp("downloading")
 	s.Logs.Add(LogInfo, "import", "开始下载资源: %s", downloadURL)
-	ciphertextPath, size, err := resource.DownloadToTempFile(downloadURL)
+	ciphertextPath, size, err := resource.DownloadToTempFileWithClient(s.activeTaskContext(), http.DefaultClient, downloadURL)
 	if err != nil {
+		// Checked before release(): the handle is what carries the cancellation,
+		// and releasing the task drops it.
+		stopped := s.taskCancelled()
 		store.Rollback(req.RequestID, req.TaskID)
 		release()
+		if stopped {
+			// The stop arrived while the bytes were still coming in. The task is
+			// over; there is no import to fail and no report to send.
+			s.Logs.Add(LogInfo, "import", "下载中止：任务已停止: taskId=%s", req.TaskID)
+			writeEnvelope(w, http.StatusOK, "任务已中止", nil, 0)
+			return
+		}
 		s.Logs.Add(LogError, "import", "下载资源失败: %v", err)
 		writeErr(w, http.StatusInternalServerError, err)
 		return
 	}
 	s.Logs.Add(LogInfo, "import", "下载完成 (%d bytes) -> %s", size, ciphertextPath)
+
+	// A last check between the download and the answer: the stop may have landed
+	// in the instant the download finished. The pipeline would drop the task at
+	// its first step either way, but the platform would have been told the data
+	// was accepted for processing.
+	if s.taskCancelled() {
+		store.Rollback(req.RequestID, req.TaskID)
+		release()
+		_ = os.Remove(ciphertextPath)
+		s.Logs.Add(LogInfo, "import", "下载完成但任务已停止，数据不予处理: taskId=%s", req.TaskID)
+		writeEnvelope(w, http.StatusOK, "任务已中止", nil, 0)
+		return
+	}
 
 	msg = "数据已接收，训练结果将通过 reportRes 上报"
 	writeEnvelope(w, http.StatusOK, msg, nil, 0)
@@ -488,8 +544,19 @@ func (s *TAAState) modelImportHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.Logs.Add(LogInfo, "importModel", "开始下载资源: %s", req.ResourceURL)
-	ciphertextPath, size, err := resource.DownloadToTempFile(req.ResourceURL)
+	ciphertextPath, size, err := resource.DownloadToTempFileWithClient(s.activeTaskContext(), http.DefaultClient, req.ResourceURL)
 	if err != nil {
+		stopped := s.taskCancelled()
+		if stopped {
+			// A stopped model import leaves nothing behind. Only the flag goes:
+			// the failed-download undo also drops the runtimeConfig and model URL
+			// this request may have just replaced.
+			s.clearModelImportedFlag()
+			release()
+			s.Logs.Add(LogInfo, "importModel", "下载中止：任务已停止: taskId=%s", req.TaskID)
+			writeEnvelope(w, http.StatusOK, "任务已中止", nil, 0)
+			return
+		}
 		// ModelImported was sealed before the download, so a failure here has to
 		// undo it explicitly. Relying on release() alone left the flag set with no
 		// model on disk and no audit ever launched — and release() clears

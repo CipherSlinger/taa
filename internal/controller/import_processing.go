@@ -32,6 +32,15 @@ func (s *TAAState) processImportedResource(req importRequest, phase int, isModel
 
 	defer os.Remove(ciphertextPath)
 
+	// The task was acquired under a stop handle, so a stop can have arrived
+	// before this async stage started. Nothing below can be interrupted mid-way
+	// (decryption and extraction read their whole input), which is why the checks
+	// sit at the boundaries: each one is the earliest point a cancelled task can
+	// be answered without doing the work anyway.
+	if s.abortStoppedImport(req, phase, isModel) {
+		return
+	}
+
 	StepSeparator("Decrypt")
 	s.setCurrentOp("decrypting")
 	var plaintextPath string
@@ -55,6 +64,10 @@ func (s *TAAState) processImportedResource(req importRequest, phase int, isModel
 	}
 	if isDecrypted {
 		defer os.Remove(plaintextPath)
+	}
+
+	if s.abortStoppedImport(req, phase, isModel) {
+		return
 	}
 
 	// A data-anaylsis instance lands the plaintext and stops: no checksum, no
@@ -96,6 +109,9 @@ func (s *TAAState) processImportedResource(req importRequest, phase int, isModel
 		// audit's verdict is discarded either way.
 		s.waitAuditStopped()
 
+		if s.abortStoppedImport(req, phase, isModel) {
+			return
+		}
 		s.Logs.Add(LogInfo, "extract", "开始解压到: %s", s.Security.ModelDir)
 		if err := extractArchiveToDir(s.Security.ModelDir, plaintextPath); err != nil {
 			s.Logs.Add(LogError, "extract", "解压失败: %v", err)
@@ -104,6 +120,13 @@ func (s *TAAState) processImportedResource(req importRequest, phase int, isModel
 			return
 		}
 		s.Logs.Add(LogInfo, "extract", "解压成功")
+
+		// Extracting replaced the model directory. A task stopped during that
+		// window still answers here: reporting the import and launching the audit
+		// would carry out the rest of an import the platform already ended.
+		if s.abortStoppedImport(req, phase, isModel) {
+			return
+		}
 
 		// ── Stage 1: Report model import result immediately upon decompression ──
 		checksum := map[string]any{
@@ -149,6 +172,9 @@ func (s *TAAState) processImportedResource(req importRequest, phase int, isModel
 			Phase:     phase,
 		}
 
+		if s.abortStoppedImport(req, phase, isModel) {
+			return
+		}
 		extracted, err := ensureArchiveExtractedIntoDir(dataDir, plaintextPath)
 		if err != nil {
 			s.Logs.Add(LogError, "extract", "展开 hash 数据目录失败: %v", err)
@@ -160,6 +186,14 @@ func (s *TAAState) processImportedResource(req importRequest, phase int, isModel
 			s.Logs.Add(LogInfo, "extract", "hash 数据目录创建完成: %s", dataDir)
 		} else {
 			s.Logs.Add(LogInfo, "extract", "hash 数据目录已存在，复用: %s", dataDir)
+		}
+
+		// A committed record is durable, and the rollback a cancelled import runs
+		// only releases a reservation - it cannot take the record back. So the
+		// stop is checked before the commit, not after it: a stopped task must not
+		// leave an import behind that the platform never asked to keep.
+		if s.abortStoppedImport(req, phase, isModel) {
+			return
 		}
 
 		store, err := s.importIndexStore()
@@ -187,6 +221,13 @@ func (s *TAAState) processImportedResource(req importRequest, phase int, isModel
 	}
 
 	// ── 只有下发数据时，才触发训练任务，并做前置准备条件检查 ──
+	// A stop that arrived during the import ends the task here rather than
+	// starting the run it was asked to stop. The data itself was already
+	// committed, so only the task is dropped.
+	if s.abortStoppedImport(req, phase, isModel) {
+		return
+	}
+
 	// 1. 检查模型是否已就绪及是否在飞
 	s.mu.RLock()
 	modelImported := s.ModelImported
@@ -263,6 +304,44 @@ func (s *TAAState) processImportedResource(req importRequest, phase int, isModel
 	s.Logs.Add(LogInfo, "import", "导入阶段结束，已释放导入占用的内存")
 
 	s.executeTraining(trainReq, phase, trainRecord, cfg, env, startedAt)
+}
+
+// clearModelImportedFlag drops the model-imported flag an interrupted model
+// import sealed. It is deliberately narrower than updateImportState: that also
+// drops SavedModelResourceURL and RuntimeConfig, and a stop ends the transfer,
+// not the configuration of the next one - the request may have replaced both
+// just before the stop arrived. No model reached the disk either way, so the
+// flag alone is what has to go.
+func (s *TAAState) clearModelImportedFlag() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.ModelImported = false
+	if err := s.sealStateLocked(); err != nil {
+		s.Logs.Add(LogError, "state", "持久化中止导入状态失败: %v", err)
+	}
+}
+
+// abortStoppedImport unwinds an import whose task was stopped before it reached
+// training, and reports whether it did.
+//
+// Nothing is reported to the platform: a stopped task is answered by
+// stopTraining itself, and a reportRes for the same task would describe an
+// import the platform already asked not to happen. What the import did claim is
+// given back - the import index reservation, the model-import flags - so the
+// same requestId/taskId can be submitted again.
+func (s *TAAState) abortStoppedImport(req importRequest, phase int, isModel bool) bool {
+	if !s.taskCancelled() {
+		return false
+	}
+	s.Logs.Add(LogInfo, "import", "任务已停止，中止导入流程: taskId=%s, phase=%d, isModel=%v", req.TaskID, phase, isModel)
+	if isModel {
+		s.clearModelImportedFlag()
+	}
+	if store, err := s.importIndexStore(); err == nil {
+		store.Rollback(req.RequestID, req.TaskID)
+	}
+	s.setCurrentOp("idle")
+	return true
 }
 
 func (s *TAAState) ensureTrainingControl(trainReq importRequest, phase int, trainRecord ImportIndexRecord, startedAt time.Time) *trainingControl {

@@ -78,6 +78,31 @@ func TestTrainingControlStartCommandFailureCleansUp(t *testing.T) {
 	}
 }
 
+// TestStopTrainingReleasesTheControlWithoutAProcess pins the reply for a task
+// that never reached a model process: stopping it must not spend the 5 s wait on
+// a handle that has nothing to finish, and the handler must still answer within
+// the request.
+func TestStopTrainingWithoutAProcessReturnsImmediately(t *testing.T) {
+	state, server := setupTestServer(t)
+
+	release, err := state.tryAcquireTask("task-stop-handle", "req-stop-handle", "downloading", false)
+	if err != nil {
+		t.Fatalf("tryAcquireTask: %v", err)
+	}
+	defer release()
+
+	start := time.Now()
+	resp := postEmptyJSON(t, server.URL+"/v1/taa/stopTraining")
+	elapsed := time.Since(start)
+	api := decodeResponse(t, resp)
+	if resp.StatusCode != http.StatusOK || api.Error != 0 || api.Msg != "任务已中止" {
+		t.Fatalf("status=%d error=%d msg=%q, want 200/0/'任务已中止'", resp.StatusCode, api.Error, api.Msg)
+	}
+	if elapsed > 2*time.Second {
+		t.Fatalf("stop took %v, want an immediate reply: a task with no process has nothing to wait for", elapsed)
+	}
+}
+
 func TestStopTrainingWithoutActiveTaskIsIdempotent(t *testing.T) {
 	_, server := setupTestServer(t)
 	defer server.Close()

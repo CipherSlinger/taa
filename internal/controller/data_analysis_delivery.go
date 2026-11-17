@@ -139,9 +139,15 @@ func (s *TAAState) handleDataAnalysisImport(w http.ResponseWriter, req *importRe
 	// The delivery URL is logged without the envelope and the path parameters.
 	s.Logs.Add(LogInfo, "import", "data-anaylsis: 开始下载资源: %s (fileName=%s, dataResourceCode=%s, phase=%d)",
 		delivery.DownloadURL, delivery.FileName, delivery.DataResourceCode, phase)
-	ciphertextPath, size, err := resource.DownloadToTempFile(delivery.DownloadURL)
+	ciphertextPath, size, err := resource.DownloadToTempFileWithClient(s.activeTaskContext(), http.DefaultClient, delivery.DownloadURL)
 	if err != nil {
+		stopped := s.taskCancelled()
 		release()
+		if stopped {
+			s.Logs.Add(LogInfo, "import", "下载中止：任务已停止: taskId=%s", req.TaskID)
+			writeEnvelope(w, http.StatusOK, "任务已中止", nil, 0)
+			return
+		}
 		s.Logs.Add(LogError, "import", "下载资源失败: %v", err)
 		s.reportDataAnalysisResult(*req, 1, err.Error())
 		writeErr(w, http.StatusInternalServerError, err)
