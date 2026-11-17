@@ -8,6 +8,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -141,6 +142,76 @@ func TestHostTerminalRunsAShellOnThisHost(t *testing.T) {
 			return
 		}
 	}
+}
+
+// TestHostTerminalPingsKeepAnIdleShellAlive pins the difference between "no
+// typing" and "no connection": the server pings, the browser answers with a
+// pong, and that is what holds the session open. Without the pong handler the
+// idle deadline would close it, which is what this shrinks the clock to check.
+func TestHostTerminalPingsKeepAnIdleShellAlive(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("the terminal needs a Linux PTY")
+	}
+	oldTimeout, oldPing := terminalIdleTimeout, terminalPingInterval
+	terminalIdleTimeout = 300 * time.Millisecond
+	terminalPingInterval = 50 * time.Millisecond
+	defer func() {
+		terminalIdleTimeout, terminalPingInterval = oldTimeout, oldPing
+	}()
+
+	server := httptest.NewServer(hostTerminalHandler(newTerminalSessions(), "/bin/sh"))
+	defer server.Close()
+
+	conn, _, err := websocket.DefaultDialer.Dial(wsURL(server.URL), http.Header{})
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer conn.Close()
+
+	// A browser reads continuously, which is what lets its ping handler run; the
+	// reader has to exist during the idle period or no pong is ever sent.
+	var mu sync.Mutex
+	var got strings.Builder
+	readErr := make(chan error, 1)
+	go func() {
+		for {
+			var msg terminalMessage
+			if err := conn.ReadJSON(&msg); err != nil {
+				readErr <- err
+				return
+			}
+			if msg.Type == "output" {
+				mu.Lock()
+				got.WriteString(msg.Data)
+				mu.Unlock()
+			}
+		}
+	}()
+
+	// Sit idle for several deadlines. The default client handler answers pings
+	// with pongs, so the session must still be usable afterwards.
+	time.Sleep(4 * terminalIdleTimeout)
+	if err := conn.WriteJSON(terminalMessage{Type: "input", Data: "echo idle-ok\n"}); err != nil {
+		t.Fatalf("the idle session stopped accepting input: %v", err)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		mu.Lock()
+		output := got.String()
+		mu.Unlock()
+		if strings.Contains(output, "idle-ok") {
+			return
+		}
+		select {
+		case err := <-readErr:
+			t.Fatalf("the idle session closed: %v", err)
+		case <-time.After(20 * time.Millisecond):
+		}
+	}
+	mu.Lock()
+	output := got.String()
+	mu.Unlock()
+	t.Fatalf("output = %q, want an answer after the idle period", output)
 }
 
 func wsURL(serverURL string) string {

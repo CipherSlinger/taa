@@ -158,6 +158,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
   "the card is still computing".
 
 ### Changed
+- **The Platform-Mock Host Terminal Keeps An Idle Tab Connected**: the panel used to close a shell
+  after 30 minutes without a frame from the browser, and "no frame" includes an operator who only
+  reads output, so a long observation killed its own session. The server now sends a WebSocket ping
+  every 60 seconds and resets the read deadline on the pong, which browsers answer automatically — an
+  open tab stays connected indefinitely, while a closed tab or a silently dropped network is still
+  reaped after `terminalIdleTimeout` drops to 5 minutes (was 30). Pings are written through
+  `WriteControl`, which gorilla allows alongside the output writer, and a test shrinks both clocks to
+  prove an idle session still accepts input after several deadlines.
 - **The Platform-Mock Registration Detail Row Is Gone, The Flow And Log Rows Are Separated, And The
   Host Terminal Drops Its Console Login**: the instance list still had a detail row under it —
   `TAA 服务地址`, a 已注册 pill and `环境状态` — that described only the selected instance and

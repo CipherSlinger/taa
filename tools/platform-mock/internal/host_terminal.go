@@ -33,15 +33,22 @@ import (
 // trusted network.
 const (
 	terminalMaxSessions = 4
-	// terminalIdleTimeout closes a shell whose browser stopped sending. A tab
-	// closed without a close frame sends nothing, and a stray root shell on the
-	// host should not outlive the person who opened it by more than this.
-	terminalIdleTimeout = 30 * time.Minute
 	// terminalDrainGrace is how long the session waits after the shell exits for
 	// the last bytes to come through the PTY. Without it the final line of a
 	// command that exits immediately ("echo x; exit") is often lost.
 	terminalDrainGrace = 300 * time.Millisecond
 )
+
+// terminalPingInterval keeps an idle tab connected: the browser answers a
+// protocol ping with a pong automatically, so a session with no typing stays up
+// while the tab exists instead of dying on an idle timer.
+var terminalPingInterval = 60 * time.Second
+
+// terminalIdleTimeout is how long the server waits for any frame — a keystroke,
+// a resize or a pong — before it treats the socket as dead and kills the shell.
+// Pings land well inside it, so a live tab is never closed; a tab closed without
+// a close frame, or a network that silently dropped, is reaped after this.
+var terminalIdleTimeout = 5 * time.Minute
 
 // terminalMessage is one frame in either direction.
 //
@@ -193,11 +200,30 @@ func runHostTerminal(conn *websocket.Conn, shell string) {
 	}()
 
 	// inputDone fires when the browser stops sending: a closed tab, a dead
-	// network, or the idle deadline.
+	// network, or the idle deadline. The deadline is reset by a pong as well as
+	// by input, which is what lets an idle tab stay open indefinitely.
 	inputDone := make(chan struct{})
+	pingDone := make(chan struct{})
+	_ = conn.SetReadDeadline(time.Now().Add(terminalIdleTimeout))
+	conn.SetPongHandler(func(string) error {
+		return conn.SetReadDeadline(time.Now().Add(terminalIdleTimeout))
+	})
+	go func() {
+		ticker := time.NewTicker(terminalPingInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				if err := conn.WriteControl(websocket.PingMessage, nil, time.Now().Add(5*time.Second)); err != nil {
+					return
+				}
+			case <-pingDone:
+				return
+			}
+		}
+	}()
 	go func() {
 		defer close(inputDone)
-		_ = conn.SetReadDeadline(time.Now().Add(terminalIdleTimeout))
 		for {
 			var msg terminalMessage
 			if err := conn.ReadJSON(&msg); err != nil {
@@ -240,6 +266,7 @@ func runHostTerminal(conn *websocket.Conn, shell string) {
 		}
 		_ = write(terminalMessage{Type: "exit", Code: code})
 	}
+	close(pingDone)
 	_ = conn.Close()
 	log.Printf("host terminal closed: pid=%d", pid)
 }
