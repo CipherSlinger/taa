@@ -776,19 +776,16 @@ check_absent "dcu: the CPU test Pod requests no card" 'hygon.cn/k100_ai' \
 check_absent "dcu: the CPU test Pod carries no cold-plug annotation" 'cdi.k8s.io/hycu' \
   "$(cat "$pkg/test/test-pod.yaml")"
 
-# The guest installs two hooks for a DCU role, at the two points that matter:
-# prestart makes the card addressable (`hygon.cn/hycu=0` resolves to a CDI spec),
-# poststop resets it before the VM is destroyed. Missing the second one is not
-# visible in this Pod at all -- the card is already gone -- so it is asserted
-# here rather than left to the next Pod on the same host.
-for hook in prestart/guest-hycu-cdi-generator.sh poststop/guest-hycu-dcu-reset.sh; do
-  if grep -qF "usr/share/oci/hooks/$hook" "$BUILD"; then
-    echo "ok   dcu: the build installs the $hook guest hook"
-  else
-    echo "FAIL dcu: the build does not install usr/share/oci/hooks/$hook" >&2
-    failures=$((failures + 1))
-  fi
-done
+# The DCU guest installs the prestart hook that makes the card addressable
+# (`hygon.cn/hycu=0` resolves to a CDI spec). The poststop reset hook is
+# currently disabled in favour of the driver's own load-time reset, so assert
+# that no live install line targets it and that the module option is written.
+check_contains "dcu: the build installs the prestart CDI generator hook" \
+  'usr/share/oci/hooks/prestart/guest-hycu-cdi-generator.sh' "$(cat "$BUILD")"
+check "dcu: no live install line ships the poststop reset hook" "0" \
+  "$(grep -c '^[[:space:]]*install .*usr/share/oci/hooks/poststop' "$BUILD" || true)"
+check_contains "dcu: the driver is asked to reset the card on load" \
+  'options hycu reset_on_load=1' "$(cat "$BUILD")"
 
 # ── 5c. expected MEASUREMENT ───────────────────────────────────────────────
 MEASURE="$SCRIPT_DIR/render/measure.py"

@@ -1374,20 +1374,28 @@ build_initrd() {
     install -m 0755 "$SCRIPT_DIR/guest-hycu-cdi-generator.sh" \
       "$stage/usr/share/oci/hooks/prestart/guest-hycu-cdi-generator.sh"
 
-    # The poststop hook resets the card before the guest is destroyed. The host
-    # has no reset path for the DCU (reset_method is empty, no FLReset, QEMU
-    # reports "Cannot reset device"), so a guest that was computing leaves state
-    # the next guest's probe cannot recover from -- and the only fix is a host
-    # reboot. The guest side does have one: the driver's recovery entry under
-    # /sys/kernel/debug/dri/<minor>/gpu_recover, which is what
-    # `hy-smi --hcureset` writes. poststop is the only in-guest point that runs
-    # after the container's own processes are gone and before the VM is torn
-    # down, which is exactly the ordering the driver's kill-then-reset recovery
-    # expects. See the script's header for what this does and does not cover.
-    echo "注入 DCU poststop reset hook"
-    install -d -m 0755 "$stage/usr/share/oci/hooks/poststop"
-    install -m 0755 "$SCRIPT_DIR/guest-hycu-dcu-reset.sh" \
-      "$stage/usr/share/oci/hooks/poststop/guest-hycu-dcu-reset.sh"
+    # EXPERIMENT: ask the driver to reset the card while it initialises, instead
+    # of resetting it from a poststop hook. `reset_on_load` is a read-only module
+    # parameter (perm 0444 -- it cannot be written under
+    # /sys/module/hycu/parameters), so it only takes effect when `modprobe hycu`
+    # runs, which the CDI prestart hook does; the payload's kmod does read
+    # /etc/modprobe.d. When it is on, gpu_device_init runs an ASIC reset before
+    # hardware init and fails probe with `asic reset on init failed` if that
+    # reset fails, so a card left in a bad state gets one reset attempt at load
+    # time instead of poisoning the guest.
+    echo "写入 hycu 模块参数: reset_on_load=1"
+    install -d -m 0755 "$stage/etc/modprobe.d"
+    printf 'options hycu reset_on_load=1\n' \
+      >"$stage/etc/modprobe.d/hycu-reset-on-load.conf"
+    chmod 0644 "$stage/etc/modprobe.d/hycu-reset-on-load.conf"
+
+    # The guest-side reset hook -- the only in-guest reset path before this
+    # experiment -- is disabled while reset_on_load is under test. Restore it
+    # by uncommenting these two lines and removing the modprobe options file.
+    #
+    # install -d -m 0755 "$stage/usr/share/oci/hooks/poststop"
+    # install -m 0755 "$SCRIPT_DIR/guest-hycu-dcu-reset.sh" \
+    #   "$stage/usr/share/oci/hooks/poststop/guest-hycu-dcu-reset.sh"
   fi
 
   # The `python`/`python3` names are not added here: the semgrep payload ships
