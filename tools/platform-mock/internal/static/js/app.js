@@ -993,8 +993,11 @@ function showResultRunning(elId, text) {
 // setHealthState records the outcome on the row that ran the check. There is no
 // shared detail row any more: the state is keyed by the selected instance and
 // painted by renderInstanceList() when the row is rebuilt.
-function setHealthState(tone, title, labelText) {
-  const id = typeof currentDockerId === 'function' ? currentDockerId() : '';
+// setHealthState writes the result onto the row that asked. checkId is the
+// instance the check was started for; without it the selected instance is
+// assumed, which is right for a check started from the detail panels.
+function setHealthState(tone, title, labelText, checkId) {
+  const id = checkId || (typeof currentDockerId === 'function' ? currentDockerId() : '');
   if (typeof recordInstanceHealth === 'function') recordInstanceHealth(id, tone, labelText, title);
 }
 
@@ -1737,7 +1740,16 @@ async function refreshDashboardStatus() {
 window.refreshDashboardStatus = refreshDashboardStatus;
 
 // ── TAA API Triggers ──
-async function testHealth() {
+// check is optional: {instanceId, seq}. A row's 检查连通性 passes it so a slow
+// reply cannot overwrite a newer check, and so the result lands on the row that
+// asked rather than on whatever instance happens to be selected by then.
+async function testHealth(check) {
+  const checkId = check && check.instanceId;
+  const checkSeq = check && check.seq;
+  const isCurrent = () => {
+    if (!checkId || checkSeq === undefined) return true;
+    return instanceConnectionChecks[checkId] === checkSeq;
+  };
   setHealthState('running', '检查中', '检查中...');
   recordInteraction('health', {
     title: '健康检查 (GET /v1/taa/health)',
@@ -1750,11 +1762,13 @@ async function testHealth() {
   });
   try {
     const r = await postToTAA('/v1/taa/health', {}, 10000);
+    if (!isCurrent()) return; // a newer check owns this row now
     const ok = r.status === 200 && r.data && r.data.error === 0;
     lastHealthData = r.data != null ? r.data : { status: r.status, raw: r };
-    setHealthState(ok ? 'ok' : 'bad', ok ? '连通正常' : '连通异常', ok ? '连通正常' : 'HTTP ' + r.status);
+    setHealthState(ok ? 'ok' : 'bad', ok ? '连通正常' : '连通异常', ok ? '连通正常' : 'HTTP ' + r.status, checkId);
     recordInteraction('health', { primaryContent: lastHealthData, respBody: lastHealthData, statusCode: r.status });
   } catch (e) {
+    if (!isCurrent()) return;
     const msg = e.name === 'AbortError'
       ? '请求超时（10s）：TAA 服务响应过慢或不可达。\n请确认：\n1. TAA 服务地址是否正确\n2. TAA 服务是否已启动\n3. 浏览器能否直接访问该地址'
       : '请求失败: ' + e.message + '\n\n可能原因：\n1. TAA 服务地址不正确或服务未启动\n2. 网络不通\n3. 混合内容安全限制';
@@ -1763,7 +1777,7 @@ async function testHealth() {
       msg: e.message || '网络请求异常',
       detail: msg,
     };
-    setHealthState('bad', '不可达', '不可达');
+    setHealthState('bad', '不可达', '不可达', checkId);
     recordInteraction('health', { primaryContent: lastHealthData, respBody: lastHealthData, statusCode: 500 });
   } finally {
     // The row is rebuilt so 查看结果 appears next to this instance's 检查连通性.

@@ -64,8 +64,22 @@ let instanceTargets = {};
 // action, not a polled fact, so it is not part of /api/instances: the row shows
 // what its own 检查连通性 learned, and 查看结果 exists only where that result is
 // still the one `lastHealthData` holds.
+//
+// The badge separates two questions that used to share one colour. `tone` is the
+// registration the platform accepted — it does not change when the instance
+// stops answering, because nothing polls it. `health` is the outcome of this
+// session's connectivity check, and an instance whose check failed must never
+// keep showing 已连接 as if the check had succeeded.
 const instanceHealthState = {};
 let lastHealthOwner = '';
+// instanceConnectionChecks counts 检查连通性 clicks per instance. A check is a
+// slow round trip, and the reply from an earlier click must not overwrite the
+// result of a later one.
+const instanceConnectionChecks = {};
+// healthStampRendered is the timestamp signature the list currently displays.
+// tickInstanceHealthExpiry compares against it to repaint only when a check has
+// aged out of the green badge.
+let healthStampRendered = '';
 
 function recordInstanceHealth(id, tone, label, title) {
   if (!id) return;
@@ -73,17 +87,81 @@ function recordInstanceHealth(id, tone, label, title) {
     tone: tone === 'ok' || tone === 'bad' || tone === 'running' ? tone : 'pending',
     label: label || '未检查',
     title: title || '',
+    checkedAt: (tone === 'ok' || tone === 'bad') ? Date.now() : 0,
   };
   if (tone === 'ok' || tone === 'bad') lastHealthOwner = id;
   renderInstanceList();
 }
 
+// instanceHealthFor is the health chip's accessor: the last check's outcome, or
+// the "not checked yet" placeholder that the chip renders for a fresh row.
 function instanceHealthFor(id) {
-  return instanceHealthState[id] || {
+  return healthSlotFor(id) || {
     tone: 'pending',
     label: '未检查',
     title: '尚未对该实例执行连通性检查',
   };
+}
+
+// healthSlotFor is the same lookup without the placeholder, for callers that
+// must tell "no check has run" apart from "the check said pending".
+function healthSlotFor(id) {
+  return instanceHealthState[id] || null;
+}
+
+// healthStampKey is the signature of every check timestamp. A tick that finds it
+// unchanged has nothing to repaint, and a changed one means a check result aged
+// out, so the badge must be redrawn even though no request came back.
+function healthStampKey() {
+  return Object.keys(instanceHealthState)
+    .sort()
+    .map((id) => id + ':' + (instanceHealthState[id].checkedAt || 0))
+    .join(',');
+}
+
+function tickInstanceHealthExpiry() {
+  if (!instanceCache.length) return;
+  if (healthStampKey() === healthStampRendered) return;
+  healthStampRendered = healthStampKey();
+  renderInstanceList();
+}
+
+// instanceConnectionState combines the registration fact with the health
+// result. A failing check wins: 已连接 would otherwise describe a connection
+// this console just proved is not there. A passing check is labelled 连通正常
+// rather than 已连接 so the two facts cannot be mistaken for each other.
+//
+// A passing check expires. Nothing observes an instance between checks, so a
+// green badge from ten minutes ago claims a connection nobody re-verified; once
+// instanceHealthStaleMs has passed the row falls back to the registration
+// wording rather than keep vouching for a link it no longer knows about.
+const instanceHealthStaleMs = 90 * 1000;
+
+function instanceConnectionState(item) {
+  const health = healthSlotFor(item && item.dockerId);
+  if (!item) return { label: '未注册', tone: 'pending', hint: '' };
+  if (health && health.tone === 'running') {
+    return { label: '检查中', tone: 'pending', hint: '正在检查该实例是否可达' };
+  }
+  if (health && health.tone === 'bad') {
+    return { label: '已断开', tone: 'bad', hint: '连通性检查失败：平台已接受该实例的注册，但当前连不通' };
+  }
+  if (health && health.tone === 'ok') {
+    const age = Date.now() - (health.checkedAt || 0);
+    if (age <= instanceHealthStaleMs) {
+      return { label: '连通正常', tone: 'ok', hint: '连通性检查通过，且平台已接受该实例的注册' };
+    }
+    return {
+      label: '已连接',
+      tone: 'ok',
+      hint: '平台已接受该实例的注册；上次连通性检查已超过 ' + Math.round(instanceHealthStaleMs / 60000) + ' 分钟，结论不再显示',
+    };
+  }
+  if (item.accepted) {
+    return { label: '已连接', tone: 'ok', hint: '平台已接受该实例的注册（连通性未检查）' };
+  }
+  if (item.received) return { label: '注册失败', tone: 'bad', hint: '实例已上报，但平台未接受' };
+  return { label: '未注册', tone: 'pending', hint: '尚未收到该实例的注册请求' };
 }
 
 // INSTANCE_GROUPS is the fixed display order of the list. A kind the mock does
@@ -101,14 +179,26 @@ function instanceKindLabel(kind) {
   return '';
 }
 
-// instanceConnectionState is the per-row connection badge. The mock does not
-// probe instances, so the honest signal is what the platform itself knows: an
-// accepted registration means the instance is connected, a report that the
-// platform rejected is a failed registration, and silence is "never registered".
-function instanceConnectionState(item) {
-  if (item.accepted) return { label: '已连接', tone: 'ok', hint: '平台已接受该实例的注册' };
-  if (item.received) return { label: '注册失败', tone: 'bad', hint: '实例已上报，但平台未接受' };
-  return { label: '未注册', tone: 'pending', hint: '尚未收到该实例的注册请求' };
+
+// instanceNameHint explains where the row's name comes from. The name is the
+// dockerId the instance was configured with — TAA sends it in the registration
+// body — so it is an identity string, not a Pod name. Comparing the two is a
+// normal way to get confused, so the hint names the source and, when the
+// platform knows it, the address the registration actually came from.
+function instanceNameHint(item) {
+  const parts = ['名称来自实例注册时上报的 dockerId（DOCKER_ID 配置），不是 Pod 名称'];
+  if (item.sourceAddr) parts.push('本次注册来源地址 ' + item.sourceAddr);
+  if (item.taaTarget) parts.push('TAA 服务地址 ' + item.taaTarget);
+  return parts.join('\n');
+}
+
+function instanceRowTitle(item, state) {
+  const lines = [state.hint];
+  if (item.taaTarget) lines.push('TAA 地址 ' + item.taaTarget);
+  lines.push('实例名（dockerId）：' + (item.dockerId || '(legacy)'));
+  if (item.sourceAddr) lines.push('注册来源：' + item.sourceAddr);
+  if (item.userAgent) lines.push('User-Agent：' + item.userAgent);
+  return lines.join('\n');
 }
 
 function instanceClock(at) {
@@ -198,6 +288,7 @@ function renderInstanceList() {
     empty.textContent = '暂无已注册实例。TAA 启动后会向平台注册，列表每 5 秒刷新一次。';
     container.appendChild(empty);
     instanceRenderedSelection = '';
+    healthStampRendered = '';
     return;
   }
   INSTANCE_GROUPS.forEach((group) => {
@@ -219,6 +310,7 @@ function renderInstanceList() {
     container.appendChild(section);
   });
   instanceRenderedSelection = currentInstanceDockerId;
+  healthStampRendered = healthStampKey();
 }
 
 // buildInstanceRow is one instance: a select button carrying its identity and
@@ -236,7 +328,7 @@ function buildInstanceRow(item) {
   main.type = 'button';
   main.className = 'instance-row-main';
   main.setAttribute('aria-pressed', selected ? 'true' : 'false');
-  main.title = state.hint + (item.taaTarget ? '\nTAA 地址 ' + item.taaTarget : '');
+  main.title = instanceRowTitle(item, state);
   main.addEventListener('click', () => selectInstance(id));
 
   const dot = document.createElement('span');
@@ -244,6 +336,7 @@ function buildInstanceRow(item) {
   const name = document.createElement('span');
   name.className = 'instance-name';
   name.textContent = id || '(legacy)';
+  name.title = instanceNameHint(item);
   main.appendChild(dot);
   main.appendChild(name);
   const kind = instanceKindLabel(item.kind);
@@ -257,6 +350,11 @@ function buildInstanceRow(item) {
     const tag = document.createElement('span');
     tag.className = 'instance-default-tag';
     tag.textContent = '默认';
+    // "默认" answers a console question, not an instance question: it is the
+    // row the console addresses when no row is selected — the first accepted
+    // registration. It says nothing about the instance being the only, the
+    // newest, or the preferred one.
+    tag.title = '默认实例：控制台在未选中任何行时，把控制台自身的请求发往这一行';
     main.appendChild(tag);
   }
   // The two facts that used to sit in a detail row under the list: the address
@@ -396,12 +494,20 @@ async function runInstanceAttestation(id) {
 }
 
 // runInstanceHealth does the same for the health check: the result is written
-// into that row's 环境状态 chip, where the row's own 查看结果 then reads it.
+// into that row's 连接状态 badge, where the row's own 查看结果 then reads it.
+//
+// A check is a 10 s round trip. Clicking again before the first reply arrives
+// used to leave the row at whatever the slow reply said, so each click takes a
+// sequence number and only the newest one is allowed to record a result.
 async function runInstanceHealth(id) {
+  if (!id) return;
   selectInstance(id);
+  const seq = (instanceConnectionChecks[id] || 0) + 1;
+  instanceConnectionChecks[id] = seq;
+  recordInstanceHealth(id, 'running', '检查中', '连通性检查进行中');
   try {
     if (typeof detectTAAProxy === 'function') await detectTAAProxy();
-    await testHealth();
+    await testHealth({ instanceId: id, seq: seq });
   } finally {
     renderInstanceList();
   }
@@ -454,6 +560,10 @@ function maybeAutoDetectTAAAddr(result) {
 function initInstanceSelector() {
   loadInstances();
   setInterval(loadInstances, 5000);
+  // A health result has no server-side counterpart to refresh it, so the badge
+  // is repainted here once its green expires; otherwise the row would keep
+  // showing 连通正常 until some unrelated event happened to redraw it.
+  setInterval(tickInstanceHealthExpiry, 5000);
 }
 
 // refreshInstancePanels re-reads every instance-scoped panel. It is shared by

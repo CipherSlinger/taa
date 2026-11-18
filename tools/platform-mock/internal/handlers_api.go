@@ -78,6 +78,11 @@ type instanceSummary struct {
 	ModelLogCount int    `json:"modelLogCount"`
 	TaaLogCount   int    `json:"taaLogCount"`
 	Default       bool   `json:"default"`
+	// SourceAddr and UserAgent are the registration's origin as the platform
+	// observed it. dockerId is an identity the instance was configured with, not
+	// a Pod name, so these are what the console shows when the two disagree.
+	SourceAddr string `json:"sourceAddr,omitempty"`
+	UserAgent  string `json:"userAgent,omitempty"`
 }
 
 func lastReportAt(b *instanceStores) string {
@@ -102,6 +107,8 @@ func summarizeInstance(mgr *instanceManager, b *instanceStores) instanceSummary 
 		LastReportAt:  lastReportAt(b),
 		ModelLogCount: b.modelLog.get().TotalCount,
 		TaaLogCount:   b.taaLog.get().TotalCount,
+		SourceAddr:    reg.SourceAddr,
+		UserAgent:     reg.UserAgent,
 	}
 }
 

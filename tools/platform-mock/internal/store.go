@@ -16,10 +16,17 @@ import (
 )
 
 type registerState struct {
-	Received           bool   `json:"received"`
-	Accepted           bool   `json:"accepted"`
-	ReceivedAt         string `json:"receivedAt"`
-	DockerID           string `json:"dockerId"`
+	Received   bool   `json:"received"`
+	Accepted   bool   `json:"accepted"`
+	ReceivedAt string `json:"receivedAt"`
+	DockerID   string `json:"dockerId"`
+	// SourceAddr and UserAgent are what the platform saw, not what the instance
+	// claimed: the registration body carries no Pod name, and dockerId is an
+	// identity string (production allocates a 32-hex value) that need not match
+	// the Pod. Recording both lets the console say where a name came from
+	// instead of leaving "the name differs from the Pod" unexplained.
+	SourceAddr         string `json:"sourceAddr,omitempty"`
+	UserAgent          string `json:"userAgent,omitempty"`
 	TaaTarget          string `json:"taaTarget,omitempty"`
 	AuthInfo           string `json:"authInfo"`
 	TaaPublicKey       string `json:"taaPublicKey"`

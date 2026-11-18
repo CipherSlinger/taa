@@ -59,6 +59,11 @@ func registerHandler(mgr *instanceManager, allowEmptyAttestation bool) http.Hand
 		}
 
 		state.ContentType = r.Header.Get("Content-Type")
+		// Recorded before the body is opened: these are the platform's own
+		// observations, and they are the only place a name can be checked
+		// against the Pod that actually sent the registration.
+		state.SourceAddr = sourceHost(r.RemoteAddr)
+		state.UserAgent = r.Header.Get("User-Agent")
 		rawBody, err := io.ReadAll(r.Body)
 		if err != nil {
 			state.StatusCode = http.StatusBadRequest

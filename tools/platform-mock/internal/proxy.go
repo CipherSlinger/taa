@@ -152,6 +152,21 @@ func loggingReverseProxyHandler(next http.Handler) http.Handler {
 // source port is ephemeral. A RemoteAddr that yields no usable host returns ""
 // and leaves the instance without a derived target; registration still
 // succeeds, and outbound calls report the missing address explicitly.
+// sourceHost returns the bare host from a RemoteAddr, or the trimmed value when
+// it is not host:port. It exists so the registration record can name where a
+// request came from without repeating the SplitHostPort dance.
+func sourceHost(remoteAddr string) string {
+	remoteAddr = strings.TrimSpace(remoteAddr)
+	if remoteAddr == "" {
+		return ""
+	}
+	host, _, err := net.SplitHostPort(remoteAddr)
+	if err != nil {
+		host = remoteAddr
+	}
+	return strings.TrimSpace(strings.Trim(host, "[]"))
+}
+
 func deriveTAATarget(remoteAddr, port string) string {
 	remoteAddr = strings.TrimSpace(remoteAddr)
 	if remoteAddr == "" {

@@ -2016,7 +2016,9 @@ func TestHealthCheckIntegratedIntoRegistration(t *testing.T) {
 	// Integrated elements and functions should be present
 	for _, want := range []string{
 		`id="card-attestation"`,
-		"testHealth()",
+		// A row's check passes its own instance and a sequence number, so the
+		// call site is testHealth({...}) rather than a bare testHealth().
+		"testHealth(",
 		"openHealthResultModal",
 		"lastHealthData",
 		// The address and health state moved into the rows themselves.
