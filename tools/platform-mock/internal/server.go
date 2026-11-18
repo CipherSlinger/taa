@@ -213,6 +213,14 @@ func NewServer(cfg Config) *Server {
 	hostStatus := newHostStatusCache("", hostStatusTTL)
 	mux.HandleFunc("/api/host/status", hostStatusHandler(hostStatus))
 	mux.HandleFunc("/api/upload", uploadHandler(cfg.Addr, uploadDir, mgr))
+	// Resumable variant of the same upload: a large file is sent as a series of
+	// short requests, and the server's record of which chunks arrived is what a
+	// retry resumes from. See upload_sessions.go for why one long request does
+	// not survive a slow link.
+	uploadSessions := newUploadSessionStore(uploadDir)
+	mux.HandleFunc("/api/upload/session", handleUploadSession(uploadSessions))
+	mux.HandleFunc("/api/upload/chunk", handleUploadChunk(uploadSessions))
+	mux.HandleFunc("/api/upload/complete", handleUploadComplete(uploadSessions, uploadDir, cfg.Addr, mgr))
 	registerUploadDeleteRoutes(mux, uploadDir)
 	mux.HandleFunc("/api/uploads", uploadListHandler(cfg.Addr, uploadDir))
 	mux.HandleFunc("/api/uploads/reset", uploadResetHandler(uploadDir))

@@ -473,6 +473,160 @@ function postFormWithProgress(url, formData, onProgress) {
   });
 }
 
+// ── Resumable (chunked) upload ──
+// A single large POST does not survive a slow link: measured on a real
+// transfer, the browser gave up on a 46 MiB body within milliseconds of sending
+// its headers, while the same file sent as small requests always completed.
+// Chunking is therefore the transport, not a timeout tweak. The server keys the
+// session to the file's identity (name + size + mtime), so re-uploading the
+// same unchanged file after a failure resumes at the first missing chunk
+// instead of starting over.
+const UPLOAD_CHUNK_SIZE = 4 * 1024 * 1024;
+// The single-request path stays for small files: it is one round trip instead
+// of several, and it cannot lose a chunk that is smaller than one request.
+const UPLOAD_CHUNK_THRESHOLD = 8 * 1024 * 1024;
+const UPLOAD_CHUNK_RETRIES = 5;
+const UPLOAD_CHUNK_RETRY_BASE_MS = 800;
+
+function uploadChunkDelay(attempt) {
+  // Exponential backoff with a cap: a stalled link usually recovers in
+  // seconds, and a fixed delay would spend minutes on a long run of retries.
+  return Math.min(UPLOAD_CHUNK_RETRY_BASE_MS * Math.pow(2, attempt), 15000);
+}
+
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+function parseEnvelopeResponse(xhr) {
+  try {
+    return JSON.parse(xhr.responseText || '{}');
+  } catch (_) {
+    return {};
+  }
+}
+
+// postChunk sends one application/octet-stream body. It resolves with
+// {status, data} like postFormWithProgress, and reports how many bytes of this
+// chunk have left the browser so the caller can drive a true aggregate bar.
+function postChunk(url, blob, onProgress) {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open('POST', url);
+    xhr.setRequestHeader('Content-Type', 'application/octet-stream');
+    if (xhr.upload && typeof onProgress === 'function') {
+      xhr.upload.onprogress = (ev) => {
+        if (ev.lengthComputable) onProgress(ev.loaded, ev.total);
+      };
+    }
+    xhr.onload = () => resolve({ status: xhr.status, data: parseEnvelopeResponse(xhr) });
+    xhr.onerror = () => reject(new Error('网络错误'));
+    xhr.onabort = () => reject(new Error('上传已取消'));
+    xhr.send(blob);
+  });
+}
+
+// postJSON is the session endpoint's transport. Its body is tiny, so the
+// simplest possible request is right.
+function postJSON(url, body) {
+  return fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  }).then(async res => {
+    let data = {};
+    try {
+      data = await res.json();
+    } catch (_) {
+      data = {};
+    }
+    return { status: res.status, data };
+  });
+}
+
+async function uploadFileChunked(file, encryptMode, publicKey) {
+  const sessionResp = await postJSON(withDockerId('/api/upload/session'), {
+    name: file.name,
+    size: file.size,
+    lastModified: file.lastModified || 0,
+    chunkSize: UPLOAD_CHUNK_SIZE,
+    encryptMode: encryptMode,
+  });
+  if (sessionResp.status !== 200 || !sessionResp.data || sessionResp.data.error !== 0) {
+    const msg = (sessionResp.data && sessionResp.data.msg) || ('HTTP ' + sessionResp.status);
+    throw new Error('创建上传会话失败: ' + msg);
+  }
+
+  const session = sessionResp.data.result || {};
+  const total = Number(session.size) || file.size;
+  const chunkSize = Number(session.chunkSize) || UPLOAD_CHUNK_SIZE;
+  const totalChunks = Number(session.totalChunks) || Math.ceil(total / chunkSize);
+  const done = new Set((session.received || []).map(Number));
+
+  // A resumed transfer must report the bytes it already has, or the bar would
+  // start at zero and misrepresent a nearly finished upload.
+  let uploaded = 0;
+  done.forEach(index => {
+    uploaded += Math.min(chunkSize, total - index * chunkSize);
+  });
+  const resumed = done.size > 0;
+  setUploadProgress(uploaded, total, resumed ? `从断点继续（已完成 ${done.size}/${totalChunks} 片）` : '');
+
+  for (let index = 0; index < totalChunks; index++) {
+    if (done.has(index)) continue;
+    const start = index * chunkSize;
+    const end = Math.min(start + chunkSize, total);
+    const blob = file.slice(start, end);
+
+    let lastError = null;
+    for (let attempt = 0; attempt <= UPLOAD_CHUNK_RETRIES; attempt++) {
+      if (attempt > 0) {
+        const delay = uploadChunkDelay(attempt - 1);
+        setUploadProgress(uploaded, total,
+          `第 ${index + 1}/${totalChunks} 片失败，${Math.round(delay / 1000)} 秒后重试（${attempt}/${UPLOAD_CHUNK_RETRIES}）`);
+        await sleep(delay);
+      }
+      try {
+        const base = uploaded;
+        const resp = await postChunk(
+          withDockerId(`/api/upload/chunk?sessionId=${encodeURIComponent(session.sessionId)}&index=${index}`),
+          blob,
+          (loaded, chunkTotal) => {
+            // Clamp to the chunk's own length: the request body is exactly the
+            // slice, and a server-side rejection must not inflate the bar.
+            const inFlight = chunkTotal > 0 ? Math.min(loaded, blob.size) : loaded;
+            setUploadProgress(base + inFlight, total, '');
+          },
+        );
+        if (resp.status === 200 && resp.data && resp.data.error === 0) {
+          uploaded = base + blob.size;
+          setUploadProgress(uploaded, total, '');
+          lastError = null;
+          break;
+        }
+        lastError = new Error((resp.data && resp.data.msg) || ('HTTP ' + resp.status));
+      } catch (err) {
+        lastError = err;
+      }
+    }
+    if (lastError) {
+      // The chunks already stored stay on disk, so re-selecting this same file
+      // resumes from here rather than re-sending everything.
+      throw new Error(`第 ${index + 1}/${totalChunks} 片重试 ${UPLOAD_CHUNK_RETRIES} 次后仍失败: ${lastError.message}（已上传分片保留，可重新选择同一文件继续）`);
+    }
+  }
+
+  setUploadProgress(total, total, '分片已传完，正在服务端合并并加密...');
+  const finalForm = new FormData();
+  finalForm.append('encryptMode', encryptMode);
+  if (publicKey) finalForm.append('publicKey', publicKey);
+  return postFormWithProgress(
+    withDockerId('/api/upload/complete?sessionId=' + encodeURIComponent(session.sessionId)),
+    finalForm,
+    null,
+  );
+}
+
 let uploadProgressHideTimer = null;
 
 function setUploadButtonBusy(busy) {
@@ -585,9 +739,14 @@ async function uploadFile() {
     isEncrypted ? '服务端将使用 TAA 注册公钥加密' : ''
   );
   try {
-    const res = await postFormWithProgress(withDockerId('/api/upload'), formData, (loaded, total) => {
-      setUploadProgress(loaded, total, isEncrypted ? '上传完成，正在服务端加密...' : '上传完成，正在等待返回...');
-    });
+    // Large files take the chunked path: a single request of this size is what
+    // a slow link drops. Small ones keep the one-request path.
+    const useChunked = file.size > UPLOAD_CHUNK_THRESHOLD;
+    const res = useChunked
+      ? await uploadFileChunked(file, encryptMode, formData.get('publicKey'))
+      : await postFormWithProgress(withDockerId('/api/upload'), formData, (loaded, total) => {
+        setUploadProgress(loaded, total, isEncrypted ? '上传完成，正在服务端加密...' : '上传完成，正在等待返回...');
+      });
     const data = res.data;
     recordInteraction('upload', { primaryContent: data, respBody: data, statusCode: res.status });
     if (res.status === 200 && data.error === 0) {

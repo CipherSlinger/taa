@@ -283,6 +283,35 @@ func sanitizeUploadFilename(name string) string {
 	return cleaned
 }
 
+// resolveEncryptMode maps the request's fields onto the three storage modes.
+// Both upload paths share it so the legacy encrypt=true spelling, and the
+// fallback recorded when the session was created, cannot drift apart.
+//
+//   - none:     plaintext, streamed straight to disk
+//   - envelope: whole-file SM2/SM4-GCM envelope (the legacy layout)
+//   - urlkey:   bare ciphertext plus the key envelope on the download URL
+func resolveEncryptMode(modeValue, legacyValue, fallback string) string {
+	mode := strings.ToLower(strings.TrimSpace(modeValue))
+	if mode == "none" || mode == "envelope" || mode == "urlkey" {
+		return mode
+	}
+	legacy := strings.TrimSpace(legacyValue)
+	if strings.EqualFold(legacy, "true") || legacy == "1" || strings.EqualFold(legacy, "on") {
+		return "envelope"
+	}
+	if legacy != "" {
+		return "none"
+	}
+	// Neither field was sent: this is the finalize call of a chunked upload,
+	// which recorded its mode when the session was created.
+	switch strings.ToLower(strings.TrimSpace(fallback)) {
+	case "envelope", "urlkey":
+		return strings.ToLower(strings.TrimSpace(fallback))
+	default:
+		return "none"
+	}
+}
+
 // storedUpload is the result of storing one multipart upload: the list-record
 // shape every upload response shares, plus the data key envelope that only the
 // immediate response needs (the sidecar holds the durable copy).
@@ -519,18 +548,7 @@ func uploadHandler(addr, uploadDir string, mgr *instanceManager) http.HandlerFun
 		}
 		defer file.Close()
 
-		// encryptMode is none / envelope (whole-file envelope, the legacy format) /
-		// urlkey (envelope in the URL, the new protocol). The legacy encrypt=true
-		// field maps to envelope for backward compatibility.
-		encryptMode := strings.ToLower(strings.TrimSpace(r.FormValue("encryptMode")))
-		if encryptMode != "none" && encryptMode != "envelope" && encryptMode != "urlkey" {
-			encryptVal := strings.TrimSpace(r.FormValue("encrypt"))
-			if strings.EqualFold(encryptVal, "true") || encryptVal == "1" || strings.EqualFold(encryptVal, "on") {
-				encryptMode = "envelope"
-			} else {
-				encryptMode = "none"
-			}
-		}
+		encryptMode := resolveEncryptMode(r.FormValue("encryptMode"), r.FormValue("encrypt"), "")
 
 		// The storage step is shared with the audit submit endpoint. The
 		// selected instance's registered key wins; the form's publicKey is only
