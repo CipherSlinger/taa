@@ -239,7 +239,14 @@ func (s *TAAState) executeFHETask(req importRequest, phase int, plaintextPath st
 		s.Logs.Add(LogInfo, "fhe", "任务已停止，不再提交 FHE 任务: taskId=%s, err=%v", req.TaskID, cancelErr)
 		return
 	}
-	s.setFHEActiveTask(req.TaskID)
+	// The id is published once the service has the task, not before Execute: the
+	// run only enters the runner's in-flight table at the end of staging, so an id
+	// published earlier names a run Runner.Cancel cannot find. A stop in that
+	// window used to be answered as a failed stop while the staging it was meant
+	// to end carried on and submitted the task anyway. Left unpublished, the stop
+	// reaches the handle below, and the handle's cancellation context - passed to
+	// Execute - aborts the staging at its next boundary.
+	//
 	// The defer is the backstop, and clearing twice is harmless: clearFHEActiveTask
 	// is a no-op unless the id still matches. Nothing below returns early before
 	// the explicit clear at the end of Execute, so its live purpose is the panic
@@ -255,8 +262,15 @@ func (s *TAAState) executeFHETask(req importRequest, phase int, plaintextPath st
 	// keeps the platform's log view populated while Execute blocks.
 	stopLogs, onTaskCreated := s.startFHELogPoller(runner, req.RequestID, req.TaskID, spec.UserID)
 	defer stopLogs()
-	spec.OnCreated = onTaskCreated
-	outcome, execErr := runner.Execute(context.Background(), spec, func(percent float64) {
+	spec.OnCreated = func() {
+		s.setFHEActiveTask(req.TaskID)
+		onTaskCreated()
+	}
+	// The run executes under the task's context, so a stop that lands while the
+	// key or the input package is still being staged ends it here instead of
+	// submitting a task the platform has already ended.
+	control := s.activeControl()
+	outcome, execErr := runner.Execute(s.activeTaskContext(), spec, func(percent float64) {
 		s.reportFHEProgress(req.RequestID, req.TaskID, percent)
 	})
 	// Released the moment the run stops being cancellable, which is here: Execute
@@ -273,6 +287,21 @@ func (s *TAAState) executeFHETask(req importRequest, phase int, plaintextPath st
 	// claiming to end a run that already finished. The import task itself keeps
 	// running and is released by its own release().
 	s.detachStopHandle()
+
+	// A stopped run is neither a failure to report nor a result to land. The
+	// handle is read here because detaching it above clears it from the state;
+	// the service-reported status covers a cancel that resolved the run before
+	// its caller noticed, and the handle covers a cancel that ended the staging,
+	// where Execute returns the context error rather than a cancelled status.
+	// Reporting either as "FHE 任务失败" would contradict the stop the platform
+	// just requested and leave a failure notice behind it.
+	if (control != nil && control.isCancelled()) || outcome.Status == fhe.StatusCancelled {
+		s.Logs.Add(LogInfo, "fhe", "FHE 任务已中止: taskId=%s", req.TaskID)
+		if store, storeErr := s.importIndexStore(); storeErr == nil {
+			store.Rollback(req.RequestID, req.TaskID)
+		}
+		return
+	}
 
 	status, failureReason, code, msg := "succeeded", "", 0, ""
 	if execErr != nil {

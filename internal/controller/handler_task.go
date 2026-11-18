@@ -111,10 +111,14 @@ func (s *TAAState) stopTrainingHandler(w http.ResponseWriter, r *http.Request) {
 	// falls through to the handle below, which ends it before submission.
 	if runner := s.fheRunner(); runner != nil {
 		if taskID := s.fheActiveTask(); taskID != "" {
+			// Read before the switch: the fall-through case needs to know whether
+			// this task still has a local handle to end it with.
+			control := s.activeControl()
 			switch err := runner.Cancel(r.Context(), taskID); {
 			case err == nil:
 				s.Logs.Add(LogInfo, "fhe", "已取消 FHE 任务: taskId=%s", taskID)
 				writeEnvelope(w, http.StatusOK, "FHE 任务已取消", nil, 0)
+				return
 			case errors.Is(err, fhe.ErrTaskAlreadyFinished):
 				// The task reached its terminal state before this request arrived.
 				// That is not a failed stop: the platform asked for the task not to
@@ -122,12 +126,19 @@ func (s *TAAState) stopTrainingHandler(w http.ResponseWriter, r *http.Request) {
 				// back an error for a stop that has nothing left to stop.
 				s.Logs.Add(LogInfo, "fhe", "FHE 任务在停止请求到达前已结束: taskId=%s", taskID)
 				writeEnvelope(w, http.StatusOK, "FHE 任务已结束", nil, 0)
+				return
+			case errors.Is(err, fhe.ErrTaskNotInFlight) && control != nil && s.isInFlight(control):
+				// The run left the runner's table moments ago - Execute returns and
+				// forgets it before this path clears the id - so the stop belongs to
+				// the local handle below, which answers it without claiming a service
+				// call that was never made.
+				s.Logs.Add(LogInfo, "fhe", "FHE 运行已结束，停止请求转由本地任务句柄处理: taskId=%s", taskID)
 			default:
 				s.Logs.Add(LogError, "fhe", "取消 FHE 任务失败: taskId=%s, err=%v", taskID, err)
 				writeErr(w, http.StatusInternalServerError,
 					pkgerrors.Wrap(pkgerrors.CodeInternal, "取消 FHE 任务失败", err))
+				return
 			}
-			return
 		}
 	}
 

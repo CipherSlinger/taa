@@ -964,6 +964,36 @@ func TestRunnerExecuteAbortsStagingWhenTheCallerGivesUp(t *testing.T) {
 	}
 }
 
+// TestRunnerExecuteCancelsTheServiceTaskWhenTheCallerGivesUp is the other half
+// of a caller cancellation. Staging is aborted before submission when the cancel
+// lands early, but CreateTask and the cancel can interleave: the task then exists
+// at the service, and nothing would collect its result. Execute cancels it there,
+// best effort, and reports the run as cancelled rather than failed.
+func TestRunnerExecuteCancelsTheServiceTaskWhenTheCallerGivesUp(t *testing.T) {
+	layout := NewLayout(t.TempDir())
+	fake, srv := newFakeFHE(t, layout)
+	r := newTestRunner(t, srv.URL, layout)
+	keyBytes := []byte("k")
+	spec := specFor(t, r, keyServer(t, keyBytes).URL, keyBytes, []byte("i"))
+
+	// The hook fires once the service has the task, which is the interleaving
+	// under test: the caller gives up after the submission.
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	spec.OnCreated = cancel
+
+	out, err := r.Execute(ctx, spec, nil)
+	if err == nil {
+		t.Fatal("Execute with a cancelled caller = nil, want the error that ended it")
+	}
+	if out.Status != StatusCancelled {
+		t.Errorf("Status = %q, want %q: the service accepted the cancel", out.Status, StatusCancelled)
+	}
+	if got := fake.status("task-1"); got != "cancelled" {
+		t.Errorf("service status = %q, want cancelled: a task nobody waits for must not keep running", got)
+	}
+}
+
 // TestRunnerPublishedFilesAreReadableDespiteTheUmask is the regression test for
 // the modes of the files published into the shared directory.
 //

@@ -346,6 +346,15 @@ func (r *Runner) Deliver(p CallbackPayload) bool {
 // apart with errors.Is.
 var ErrTaskAlreadyFinished = errors.New("fhe task already finished")
 
+// ErrTaskNotInFlight reports that Cancel was called for a task the runner is not
+// tracking at all: it never ran here, or it was started before the last restart.
+//
+// It is separate from ErrTaskAlreadyFinished because the two mean different
+// things to a caller: a finished task is a truth the stop path can report as
+// "already ended", while an id the runner never knew may name a task this
+// instance has to end another way. errors.Is is how they are told apart.
+var ErrTaskNotInFlight = errors.New("fhe task not in flight")
+
 // Cancel maps TAA's stopTraining onto the service's cancel endpoint and resolves
 // the local run.
 //
@@ -370,7 +379,8 @@ func (r *Runner) Cancel(ctx context.Context, taskID string) error {
 		return fmt.Errorf("fhe task %s is not in flight on this TAA instance, so it cannot be cancelled: "+
 			"it either never ran here, already finished, or was started before the last restart. "+
 			"The FHE service scopes task calls by tenant and the tenant is known only for an in-flight task, "+
-			"so no cancel request was sent; cancel it through the FHE service directly if it is still running", taskID)
+			"so no cancel request was sent; cancel it through the FHE service directly if it is still running: %w",
+			taskID, ErrTaskNotInFlight)
 	}
 	// Reading run.outcome after observing done closed is ordered by the channel
 	// close, which finish performs after storing the outcome.
@@ -430,6 +440,15 @@ func (r *Runner) Execute(ctx context.Context, spec TaskSpec, onProgress func(per
 		return TaskOutcome{Status: StatusFailed, Err: err}, err
 	}
 	defer r.forget(run)
+
+	// Staging is the last uninterruptible step, so a caller that gave up while
+	// the input archive was being copied is observed here, at the first boundary
+	// after it. Submitting anyway would create a task the caller has already
+	// abandoned, and its result would land on no one.
+	if err := ctx.Err(); err != nil {
+		out, _ := r.finish(run, TaskOutcome{Status: StatusFailed, Err: err})
+		return out, out.Err
+	}
 
 	createCtx, cancel := context.WithTimeout(ctx, r.cfg.RequestTimeout)
 	err = r.client.CreateTask(createCtx, CreateTaskRequest{
@@ -572,7 +591,20 @@ func (r *Runner) wait(ctx context.Context, run *taskRun, onProgress func(percent
 			return run.outcome, run.outcome.Err
 		case <-ticker.C:
 		case <-ctx.Done():
-			out, _ := r.finish(run, TaskOutcome{Status: StatusFailed, Err: ctx.Err()})
+			// The caller gave up on the run. The task may already exist at the
+			// service - CreateTask and this select interleave - and a task left
+			// running there keeps a worker busy for a result TAA will never
+			// collect, so it is cancelled too. Best effort: the local run is
+			// finished either way, and the outcome says which happened.
+			status := StatusFailed
+			sendCtx, sendCancel := context.WithTimeout(context.Background(), r.cfg.RequestTimeout)
+			if cancelErr := r.client.CancelTask(sendCtx, run.spec.TaskID, run.spec.UserID); cancelErr == nil {
+				status = StatusCancelled
+			} else {
+				r.log(LevelWarn, "调用方已放弃，但中止服务端任务失败，任务可能仍在运行: taskId=%s, err=%v", run.spec.TaskID, cancelErr)
+			}
+			sendCancel()
+			out, _ := r.finish(run, TaskOutcome{Status: status, Err: ctx.Err()})
 			return out, out.Err
 		}
 	}

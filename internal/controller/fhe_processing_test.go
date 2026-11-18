@@ -260,12 +260,19 @@ type fheServiceStub struct {
 	downloadGate chan struct{}
 	downloads    int
 
-	// onCreate runs inside the service call that creates a task, which is the only
-	// moment a run's own state can be sampled without racing it.
-	onCreate           func()
-	opDuringCreate     string
-	activeDuringCreate string
-	busyDuringCreate   bool
+	// keyGate, when non-nil, holds an eval key download until it is closed. It
+	// parks a run inside Execute's staging, before the task reaches the service,
+	// which is where a stop has to end the import without a submission.
+	keyGate chan struct{}
+	keyHits int
+
+	// onPoll runs inside a status poll. The first one is the first moment after
+	// the service has the task, which is where the run's published state can be
+	// sampled without racing the create that precedes it.
+	onPoll           func()
+	opDuringPoll     string
+	activeDuringPoll string
+	busyDuringPoll   bool
 }
 
 func newFHEServiceStub(t *testing.T) *fheServiceStub {
@@ -278,6 +285,13 @@ func newFHEServiceStub(t *testing.T) *fheServiceStub {
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/eval_context.bin", func(w http.ResponseWriter, r *http.Request) {
+		s.mu.Lock()
+		s.keyHits++
+		gate := s.keyGate
+		s.mu.Unlock()
+		if gate != nil {
+			<-gate
+		}
 		_, _ = w.Write(s.evalKey)
 	})
 	mux.HandleFunc("/api/v1/models/activate", func(w http.ResponseWriter, r *http.Request) {
@@ -294,11 +308,7 @@ func newFHEServiceStub(t *testing.T) *fheServiceStub {
 		}
 		s.mu.Lock()
 		s.created = append(s.created, req)
-		cb := s.onCreate
 		s.mu.Unlock()
-		if cb != nil {
-			cb()
-		}
 		_, _ = w.Write([]byte(`{}`))
 	})
 	mux.HandleFunc("/api/v1/tasks/", s.serveTask)
@@ -341,7 +351,12 @@ func (s *fheServiceStub) serveTask(w http.ResponseWriter, r *http.Request) {
 		s.polls++
 		gate := s.pollGate
 		status, entries, taskProgress := s.taskStatus, s.caseEntries, s.taskProgress
+		cb := s.onPoll
+		first := s.polls == 1
 		s.mu.Unlock()
+		if first && cb != nil {
+			cb()
+		}
 		if gate != nil {
 			<-gate
 		}
@@ -401,6 +416,30 @@ func (s *fheServiceStub) pollCount() int {
 	return s.polls
 }
 
+// holdKeyDownload makes the next eval key download block until releaseKeyDownload
+// is called.
+func (s *fheServiceStub) holdKeyDownload() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.keyGate = make(chan struct{})
+}
+
+// releaseKeyDownload lets a held key download answer, and later ones run free.
+func (s *fheServiceStub) releaseKeyDownload() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.keyGate != nil {
+		close(s.keyGate)
+		s.keyGate = nil
+	}
+}
+
+func (s *fheServiceStub) keyDownloadCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.keyHits
+}
+
 func (s *fheServiceStub) failDownload(status int) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -431,10 +470,10 @@ func (s *fheServiceStub) downloadCount() int {
 	return s.downloads
 }
 
-func (s *fheServiceStub) sampleOnCreate() (op, active string, busy bool) {
+func (s *fheServiceStub) sampleDuringRun() (op, active string, busy bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.opDuringCreate, s.activeDuringCreate, s.busyDuringCreate
+	return s.opDuringPoll, s.activeDuringPoll, s.busyDuringPoll
 }
 
 // evalKeyHash is the digest the platform declares for the stub's eval key. The
@@ -677,12 +716,13 @@ func TestFHEImportDispatchesTaskAndLandsResult(t *testing.T) {
 		t.Fatalf("write shared result: %v", err)
 	}
 
-	env.stub.onCreate = func() {
-		// Sample the instance state at the one moment the run is definitely in
-		// flight. The state lock is released between the two reads and busy is
-		// computed under the lock alone: isTrainingBusyLocked and fheActiveTask
-		// each take the lock themselves, and a nested RLock would deadlock as soon
-		// as a writer queued up behind it.
+	env.stub.onPoll = func() {
+		// Sample the instance state at the first poll: the service has the task,
+		// the id is published, and the run is definitely in flight. The state lock
+		// is released between the two reads and busy is computed under the lock
+		// alone: isTrainingBusyLocked and fheActiveTask each take the lock
+		// themselves, and a nested RLock would deadlock as soon as a writer queued
+		// up behind it.
 		env.state.mu.RLock()
 		op := env.state.CurrentOp
 		busy := env.state.isTrainingBusyLocked()
@@ -691,9 +731,9 @@ func TestFHEImportDispatchesTaskAndLandsResult(t *testing.T) {
 
 		env.stub.mu.Lock()
 		defer env.stub.mu.Unlock()
-		env.stub.opDuringCreate = op
-		env.stub.busyDuringCreate = busy
-		env.stub.activeDuringCreate = active
+		env.stub.opDuringPoll = op
+		env.stub.busyDuringPoll = busy
+		env.stub.activeDuringPoll = active
 	}
 
 	zipPath, zipData := writeTestZip(t, t.TempDir(), map[string]string{"data/case.txt": "ciphertext"})
@@ -767,7 +807,7 @@ func TestFHEImportDispatchesTaskAndLandsResult(t *testing.T) {
 
 	// While the run was in flight the instance had to look busy, and stopTraining
 	// had to be able to find the task.
-	op, active, busy := env.stub.sampleOnCreate()
+	op, active, busy := env.stub.sampleDuringRun()
 	if op != "training" {
 		t.Errorf("CurrentOp during the run = %q, want training (a status query would otherwise report the instance as free)", op)
 	}

@@ -181,11 +181,11 @@ func postStopTraining(t *testing.T, s *TAAState) *httptest.ResponseRecorder {
 // running: the state has to report it as the active FHE task, and the service has
 // to have been asked to create it.
 //
-// The second condition is not redundant. setFHEActiveTask runs before Execute,
-// and the runner registers the run inside Execute's prepare, so right after the
-// first condition holds there is a window in which a stop finds no run to cancel.
-// Waiting for the create call - which happens after that registration - makes the
-// test start from a state where the run is genuinely in flight.
+// The second condition is what makes the state meaningful. The id is published
+// from the runner's OnCreated hook, immediately after the service accepts the
+// task, so waiting for the create call as well starts the test from a run that is
+// genuinely cancellable through Runner.Cancel rather than from a staging state a
+// stop would have to end locally.
 func waitForInFlightFHETask(t *testing.T, env *fheTestEnv) {
 	t.Helper()
 	deadline := time.Now().Add(3 * time.Second)
@@ -226,6 +226,22 @@ func TestStopTrainingCancelsTheRunningFHETaskThroughTheService(t *testing.T) {
 	env.importModel()
 	zipPath, _ := writeTestZip(t, t.TempDir(), map[string]string{"case": "input"})
 
+	// The platform's reportRes endpoint. The stop has already told the platform
+	// the task ended, so a report arriving afterwards must not describe a failure.
+	reported := make(chan map[string]any, 4)
+	platform := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/taa/reportRes" {
+			var payload map[string]any
+			_ = json.NewDecoder(r.Body).Decode(&payload)
+			reported <- payload
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer platform.Close()
+	env.state.mu.Lock()
+	env.state.PlatformIP = platform.URL
+	env.state.mu.Unlock()
+
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
@@ -253,6 +269,98 @@ func TestStopTrainingCancelsTheRunningFHETaskThroughTheService(t *testing.T) {
 	}
 	if got := env.state.fheActiveTask(); got != "" {
 		t.Errorf("fheActiveTask() after the cancelled run = %q, want empty", got)
+	}
+
+	// The cancelled run is neither reported nor recorded: the platform asked for
+	// the task to end, and a failure report would contradict its own stop.
+	select {
+	case payload := <-reported:
+		t.Fatalf("reportRes after a stopped FHE run = %v, want none: a cancelled task is not a failed one", payload)
+	case <-time.After(time.Second):
+	}
+	store, err := env.state.importIndexStore()
+	if err != nil {
+		t.Fatalf("importIndexStore: %v", err)
+	}
+	if err := store.Reserve("req-data", "task-data"); err != nil {
+		t.Errorf("Reserve after a cancelled run = %v, want the reservation released", err)
+	}
+}
+
+// TestStopTrainingDuringFHEStagingSubmitsNothing is the regression test for the
+// stop that landed while the eval key and the input package were still being
+// staged.
+//
+// The task id used to be published before Execute, so a stop in that window found
+// an id with no run behind it: Runner.Cancel refused it, the handler answered 500,
+// and Execute - then running on context.Background() - ignored the local
+// cancellation and submitted the task anyway.
+func TestStopTrainingDuringFHEStagingSubmitsNothing(t *testing.T) {
+	env := newFHETestEnv(t)
+	env.importModel()
+
+	// Park the staging inside the eval key download: the stop has to land while
+	// the run is still on this side of the service.
+	env.stub.holdKeyDownload()
+	t.Cleanup(env.stub.releaseKeyDownload)
+	zipPath, _ := writeTestZip(t, t.TempDir(), map[string]string{"data/case.txt": "ciphertext"})
+
+	// The handle the import handler takes before it goes asynchronous.
+	release, err := env.state.tryAcquireTask("task-data", "req-data", "downloading", false)
+	if err != nil {
+		t.Fatalf("tryAcquireTask: %v", err)
+	}
+	defer release()
+	env.reserveRecord()
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		env.state.processImportedResource(env.dataRequest(), 2, false, zipPath, nil)
+	}()
+
+	deadline := time.Now().Add(3 * time.Second)
+	for env.stub.keyDownloadCount() == 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("the run never reached the eval key download")
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+
+	rec := postStopTraining(t, env.state)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 for a stop during staging: %s", rec.Code, rec.Body.String())
+	}
+	if msg := envelopeMsg(t, rec); msg != "任务已中止" {
+		t.Errorf("msg = %q, want the local stop confirmation", msg)
+	}
+
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the stopped staging did not return")
+	}
+
+	if created := env.stub.createdTasks(); len(created) != 0 {
+		t.Errorf("the service was asked to create %d tasks, want 0: a stop during staging must not submit", len(created))
+	}
+	if !logContains(env.state, "FHE 任务已中止") {
+		t.Error("the stopped run was not logged as stopped")
+	}
+	if logContains(env.state, "FHE 任务失败") {
+		t.Error("the stopped staging was reported as a failed run")
+	}
+	// The reservation is back in circulation, so the platform can submit the same
+	// requestId/taskId again.
+	store, err := env.state.importIndexStore()
+	if err != nil {
+		t.Fatalf("importIndexStore: %v", err)
+	}
+	if err := store.Reserve("req-data", "task-data"); err != nil {
+		t.Errorf("Reserve after a stopped staging = %v, want the reservation released", err)
+	}
+	if got := env.state.fheActiveTask(); got != "" {
+		t.Errorf("fheActiveTask() after the stopped staging = %q, want empty", got)
 	}
 }
 
