@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -571,5 +572,144 @@ func TestStopTrainingThenRestart(t *testing.T) {
 	}
 	if trainingRunning {
 		t.Fatal("TrainingRunning should be false after task 2 completes")
+	}
+}
+
+// stopTestProcess starts a long-lived process bound to control. ownGroup puts
+// it in a process group of its own, the way a real model run is started, so the
+// handler's group kill reaches it; without one the kill reaches no group and
+// the process survives.
+func stopTestProcess(t *testing.T, control *trainingControl, ownGroup bool) *exec.Cmd {
+	t.Helper()
+	cmd := exec.Command("sleep", "30")
+	if ownGroup {
+		cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	}
+	if err := control.startCommand(cmd); err != nil {
+		t.Fatalf("startCommand: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+	})
+	return cmd
+}
+
+// stopTestState installs control as the stop handle of a running training task,
+// which is the state the handler reads its reply from.
+func stopTestState(t *testing.T, control *trainingControl) *TAAState {
+	t.Helper()
+	state, _ := setupTestState(t)
+	state.mu.Lock()
+	state.trainingControl = control
+	state.TrainingRunning = true
+	state.activeTask = &ActiveTaskSnapshot{Type: "training", Status: "RUNNING"}
+	state.mu.Unlock()
+	return state
+}
+
+// TestStopTrainingOnADeadProcessReportsTheStop pins the difference between "the
+// stop failed" and "cleanup is still running". The process is gone and the stop
+// has been applied, so the reply is the stop confirmation even though the
+// pipeline around the process has not finished unwinding within the wait.
+func TestStopTrainingOnADeadProcessReportsTheStop(t *testing.T) {
+	old := stopWaitTimeout
+	stopWaitTimeout = 500 * time.Millisecond
+	t.Cleanup(func() { stopWaitTimeout = old })
+
+	control := newTrainingControl()
+	cmd := stopTestProcess(t, control, true)
+	state := stopTestState(t, control)
+
+	// The run's exiting goroutine: it reaps the process and clears the binding,
+	// like RunRuntimeConfigWithTarget does, but the pipeline it belongs to is
+	// still working, so done stays open.
+	go func() {
+		for !control.isCancelled() {
+			time.Sleep(time.Millisecond)
+		}
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+		control.clearCommand(cmd)
+	}()
+
+	rec := httptest.NewRecorder()
+	state.stopTrainingHandler(rec, httptest.NewRequest(http.MethodPost, "/v1/taa/stopTraining", nil))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", rec.Code, rec.Body.String())
+	}
+	if msg := envelopeMsg(t, rec); msg != "训练任务已中止" {
+		t.Errorf("msg = %q, want the stop confirmation", msg)
+	}
+	if !logContains(state, "停止请求已生效") {
+		t.Error("the slow cleanup was not logged as a successful stop")
+	}
+	if logContains(state, "等待训练任务中止超时") {
+		t.Error("a stop whose process is gone was logged as a timeout")
+	}
+}
+
+// TestStopTrainingOnASurvivingProcessReportsATimeout is the other side: when the
+// process is still bound to the handle at the deadline, the stop did not take
+// effect and the reply says so.
+func TestStopTrainingOnASurvivingProcessReportsATimeout(t *testing.T) {
+	old := stopWaitTimeout
+	stopWaitTimeout = 100 * time.Millisecond
+	t.Cleanup(func() { stopWaitTimeout = old })
+
+	control := newTrainingControl()
+	// No process group of its own: the handler's group kill reaches no group, so
+	// the process survives exactly as a process stuck in the kernel would.
+	stopTestProcess(t, control, false)
+	state := stopTestState(t, control)
+
+	rec := httptest.NewRecorder()
+	state.stopTrainingHandler(rec, httptest.NewRequest(http.MethodPost, "/v1/taa/stopTraining", nil))
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500: %s", rec.Code, rec.Body.String())
+	}
+	if msg := envelopeMsg(t, rec); msg != "中止训练任务超时" {
+		t.Errorf("msg = %q, want the timeout message", msg)
+	}
+	if !logContains(state, "等待训练任务中止超时") {
+		t.Error("the surviving process was not logged as a timeout")
+	}
+}
+
+// TestReportImportFailureIsSilentForAStoppedImport pins the guard at the one
+// place every import failure ends up: a stop can land while an uninterruptible
+// step is running, and that step can fail for its own reason. The stop is the
+// later instruction, so the failure is not reported and the reservation the
+// import took is given back, exactly as a step boundary would have done.
+func TestReportImportFailureIsSilentForAStoppedImport(t *testing.T) {
+	state, _ := setupTestState(t)
+
+	control := newTrainingControl()
+	control.requestStop()
+	state.mu.Lock()
+	state.trainingControl = control
+	state.mu.Unlock()
+
+	store, err := state.importIndexStore()
+	if err != nil {
+		t.Fatalf("importIndexStore: %v", err)
+	}
+	if err := store.Reserve("req-stopped", "task-stopped"); err != nil {
+		t.Fatalf("Reserve: %v", err)
+	}
+
+	req := importRequest{RequestID: "req-stopped", TaskID: "task-stopped"}
+	state.reportImportFailure(req, 2, false, time.Now().UTC(), "解压资源失败")
+
+	if logContains(state, "导入失败") {
+		t.Error("a stopped import was logged as a failed one")
+	}
+	if !logContains(state, "任务已停止") {
+		t.Error("the stopped import was not logged as stopped")
+	}
+	if err := store.Reserve("req-stopped", "task-stopped"); err != nil {
+		t.Errorf("Reserve after a stopped failure = %v, want the reservation released", err)
 	}
 }

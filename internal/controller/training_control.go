@@ -116,6 +116,20 @@ func (c *trainingControl) clearCommand(cmd *exec.Cmd) {
 	}
 }
 
+// currentCommand returns the process bound to this handle, or nil when none is
+// bound. The field is cleared right after the process exits and is reaped
+// (ClearCommand follows Wait), so nil means the process is gone even while the
+// pipeline around it is still unwinding. The stop path uses that difference to
+// tell "cleanup is slow" from "the process survived SIGKILL".
+func (c *trainingControl) currentCommand() *exec.Cmd {
+	if c == nil {
+		return nil
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.cmd
+}
+
 func (c *trainingControl) Finish() {
 	c.finish()
 }

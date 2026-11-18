@@ -1,6 +1,7 @@
 package controller
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -114,7 +115,13 @@ func (s *TAAState) stopTrainingHandler(w http.ResponseWriter, r *http.Request) {
 			// Read before the switch: the fall-through case needs to know whether
 			// this task still has a local handle to end it with.
 			control := s.activeControl()
-			switch err := runner.Cancel(r.Context(), taskID); {
+			// The cancel travels on a context of its own, not the request's.
+			// Cancel bounds the call with RequestTimeout itself, and the stop has
+			// already been granted by the time the platform can hang up: letting
+			// a disconnect or the platform's own deadline abort the outbound
+			// cancel would drop the only request that can stop the worker, while
+			// the 500 that follows has nowhere to go.
+			switch err := runner.Cancel(context.Background(), taskID); {
 			case err == nil:
 				s.Logs.Add(LogInfo, "fhe", "已取消 FHE 任务: taskId=%s", taskID)
 				writeEnvelope(w, http.StatusOK, "FHE 任务已取消", nil, 0)
@@ -127,12 +134,22 @@ func (s *TAAState) stopTrainingHandler(w http.ResponseWriter, r *http.Request) {
 				s.Logs.Add(LogInfo, "fhe", "FHE 任务在停止请求到达前已结束: taskId=%s", taskID)
 				writeEnvelope(w, http.StatusOK, "FHE 任务已结束", nil, 0)
 				return
-			case errors.Is(err, fhe.ErrTaskNotInFlight) && control != nil && s.isInFlight(control):
-				// The run left the runner's table moments ago - Execute returns and
-				// forgets it before this path clears the id - so the stop belongs to
-				// the local handle below, which answers it without claiming a service
-				// call that was never made.
-				s.Logs.Add(LogInfo, "fhe", "FHE 运行已结束，停止请求转由本地任务句柄处理: taskId=%s", taskID)
+			case errors.Is(err, fhe.ErrTaskNotInFlight):
+				if control != nil && s.isInFlight(control) {
+					// The run left the runner's table moments ago - Execute returns
+					// and forgets it before this path clears the id - so the stop
+					// belongs to the local handle below, which answers it without
+					// claiming a service call that was never made.
+					s.Logs.Add(LogInfo, "fhe", "FHE 运行已结束，停止请求转由本地任务句柄处理: taskId=%s", taskID)
+					break
+				}
+				// The run left the table and its handle is gone too: the task
+				// ended in the instant between reading the id and sending the
+				// cancel. There is nothing to cancel, and the task did end, so
+				// this is the already-finished answer rather than a failure.
+				s.Logs.Add(LogInfo, "fhe", "FHE 任务在取消请求发出前已结束: taskId=%s", taskID)
+				writeEnvelope(w, http.StatusOK, "FHE 任务已结束", nil, 0)
+				return
 			default:
 				s.Logs.Add(LogError, "fhe", "取消 FHE 任务失败: taskId=%s, err=%v", taskID, err)
 				writeErr(w, http.StatusInternalServerError,
@@ -192,11 +209,25 @@ func (s *TAAState) stopTrainingHandler(w http.ResponseWriter, r *http.Request) {
 	select {
 	case <-control.done:
 		writeEnvelope(w, http.StatusOK, msg, nil, 0)
-	case <-time.After(5 * time.Second):
-		s.Logs.Add(LogError, "stopTraining", "等待训练任务中止超时 (5s)")
+	case <-time.After(stopWaitTimeout):
+		// The stop itself has already been applied - requestStop set the flag and
+		// the process group was sent SIGKILL - so a timeout means the pipeline has
+		// not finished unwinding, not that the stop failed. Those are different
+		// facts and the reply says which one happened: a task whose process is
+		// gone is stopped, even if its cleanup is still running.
+		if control.currentCommand() == nil {
+			s.Logs.Add(LogWarn, "stopTraining", "停止请求已生效，但任务收尾未在 %s 内完成", stopWaitTimeout)
+			writeEnvelope(w, http.StatusOK, msg, nil, 0)
+			return
+		}
+		s.Logs.Add(LogError, "stopTraining", "等待训练任务中止超时 (%s)", stopWaitTimeout)
 		writeError(w, http.StatusInternalServerError, "中止训练任务超时")
 	}
 }
+
+// stopWaitTimeout bounds how long stopTraining waits for the task to unwind
+// after it has been cancelled. It is a variable so tests can shrink it.
+var stopWaitTimeout = 5 * time.Second
 
 // ── Handler: /v1/taa/import ──────────────────────────────
 
@@ -582,6 +613,20 @@ func (s *TAAState) modelImportHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.Logs.Add(LogInfo, "importModel", "下载完成 (%d bytes) -> %s", size, ciphertextPath)
+
+	// The mirror of importHandler's last check: a stop may have landed in the
+	// instant the download finished. The pipeline would drop the task at its
+	// first step either way, but the platform would have been told the model was
+	// received for an import it had already ended. Only the flag goes, for the
+	// same reason as on the stopped-download path above.
+	if s.taskCancelled() {
+		s.clearModelImportedFlag()
+		release()
+		_ = os.Remove(ciphertextPath)
+		s.Logs.Add(LogInfo, "importModel", "下载完成但任务已停止，模型不予处理: taskId=%s", req.TaskID)
+		writeEnvelope(w, http.StatusOK, "任务已中止", nil, 0)
+		return
+	}
 
 	msg := "模型已接收，训练结果将通过 reportRes 上报"
 	writeEnvelope(w, http.StatusOK, msg, nil, 0)

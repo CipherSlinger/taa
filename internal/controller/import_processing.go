@@ -1116,6 +1116,14 @@ func llmAvailable(ctx context.Context, endpoint, model string) bool {
 }
 
 func (s *TAAState) reportImportFailure(req importRequest, phase int, isModel bool, startedAt time.Time, reason string) {
+	// A stop can land while an uninterruptible step is running, and that step can
+	// fail for its own reason. The stop is the later instruction: the platform has
+	// already been answered "任务已中止", and a failure report would describe an
+	// import it asked not to happen. The task ends here the same way a boundary
+	// check ends it, giving back what the import claimed.
+	if s.abortStoppedImport(req, phase, isModel) {
+		return
+	}
 	s.Logs.Add(LogError, "import", "导入失败: %s", reason)
 	s.clearImportedState(isModel, phase)
 	if !isModel {

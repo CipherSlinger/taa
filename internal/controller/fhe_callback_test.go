@@ -1,6 +1,7 @@
 package controller
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -484,20 +485,64 @@ func TestStopTrainingOnAFinishedFHETaskWhoseResultIsStillLanding(t *testing.T) {
 	}
 }
 
-// TestStopTrainingReportsATaskThisInstanceDoesNotTrack covers the other side of
-// the same call: a task the runner never had cannot be cancelled, and reporting
-// that as a success would tell the platform a stop happened that never did.
-func TestStopTrainingReportsATaskThisInstanceDoesNotTrack(t *testing.T) {
+// TestStopTrainingOnAnIdThatLeftTheRunnerAnswersFinished covers the read-then-cancel
+// race: the handler reads the published id, and before the cancel is issued the run
+// leaves the runner's table (Execute returns and forgets it) and its stop handle is
+// detached. There is nothing left to cancel and the task did end, so the answer is
+// the already-finished one rather than a failed stop.
+//
+// The id is published only after the service accepted the task, so an id this
+// instance no longer tracks names a run that ended here - not one that never ran.
+func TestStopTrainingOnAnIdThatLeftTheRunnerAnswersFinished(t *testing.T) {
 	s, _ := setupTestState(t)
 	s.SetFHERunner(newStubRunner(t))
 	s.setFHEActiveTask("task-not-in-flight")
 
 	rec := postStopTraining(t, s)
-	if rec.Code != http.StatusInternalServerError {
-		t.Fatalf("status = %d, want 500: %s", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", rec.Code, rec.Body.String())
 	}
-	if msg := envelopeMsg(t, rec); msg != "取消 FHE 任务失败" {
-		t.Errorf("msg = %q, want the cancel failure message", msg)
+	if msg := envelopeMsg(t, rec); msg != "FHE 任务已结束" {
+		t.Errorf("msg = %q, want the already-finished message", msg)
+	}
+}
+
+// TestStopTrainingCancelsTheFHETaskEvenWhenTheRequestContextIsCancelled pins the
+// context the outbound cancel travels on: the platform hanging up must not abort
+// the one request that can stop the worker.
+func TestStopTrainingCancelsTheFHETaskEvenWhenTheRequestContextIsCancelled(t *testing.T) {
+	env := newFHETestEnv(t)
+	env.stub.setTaskStatus("running")
+	env.importModel()
+	zipPath, _ := writeTestZip(t, t.TempDir(), map[string]string{"case": "input"})
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		env.runData(zipPath)
+	}()
+	waitForInFlightFHETask(t, env)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/taa/stopTraining", nil)
+	ctx, cancel := context.WithCancel(req.Context())
+	cancel() // the platform is already gone when the handler runs
+	rec := httptest.NewRecorder()
+	env.state.stopTrainingHandler(rec, req.WithContext(ctx))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", rec.Code, rec.Body.String())
+	}
+	if msg := envelopeMsg(t, rec); msg != "FHE 任务已取消" {
+		t.Errorf("msg = %q, want the FHE stop confirmation", msg)
+	}
+	if got := env.stub.cancelCalls(); len(got) != 1 {
+		t.Errorf("the service received %v, want exactly one cancel request", got)
+	}
+
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the run did not return after its task was cancelled")
 	}
 }
 
