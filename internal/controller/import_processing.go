@@ -113,7 +113,10 @@ func (s *TAAState) processImportedResource(req importRequest, phase int, isModel
 			return
 		}
 		s.Logs.Add(LogInfo, "extract", "开始解压到: %s", s.Security.ModelDir)
-		if err := extractArchiveToDir(s.Security.ModelDir, plaintextPath); err != nil {
+		// The extraction runs under the task's context, so a stop that lands here
+		// takes effect at the next archive entry instead of after the whole model
+		// package has been written; the boundary check below then ends the import.
+		if err := extractArchiveToDir(s.activeTaskContext(), s.Security.ModelDir, plaintextPath); err != nil {
 			s.Logs.Add(LogError, "extract", "解压失败: %v", err)
 			s.setCurrentOp("idle")
 			s.reportImportFailure(req, phase, true, startedAt, fmt.Sprintf("解压资源失败: %v", err))
@@ -823,6 +826,19 @@ func (s *TAAState) launchModelAudit(req importRequest) {
 	s.mu.Lock()
 	s.auditGen++
 	gen := s.auditGen
+	// Registration and a stop are serialized by s.mu: a handle already cancelled
+	// here means the platform ended this task between the pipeline's last
+	// boundary check and this launch, so the audit it would have owed is dropped
+	// instead of scanned. A stop arriving after this point finds the audit
+	// registered and aborts it by task id. Checking outside the lock would leave
+	// a window in which neither happens.
+	if s.trainingControl != nil && s.trainingControl.isCancelled() {
+		s.supersedeAuditLocked()
+		s.mu.Unlock()
+		cancel()
+		s.Logs.Add(LogInfo, "audit", "任务已停止，未启动模型代码审计: taskId=%s", req.TaskID)
+		return
+	}
 	s.auditCancel = cancel
 	s.auditDone = done
 	s.mu.Unlock()
@@ -940,7 +956,7 @@ func (s *TAAState) auditAndReportModelImport(ctx context.Context, gen uint64, re
 // logAuditAborted records that an audit stopped because it was cancelled or
 // superseded rather than because it reached a verdict.
 func (s *TAAState) logAuditAborted(req importRequest) {
-	s.Logs.Add(LogInfo, "audit", "模型代码审计已中止: 收到新的模型下发或状态已被取代; taskId=%s, requestId=%s",
+	s.Logs.Add(LogInfo, "audit", "模型代码审计已中止: 审计上下文已取消或被新任务取代; taskId=%s, requestId=%s",
 		req.TaskID, req.RequestID)
 }
 
@@ -1287,8 +1303,8 @@ func (s *TAAState) reportTrainingFailureFromResult(req importRequest, startedAt 
 	s.setCurrentOp("idle")
 }
 
-func extractArchiveToDir(dst, filePath string) error {
-	return resource.ExtractArchiveToDir(dst, filePath)
+func extractArchiveToDir(ctx context.Context, dst, filePath string) error {
+	return resource.ExtractArchiveToDirContext(ctx, dst, filePath)
 }
 
 func extractArchiveFile(dst, filePath string) error {

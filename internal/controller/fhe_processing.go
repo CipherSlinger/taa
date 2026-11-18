@@ -138,7 +138,7 @@ func (s *TAAState) importFHEModel(req importRequest, phase int, plaintextPath st
 		s.reportImportFailure(req, phase, true, startedAt, fmt.Sprintf("创建模型目录失败: %v", err))
 		return
 	}
-	if err := extractArchiveToDir(modelDir, plaintextPath); err != nil {
+	if err := extractArchiveToDir(s.activeTaskContext(), modelDir, plaintextPath); err != nil {
 		s.reportImportFailure(req, phase, true, startedAt, fmt.Sprintf("解压模型包失败: %v", err))
 		return
 	}

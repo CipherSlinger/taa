@@ -5,6 +5,7 @@ import (
 	"archive/zip"
 	"bytes"
 	"compress/gzip"
+	"context"
 	"fmt"
 	"io"
 	"log"
@@ -35,8 +36,19 @@ func IsArchiveFile(filePath string) (bool, error) {
 
 // ExtractArchiveToDir 解压归档文件到指定目标目录（先解压到临时目录，成功后原子重命名替换）
 func ExtractArchiveToDir(dst, filePath string) error {
+	return ExtractArchiveToDirContext(context.Background(), dst, filePath)
+}
+
+// ExtractArchiveToDirContext is ExtractArchiveToDir with cancellation. A
+// cancelled context aborts the extraction before the package replaces dst, so a
+// stopped import leaves the previous contents in place instead of a half-written
+// tree that no boundary would ever clean up.
+func ExtractArchiveToDirContext(ctx context.Context, dst, filePath string) error {
 	if strings.TrimSpace(dst) == "" {
 		return fmt.Errorf("target destination dir is required")
+	}
+	if err := ctx.Err(); err != nil {
+		return err
 	}
 
 	parent := filepath.Dir(dst)
@@ -47,12 +59,18 @@ func ExtractArchiveToDir(dst, filePath string) error {
 	}
 	defer os.RemoveAll(tmpDir)
 
-	if err := ExtractArchiveFile(tmpDir, filePath); err != nil {
+	if err := ExtractArchiveFileContext(ctx, tmpDir, filePath); err != nil {
+		return err
+	}
+	if err := ctx.Err(); err != nil {
 		return err
 	}
 
 	if err := ChmodScripts(tmpDir); err != nil {
 		return fmt.Errorf("chmod scripts: %w", err)
+	}
+	if err := ctx.Err(); err != nil {
+		return err
 	}
 
 	if err := os.RemoveAll(dst); err != nil {
@@ -101,6 +119,15 @@ func EnsureArchiveExtractedIntoDir(dst, archivePath string) (bool, error) {
 
 // ExtractArchiveFile 从磁盘文件解压，根据 magic bytes 自动检测格式
 func ExtractArchiveFile(dst, filePath string) error {
+	return ExtractArchiveFileContext(context.Background(), dst, filePath)
+}
+
+// ExtractArchiveFileContext 是带取消的 ExtractArchiveFile。取消在归档条目边界
+// 生效：正在拷贝的单个条目会在下一个数据块处停下，不必等整个包解完。
+func ExtractArchiveFileContext(ctx context.Context, dst, filePath string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	log.Printf("extractArchiveFile: dst=%s, filePath=%s", dst, filePath)
 
 	hdr := make([]byte, 512)
@@ -122,7 +149,12 @@ func ExtractArchiveFile(dst, filePath string) error {
 			if err != nil {
 				return err
 			}
-			return ExtractZipArchive(dst, data)
+			// The archive is read whole before any entry is written; a stop that
+			// lands during that read is honoured here rather than after extraction.
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			return ExtractZipArchiveContext(ctx, dst, data)
 		}
 		// gzip: starts with 0x1F 0x8B — 流式读取
 		if hdr[0] == 0x1F && hdr[1] == 0x8B {
@@ -137,7 +169,7 @@ func ExtractArchiveFile(dst, filePath string) error {
 				return err
 			}
 			defer gz.Close()
-			err = ExtractTarStream(dst, gz)
+			err = ExtractTarStreamContext(ctx, dst, gz)
 			if err != nil {
 				return err
 			}
@@ -159,18 +191,21 @@ func ExtractArchiveFile(dst, filePath string) error {
 			return err
 		}
 		defer f.Close()
-		return ExtractTarStream(dst, f)
+		return ExtractTarStreamContext(ctx, dst, f)
 	}
 
 	// Fallback: 尝试 zip 和流式 tar.gz/tar
 	if data, err := os.ReadFile(filePath); err == nil {
-		if err := ExtractZipArchive(dst, data); err == nil {
+		if err := ExtractZipArchiveContext(ctx, dst, data); err == nil {
 			return nil
 		}
 	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if f, err := os.Open(filePath); err == nil {
 		if gz, err := gzip.NewReader(f); err == nil {
-			err = ExtractTarStream(dst, gz)
+			err = ExtractTarStreamContext(ctx, dst, gz)
 			_ = gz.Close()
 			_ = f.Close()
 			if err == nil {
@@ -180,8 +215,11 @@ func ExtractArchiveFile(dst, filePath string) error {
 			_ = f.Close()
 		}
 	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if f, err := os.Open(filePath); err == nil {
-		err = ExtractTarStream(dst, f)
+		err = ExtractTarStreamContext(ctx, dst, f)
 		_ = f.Close()
 		if err == nil {
 			return nil
@@ -192,6 +230,15 @@ func ExtractArchiveFile(dst, filePath string) error {
 
 // ExtractZipArchive 解压 ZIP 内存字节到目标目录，执行目录逃逸校验
 func ExtractZipArchive(dst string, data []byte) error {
+	return ExtractZipArchiveContext(context.Background(), dst, data)
+}
+
+// ExtractZipArchiveContext 是带取消的 ExtractZipArchive：取消在条目边界生效，
+// 正在写入的条目在下一个数据块处停下。
+func ExtractZipArchiveContext(ctx context.Context, dst string, data []byte) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	r, err := zip.NewReader(bytes.NewReader(data), int64(len(data)))
 	if err != nil {
 		return err
@@ -202,6 +249,10 @@ func ExtractZipArchive(dst string, data []byte) error {
 	}
 	skipped := 0
 	for _, f := range r.File {
+		if err := ctx.Err(); err != nil {
+			_ = utils.CleanDir(dst)
+			return err
+		}
 		// Packaging metadata is not package content: it must not land on disk,
 		// where the audit walk and the model runtime would both see it. The
 		// check runs before the path join so a skipped entry cannot influence
@@ -227,7 +278,7 @@ func ExtractZipArchive(dst string, data []byte) error {
 		if err != nil {
 			return err
 		}
-		_, err = WriteExtractedFile(target, rc, f.Mode())
+		_, err = WriteExtractedFileContext(ctx, target, rc, f.Mode())
 		_ = rc.Close()
 		if err != nil {
 			_ = utils.CleanDir(dst)
@@ -242,6 +293,15 @@ func ExtractZipArchive(dst string, data []byte) error {
 
 // ExtractTarStream 从流中解压 TAR 包，拦截软链接逃逸
 func ExtractTarStream(dst string, src io.Reader) error {
+	return ExtractTarStreamContext(context.Background(), dst, src)
+}
+
+// ExtractTarStreamContext 是带取消的 ExtractTarStream：取消在条目边界生效，
+// 正在写入的条目在下一个数据块处停下。
+func ExtractTarStreamContext(ctx context.Context, dst string, src io.Reader) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	baseAbs, err := filepath.Abs(dst)
 	if err != nil {
 		return err
@@ -249,6 +309,10 @@ func ExtractTarStream(dst string, src io.Reader) error {
 	tr := tar.NewReader(src)
 	skipped := 0
 	for {
+		if err := ctx.Err(); err != nil {
+			_ = utils.CleanDir(dst)
+			return err
+		}
 		hdr, err := tr.Next()
 		if err == io.EOF {
 			break
@@ -279,7 +343,7 @@ func ExtractTarStream(dst string, src io.Reader) error {
 			if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
 				return err
 			}
-			if _, err := WriteExtractedFile(target, tr, hdr.FileInfo().Mode()); err != nil {
+			if _, err := WriteExtractedFileContext(ctx, target, tr, hdr.FileInfo().Mode()); err != nil {
 				_ = utils.CleanDir(dst)
 				return err
 			}
@@ -297,11 +361,20 @@ func ExtractTarStream(dst string, src io.Reader) error {
 
 // WriteExtractedFile 将归档条目内容写入目标文件
 func WriteExtractedFile(target string, src io.Reader, mode os.FileMode) (int64, error) {
+	return WriteExtractedFileContext(context.Background(), target, src, mode)
+}
+
+// WriteExtractedFileContext 是带取消的 WriteExtractedFile。拷贝经由
+// contextReader 进行，取消在下一个数据块处生效，而不是等整个条目写完。
+func WriteExtractedFileContext(ctx context.Context, target string, src io.Reader, mode os.FileMode) (int64, error) {
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
 	out, err := os.OpenFile(target, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, mode)
 	if err != nil {
 		return 0, err
 	}
-	n, err := io.Copy(out, src)
+	n, err := io.Copy(out, &contextReader{ctx: ctx, r: src})
 	closeErr := out.Close()
 	if err != nil {
 		_ = os.Remove(target)
@@ -312,6 +385,20 @@ func WriteExtractedFile(target string, src io.Reader, mode os.FileMode) (int64, 
 		return n, closeErr
 	}
 	return n, nil
+}
+
+// contextReader fails the read as soon as ctx is done, so a bulk copy of an
+// archive entry stops at the next chunk instead of running to completion.
+type contextReader struct {
+	ctx context.Context
+	r   io.Reader
+}
+
+func (r *contextReader) Read(p []byte) (int, error) {
+	if err := r.ctx.Err(); err != nil {
+		return 0, err
+	}
+	return r.r.Read(p)
 }
 
 // SafeJoinWithBase 防 Zip-Slip 跨目录越界安全拼接

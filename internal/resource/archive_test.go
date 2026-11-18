@@ -5,6 +5,9 @@ import (
 	"archive/zip"
 	"bytes"
 	"compress/gzip"
+	"context"
+	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -280,4 +283,106 @@ func TestExtractTarStreamSkipsPackagingMetadata(t *testing.T) {
 		t.Fatalf("ExtractTarStream: %v", err)
 	}
 	assertOnlyContent(t, dst)
+}
+
+// cancelAfterReader cancels ctx once the bytes it has served exceed the budget,
+// then keeps serving. It makes mid-entry cancellation deterministic: the next
+// context check inside the copy sees the cancellation instead of racing a timer.
+type cancelAfterReader struct {
+	r         io.Reader
+	remaining int
+	cancel    context.CancelFunc
+}
+
+func (c *cancelAfterReader) Read(p []byte) (int, error) {
+	if c.remaining <= 0 {
+		c.cancel()
+	}
+	n, err := c.r.Read(p)
+	c.remaining -= n
+	return n, err
+}
+
+// TestExtractTarStreamContextStopsInsideAnEntry pins that a cancellation during
+// extraction takes effect at the next chunk of a large entry, instead of after
+// the whole package has been written. A stopped import must not keep unpacking.
+func TestExtractTarStreamContextStopsInsideAnEntry(t *testing.T) {
+	var buf bytes.Buffer
+	tw := tar.NewWriter(&buf)
+	content := bytes.Repeat([]byte("x"), 128*1024)
+	hdr := &tar.Header{
+		Name:     "weights.bin",
+		Mode:     0o644,
+		Size:     int64(len(content)),
+		Typeflag: tar.TypeReg,
+	}
+	if err := tw.WriteHeader(hdr); err != nil {
+		t.Fatalf("write tar header: %v", err)
+	}
+	if _, err := tw.Write(content); err != nil {
+		t.Fatalf("write tar content: %v", err)
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatalf("close tar writer: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	// The header is one 512-byte block: cancelling once it has been served puts
+	// the cancellation at the first chunk of the entry itself.
+	src := &cancelAfterReader{r: bytes.NewReader(buf.Bytes()), remaining: 512, cancel: cancel}
+
+	dst := t.TempDir()
+	err := ExtractTarStreamContext(ctx, dst, src)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("error = %v, want context.Canceled", err)
+	}
+	entries, readErr := os.ReadDir(dst)
+	if readErr != nil {
+		t.Fatalf("read dst: %v", readErr)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("cancelled extraction left %d entries behind", len(entries))
+	}
+}
+
+// TestExtractArchiveToDirContextStopsBeforeReplacingTheTarget pins the other
+// half: a cancelled extraction never replaces the destination, so the previous
+// contents survive a stop that lands before any entry is written.
+func TestExtractArchiveToDirContextStopsBeforeReplacingTheTarget(t *testing.T) {
+	dir := t.TempDir()
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+	w, err := zw.Create("model.bin")
+	if err != nil {
+		t.Fatalf("create zip entry: %v", err)
+	}
+	if _, err := w.Write([]byte("model")); err != nil {
+		t.Fatalf("write zip content: %v", err)
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatalf("close zip writer: %v", err)
+	}
+	archive := filepath.Join(dir, "model.zip")
+	if err := os.WriteFile(archive, buf.Bytes(), 0o644); err != nil {
+		t.Fatalf("write archive: %v", err)
+	}
+
+	dst := filepath.Join(dir, "model")
+	if err := os.MkdirAll(dst, 0o755); err != nil {
+		t.Fatalf("create dst: %v", err)
+	}
+	marker := filepath.Join(dst, "keep.txt")
+	if err := os.WriteFile(marker, []byte("keep"), 0o644); err != nil {
+		t.Fatalf("write marker: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := ExtractArchiveToDirContext(ctx, dst, archive); !errors.Is(err, context.Canceled) {
+		t.Fatalf("error = %v, want context.Canceled", err)
+	}
+	if _, err := os.Stat(marker); err != nil {
+		t.Fatalf("destination was replaced despite cancellation: %v", err)
+	}
 }

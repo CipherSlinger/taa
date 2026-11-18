@@ -746,8 +746,27 @@ func (s *TAAState) supersedeAuditLocked() {
 // the old goroutine (state, last audit, platform report) fails its ownership
 // check even if it was already past the context check.
 func (s *TAAState) abortModelAudit() {
+	s.abortModelAuditWhere("", "收到新的模型下发")
+}
+
+// abortModelAuditForTask cancels the running model audit, but only when it
+// belongs to taskID. The audit outlives the import goroutine that launched it,
+// so a stop that ends that import has to end the audit as well; matching by task
+// id keeps a stop for the current task from touching the audit of an import that
+// already completed. An empty taskID never matches: without an id there is
+// nothing to prove the audit is the stopped task's.
+func (s *TAAState) abortModelAuditForTask(taskID string) {
+	if taskID == "" {
+		return
+	}
+	s.abortModelAuditWhere(taskID, "任务已停止")
+}
+
+// abortModelAuditWhere cancels the running model audit when taskID is empty (any
+// audit) or matches the audit's task. Callers must hold no lock.
+func (s *TAAState) abortModelAuditWhere(taskID, reason string) {
 	s.mu.Lock()
-	if !s.isAuditBusyLocked() {
+	if !s.isAuditBusyLocked() || (taskID != "" && s.ActiveAuditTaskID != taskID) {
 		s.mu.Unlock()
 		return
 	}
@@ -760,7 +779,7 @@ func (s *TAAState) abortModelAudit() {
 	if cancel != nil {
 		cancel()
 	}
-	s.Logs.Add(LogInfo, "audit", "模型代码审计已中止: 收到新的模型下发; 旧 taskId=%s, requestId=%s", oldTask, oldRequest)
+	s.Logs.Add(LogInfo, "audit", "模型代码审计已中止: %s; 旧 taskId=%s, requestId=%s", reason, oldTask, oldRequest)
 }
 
 // auditAbortWaitTimeout bounds how long an import waits for the aborted audit to
@@ -1044,9 +1063,11 @@ func (s *TAAState) activeTaskContext() context.Context {
 }
 
 // taskCancelled reports whether the task in flight has been asked to stop. The
-// import pipeline checks it at every step boundary: decryption and extraction
-// cannot be interrupted mid-way, so a boundary is the earliest point at which a
-// cancelled task can be answered.
+// import pipeline checks it at every step boundary: decryption and the other
+// bulk stages cannot be interrupted mid-way, so a boundary is the earliest point
+// at which a cancelled task can be answered. Extraction is the exception: it
+// runs under the task context and stops at an archive entry or chunk boundary,
+// after which the same check ends the import.
 func (s *TAAState) taskCancelled() bool {
 	control := s.activeControl()
 	return control != nil && control.isCancelled()

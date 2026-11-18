@@ -187,6 +187,19 @@ func (s *TAAState) stopTrainingHandler(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// The model audit runs on a context of its own and outlives the import that
+	// launched it, so stopping the task does not stop the scan. A stop must: the
+	// audit belongs to this task (matched by id, since the request names none),
+	// and letting it run would keep a static scan and any LLM adjudication busy on
+	// a model the platform has already abandoned. The abort runs after
+	// requestStop, so an audit registered in between sees the cancelled handle
+	// and never starts; a mismatch is a completed import's audit, which a stop for
+	// the current task must not touch.
+	s.mu.RLock()
+	stoppedTaskID := s.ActiveTaskID
+	s.mu.RUnlock()
+	s.abortModelAuditForTask(stoppedTaskID)
+
 	s.mu.RLock()
 	isTraining := s.TrainingRunning && s.activeTask != nil && s.activeTask.Type == "training"
 	s.mu.RUnlock()

@@ -713,3 +713,100 @@ func TestReportImportFailureIsSilentForAStoppedImport(t *testing.T) {
 		t.Errorf("Reserve after a stopped failure = %v, want the reservation released", err)
 	}
 }
+
+// TestStopTrainingAbortsTheAuditOfTheStoppedTask pins that the advisory model
+// audit belongs to the task it was launched for: stopping that task cancels the
+// scan instead of leaving it busy on a model the platform has already abandoned.
+// The audit runs on its own context, so nothing else in the pipeline would stop
+// it.
+func TestStopTrainingAbortsTheAuditOfTheStoppedTask(t *testing.T) {
+	state, server := setupTestServer(t)
+	defer server.Close()
+	store, _ := createTestStateStore(t)
+	state.SetStateStore(store)
+	state.Security.ScanEnabled = true
+	engine := newBlockingAuditEngine()
+	state.Security.Engine = engine
+
+	req := importRequest{RequestID: "req-audit-stop", TaskID: "task-audit-stop"}
+	release, err := state.tryAcquireTask(req.TaskID, req.RequestID, "staging", true)
+	if err != nil {
+		t.Fatalf("tryAcquireTask: %v", err)
+	}
+	defer release()
+
+	state.mu.Lock()
+	state.markModelAuditPendingLocked(req, 1)
+	state.mu.Unlock()
+	state.launchModelAudit(req)
+
+	waitFor(t, engine.started, "audit did not start")
+
+	resp := postEmptyJSON(t, server.URL+"/v1/taa/stopTraining")
+	api := decodeResponse(t, resp)
+	if resp.StatusCode != http.StatusOK || api.Error != 0 || api.Msg != "任务已中止" {
+		t.Fatalf("status=%d error=%d msg=%q, want 200/0/'任务已中止'", resp.StatusCode, api.Error, api.Msg)
+	}
+
+	waitFor(t, engine.stopped, "audit did not stop after the task was stopped")
+	state.waitAuditStopped()
+
+	state.mu.RLock()
+	running := state.AuditRunning
+	op := state.CurrentAuditOp
+	auditTask := state.ActiveAuditTaskID
+	pending := state.pendingAudit
+	state.mu.RUnlock()
+	if running || op != "idle" || auditTask != "" {
+		t.Fatalf("audit state not reset after stop: running=%v op=%s task=%s", running, op, auditTask)
+	}
+	if pending != nil {
+		t.Fatalf("pending audit marker survived the stop: %+v", pending)
+	}
+}
+
+// TestStopTrainingLeavesAnotherTasksAuditAlone pins the scoping half: a stop for
+// the current task must not cancel the audit of an import that already
+// completed. The audit's task id is the only thing that tells the two apart,
+// since the stop request names no task.
+func TestStopTrainingLeavesAnotherTasksAuditAlone(t *testing.T) {
+	state, server := setupTestServer(t)
+	defer server.Close()
+	store, _ := createTestStateStore(t)
+	state.SetStateStore(store)
+	state.Security.ScanEnabled = true
+	engine := newBlockingAuditEngine()
+	state.Security.Engine = engine
+
+	oldReq := importRequest{RequestID: "req-old-audit", TaskID: "task-old-audit"}
+	state.mu.Lock()
+	state.markModelAuditPendingLocked(oldReq, 1)
+	state.mu.Unlock()
+	state.launchModelAudit(oldReq)
+
+	waitFor(t, engine.started, "audit did not start")
+
+	release, err := state.tryAcquireTask("task-current", "req-current", "downloading", false)
+	if err != nil {
+		t.Fatalf("tryAcquireTask: %v", err)
+	}
+	defer release()
+
+	resp := postEmptyJSON(t, server.URL+"/v1/taa/stopTraining")
+	api := decodeResponse(t, resp)
+	if resp.StatusCode != http.StatusOK || api.Error != 0 || api.Msg != "任务已中止" {
+		t.Fatalf("status=%d error=%d msg=%q, want 200/0/'任务已中止'", resp.StatusCode, api.Error, api.Msg)
+	}
+
+	state.mu.RLock()
+	running := state.AuditRunning
+	auditTask := state.ActiveAuditTaskID
+	state.mu.RUnlock()
+	if !running || auditTask != oldReq.TaskID {
+		t.Fatalf("stop touched a completed import's audit: running=%v task=%s", running, auditTask)
+	}
+
+	state.abortModelAudit()
+	waitFor(t, engine.stopped, "cleanup abort did not stop the old audit")
+	state.waitAuditStopped()
+}
