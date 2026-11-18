@@ -109,13 +109,19 @@ function healthSlotFor(id) {
   return instanceHealthState[id] || null;
 }
 
-// healthStampKey is the signature of every check timestamp. A tick that finds it
-// unchanged has nothing to repaint, and a changed one means a check result aged
-// out, so the badge must be redrawn even though no request came back.
+// healthStampKey is the signature of what the list would draw for every row:
+// the check's tone plus whether it is still fresh. Including freshness is what
+// makes the expiry repaint work — a key built from checkedAt alone never
+// changes as time passes, so a green badge could outlive its check until some
+// unrelated request repainted the row.
 function healthStampKey() {
   return Object.keys(instanceHealthState)
     .sort()
-    .map((id) => id + ':' + (instanceHealthState[id].checkedAt || 0))
+    .map((id) => {
+      const h = instanceHealthState[id];
+      const fresh = h.checkedAt > 0 && Date.now() - h.checkedAt <= instanceHealthStaleMs;
+      return id + ':' + h.tone + ':' + (fresh ? 'fresh' : 'stale');
+    })
     .join(',');
 }
 

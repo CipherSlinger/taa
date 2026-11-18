@@ -1750,7 +1750,9 @@ async function testHealth(check) {
     if (!checkId || checkSeq === undefined) return true;
     return instanceConnectionChecks[checkId] === checkSeq;
   };
-  setHealthState('running', '检查中', '检查中...');
+  // The running marker goes to the same row the result will, so a check started
+  // from a row that is not the selected one cannot stall elsewhere's badge.
+  setHealthState('running', '检查中', '检查中...', checkId);
   recordInteraction('health', {
     title: '健康检查 (GET /v1/taa/health)',
     primaryLabel: '返回内容',

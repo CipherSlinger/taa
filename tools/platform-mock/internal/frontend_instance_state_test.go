@@ -87,6 +87,18 @@ func TestFrontendHealthBadgeExpires(t *testing.T) {
 	if !strings.Contains(fn, "'已连接'") {
 		t.Fatal("an expired check should fall back to 已连接 (registration only)")
 	}
+	// The tick only repaints when the stamp changed, so the stamp must depend on
+	// freshness. A key built from checkedAt alone is constant as time passes and
+	// the badge would stay green past its deadline — which is the whole bug.
+	start = strings.Index(frontendBundle, "function healthStampKey()")
+	if start == -1 {
+		t.Fatal("frontendBundle missing healthStampKey")
+	}
+	end = strings.Index(frontendBundle[start:], "\n}")
+	key := frontendBundle[start : start+end]
+	if !strings.Contains(key, "instanceHealthStaleMs") {
+		t.Fatal("healthStampKey ignores freshness, so the expiry tick can never fire")
+	}
 }
 
 // TestFrontendExplainsWhereTheInstanceNameComesFrom pins the answer to "why is
