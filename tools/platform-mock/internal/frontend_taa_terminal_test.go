@@ -15,7 +15,7 @@ func TestFrontendTaaTerminalIsPerInstance(t *testing.T) {
 		"const taaTerminals = new Map();",
 		"function taaTerminalState(id)",
 		"taaTerminals.set(id, st);",
-		"function fetchTaaLogsFor(id)",
+		"function fetchTaaLogsFor(id, force)",
 		"'/api/taaLog/status?dockerId=' + encodeURIComponent(id)",
 		"'/api/taaLog/reset?dockerId=' + encodeURIComponent(id)",
 		"function pollTaaTerminals()",
@@ -55,5 +55,48 @@ func TestFrontendTaaTerminalScrollIsPerTerminal(t *testing.T) {
 	}
 	if !strings.Contains(frontendFunction(t, "paintTaaTerminal"), "st.autoScroll") {
 		t.Fatal("paintTaaTerminal does not honour this terminal's scroll lock")
+	}
+}
+
+// TestFrontendTaaTerminalModuleDoesNotFollowTheSelection pins the hard rule
+// from the spec: the terminal module must not go through the selected-instance
+// helpers or any page-wide TAA log state. Only the new module block is checked,
+// so the old card (removed in a later task) does not mask a regression here.
+func TestFrontendTaaTerminalModuleDoesNotFollowTheSelection(t *testing.T) {
+	src, err := staticFS.ReadFile("static/js/logs.js")
+	if err != nil {
+		t.Fatalf("failed to read static/js/logs.js: %v", err)
+	}
+	logs := string(src)
+	start := strings.Index(logs, "// ── Per-instance TAA terminals ──")
+	if start == -1 {
+		t.Fatal("logs.js has no per-instance terminal module")
+	}
+	module := logs[start:]
+	for _, gone := range []string{
+		"mockFetch",
+		"withDockerId",
+		"currentInstanceDockerId",
+		"taaLogPaused",
+		"currentSearchKeyword",
+		"currentLogFilter",
+		"autoScrollLocked",
+	} {
+		if strings.Contains(module, gone) {
+			t.Fatalf("the terminal module still references %q", gone)
+		}
+	}
+	if !strings.Contains(module, "fetchTaaLogsFor(id, true)") {
+		t.Fatal("the refresh button does not force a fetch while paused")
+	}
+}
+
+// TestFrontendTaaLogFetchKeepsLinesOnFailure pins that a failed poll leaves the
+// cached lines alone: blanking the window on a transient error would look like
+// the instance had no logs.
+func TestFrontendTaaLogFetchKeepsLinesOnFailure(t *testing.T) {
+	fn := frontendFunction(t, "fetchTaaLogsFor")
+	if strings.Contains(fn, "st.entries = []") {
+		t.Fatal("a failed fetch clears the cached lines")
 	}
 }

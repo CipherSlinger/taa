@@ -306,9 +306,8 @@ document.addEventListener('DOMContentLoaded', () => {
 //
 // A terminal belongs to one dockerId, not to the page's selection: two
 // instances can be watched side by side, each with its own pause, level
-// filter, search keyword and scroll lock. Nothing below reads
-// currentInstanceDockerId — a terminal only ever addresses the id it was built
-// for.
+// filter, search keyword and scroll lock. Nothing below reads the page's
+// selected instance — a terminal only ever addresses the id it was built for.
 const taaTerminals = new Map();
 
 function taaTerminalState(id) {
@@ -326,6 +325,7 @@ function taaTerminalState(id) {
       error: '',
       loading: false,
       fetchedAt: 0,
+      generation: 0,
     };
     taaTerminals.set(id, st);
   }
@@ -361,10 +361,11 @@ function taaTerminalButton(label, kind, handler, title) {
   return btn;
 }
 
-function fetchTaaLogsFor(id) {
+function fetchTaaLogsFor(id, force) {
   const st = taaTerminalState(id);
-  if (!st.expanded || st.paused || st.loading) return Promise.resolve();
+  if (!st.expanded || (!force && st.paused) || st.loading) return Promise.resolve();
   st.loading = true;
+  const gen = st.generation;
   const done = () => {
     st.loading = false;
     const root = findTaaTerminal(id);
@@ -373,10 +374,13 @@ function fetchTaaLogsFor(id) {
   };
   return fetch('/api/taaLog/status?dockerId=' + encodeURIComponent(id), { cache: 'no-store' })
     .then((res) => {
+      // An unknown dockerId is an empty terminal, not a failure.
+      if (res.status === 404) return { entries: [], totalCount: 0, lastSeq: 0 };
       if (!res.ok) throw new Error('status ' + res.status);
       return res.json();
     })
     .then((data) => {
+      if (gen !== st.generation) return;
       const result = responseResult(data);
       if (!result || !Array.isArray(result.entries)) throw new Error('unexpected payload');
       st.entries = result.entries;
@@ -447,6 +451,7 @@ function onTaaTerminalSearch(id, value) {
 
 function clearTaaTerminal(id) {
   const st = taaTerminalState(id);
+  st.generation += 1;
   return fetch('/api/taaLog/reset?dockerId=' + encodeURIComponent(id), { method: 'POST' })
     .then((res) => {
       if (!res.ok) throw new Error('reset ' + res.status);
@@ -454,6 +459,7 @@ function clearTaaTerminal(id) {
     })
     .then((data) => {
       if (!data || data.error !== 0) throw new Error('reset rejected');
+      st.generation += 1;
       st.entries = [];
       st.total = 0;
       st.lastSeq = 0;
@@ -486,7 +492,9 @@ function applyTaaTerminalView(root, st) {
     if (levelMatch && keywordMatch) {
       row.style.display = '';
       if (st.keyword) matchCount++;
-      if (msg) msg.innerHTML = st.keyword ? highlightSearchMatches(raw, st.keyword) : raw;
+      // dataset.rawText is HTML-entity-decoded by the parser, so the text must
+      // be re-escaped before it goes back through innerHTML.
+      if (msg) msg.innerHTML = st.keyword ? highlightSearchMatches(escapeHtml(raw), st.keyword) : escapeHtml(raw);
     } else {
       row.style.display = 'none';
     }
@@ -550,7 +558,7 @@ function buildTaaTerminal(item) {
   seqEl.className = 'muted taa-terminal-seq';
   seqEl.style.fontSize = '12px';
   actions.appendChild(seqEl);
-  actions.appendChild(taaTerminalButton('刷新', 'secondary', () => fetchTaaLogsFor(id), '立即重新拉取该实例的 TAA 日志'));
+  actions.appendChild(taaTerminalButton('刷新', 'secondary', () => fetchTaaLogsFor(id, true), '立即重新拉取该实例的 TAA 日志'));
   const pauseBtn = taaTerminalButton('暂停', 'secondary', () => toggleTaaTerminalPause(id), '暂停后该终端停止轮询，不影响其他实例');
   pauseBtn.classList.add('taa-terminal-pause');
   actions.appendChild(pauseBtn);
@@ -639,13 +647,21 @@ function paintTaaTerminal(root, id) {
 
   const out = root.querySelector('.taa-terminal-output');
   if (!out) return;
-  if (st.entries.length === 0) {
-    out.innerHTML = '<div class="taa-terminal-empty" style="color:#6b7280; text-align:center; padding:40px 0;">该实例暂无 TAA 日志。(/v1/taa/taaLog)</div>';
-  } else {
-    out.innerHTML = st.entries.map((e) => renderTaaLogEntry(e, st)).join('');
+  const scrollTop = out.scrollTop;
+  const nextSeq = String(st.lastSeq);
+  const nextCount = String(st.entries.length);
+  if (out.dataset.renderedSeq !== nextSeq || out.dataset.renderedCount !== nextCount) {
+    if (st.entries.length === 0) {
+      out.innerHTML = '<div class="taa-terminal-empty" style="color:#6b7280; text-align:center; padding:40px 0;">该实例暂无 TAA 日志。(/v1/taa/taaLog)</div>';
+    } else {
+      out.innerHTML = st.entries.map((e) => renderTaaLogEntry(e, st)).join('');
+    }
+    out.dataset.renderedSeq = nextSeq;
+    out.dataset.renderedCount = nextCount;
   }
   applyTaaTerminalView(root, st);
   if (st.autoScroll) out.scrollTop = out.scrollHeight;
+  else out.scrollTop = scrollTop;
 }
 
 // refreshInstanceLogBadges keeps the collapsed row's count current without
