@@ -325,7 +325,7 @@ callbacks and reports to the platform use `{"dockerId": "...", "cipher": "...", 
 
 ## Runtime Configuration
 
-TAA reads its configuration from `taa-config.json` located in its working directory. Configuration is organized into 7 cohesive functional domains (`server`, `platform`, `storage`, `model`, `codeAudit`, `attestation`, `fhe`). For backward compatibility, legacy flat fields are also accepted as fallbacks.
+TAA reads its configuration from `taa-config.json` located in its working directory. Configuration is organized into 8 cohesive functional domains (`server`, `platform`, `storage`, `model`, `crypto`, `codeAudit`, `attestation`, `fhe`). For backward compatibility, legacy flat fields are also accepted as fallbacks.
 
 ### Configuration Fields
 
@@ -352,6 +352,16 @@ TAA reads its configuration from `taa-config.json` located in its working direct
       "result": "/opt/taa/output/result",
       "log": "/opt/taa/output/log",
       "progress": "/opt/taa/output/progress/progress.json"
+    }
+  },
+  "crypto": {
+    "backend": "builtin",
+    "hct": {
+      "helperPath": "/usr/local/bin/taa-hct-helper",
+      "loaderPath": "/usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2",
+      "libDir": "/opt/hygon/hct/lib64",
+      "accel": "sw",
+      "requireVersion": "3.0.10"
     }
   },
   "codeAudit": {
@@ -400,6 +410,10 @@ TAA reads its configuration from `taa-config.json` located in its working direct
 | `model.output.result` | `/opt/taa/output/result` | Target output directory for model training checkpoints and artifacts |
 | `model.output.log` | `/opt/taa/output/log` | Model execution log directory (or file) monitored by log watcher (`modelLog`); every `*.log`/`*.jsonl` file in it is streamed |
 | `model.output.progress` | `/opt/taa/output/progress/progress.json` | Model progress file (or directory) monitored by progress watcher (`reportProgress`) |
+| `crypto.backend` | `builtin` | SM2/SM3/SM4 implementation: `builtin` (gmsm, pure Go) or `hct` (Hygon HCT 3.0.10, reached through the `taa-hct-helper` process so TAA itself stays statically linked). The block is top-level rather than part of `codeAudit` because every role seals state and talks to the platform. An unknown name is rejected at startup; a configured `hct` that cannot start does not stop TAA — the daemon logs the failure and runs on the built-in software implementation. Startup logs `crypto backend: hct (Hygon HCT interface; …)` or `crypto backend: builtin (original software implementation, gmsm)`, so the log always names the interface in use |
+| `crypto.hct.helperPath` / `loaderPath` / `libDir` | `/usr/local/bin/taa-hct-helper`, `/usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2`, `/opt/hygon/hct/lib64` | Absolute paths of the helper, the dynamic loader used to start it with an explicit library path, and the directory holding `libhct.so` and `libnuma.so.1`. A relative path is rejected at startup |
+| `crypto.hct.accel` | `sw` | HCT acceleration backend: `sw` (CIS/AVX, no device needed) or `ccp` (hardware coprocessor). `ccp` requires a `/dev/ccp*` device; the CSV2 guests TAA runs in have none, so a configured `ccp` logs the missing device and falls back to the built-in software implementation |
+| `crypto.hct.requireVersion` | `3.0.10` | libhct version the helper must report. Matched component-wise, so the vendor's `hct-3.0.10-2601d03-` string satisfies it. A mismatch is treated like any other HCT startup failure and falls back to the software implementation |
 | `codeAudit.enabled` | `true` | Master audit switch: enables the static rule-based security scan during model import |
 | `codeAudit.codeScan.engine` | `semgrep` | Tier 1 static engine, `semgrep` or `regex`. Normalized to lower case; any other value is rejected at startup, because an unrecognized name would silently scan with the regex baseline while the deployment believed otherwise. `regex` is the baseline an operator falls back to deliberately |
 | `codeAudit.codeScan.rulesPath` | unset | Rules file or directory for the semgrep engine, passed through as semgrep's `--config`. Unset means the engine's built-in default, which is relative to the repository root and therefore useless in a container: a deployment that selects semgrep has to set this. If the path does not exist at startup, TAA logs a warning and runs the regex engine for the rest of the process |

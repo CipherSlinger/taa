@@ -711,7 +711,8 @@ Notes:
   build-hct-helper.sh (fetch, build, payload) and point HCT_PAYLOAD_DIR at it.
   A payload without the backend switch is allowed: that is the gray-rollout
   shape, where one image still runs builtin. TAA_HCT_ACCEL=ccp writes the ccp
-  accel; the CSV2 guest has no /dev/ccp, so TAA refuses that at startup.
+  accel; the CSV2 guest has no /dev/ccp, so at startup TAA logs the missing
+  device and falls back to the built-in software implementation.
   TAA starts whenever /etc/taa/taa-config.json is readable: the config is a hard
   dependency (TAA exits 1 without it). PLATFORM_IP and DOCKER_ID are optional and
   only affect platform registration, which is a warning inside TAA. Set both to
@@ -909,8 +910,10 @@ check_build_inputs() {
       ;;
   esac
 
-  # An initrd that configures hct without the helper and libraries boots, then
-  # TAA exits at startup: selectCryptoBackend is fail-closed by design. The
+  # An initrd that configures hct without the helper and libraries still boots:
+  # TAA logs the failure and runs the built-in software implementation. That is
+  # not what the build asked for, so refuse it here rather than shipping an
+  # image whose log says "hct" in its config and "builtin" at runtime. The
   # reverse (payload present, backend builtin) is allowed -- that is exactly the
   # gray-rollout shape, where one payload serves both paths.
   if initrd_wants_hct; then

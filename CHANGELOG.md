@@ -9,6 +9,36 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 ## [Unreleased]
 
 ### Added
+- **TAA Can Run Its SM2/SM3/SM4 on Hygon HCT 3.0.10, With the gmsm Software Implementation as the
+  Fallback (`crypto`)**: TAA's cryptographic calls go through a `Backend` seam in `pkg/crypto`
+  whose default remains the pure-Go gmsm implementation; the new `hct` backend reaches Hygon's
+  `libhct` through a long-lived `taa-hct-helper` process over a framed stdin/stdout protocol.
+  The helper exists because TAA must keep its `CGO_ENABLED=0` static-link contract — the initrd
+  build rejects a dynamically linked TAA — while `libhct` is a shared library, and because a
+  vendor library fault must not take the daemon down with it. SM2 signing keeps gmsm's semantics
+  by computing `ZA` and `SM3(ZA || M)` locally and handing libhct only the 32-byte digest, so
+  arbitrary user IDs still verify across both implementations; ciphertext keeps the `0x04`
+  prefix gmsm writes, and SM4-GCM never returns unauthenticated plaintext. The backend is selected
+  at startup from the top-level `crypto` block (not `codeAudit`, because every role seals state
+  and talks to the platform): an unknown backend name is a configuration error, but a configured
+  `hct` that cannot start — missing helper or loader, missing `libhct`/`libnuma`, version
+  mismatch, failed known-answer tests, or `accel=ccp` without a `/dev/ccp*` — **does not stop
+  TAA**. The original software implementation takes over and the log records both the reason and
+  the interface now in use: `crypto backend: hct (Hygon HCT interface; libhct …, accel=…)`,
+  `crypto backend: builtin (original software implementation, gmsm)`, or a `degraded from hct to
+  builtin` line carrying the helper error. A helper that dies while TAA is running degrades the
+  same way: stateless operations (SM2 key generation/encrypt/decrypt/sign/verify, SM3, HMAC,
+  whole Seal/Open) are replayed once on the software implementation because no output has
+  escaped, while a stream already consumed by the helper fails that one operation and leaves the
+  next one on the software implementation — replaying it would require retaining the input.
+  Protocol results such as a rejected authentication tag or signature are never retried on
+  another implementation. `deploy/guest-build/build-hct-helper.sh` pins the 3.0.10 deb by
+  SHA256, builds the helper in glibc 2.31 (the guest has 2.35), and assembles a payload carrying
+  `libhct.so`, `libnuma.so.1` and the vendor `/etc/hct_config`; `build-initrd.sh` injects it and
+  rewrites the measured config to `"backend": "hct"` byte-for-byte with a read-back assertion.
+  Scope is `pkg/crypto` only: TAA's binary still links gmsm through `teellm/teetls`, and the
+  helper's SW backend does not change the key-material boundary — private keys are still generated
+  in, and returned to, the guest (that guarantee belongs to TKM/vTKM, not HCT).
 - **The platform-mock Can Be Told Where Each Instance Answers (`-instance-targets`)**: the address the
   mock dials for an instance was derived from the registration's source IP and the TAA port, which is
   the instance's own address only while the platform shares a network with the Pod. A registration

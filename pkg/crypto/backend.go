@@ -89,6 +89,12 @@ type backendState struct {
 	name    string
 }
 
+// ErrBackendUnavailable reports that the selected backend can no longer serve
+// requests because its helper process died or a request timed out. Operations
+// that return it have not changed any output, so the fallback backend replays
+// them on the built-in implementation.
+var ErrBackendUnavailable = errors.New("teecrypto: 密码后端不可用")
+
 var (
 	backendMu sync.Mutex
 	active    atomic.Pointer[backendState]
@@ -129,7 +135,11 @@ func SelectBackend(cfg BackendConfig) error {
 		if err != nil {
 			return fmt.Errorf("teecrypto: HCT 后端初始化失败: %w", err)
 		}
-		prev := active.Swap(&backendState{backend: b, closeFn: closeFn, name: BackendHCT})
+		// The helper is a separate process and can die at any time. Wrap it so
+		// that an unavailable helper degrades to the built-in implementation
+		// instead of taking TAA down or panicking in SM3Sum.
+		wrapped := newFallbackBackend(b, closeFn)
+		prev := active.Swap(&backendState{backend: wrapped, closeFn: closeFn, name: BackendHCT})
 		if prev != nil && prev.closeFn != nil {
 			_ = prev.closeFn()
 		}

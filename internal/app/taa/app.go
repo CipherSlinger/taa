@@ -102,8 +102,10 @@ func RunWithConfig(ctx context.Context, cfg config.StartupConfig) error {
 
 	// 0b. Install the configured crypto backend before anything uses SM2/SM3/SM4.
 	// The SM2 key pair, the state sealing key and the attestation report all
-	// depend on it, and a configured HCT backend that cannot start must fail
-	// here instead of writing keys with the wrong implementation.
+	// depend on it. A configured HCT backend that cannot start falls back to the
+	// gmsm implementation here (selectCryptoBackend logs both the failure and the
+	// interface in use) instead of writing keys with an implementation nobody
+	// asked for.
 	if err := selectCryptoBackend(cfg); err != nil {
 		return err
 	}
@@ -148,8 +150,10 @@ func RunWithConfig(ctx context.Context, cfg config.StartupConfig) error {
 		return err
 	}
 	// The device wait above can last minutes on a Kata CSV2 Pod (the node is
-	// created by a postStart hook). Re-probe the crypto backend so a helper
-	// that died during the wait is caught before it is used for key material.
+	// created by a postStart hook). Re-probe the crypto backend so a helper that
+	// died during the wait is noticed before it is used for key material;
+	// CheckBackend degrades to the built-in backend and logs it, so a failure
+	// here means the software implementation could not be installed either.
 	if err := teecrypto.CheckBackend(ctx); err != nil {
 		return fmt.Errorf("crypto backend unavailable after device wait: %w", err)
 	}

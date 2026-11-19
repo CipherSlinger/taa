@@ -61,12 +61,27 @@ func (b *hctBackend) Name() string { return BackendHCT }
 // Version reports the libhct version string the helper handshake returned.
 func (b *hctBackend) Version() string { return b.client.Hello().Version }
 
-func (b *hctBackend) Check(ctx context.Context) error { return b.client.Ping(ctx) }
+func (b *hctBackend) Check(ctx context.Context) error {
+	if err := b.client.Ping(ctx); err != nil {
+		return wrapUnavailable(err)
+	}
+	return nil
+}
+
+// wrapUnavailable marks helper death as an availability failure the fallback
+// backend can recognise. Protocol statuses (a rejected tag or signature) are
+// real crypto results and must never trigger the fallback.
+func wrapUnavailable(err error) error {
+	if errors.Is(err, hctclient.ErrUnavailable) {
+		return fmt.Errorf("%w: %v", ErrBackendUnavailable, err)
+	}
+	return err
+}
 
 func (b *hctBackend) call(op uint16, payload []byte) ([]byte, error) {
 	resp, err := b.client.Call(context.Background(), op, payload)
 	if err != nil {
-		return nil, err
+		return nil, wrapUnavailable(err)
 	}
 	return resp, nil
 }

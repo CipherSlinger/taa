@@ -12,12 +12,14 @@ import (
 
 // selectCryptoBackend installs the configured SM2/SM3/SM4 backend. It runs
 // before any key material exists: key generation, state sealing and the
-// platform envelope all go through this backend, so a broken HCT deployment
-// must stop startup here rather than after keys were written with it.
+// platform envelope all go through this backend.
 //
-// There is no fallback to the built-in backend. A configured hct that cannot
-// start is a deployment error; silently running on gmsm would make the
-// instance look healthy while doing something nobody asked for.
+// HCT is preferred when configured, but a helper that cannot start does not
+// take TAA down. The deployment contract is availability: the original gmsm
+// software implementation takes over, and the log states both why HCT was
+// dropped and which interface is now doing the work. An unknown backend name
+// is still a configuration error — that is a typo, not an availability
+// problem — and is refused.
 func selectCryptoBackend(cfg config.StartupConfig) error {
 	c := cfg.Crypto
 	backend := strings.ToLower(strings.TrimSpace(c.Backend))
@@ -29,9 +31,19 @@ func selectCryptoBackend(cfg config.StartupConfig) error {
 		accel = teecrypto.HCTAccelSW
 	}
 
-	if backend == teecrypto.BackendHCT && accel == teecrypto.HCTAccelCCP {
+	switch backend {
+	case teecrypto.BackendBuiltin:
+		return selectBuiltinCryptoBackend()
+	case teecrypto.BackendHCT:
+		// keep going
+	default:
+		return fmt.Errorf("teecrypto: 未知的密码后端 %q (支持 %q、%q)",
+			backend, teecrypto.BackendBuiltin, teecrypto.BackendHCT)
+	}
+
+	if accel == teecrypto.HCTAccelCCP {
 		if err := requireCCPDevice(); err != nil {
-			return err
+			return fallbackToBuiltinCryptoBackend(err)
 		}
 	}
 
@@ -46,15 +58,31 @@ func selectCryptoBackend(cfg config.StartupConfig) error {
 		},
 	})
 	if err != nil {
-		return fmt.Errorf("select %s crypto backend: %w", backend, err)
+		return fallbackToBuiltinCryptoBackend(err)
 	}
 
-	if backend == teecrypto.BackendHCT {
-		log.Printf("crypto backend: hct (libhct %s, accel=%s)", teecrypto.BackendVersion(), accel)
-	} else {
-		log.Printf("crypto backend: builtin")
-	}
+	log.Printf("crypto backend: hct (Hygon HCT interface; libhct %s, accel=%s)",
+		teecrypto.BackendVersion(), accel)
 	return nil
+}
+
+// selectBuiltinCryptoBackend installs the pure-Go gmsm implementation. Its log
+// line is the operator's answer to "which crypto interface is in use": the
+// software one.
+func selectBuiltinCryptoBackend() error {
+	err := teecrypto.SelectBackend(teecrypto.BackendConfig{Backend: teecrypto.BackendBuiltin})
+	if err != nil {
+		return fmt.Errorf("select builtin crypto backend: %w", err)
+	}
+	log.Printf("crypto backend: builtin (original software implementation, gmsm)")
+	return nil
+}
+
+// fallbackToBuiltinCryptoBackend keeps TAA serving on the software
+// implementation after HCT could not be installed.
+func fallbackToBuiltinCryptoBackend(reason error) error {
+	log.Printf("crypto backend: HCT unavailable (%v); falling back to the original software implementation (gmsm)", reason)
+	return selectBuiltinCryptoBackend()
 }
 
 // ccpDeviceGlob is the device pattern requireCCPDevice looks for. It is a

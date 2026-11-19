@@ -1,6 +1,8 @@
 package taa
 
 import (
+	"bytes"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -55,9 +57,10 @@ func TestSelectCryptoBackendRejectsUnknown(t *testing.T) {
 	}
 }
 
-// TestSelectCryptoBackendCCPWithoutDevice pins the refusal itself: on a CSV2
-// guest there is no /dev/ccp*, and the check must fire before the helper is
-// started, so the error names the device rather than a helper failure.
+// TestSelectCryptoBackendCCPWithoutDevice pins the fallback itself: on a CSV2
+// guest there is no /dev/ccp*, and a configured hardware accelerator must not
+// stop TAA. The check fires before the helper is started, the software
+// implementation takes over, and startup succeeds.
 func TestSelectCryptoBackendCCPWithoutDevice(t *testing.T) {
 	t.Cleanup(func() { _ = teecrypto.CloseBackend() })
 
@@ -65,15 +68,56 @@ func TestSelectCryptoBackendCCPWithoutDevice(t *testing.T) {
 	ccpDeviceGlob = filepath.Join(t.TempDir(), "ccp*")
 	t.Cleanup(func() { ccpDeviceGlob = orig })
 
-	err := selectCryptoBackend(cryptoConfig(teecrypto.BackendHCT, teecrypto.HCTAccelCCP))
-	if err == nil {
-		t.Fatal("expected an error for accel=ccp with no CCP device")
-	}
-	if !strings.Contains(err.Error(), "/dev/ccp") {
-		t.Fatalf("err = %v, want it to name the missing device", err)
+	if err := selectCryptoBackend(cryptoConfig(teecrypto.BackendHCT, teecrypto.HCTAccelCCP)); err != nil {
+		t.Fatalf("selectCryptoBackend(hct, ccp) error = %v, want the software fallback", err)
 	}
 	if got := teecrypto.BackendName(); got != teecrypto.BackendBuiltin {
-		t.Fatalf("BackendName() = %q, want no backend switch after a refusal", got)
+		t.Fatalf("BackendName() = %q, want %q", got, teecrypto.BackendBuiltin)
+	}
+}
+
+// TestSelectCryptoBackendFallsBackWhenHelperMissing covers the other startup
+// failure: hct is configured but there is no helper to start. TAA keeps serving
+// on gmsm and the log records the fallback.
+func TestSelectCryptoBackendFallsBackWhenHelperMissing(t *testing.T) {
+	t.Cleanup(func() { _ = teecrypto.CloseBackend() })
+
+	cfg := cryptoConfig(teecrypto.BackendHCT, "")
+	cfg.Crypto.HCT.HelperPath = filepath.Join(t.TempDir(), "missing-helper")
+	if err := selectCryptoBackend(cfg); err != nil {
+		t.Fatalf("selectCryptoBackend(hct, missing helper) error = %v, want the software fallback", err)
+	}
+	if got := teecrypto.BackendName(); got != teecrypto.BackendBuiltin {
+		t.Fatalf("BackendName() = %q, want %q", got, teecrypto.BackendBuiltin)
+	}
+}
+
+// TestSelectCryptoBackendLogsTheInterfaceInUse pins the operator-facing half of
+// the contract: the startup log must say whether the HCT interface or the
+// original software implementation is doing the crypto, including after a
+// fallback.
+func TestSelectCryptoBackendLogsTheInterfaceInUse(t *testing.T) {
+	t.Cleanup(func() { _ = teecrypto.CloseBackend() })
+
+	var buf bytes.Buffer
+	origOut := log.Writer()
+	log.SetOutput(&buf)
+	t.Cleanup(func() { log.SetOutput(origOut) })
+
+	cfg := cryptoConfig(teecrypto.BackendHCT, "")
+	cfg.Crypto.HCT.HelperPath = filepath.Join(t.TempDir(), "missing-helper")
+	if err := selectCryptoBackend(cfg); err != nil {
+		t.Fatalf("selectCryptoBackend() error = %v", err)
+	}
+
+	out := buf.String()
+	for _, want := range []string{
+		"HCT unavailable",
+		"crypto backend: builtin (original software implementation, gmsm)",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("startup log = %q, want it to contain %q", out, want)
+		}
 	}
 }
 
