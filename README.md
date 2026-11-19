@@ -677,6 +677,18 @@ the container exits with that status.
 > `TAA_POD_READY_TIMEOUT`, `TAA_POD_CC_INIT_DATA` and `TAA_POD_DOCKER_ID`. The template lives at
 > `deploy/manifest/k8s/taa-pod.yaml.tmpl`.
 >
+> **Publishing an instance off the cluster network.** `TAA_SERVICE_NODE_PORT` (`30000`-`32767`,
+> empty by default) creates a NodePort Service beside the Pod, reachable at
+> `http://<node>:<port>`. A Service is used rather than `hostPort` because the CNI's portmap DNATs a
+> `hostPort` to one Pod IP, while a NodePort is served by kube-proxy and load-balanced to whatever
+> Pods match its selector — so the address survives the Pod being recreated. The Service is named
+> `taa-<dockerId>` (lower-cased, `.`/`_` → `-`), selects the `taa-instance-id` label
+> (`TAA_INSTANCE_LABEL_KEY`) the Pod carries, and is applied rather than created, so a new Pod under
+> the same `DOCKER_ID` rejoins it. `delete` removes it with the Pod. `DOCKER_ID` must be a valid
+> Kubernetes label value (at most 63 characters of `[A-Za-z0-9._-]`, alphanumeric at both ends); it is
+> checked before the image build. Record the resulting address for the mock in
+> `--instance-targets`, since the registration's source IP cannot name it through a NAT.
+>
 > Unless `TAA_POD_IMAGE` is set, every Pod creation is preceded by an image build from the current
 > tree: the production image is assembled by the same code path as `save`, uploaded to the
 > remote host, and pushed as `TAA_POD_REGISTRY/TAA_POD_IMAGE_REPO:<YYYYMMDD>` (default

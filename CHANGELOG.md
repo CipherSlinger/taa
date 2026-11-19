@@ -9,8 +9,69 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 ## [Unreleased]
 
 ### Added
-
-### Changed
+- **The platform-mock Can Be Told Where Each Instance Answers (`-instance-targets`)**: the address the
+  mock dials for an instance was derived from the registration's source IP and the TAA port, which is
+  the instance's own address only while the platform shares a network with the Pod. A registration
+  relayed across a NAT arrives with its source rewritten — a Kata Pod dialling another host is
+  masqueraded to that host's IP — so the derivation named the relay and every instance ended up with
+  the same wrong address, which no reachability check can repair because the address itself is a
+  guess. `-instance-targets` (`PLATFORM_MOCK_INSTANCE_TARGETS`, `--instance-targets` on
+  `deploy-platform-mock.sh`) records the real address per instance as comma-separated `dockerId=URL`
+  pairs, e.g. `kata-csv2-taa-test-0001=http://172.16.10.178:31001`, which is what a NodePort Service
+  per instance (see the deployment entry below) makes available. The precedence in `targetFor` is now:
+  the address configured for that `dockerId`, then the single-instance `-taa-target` fallback, then the
+  address derived from the registration, then the static target, then Pod discovery — a configured
+  value outranks the derivation because it is the only one known to be routable from the platform's
+  network, while everything below it is inferred. An instance without an entry keeps the old
+  behaviour, so the map only has to name the instances behind a NAT. The configured value is also what
+  the console and `GET /api/taa-target` report, so the address shown is the one actually dialled
+  rather than a second derivation. A field that is not `dockerId=URL` (or whose URL has no scheme) is
+  logged and skipped instead of turning the whole list into a startup failure, a duplicate `dockerId`
+  keeps the later value with a warning, and a trailing `/` is trimmed from the target. Startup logs
+  the parsed map so a typo is visible before the first task.
+- **`deploy-platform-mock.sh` Can Run On This Host (`--local`)**: the mock was remote-only after the
+  positional `local` word was removed, but the platform it stands in for does not have to run on the
+  cluster host: a development machine on the same network, or a host that reaches the instances
+  through their NodePort Services, is a legitimate place for it, and requiring an SSH hop there only
+  added a second machine to keep in sync. `--local` runs the same lifecycle (build, start, stop,
+  restart, status, readiness probe) against the local shell instead of SSH — `remote_sh` and
+  `copy_to_host` dispatch on the mode, so every step keeps one implementation — and skips the SSH
+  requirement entirely. Nothing is uploaded: the binary built under `bin/` is run where it is, since
+  copying it elsewhere could only run a different file than the build produced, and the state, log and
+  pid defaults move from `<remote-dir>` into the project's own `bin/`. The semgrep CLI is taken from
+  the local `PATH` (e.g. `~/.local/bin/semgrep`) with no venv installation, and the rules are read
+  from the working copy's `models/audit/semgrep/rules` instead of being packed and unpacked. `--llm-host`
+  supplies the node address that the `--llm-target` default would otherwise take from `--host`, which
+  local mode does not have; without either, startup stops with a message naming both instead of
+  dialling an empty host. The catch this mode exists for: a local mock that is not on the cluster
+  network has to name every instance with `--instance-targets`, because the derived address will be
+  its own (the NAT it dialled through), not the Pod's. The positional `local` action word stays
+  refused, so the action still comes first (`start --local`).
+- **`deploy.sh` Publishes Each Instance On Its Own NodePort Service (方案 A)**: with the platform-mock
+  moved off the cluster network, the platform needs an address for each instance that is routable from
+  where it runs and that does not change when the Pod is recreated — the Pod IP gives neither. The
+  obvious mapping, `hostPort`, does not solve it either: the CNI portmap plugin DNATs a `hostPort` to
+  one Pod IP, so the mapping is tied to that Pod, and a recreated Pod leaves the platform dialling an
+  address nobody owns. A `NodePort` Service is the different mechanism this needs: kube-proxy listens
+  on the node and load-balances to whatever Pods currently match the selector, so the Service outlives
+  the Pod and its port is allocated once. `create` therefore applies a Service of its own for each Pod
+  it creates when `TAA_SERVICE_NODE_PORT` (`30000`-`32767`) is set — empty keeps the previous
+  behaviour of reaching the Pod by its own address — with name `taa-<dockerId>` lower-cased and with
+  `.`/`_` replaced by `-`, selecting on the `taa-instance-id` label (`TAA_INSTANCE_LABEL_KEY`) that the
+  Pod template now carries. The selector is the registered identity rather than the Pod name so a
+  replacement Pod under the same `DOCKER_ID` joins the same Service with no second edit, and for the
+  same reason the Service is `kubectl apply`-ed rather than created: after a delete it simply has no
+  endpoints, and the next create fills them in without touching the port. `delete` removes the Service
+  together with the Pod so a half-deleted deployment keeps no route to nothing, tolerating its absence
+  for deployments that never published. Since the `DOCKER_ID` has to be a Kubernetes label value,
+  `validate_instance_label` checks it (at most 63 characters of `[A-Za-z0-9._-]`, starting and ending
+  alphanumeric) **before** anything is built, and the derived Service name is length-checked as well,
+  because a manifest rejected at apply time comes after tens of minutes of image build. The NodePort is
+  deliberately explicit: it is an address the platform records, so it is allocated by the operator
+  rather than by the cluster, and a port already owned by another Service fails the publish while
+  leaving the Pod running (the message names the port and points at
+  `kubectl get svc -o wide`), because publishing is what failed, not the instance. The platform side
+  records the resulting `http://<node>:<port>` with `-instance-targets`.
 - **The platform-mock Lists The Instances It Expects, Not Only The Ones That Reported**: the 平台注册
   card could only show an instance once it had registered, so an instance whose Pod never came up
   was indistinguishable from one that was never deployed, and a Pod deleted after registering left a

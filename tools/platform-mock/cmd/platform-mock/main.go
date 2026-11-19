@@ -33,6 +33,7 @@ func main() {
 	flag.StringVar(&cfg.SemgrepRules, "semgrep-rules", cfg.SemgrepRules, "semgrep rules file or directory")
 	flag.StringVar(&cfg.TerminalShell, "terminal-shell", cfg.TerminalShell, "shell the API tester's host terminal starts")
 	flag.StringVar(&cfg.ExpectedInstances, "instances", cfg.ExpectedInstances, "configured instance inventory, type:dockerId[,type:dockerId...]; entries that never register are listed as 未连接")
+	flag.StringVar(&cfg.InstanceTargets, "instance-targets", cfg.InstanceTargets, "per-instance address override, dockerId=URL[,dockerId=URL...]; outranks the address derived from the registration's source IP (use it when the platform is on another network)")
 	flag.Parse()
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()

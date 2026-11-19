@@ -117,6 +117,19 @@ type Config struct {
 	// would otherwise list a configured-but-absent instance nowhere at all.
 	// Empty means "list whatever registers", the pre-inventory behaviour.
 	ExpectedInstances string
+	// InstanceTargets overrides the address the platform dials for an instance,
+	// written as a comma-separated "dockerId=URL" list, e.g.
+	// "kata-csv2-taa-test-0001=http://172.16.10.178:31001".
+	//
+	// The derived address is the registration's source IP with TAAPort, which
+	// is only the instance's own address when the platform shares a network
+	// with the Pod. A registration relayed across a NAT arrives with the
+	// sender's address rewritten — a Kata Pod dialling another host is
+	// masqueraded to that host's IP — so the derivation would name the proxy.
+	// A NodePort Service per instance gives a stable, routable address; this
+	// map is where it is recorded. An instance without an entry keeps the
+	// derived address.
+	InstanceTargets string
 }
 
 func (c Config) withDefaults() Config {
@@ -190,7 +203,7 @@ func envIntOrDefault(key string, fallback int) int {
 // UPLOAD_DIR, TAA_POD, TAA_NS, TAA_PORT, LLM_POD, LLM_NS, LLM_PORT,
 // LLM_TARGET, LLM_POLL_SECONDS, PLATFORM_SM2_ID, PLATFORM_KEY_FILE,
 // CONSOLE_USER, CONSOLE_PASSWORD, TEELLM_TLS_ENDPOINT, TERMINAL_SHELL,
-// PLATFORM_MOCK_INSTANCES).
+// PLATFORM_MOCK_INSTANCES, PLATFORM_MOCK_INSTANCE_TARGETS).
 // PLATFORM_SM2_ID is deliberately the same variable TAA reads, so one exported
 // value configures both ends.
 func DefaultConfig() Config {
@@ -214,5 +227,6 @@ func DefaultConfig() Config {
 		SemgrepRules:      envOrDefault("SEMGREP_RULES", ""),
 		TerminalShell:     envOrDefault("TERMINAL_SHELL", ""),
 		ExpectedInstances: envOrDefault("PLATFORM_MOCK_INSTANCES", ""),
+		InstanceTargets:   envOrDefault("PLATFORM_MOCK_INSTANCE_TARGETS", ""),
 	}.withDefaults()
 }

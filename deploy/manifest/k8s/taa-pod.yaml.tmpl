@@ -51,6 +51,12 @@ metadata:
   namespace: __NAMESPACE__
   labels:
     app: taa
+    # The instance's registered identity. Every Pod of this deployment carries it, and the
+    # NodePort Service created beside the Pod selects on it, so recreating the Pod under the
+    # same DOCKER_ID keeps the Service pointing at the new one without a second edit. A label
+    # value may contain only alphanumerics, '-', '_' and '.', and must be at most 63
+    # characters; deploy.sh validates the id before the manifest is applied.
+    taa-instance-id: "__TAA_INSTANCE_ID__"
   annotations:
     # Required. The guest pulls the image through its own CDH, and the host's
     # trust in the local registry's self-signed certificate does not carry into

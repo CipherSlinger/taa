@@ -89,6 +89,18 @@ Pod 的环境变量不能原地修改，已有 Pod 的角色与本次请求不�
 其余可调项（Pod 规格、节点、RuntimeClass、registry、就绪超时、semgrep payload 等）见
 `./deploy.sh --help` 的 Environment overrides 段。
 
+**对外发布实例（`TAA_SERVICE_NODE_PORT`）**：平台不在集群网络时，它需要一个稳定、可路由的
+实例地址。`create` 在 `TAA_SERVICE_NODE_PORT`（30000–32767，空=不发布）设置时，为这个 Pod 建一个
+NodePort Service，地址是 `http://<REMOTE_HOST>:<端口>`，Pod 重建后不变。用 Service 而不是
+`hostPort`：portmap 的 `hostPort` 只把端口 DNAT 到一个 Pod IP，Pod 重建就失效；NodePort 由
+kube-proxy 在节点上监听并按选择器负载均衡到当前 Pod，生命周期独立于 Pod。Service 名为
+`taa-<dockerId>`（小写，`.`/`_` 换成 `-`），选择 Pod 上的 `taa-instance-id` 标签
+（`TAA_INSTANCE_LABEL_KEY`），用 `kubectl apply` 而不是 create——pod 删除后 Service 只留下空
+Endpoints，同一 `DOCKER_ID` 下重建的 Pod 会接进来并复用同一个端口。`delete` 一并删除 Service。
+`DOCKER_ID` 因此必须是合法的 label 值（≤63 字符、`[A-Za-z0-9._-]`、首尾字母数字），
+`validate_instance_label` 在构建镜像之前校验。端口被别的 Service 占用时发布失败但 Pod 保持运行，
+按提示换端口或置空。把这个地址记进 platform-mock 的 `--instance-targets`。
+
 ## FHE + TAA：`deploy-fhe.sh`
 
 一个容器同时运行 FHE 服务（redis + api_server + worker，镜像
@@ -297,8 +309,9 @@ DNS label（≤63 字符）、命名空间与 RuntimeClass 存在、宿主端口
 
 ## 平台 mock：`deploy-platform-mock.sh`
 
-构建、启动、停止和就绪检查统一由仓库根目录的 `deploy-platform-mock.sh` 负责。mock 在远端
-主机上以后台进程运行，二进制经 SSH 上传；local 本地模式已移除。
+构建、启动、停止和就绪检查统一由仓库根目录的 `deploy-platform-mock.sh` 负责。默认在远端
+主机上以后台进程运行，二进制经 SSH 上传；`--local` 改为在本机运行（见下文"本机模式"），
+位置参数形式的 `local` 动作词仍然拒绝。
 
 ```bash
 ./deploy-platform-mock.sh <start|stop|restart|status> [选项]
@@ -331,7 +344,10 @@ DNS label（≤63 字符）、命名空间与 RuntimeClass 存在、宿主端口
 | `--state-dir DIR` / `--upload-dir DIR` | 为空时不传对应参数，沿用二进制自身默认目录 |
 | `--log-file PATH` / `--pid-file PATH` | 默认在 `--remote-dir` 下（`platform-mock.log` / `platform-mock.pid`） |
 | `--taa-target URL` | 固定到单个 TAA 地址；不传时按注册信息推导每个实例的地址 |
+| `--instance-targets LIST` | 按实例覆盖地址，`dockerId=URL[,dockerId=URL...]`；优先级高于注册源 IP 推导（`PLATFORM_MOCK_INSTANCE_TARGETS`） |
 | `--pod` / `--namespace` / `--taa-port` | `--taa-target` 为空时的 Kubernetes 发现参数；`--taa-port` 同时用于多实例地址推导 |
+| `--local` | 在本机运行，不走 SSH；state/log/pid 默认落在项目 `bin/` |
+| `--llm-host HOST` | 本机模式下 `--llm-target` 默认值所用的节点地址（远端模式取 `--host`） |
 | `--allow-empty-attestation` | 非 TEE 测试环境跳过证明校验 |
 | `--reuse` | 端口已有实例应答时直接复用，不停止、不重启 |
 | `--reset-register` | 就绪后 `POST /api/register/reset` |
@@ -361,8 +377,27 @@ DNS label（≤63 字符）、命名空间与 RuntimeClass 存在、宿主端口
   ./deploy-platform-mock.sh start --host 172.16.10.178 --taa-port 6001
   ```
 - 需要固定单实例地址时传 `--taa-target http://<ip>:6001`（未按注册推导出地址时作为后备）。
-- 限制：反向代理或端口转发会丢失请求源 IP，此时无法按注册推导地址，应退回
-  `--taa-target` 指定固定地址。
+- 限制：反向代理或端口转发会丢失请求源 IP，此时无法按注册推导地址。mock 不在集群网络时
+  （Kata Pod 拨另一台主机，源地址被 masquerade 成那台宿主），每个实例的推导地址都会指向中继，
+  用 `--instance-targets` 按 `dockerId` 记录真实地址，通常就是 `deploy.sh` 用
+  `TAA_SERVICE_NODE_PORT` 为该实例建的 NodePort（`http://<节点>:<端口>`）。优先级为：
+  配置值 > 单实例时的 `--taa-target` > 注册推导 > 静态地址 > Pod 发现；控制台与
+  `/api/taa-target` 展示的也是配置值。未配置的实例行为不变。
+
+**本机模式（`--local`）**
+
+mock 不必和集群同网段，也可以直接跑在开发机或有 NodePort 路由的主机上。`--local` 用本地
+shell 代替 SSH 执行同一套生命周期（构建、启动、停止、重启、状态、就绪轮询），不再上传任何文件：
+`bin/` 下构建出的二进制原地运行，state/log/pid 默认落在项目的 `bin/` 目录，semgrep 直接取
+`PATH` 中的（如 `~/.local/bin/semgrep`），规则用工作副本的 `models/audit/semgrep/rules`。
+本机模式没有 `--host`，`--llm-target` 的默认值改由 `--llm-host` 给出，两者都不给则启动即报错。
+不在此集群网络时，每个要拨的实例都要用 `--instance-targets` 指定地址。
+
+```bash
+./deploy-platform-mock.sh start --local --llm-host 172.16.10.178 \
+  --instances tee:kata-csv2-taa-test-0001 \
+  --instance-targets kata-csv2-taa-test-0001=http://172.16.10.178:31001
+```
 
 
 ---

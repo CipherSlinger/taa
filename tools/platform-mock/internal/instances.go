@@ -162,6 +162,11 @@ type instanceManager struct {
 
 	staticTarget     string
 	discoveredTarget string
+	// instanceTargets is the per-instance override of the derived address. It
+	// is kept apart from staticTarget: that one is the fallback for anything
+	// without an address of its own, while these name one instance each and
+	// outrank the derivation.
+	instanceTargets map[string]string
 }
 
 func newInstanceManager(stateDir string, cfg Config) *instanceManager {
@@ -170,6 +175,8 @@ func newInstanceManager(stateDir string, cfg Config) *instanceManager {
 		cfg:          cfg,
 		byID:         make(map[string]*instanceStores),
 		staticTarget: strings.TrimRight(strings.TrimSpace(cfg.TAATarget), "/"),
+
+		instanceTargets: parseInstanceTargets(cfg.InstanceTargets),
 	}
 	if m.root != "" {
 		m.migrateLegacy()
@@ -530,7 +537,9 @@ func (m *instanceManager) realInstanceCount() int {
 
 // targetFor resolves the outbound address for one instance.
 //
-// Precedence, in order: a single instance with -taa-target keeps the old static
+// Precedence, in order: the address configured for this dockerId
+// (-instance-targets), which is the only one known to be routable from the
+// platform's network; a single instance with -taa-target keeps the old static
 // address; otherwise the address derived from that instance's registration;
 // then the static target; then Pod discovery. An instance never borrows another
 // instance's address.
@@ -550,6 +559,12 @@ func (m *instanceManager) targetFor(requestedID string) (string, string, error) 
 
 	if b != nil {
 		id := b.dockerID
+		// A configured address outranks everything else: it is the only one
+		// that is known to be reachable from here, while the derived address is
+		// a guess made from the registration's source IP.
+		if target := m.configuredTarget(id); target != "" {
+			return id, target, nil
+		}
 		if m.realInstanceCount() <= 1 && m.staticTarget != "" {
 			return id, m.staticTarget, nil
 		}

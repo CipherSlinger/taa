@@ -44,6 +44,10 @@ LLM_PORT=""
 # keep calling an address nothing answers until its next rediscovery. Pass --llm-pod to go back
 # to kubectl discovery, or --llm-target to name any other base URL.
 LLM_HOST_PORT="${PLATFORM_MOCK_LLM_HOST_PORT:-16001}"
+# Cluster node the TEE-LLM Pod's hostPort lands on (the --llm-target default).
+# Only needed in local mode, where --host is not given; over SSH the SSH host
+# is the node. --llm-target still overrides both.
+LLM_HOST="${PLATFORM_MOCK_LLM_HOST:-}"
 SM2_ID="${PLATFORM_SM2_ID:-}"
 PLATFORM_KEY_FILE="${PLATFORM_KEY_FILE:-}"
 # Audit workbench static engine. The workbench runs TAA's Tier 1 scan in-process,
@@ -61,6 +65,17 @@ SEMGREP_VERSION="${SEMGREP_VERSION:-1.177.0}"
 # registers is still listed, as 未连接, which is the point: the console shows
 # what this platform is configured to receive, not only what has reported.
 INSTANCES="${PLATFORM_MOCK_INSTANCES:-}"
+# Per-instance address overrides, "dockerId=URL" comma separated. The derived
+# address is the registration's source IP with the TAA port, which is only the
+# instance's own address when the mock shares a network with the Pod: a Kata Pod
+# dialling another host is masqueraded to that host's IP, so every instance would
+# derive the same (wrong) address. A NodePort Service per instance (deploy.sh
+# creates one) gives a stable address; record it here.
+INSTANCE_TARGETS="${PLATFORM_MOCK_INSTANCE_TARGETS:-}"
+# Deploy on this host instead of over SSH. The mock then runs as a local process
+# and, when it is not on the cluster network, needs --instance-targets for every
+# instance whose Pod it must dial.
+LOCAL_MODE=0
 # TEE-LLM console account and secure listener. Empty means the binary's own
 # defaults: admin / teellm@2026, and a TLS endpoint derived from the LLM target
 # host on port 18443.
@@ -74,6 +89,9 @@ REMOTE_HOST="${REMOTE_HOST:-}"
 REMOTE_USER="${REMOTE_USER:-root}"
 REMOTE_DIR="${REMOTE_DIR:-/root/taa}"
 REMOTE_BINARY=""
+# Set by setup_ssh in remote mode. Local mode has no SSH target, and the log
+# lines below print it, so it is initialised here rather than left unset.
+REMOTE_TARGET=""
 REMOTE_SSH_PORT=""
 REMOTE_PASSWORD="${REMOTE_PASSWORD:-}"
 # The environment spelling this replaced. Refused after parsing rather than ignored, so a stale
@@ -130,6 +148,8 @@ Common options:
   --llm-target URL           TEE-LLM base URL; the platform polls it, so no
                              registration address is needed
                              (default http://<--host>:<LLM_HOST_PORT>)
+  --llm-host HOST            Node address for that default in --local mode,
+                             where there is no --host (LLM_HOST)
   --llm-pod NAME             TEE-LLM Pod for kubectl auto-discovery instead of
                              the host address (default taa-teellm)
   --llm-ns NS                Namespace for --llm-pod (omit = search all namespaces)
@@ -147,6 +167,11 @@ Common options:
   --instances LIST           Instance inventory, type:dockerId[,type:dockerId...]
                              with type one of tee, fhe, data-anaylsis. Entries
                              that never register are still listed (未连接).
+  --instance-targets LIST    Per-instance address override,
+                             dockerId=URL[,dockerId=URL...]. Outranks the address
+                             derived from a registration's source IP; needed when
+                             the mock is not on the cluster network (the derived
+                             address would name the NAT that relayed it).
   --semgrep-rules PATH       Remote semgrep rules file or directory (default
                              <remote-dir>/semgrep-rules); the local rule set is
                              uploaded there on start
@@ -163,6 +188,10 @@ Common options:
   --ready-interval SECONDS   Readiness poll interval (default: 2)
   --dry-run                  Print what would run, execute nothing
   -h, --help                 Show this help
+
+Local options:
+  --local                    Run on this host instead of over SSH (no --host
+                             needed; --llm-target defaults to the --llm-host)
 
 SSH options:
   --host HOST                SSH host (also REMOTE_HOST)
@@ -210,6 +239,7 @@ parse_args() {
       --taa-target) need_value "$@"; TAA_TARGET="$2"; shift 2 ;;
       --pod) need_value "$@"; TAA_POD="$2"; shift 2 ;;
       --llm-target) need_value "$@"; LLM_TARGET="$2"; shift 2 ;;
+      --llm-host) need_value "$@"; LLM_HOST="$2"; shift 2 ;;
       --llm-pod) need_value "$@"; LLM_POD="$2"; shift 2 ;;
       --llm-ns) need_value "$@"; LLM_NS="$2"; shift 2 ;;
       --llm-port) need_value "$@"; LLM_PORT="$2"; shift 2 ;;
@@ -222,6 +252,8 @@ parse_args() {
       --tee-tls-endpoint) need_value "$@"; TEE_TLS_ENDPOINT="$2"; shift 2 ;;
       --audit-engine) need_value "$@"; AUDIT_ENGINE="$2"; shift 2 ;;
       --instances) need_value "$@"; INSTANCES="$2"; shift 2 ;;
+      --instance-targets) need_value "$@"; INSTANCE_TARGETS="$2"; shift 2 ;;
+      --local) LOCAL_MODE=1; shift ;;
       --semgrep-rules) need_value "$@"; SEMGREP_RULES="$2"; shift 2 ;;
       --semgrep-bin-dir) need_value "$@"; SEMGREP_BIN_DIR="$2"; shift 2 ;;
       --allow-empty-attestation) ALLOW_EMPTY_ATTESTATION=1; shift ;;
@@ -262,8 +294,24 @@ resolve_defaults() {
   [ "$PID_FILE" = "__unset__" ] && PID_FILE="$REMOTE_DIR/platform-mock.pid"
   [ "$SEMGREP_RULES" = "__unset__" ] && SEMGREP_RULES="$REMOTE_DIR/semgrep-rules"
   [ "$SEMGREP_BIN_DIR" = "__unset__" ] && SEMGREP_BIN_DIR="$REMOTE_DIR/sgvenv/bin"
-  [ -n "$REMOTE_HOST" ] || die "--host or REMOTE_HOST is required"
+  [ "$LOCAL_MODE" = "1" ] || [ -n "$REMOTE_HOST" ] || die "--host or REMOTE_HOST is required (or --local)"
   [ -n "$REMOTE_BINARY" ] || REMOTE_BINARY="$REMOTE_DIR/$BINARY_NAME"
+  if [ "$LOCAL_MODE" = "1" ]; then
+    # Local mode keeps REMOTE_DIR as the state/log root so both modes share one
+    # layout, but nothing is uploaded: the binary already built under bin/ is
+    # run from where it is, so a separate install copy would only risk running
+    # a different binary than the build produced.
+    [ "$LOG_FILE" = "$REMOTE_DIR/platform-mock.log" ] && LOG_FILE="$PROJECT_DIR/bin/platform-mock.log"
+    [ "$PID_FILE" = "$REMOTE_DIR/platform-mock.pid" ] && PID_FILE="$PROJECT_DIR/bin/platform-mock.pid"
+    [ "$SEMGREP_RULES" = "$REMOTE_DIR/semgrep-rules" ] && SEMGREP_RULES="$PROJECT_DIR/models/audit/semgrep/rules"
+    [ "$SEMGREP_BIN_DIR" = "$REMOTE_DIR/sgvenv/bin" ] && SEMGREP_BIN_DIR=""
+    REMOTE_BINARY="$BINARY_PATH"
+    # REMOTE_DIR is still used as a scratch root (the start step creates it), and
+    # /root/taa does not exist for an unprivileged local user. The defaults above
+    # have already been derived from the remote value, so rewriting it here only
+    # affects the local scratch paths.
+    [ "$REMOTE_DIR" = "/root/taa" ] && REMOTE_DIR="$PROJECT_DIR/bin"
+  fi
   return 0
 }
 
@@ -288,9 +336,38 @@ setup_ssh() {
   REMOTE_TARGET="${REMOTE_USER}@${REMOTE_HOST}"
 }
 
+# host_label names where the mock runs, for the log lines that are shared by
+# both modes. In local mode there is no SSH target and printing an empty one
+# would read like a failed connection.
+host_label() {
+  if [ "$LOCAL_MODE" = "1" ]; then
+    printf 'this host'
+  else
+    printf '%s' "$REMOTE_TARGET"
+  fi
+}
+
 remote_sh() {
   local script="$1"
+  if [ "$LOCAL_MODE" = "1" ]; then
+    # Local mode runs the same shell snippets through the local shell, so every
+    # lifecycle step (stop, pid file, probe, log tail) has one implementation.
+    /bin/sh -c "$script"
+    return
+  fi
   "${SSH_CMD[@]}" "$REMOTE_TARGET" "$script"
+}
+
+# copy_to_host places a local file at a destination path on whichever host this
+# run targets. It stands in for scp so uploading the semgrep rules and the
+# binary share one code path in both modes.
+copy_to_host() {
+  local src="$1" dst="$2"
+  if [ "$LOCAL_MODE" = "1" ]; then
+    mkdir -p "$(dirname "$dst")" && cp -f "$src" "$dst"
+    return
+  fi
+  "${SCP_CMD[@]}" "$src" "$REMOTE_TARGET:$dst"
 }
 
 # ── Probe helpers ───────────────────────────────────────────────────────────
@@ -374,7 +451,13 @@ build_mock_args() {
   else
     # The host address, not the Pod IP: deploy-llm.sh publishes the listener on
     # the node precisely so it has an address that survives recreating the Pod.
-    LLM_TARGET_EFFECTIVE="http://${REMOTE_HOST}:${LLM_HOST_PORT}"
+    # The TEE-LLM host address. In local mode no --host was given, so the
+    # default has to come from somewhere else: LLM_HOST is the cluster node the
+    # Pod's hostPort lands on, which is not necessarily this host.
+    llm_host="$REMOTE_HOST"
+    [ -n "$llm_host" ] || llm_host="${LLM_HOST:-}"
+    [ -n "$llm_host" ] || die "in local mode the TEE-LLM target cannot be defaulted: pass --llm-host <node> or --llm-target <URL>"
+    LLM_TARGET_EFFECTIVE="http://${llm_host}:${LLM_HOST_PORT}"
     MOCK_ARGS+=(-llm-target "$LLM_TARGET_EFFECTIVE")
   fi
   [ "$ALLOW_EMPTY_ATTESTATION" = "1" ] && MOCK_ARGS+=(-allow-empty-attestation)
@@ -383,6 +466,7 @@ build_mock_args() {
   [ -n "$AUDIT_ENGINE" ] && MOCK_ARGS+=(-audit-engine "$AUDIT_ENGINE")
   [ -n "$SEMGREP_RULES" ] && MOCK_ARGS+=(-semgrep-rules "$SEMGREP_RULES")
   [ -n "$INSTANCES" ] && MOCK_ARGS+=(-instances "$INSTANCES")
+  [ -n "$INSTANCE_TARGETS" ] && MOCK_ARGS+=(-instance-targets "$INSTANCE_TARGETS")
 
   # The console reads these from the environment, and passing them this way
   # keeps the password out of the process arguments on the remote host.
@@ -402,7 +486,7 @@ build_mock_args() {
 # ── Remote lifecycle ────────────────────────────────────────────────────────
 stop_remote() {
   if is_dry_run; then
-    log "would stop $BINARY_NAME on $REMOTE_TARGET (pid file $PID_FILE)"
+    log "would stop $BINARY_NAME on $(host_label) (pid file $PID_FILE)"
     return 0
   fi
   remote_sh "if [ -f $(shell_quote "$PID_FILE") ]; then p=\$(cat $(shell_quote "$PID_FILE") 2>/dev/null || true); if [ -n \"\$p\" ]; then kill \"\$p\" 2>/dev/null || true; sleep 1; kill -9 \"\$p\" 2>/dev/null || true; fi; rm -f $(shell_quote "$PID_FILE"); fi; pkill -x $(shell_quote "$BINARY_NAME") >/dev/null 2>&1 || true"
@@ -414,6 +498,14 @@ upload_remote() {
     return 0
   fi
   [ -f "$BINARY_PATH" ] || die "cannot upload $BINARY_PATH: no such file"
+  if [ "$LOCAL_MODE" = "1" ]; then
+    # The local binary is already the build's output; copying it over itself
+    # would only risk a half-written file if the build directory is odd.
+    remote_sh "mkdir -p $(shell_quote "$(dirname "$LOG_FILE")")" \
+      || die "could not create $(dirname "$LOG_FILE")"
+    log "using $BINARY_PATH in place (local mode)"
+    return 0
+  fi
   local tmp="${REMOTE_BINARY}.new"
   remote_sh "mkdir -p $(shell_quote "$(dirname "$REMOTE_BINARY")") $(shell_quote "$(dirname "$LOG_FILE")")" \
     || die "could not create the remote directories for $REMOTE_BINARY"
@@ -462,6 +554,12 @@ upload_semgrep_rules() {
     warn "semgrep rules source $SEMGREP_RULES_SOURCE is missing; the workbench will report a regex fallback"
     return 0
   fi
+  if [ "$LOCAL_MODE" = "1" ]; then
+    # In local mode the rules directory is the working copy's own, which the
+    # mock reads directly; packing and unpacking it would only churn files.
+    log "semgrep rules: $SEMGREP_RULES (the working copy's own, nothing to upload)"
+    return 0
+  fi
   if is_dry_run; then
     log "would upload $SEMGREP_RULES_SOURCE -> $REMOTE_TARGET:$SEMGREP_RULES"
     return 0
@@ -474,7 +572,7 @@ upload_semgrep_rules() {
     warn "could not pack $SEMGREP_RULES_SOURCE; leaving the remote rules unchanged"
     return 0
   fi
-  if ! "${SCP_CMD[@]}" "$tarball" "$REMOTE_TARGET:$remote_tar"; then
+  if ! copy_to_host "$tarball" "$remote_tar"; then
     rm -f "$tarball"
     warn "could not upload the semgrep rules; leaving the remote rules unchanged"
     return 0
@@ -497,41 +595,42 @@ start_remote() {
   log "console: user ${CONSOLE_USER:-admin}; TEE-TLS endpoint ${TEE_TLS_ENDPOINT:-(derived from the LLM target host on port 18443)}"
   log "audit engine: $AUDIT_ENGINE (semgrep rules $SEMGREP_RULES, CLI $SEMGREP_BIN_DIR)"
   log "instance inventory: ${INSTANCES:-(none; the console lists whatever registers)}"
+  log "instance targets: ${INSTANCE_TARGETS:-(none; every address is derived from its registration)}"
   if is_dry_run; then
-    log "would start ${REMOTE_ENV_PREFIX}$REMOTE_BINARY on $REMOTE_TARGET with ${MOCK_ARGS[*]} (log $LOG_FILE)"
+    log "would start ${REMOTE_ENV_PREFIX}$REMOTE_BINARY on $(host_label) with ${MOCK_ARGS[*]} (log $LOG_FILE)"
     return 0
   fi
-  remote_sh "mkdir -p $(shell_quote "$REMOTE_DIR")" || die "could not create $REMOTE_DIR on $REMOTE_TARGET"
+  remote_sh "mkdir -p $(shell_quote "$REMOTE_DIR")" || die "could not create $REMOTE_DIR on $(host_label)"
   stop_remote
   upload_remote
   ensure_semgrep_remote
   upload_semgrep_rules
-  log "starting platform-mock on $REMOTE_TARGET ($ADDR)"
+  log "starting platform-mock on $(host_label) ($ADDR)"
   # Environment assignments must precede nohup: nohup treats its first argument
   # as the command, so `nohup VAR=value binary` looks for a program named
   # VAR=value.
   remote_sh "${REMOTE_ENV_PREFIX}nohup $(shell_quote "$REMOTE_BINARY") $(shell_quote "${MOCK_ARGS[@]}") > $(shell_quote "$LOG_FILE") 2>&1 < /dev/null & echo \$! > $(shell_quote "$PID_FILE")" \
-    || die "failed to start $REMOTE_BINARY on $REMOTE_TARGET"
+    || die "failed to start $REMOTE_BINARY on $(host_label)"
   if ! wait_ready; then
     remote_sh "tail -n 40 $(shell_quote "$LOG_FILE")" >&2 || true
-    die "platform-mock did not answer $PROBE_URL on $REMOTE_TARGET within ${READY_TIMEOUT}s (log $LOG_FILE)"
+    die "platform-mock did not answer $PROBE_URL on $(host_label) within ${READY_TIMEOUT}s (log $LOG_FILE)"
   fi
-  log "platform-mock is answering on $REMOTE_TARGET ($PROBE_BASE, pid $PID_FILE)"
+  log "platform-mock is answering on $(host_label) ($PROBE_BASE, pid $PID_FILE)"
 }
 
 status_remote() {
   local running=0
   if remote_sh "if [ -f $(shell_quote "$PID_FILE") ]; then p=\$(cat $(shell_quote "$PID_FILE") 2>/dev/null || true); [ -n \"\$p\" ] && kill -0 \"\$p\" 2>/dev/null && echo \"pid \$p\"; fi; pgrep -x $(shell_quote "$BINARY_NAME") >/dev/null 2>&1" 2>/dev/null; then
-    log "running on $REMOTE_TARGET (pid file $PID_FILE, log $LOG_FILE)"
+    log "running on $(host_label) (pid file $PID_FILE, log $LOG_FILE)"
     running=1
   else
-    log "not running on $REMOTE_TARGET (pid file $PID_FILE)"
+    log "not running on $(host_label) (pid file $PID_FILE)"
   fi
   if http_ready_remote; then
-    log "status endpoint ready on $REMOTE_TARGET: $PROBE_BASE"
+    log "status endpoint ready on $(host_label): $PROBE_BASE"
     return 0
   fi
-  log "status endpoint not answering on $REMOTE_TARGET: $PROBE_BASE"
+  log "status endpoint not answering on $(host_label): $PROBE_BASE"
   [ "$running" = "1" ] && return 0
   return 1
 }
@@ -544,7 +643,7 @@ main() {
   fi
   parse_args "$@"
   resolve_defaults
-  setup_ssh
+  [ "$LOCAL_MODE" = "1" ] || setup_ssh
 
   case "$ACTION" in
     start)

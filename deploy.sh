@@ -151,6 +151,17 @@ TAA_POD_CC_INIT_DATA="${TAA_POD_CC_INIT_DATA:-}"
 # Identity registered with the platform. The Pod name is stable across redeploys, which keeps the
 # instance the platform sees from changing on every deployment.
 TAA_POD_DOCKER_ID="${TAA_POD_DOCKER_ID:-}"
+# NodePort that publishes this instance's TAA listener on the cluster node, so a platform that
+# is not on the cluster network can dial it. Every Pod this deployment creates gets a Service
+# of its own (see ensure_taa_service); the port has to be stable, because the platform records
+# the address, so it is allocated here rather than left to Kubernetes. Empty means "not
+# published", which keeps the old behaviour for deployments that reach the Pod by its own IP.
+TAA_SERVICE_NODE_PORT="${TAA_SERVICE_NODE_PORT:-}"
+# Labels the Service selects this Pod by. It is the registered identity rather than the Pod
+# name: the platform's inventory, the Service's selector and the registration all name the same
+# instance, and a Pod recreated under the same DOCKER_ID is picked up without touching the
+# Service.
+TAA_INSTANCE_LABEL_KEY="taa-instance-id"
 # The platform's SM2 public key (hex, 04 || X || Y). TAA seals every message it sends and refuses
 # to start without it, and the remote config path drops the `platform` block, so a Pod can only
 # receive it through its environment. PLATFORM_PUBLIC_KEY is read too: that is the name TAA itself
@@ -684,6 +695,87 @@ REMOTE_PUSH
 # Creates the deployment-owned TAA Pod. Reached only when --pod was not given and no Pod with
 # that name exists, so an immutable-Pod rewrite cannot happen here. The rendered manifest uses |
 # as the delimiter because the injected base64 value contains / and + but never |.
+# Kubernetes label values are restricted to 63 characters of [A-Za-z0-9._-], and a DOCKER_ID
+# outside that would make the Pod manifest invalid — a failure that would otherwise surface only
+# after the image was built and pushed. Checked before anything is built.
+validate_instance_label() {
+  local id="$1"
+  if [[ -z "$id" ]]; then
+    err "the instance label value is empty"
+    detail "DOCKER_ID (or the Pod name, when DOCKER_ID is unset) becomes the taa-instance-id label."
+    exit 1
+  fi
+  if (( ${#id} > 63 )); then
+    err "DOCKER_ID '$id' is ${#id} characters, longer than the 63 a Kubernetes label value allows"
+    exit 1
+  fi
+  if [[ ! "$id" =~ ^[A-Za-z0-9]([A-Za-z0-9._-]*[A-Za-z0-9])?$ ]]; then
+    err "DOCKER_ID '$id' cannot be a Kubernetes label value"
+    detail "Allowed: alphanumerics, '-', '_' and '.', starting and ending with an alphanumeric."
+    exit 1
+  fi
+}
+
+# ensure_taa_service publishes the instance's TAA listener on the cluster node. The platform
+# records this address, so it has to survive the Pod being recreated: the Service selects the
+# taa-instance-id label rather than the Pod name, so a replacement Pod with the same DOCKER_ID
+# joins the same Service without an edit here.
+#
+# applied rather than created because the Service outlives the Pod on purpose: after a delete
+# it has no endpoints, and the next create fills them in.
+ensure_taa_service() {
+  local docker_id="$1" pod_namespace="$2" name
+  if [[ -z "$TAA_SERVICE_NODE_PORT" ]]; then
+    info "no NodePort Service (TAA_SERVICE_NODE_PORT is empty); the instance is reachable at its Pod IP only"
+    return 0
+  fi
+  if [[ ! "$TAA_SERVICE_NODE_PORT" =~ ^[0-9]+$ ]] || (( TAA_SERVICE_NODE_PORT < 30000 || TAA_SERVICE_NODE_PORT > 32767 )); then
+    err "TAA_SERVICE_NODE_PORT=$TAA_SERVICE_NODE_PORT is not a NodePort number (30000-32767)"
+    exit 1
+  fi
+  # A Service name has to be a DNS-1035 label, which is stricter than the Pod label: it must
+  # start with a letter and may not contain '.', while a DOCKER_ID produced from a sha may.
+  name="taa-$(printf '%s' "$docker_id" | tr '._' '--' | tr 'A-Z' 'a-z')"
+  if (( ${#name} > 63 )); then
+    err "the Service name '$name' derived from DOCKER_ID is longer than 63 characters"
+    detail "Leave TAA_SERVICE_NODE_PORT empty to reach the Pod by its own address, or shorten DOCKER_ID."
+    exit 1
+  fi
+  step "publishing $docker_id on node port $TAA_SERVICE_NODE_PORT (Service $name)"
+  local manifest
+  manifest="$(cat <<EOF
+apiVersion: v1
+kind: Service
+metadata:
+  name: $name
+  namespace: $pod_namespace
+  labels:
+    app: taa
+spec:
+  type: NodePort
+  selector:
+    $TAA_INSTANCE_LABEL_KEY: "$docker_id"
+  ports:
+    - name: taa
+      port: $TAA_PORT
+      targetPort: $TAA_PORT
+      protocol: TCP
+      nodePort: $TAA_SERVICE_NODE_PORT
+EOF
+)"
+  # apply, because a recreated Pod with the same DOCKER_ID must reuse the Service and its port.
+  # A port already bound by another Service makes this fail, and the Pod is left running: the
+  # publishing is what failed, not the instance, so the message names the port rather than
+  # implying the deployment is broken.
+  if ! printf '%s\n' "$manifest" | remote_ssh "kubectl $K_NS apply -f -"; then
+    err "could not publish $docker_id on node port $TAA_SERVICE_NODE_PORT"
+    detail "Another Service may already own that port. Pick a free one and retry, or leave TAA_SERVICE_NODE_PORT empty to skip publishing."
+    detail "Existing NodePorts: kubectl $K_NS get svc -o wide"
+    exit 1
+  fi
+  info "NodePort $TAA_SERVICE_NODE_PORT -> $docker_id:$TAA_PORT (http://${REMOTE_HOST}:${TAA_SERVICE_NODE_PORT})"
+}
+
 create_taa_pod() {
   require_file "TAA Pod template" "$TAA_POD_TEMPLATE"
   # An image named explicitly is the operator's decision and is used as given. Otherwise the Pod
@@ -701,6 +793,7 @@ create_taa_pod() {
   fi
   cc_init_data="$(derive_cc_init_data)"
   docker_id="${TAA_POD_DOCKER_ID:-$TARGET_POD}"
+  validate_instance_label "$docker_id"
   if [[ -z "${CONTRACT_ID:-}" ]]; then
     warn "CONTRACT_ID is empty; the Pod will register without a contract id"
   fi
@@ -727,6 +820,7 @@ create_taa_pod() {
       -e "s|__MEMORY__|$(sed_escape "$TAA_POD_MEMORY")|g" \
       -e "s|__CONTRACT_TYPE__|$(sed_escape "$TAA_POD_CONTRACT_TYPE")|g" \
       -e "s|__CC_INIT_DATA__|$(sed_escape "$cc_init_data")|g" \
+      -e "s|__TAA_INSTANCE_ID__|$(sed_escape "$docker_id")|g" \
       -e "s|__DOCKER_ID__|$(sed_escape "$docker_id")|g" \
       -e "s|__PLATFORM_IP__|$(sed_escape "$REMOTE_PLATFORM_IP")|g" \
       -e "s|__PLATFORM_PUBLIC_KEY__|$(sed_escape "$TAA_POD_PLATFORM_PUBLIC_KEY")|g" \
@@ -765,6 +859,7 @@ create_taa_pod() {
   # the deployment's later pause would come after that window.
   step "holding the daemon baked into the new Pod"
   pause_remote_taa || true
+  ensure_taa_service "$docker_id" "$pod_namespace"
   info "TAA Pod created and Ready: $TARGET_POD"
 }
 
@@ -818,6 +913,12 @@ delete_taa_pod() {
     err "Pod '$TARGET_POD' is still present after a forced delete"
     exit 1
   fi
+  # The Service is named after the identity the Pod registered with, so it is found from the
+  # same value. Removing it keeps the NodePort from lingering as a route to nothing; a redeploy
+  # recreates both. Tolerated as missing because a Pod created without publishing has none.
+  local docker_id
+  docker_id="${TAA_POD_DOCKER_ID:-$TARGET_POD}"
+  remote_ssh "kubectl $K_NS delete svc 'taa-$(printf '%s' "$docker_id" | tr '._' '--' | tr 'A-Z' 'a-z')' --ignore-not-found" >/dev/null 2>&1 || true
   info "TAA Pod '$TARGET_POD' deleted (its writable layer goes with it)"
 }
 
@@ -1177,7 +1278,16 @@ Environment overrides:
   TAA_POD_INITDATA_FILE=${TAA_POD_INITDATA_FILE}
       宿主机上的 initdata 文件，作为 cc_init_data 的兜底来源（gzip + base64 后写入注解）。
   TAA_POD_DOCKER_ID=<id>
-      注册到平台的 DOCKER_ID；置空时使用 Pod 名称。
+      注册到平台的 DOCKER_ID；置空时使用 Pod 名称。同时作为 Pod 的 taa-instance-id 标签值，
+      因此必须是合法的 Kubernetes label（≤63 字符，字母数字/-/_/.，首尾为字母数字）。
+  TAA_SERVICE_NODE_PORT=<30000-32767>
+      把该实例的 TAA 监听端口以 NodePort 发布到集群节点，并创建一个以 DOCKER_ID 为选择器的
+      Service。平台不在集群网络时（例如 platform-mock 部署在另一台主机）必须用它：TAA 注册
+      报文的源地址会被 NAT 改写，平台推导出的地址只会指向那台 NAT 主机。地址形如
+      http://<REMOTE_HOST>:<port>，实例重建后不变。置空则不创建 Service（只能按 Pod IP 访问）；
+      与已占用的 NodePort 冲突时创建失败，Pod 本身不受影响。
+  TAA_INSTANCE_LABEL_KEY=${TAA_INSTANCE_LABEL_KEY}
+      Service 用来选中该 Pod 的标签键（默认 taa-instance-id）。
   TAA_POD_PLATFORM_PUBLIC_KEY=<hex>
       平台 SM2 公钥（04||X||Y 的 hex）；也可直接用 PLATFORM_PUBLIC_KEY。两者都未设置时，
       从 TAA_POD_PLATFORM_KEY_FILE 自动读取；仍读不到才拒绝创建（TAA 缺它会启动即 FATAL）。

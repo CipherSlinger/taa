@@ -102,6 +102,9 @@ func NewServer(cfg Config) *Server {
 	if expected := mgr.expectedConfig(); len(expected) > 0 {
 		log.Printf("instance inventory: %s (entries that have not registered are listed as 未连接)", describeExpected(expected))
 	}
+	if configured := describeInstanceTargets(mgr.instanceTargets); configured != "" {
+		log.Printf("configured instance targets: %s (they outrank the address derived from a registration)", configured)
+	}
 
 	uploadDir := cfg.UploadDir
 	if abs, err := filepath.Abs(uploadDir); err == nil {
