@@ -1728,39 +1728,6 @@ async function refreshDashboardStatus() {
 window.refreshDashboardStatus = refreshDashboardStatus;
 
 // ── TAA API Triggers ──
-// openHealthResult shows the reply one instance's automatic check produced.
-// Connectivity is not triggered from here any more: every registered row is
-// checked on a timer by the console (see syncInstanceConnectivity), so the only
-// remaining health action is reading the reply that check left behind.
-function openHealthResult(id) {
-  const entry = (typeof instanceHealthPayloads !== 'undefined' && instanceHealthPayloads[id]) || null;
-  const request = 'GET /v1/taa/health?dockerId=' + encodeURIComponent(id || '');
-  if (!entry) {
-    recordInteraction('health', {
-      title: '健康检查 (' + request + ')',
-      primaryLabel: '返回内容',
-      secondaryLabel: '请求体',
-      primaryContent: '该实例尚未产生连通性检查结果。',
-      secondaryContent: '{}',
-      endpoint: request,
-    });
-    openInteractionDrawer('health', 'primary');
-    return;
-  }
-  recordInteraction('health', {
-    title: '健康检查 (' + request + ')',
-    primaryLabel: '返回内容',
-    secondaryLabel: '请求体',
-    primaryContent: entry.data,
-    secondaryContent: '{}',
-    endpoint: request,
-    reqBody: {},
-    respBody: entry.data,
-    statusCode: entry.status,
-  });
-  openInteractionDrawer('health', 'primary');
-}
-
 async function testImport() {
   randomizeImportIds();
   showResultRunning('importResult', '正在请求...');

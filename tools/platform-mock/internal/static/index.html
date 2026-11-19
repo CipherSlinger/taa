@@ -103,7 +103,6 @@
     <div class="card-head" style="margin-bottom:12px; padding-bottom:10px; flex-wrap:wrap; gap:12px;">
       <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
         <h2 style="margin:0;">平台注册</h2>
-        <span id="instanceSummary" class="instance-summary">正在读取实例…</span>
       </div>
       <button type="button" class="secondary btn-icon" onclick="refreshStatus()" title="刷新状态" aria-label="刷新状态">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -186,11 +185,6 @@
       </div>
     </div>
     <div id="llmLastError" style="display:none; color:#dc2626; font-size:12.5px; margin-bottom:10px;"></div>
-
-    <details id="llmAttestationDetails" class="llm-panel">
-      <summary>远程证明</summary>
-      <div id="llmAttestationBox" class="llm-panel-body"></div>
-    </details>
 
     <details id="llmLogBox" class="llm-panel">
       <summary>运行日志</summary>

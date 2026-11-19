@@ -2016,11 +2016,9 @@ func TestHealthCheckIntegratedIntoRegistration(t *testing.T) {
 	// Integrated elements and functions should be present
 	for _, want := range []string{
 		`id="card-attestation"`,
-		// Connectivity is checked on a timer rather than pressed per row, so the
-		// health path is the scheduler plus the per-instance reply viewer.
+		// Connectivity is checked on a timer rather than pressed per row; the
+		// rows show the outcome and keep no reply viewer of their own.
 		"syncInstanceConnectivity(",
-		"openHealthResult(",
-		"instanceHealthPayloads",
 		// The address and health state moved into the rows themselves.
 		"recordInstanceHealth(",
 		"instanceHealthFor(",
@@ -2086,8 +2084,8 @@ func TestHealthCheckIntegratedIntoRegistration(t *testing.T) {
 	if strings.Contains(indexHTML, `onclick="testHealth()"`) {
 		t.Fatal("the health check button should be rendered per row, not in the card's detail bar")
 	}
-	if !strings.Contains(frontendBundle, `instanceActionButton('查看结果'`) {
-		t.Fatal("frontendBundle missing the per-row 查看结果 action")
+	if strings.Contains(frontendBundle, `instanceActionButton('查看结果'`) {
+		t.Fatal("the per-row 查看结果 action should be gone; rows show only the check's outcome")
 	}
 	// The TEE-LLM panel is the other platform-facing endpoint, so it is an inner
 	// block of the registration card rather than the sibling card it used to be.
@@ -2136,7 +2134,6 @@ func TestIndexHTMLModalTabsAndLegacySectionRemoval(t *testing.T) {
 
 	// Interaction keys should be recorded in frontendBundle
 	requiredInteractionKeys := []string{
-		"recordInteraction('health'",
 		"recordInteraction('attestation'",
 		"recordInteraction('switch'",
 		"recordInteraction('upload'",

@@ -317,11 +317,6 @@ button.secondary.btn-icon:hover:not(:disabled) {
   margin-bottom: 12px;
 }
 
-.instance-summary {
-  font-size: 12.5px;
-  color: var(--muted);
-}
-
 .instance-empty {
   padding: 12px 14px;
   font-size: 12.5px;

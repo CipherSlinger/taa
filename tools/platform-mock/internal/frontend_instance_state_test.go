@@ -81,27 +81,32 @@ func TestFrontendConnectivityIsCheckedOnATimer(t *testing.T) {
 	if strings.Contains(frontendBundle, `instanceActionButton('检查连通性'`) {
 		t.Fatal("the 检查连通性 row action survived; checks are automatic")
 	}
-	// 查看结果 reads the row's own reply rather than a single global result.
-	viewer := frontendFunction(t, "openHealthResult")
-	if !strings.Contains(viewer, "instanceHealthPayloads[id]") {
-		t.Fatal("openHealthResult does not read the per-instance reply it was opened for")
+	// A row states the check's outcome and nothing else: the reply viewer and
+	// the payload it read are gone, so no row action reopens a health reply.
+	for _, gone := range []string{
+		`instanceActionButton('查看结果'`,
+		"openHealthResult(",
+		"instanceHealthPayloads",
+	} {
+		if strings.Contains(frontendBundle, gone) {
+			t.Fatalf("frontendBundle still contains %q", gone)
+		}
 	}
 }
 
-// TestFrontendConnectionSummaryCountsOnlyVerifiedLinks pins the list summary to
-// the same rule as the rows: the tally must not say 已连接 for rows the console
-// has never verified, or the header would repeat the false claim the badge was
-// fixed to stop making.
-func TestFrontendConnectionSummaryCountsOnlyVerifiedLinks(t *testing.T) {
-	fn := frontendFunction(t, "updateInstanceSummary")
-	if !strings.Contains(fn, "instanceConnectionState(item).tone === 'ok'") {
-		t.Fatal("the summary must count rows by the connection state, not by item.accepted")
-	}
-	if strings.Contains(fn, "item.accepted") {
-		t.Fatal("the summary counts accepted registrations as connected")
-	}
-	if !strings.Contains(fn, "个连通正常") {
-		t.Fatal("the summary should use the same 连通正常 wording as the verified badge")
+// TestFrontendRegistrationHeaderCarriesNoTally pins that the instance list's
+// header has no summary sentence: every fact belongs to one instance and is
+// stated on that row, where it is refreshed by the row's own check. A tally up
+// here would repeat the rows in a place that no check updates.
+func TestFrontendRegistrationHeaderCarriesNoTally(t *testing.T) {
+	for _, gone := range []string{
+		`id="instanceSummary"`,
+		"updateInstanceSummary(",
+		"个连通正常",
+	} {
+		if strings.Contains(frontendBundle, gone) {
+			t.Fatalf("frontendBundle still contains %q", gone)
+		}
 	}
 }
 
@@ -150,6 +155,40 @@ func TestFrontendHealthChipExpires(t *testing.T) {
 
 // frontendFunction extracts one top-level function from the served bundle. The
 // bundle is plain browser JS, so the console logic is checked where it lives.
+// TestFrontendLLMAttestationShowsInADrawer pins where the TEE-LLM report is
+// read. The panel used to hold a collapsed 远程证明 section that kept the last
+// report on screen; the report is a one-off hardware call, so the button now
+// opens it in the shared drawer and the panel keeps no copy of its own.
+func TestFrontendLLMAttestationShowsInADrawer(t *testing.T) {
+	for _, gone := range []string{
+		`id="llmAttestationDetails"`,
+		`id="llmAttestationBox"`,
+		"<summary>远程证明</summary>",
+	} {
+		if strings.Contains(indexHTML, gone) {
+			t.Fatalf("index.html still contains %q", gone)
+		}
+	}
+	js, err := staticFS.ReadFile("static/js/llm.js")
+	if err != nil {
+		t.Fatalf("cannot read static/js/llm.js: %v", err)
+	}
+	src := string(js)
+	for _, want := range []string{
+		"function openLLMAttestation(att)",
+		"recordInteraction('llmAttestation'",
+		"openInteractionDrawer('llmAttestation'",
+		"attestationValues",
+	} {
+		if !strings.Contains(src, want) {
+			t.Fatalf("static/js/llm.js missing %q", want)
+		}
+	}
+	if strings.Contains(src, "renderLLMAttestation") {
+		t.Fatal("llm.js still renders the report into the panel")
+	}
+}
+
 func frontendFunction(t *testing.T, name string) string {
 	t.Helper()
 	start := strings.Index(frontendBundle, "function "+name+"(")

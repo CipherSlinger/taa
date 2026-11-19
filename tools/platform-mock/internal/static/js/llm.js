@@ -11,6 +11,9 @@ const LLM_OFFLINE_AFTER_POLLS = 3;
 
 let llmLogPaused = false;
 let llmLogAutoScroll = true;
+// llmLastAddress is the instance address the last status render saw. The
+// attestation drawer uses it to name the endpoint it came from.
+let llmLastAddress = '';
 
 function llmRelativeTime(iso) {
   if (!iso) return '';
@@ -44,6 +47,7 @@ function llmDuration(seconds) {
 
 function renderLLMStatus(payload) {
   const state = (payload && payload.state) || {};
+  llmLastAddress = state.address || '';
   const pollSeconds = Number(payload && payload.pollSeconds) || 10;
   const offlineAfterMs = pollSeconds * 1000 * LLM_OFFLINE_AFTER_POLLS;
 
@@ -93,28 +97,46 @@ function renderLLMStatus(payload) {
     errEl.style.display = state.lastError ? '' : 'none';
   }
 
-  renderLLMAttestation(state.attestation);
   renderLLMLogs(payload && payload.logs);
 }
 
-function renderLLMAttestation(att) {
-  const box = document.getElementById('llmAttestationBox');
-  if (!box) return;
-  if (!att || !att.fetchedAt) {
-    box.innerHTML = '<span class="muted" style="font-size:12.5px;">尚未拉取。点击「获取证明报告」向实例发起一次调用。</span>';
-    return;
-  }
-  const verified = att.verifiedPass ? '✓ 自检通过' : '✗ 自检失败';
-  const err = att.error ? `<div style="color:#dc2626; margin-top:6px;">${escapeHtml(att.error)}</div>` : '';
-  box.innerHTML = `
-    <div style="display:flex; gap:18px; flex-wrap:wrap; font-size:13px;">
-      <span>requestId: <code>${escapeHtml(att.requestId || '—')}</code></span>
-      <span>${verified}</span>
-      <span>报告: ${att.attestationSize || 0} B</span>
-      <span>拉取于: ${llmTimeOfDay(att.fetchedAt)}</span>
-    </div>
-    <pre style="margin:8px 0 0; max-height:140px; overflow:auto; background:var(--panel-sub); border:1px solid var(--line); border-radius:8px; padding:8px; font-size:12px;">${escapeHtml(att.attestationValues || '—')}</pre>
-    ${err}`;
+// openLLMAttestation shows one fetched report in the shared drawer. The report
+// is a snapshot the poller took when the operator asked, not panel state: it
+// only changes when the instance restarts, so it is displayed in full and then
+// left alone. attestationValues is a JSON string in the envelope; it is parsed
+// before display so the drawer can nest it instead of escaping the whole blob.
+function openLLMAttestation(att) {
+  const values = (typeof parseJSONRecursively === 'function')
+    ? parseJSONRecursively(att.attestationValues)
+    : att.attestationValues;
+  const requestID = att.requestId || '';
+  const report = {
+    requestId: requestID,
+    verifiedPass: !!att.verifiedPass,
+    attestationSize: att.attestationSize || 0,
+    fetchedAt: att.fetchedAt || '',
+    attestationValues: values || '',
+    attestationBase64: att.attestationBase64 || '',
+  };
+  if (att.error) report.error = att.error;
+  const endpoint = '/v1/llm/getAttestation';
+  // The drawer's cURL preview resolves the address from the selected TAA
+  // instance, which is the wrong endpoint here. Naming the polled LLM address
+  // directly keeps the preview honest; without one the button stays hidden
+  // rather than pointing a curl at a TAA instance.
+  const interaction = {
+    title: 'TEE-LLM 远程证明报告（来自实例，未校验）' + ' (' + endpoint + ')',
+    primaryLabel: '证明报告',
+    secondaryLabel: '请求体',
+    primaryContent: report,
+    secondaryContent: { requestId: requestID },
+    reqBody: { requestId: requestID },
+    respBody: report,
+    statusCode: 200,
+  };
+  if (llmLastAddress) interaction.url = llmLastAddress.replace(/\/+$/, '') + endpoint;
+  recordInteraction('llmAttestation', interaction);
+  openInteractionDrawer('llmAttestation', 'primary');
 }
 
 function renderLLMLogEntry(entry) {
@@ -192,6 +214,7 @@ async function pollLLMNow() {
 }
 
 async function fetchLLMAttestation() {
+  let report = null;
   try {
     const res = await fetch('/api/llm/attestation', { method: 'POST' });
     const data = await res.json();
@@ -199,15 +222,19 @@ async function fetchLLMAttestation() {
       if (typeof showToast === 'function') {
         showToast({ type: 'warning', title: '获取失败', message: data.msg || '实例未应答' });
       }
-    } else if (typeof showToast === 'function') {
-      showToast({ type: 'success', title: '已拉取', message: '远程证明报告来自实例，未做校验' });
+    } else {
+      report = responseResult(data);
     }
   } catch (_) {
     if (typeof showToast === 'function') {
       showToast({ type: 'warning', title: '获取失败', message: '请求未完成' });
     }
   }
-  refreshLLMStatus();
+  // The panel keeps no copy of the report: the drawer is where it is read, and
+  // the poller's snapshot only matters for the next 获取证明报告 click. The
+  // refresh is awaited so the drawer is titled with the address this fetch used.
+  await refreshLLMStatus();
+  if (report && report.fetchedAt) openLLMAttestation(report);
 }
 
 async function clearLLMLogs() {

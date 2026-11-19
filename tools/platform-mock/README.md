@@ -247,7 +247,10 @@ The platform mock provides an embedded single-page Web console accessible by ope
   `--llm-port` opt back into kubectl Pod-IP discovery — the instance's per-process
   `dockerId` (`teellm-<10 digits>`; a change means the instance was restarted or rebuilt, and the
   log cursor resets with it), model and uptime, heartbeat liveness, the batched run logs from
-  `/v1/llm/log`, and the report fetched from `/v1/llm/getAttestation` on demand. Reset clears the
+  `/v1/llm/log`, and the report fetched from `/v1/llm/getAttestation` on demand — clicking
+  获取证明报告 opens it in the shared drawer (request id, the instance's self-check result,
+  report size, the parsed `attestationValues` and the base64 report); the panel keeps no copy
+  between fetches, because the report changes only when the instance restarts. Reset clears the
   polled state and the LLM log store.
 
 ## Multiple Instances
@@ -302,8 +305,8 @@ flag: instance identity is the registration's `dockerId`.
   historical fact, and the periodic checks are what turn it into `连通正常`. A passing check
   expires after 90 seconds and the row falls back to `已注册`; a failed one is kept until the
   next check replaces it. It carries its
-  own actions (日志, 公钥, 注册返回, 查看结果 for a row whose check produced a reply,
-  获取证明报告 for TEE). 日志 toggles an inline terminal under that row; it belongs to the
+  own actions (日志, 公钥, 注册返回, 获取证明报告 for TEE). 日志 toggles an inline terminal
+  under that row; it belongs to the
   row's `dockerId`, not to the selection, and carries its own pause, filter, search and scroll. Those buttons address their row's `dockerId` directly; there is
   no separate detail row under the list and no delete action: the list is the configured
   inventory, so a row is not removed from here. An instance whose Pod is gone keeps its row,

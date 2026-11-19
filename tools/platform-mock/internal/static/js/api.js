@@ -61,10 +61,9 @@ let instanceKinds = {};
 let instanceTargets = {};
 
 // instanceHealthState is what the 环境 chip shows for each row: the outcome of
-// the last connectivity check the console ran. 查看结果 reads the raw response
-// from instanceHealthPayloads, so the drawer always shows the row's own reply.
+// the last connectivity check the console ran. The reply itself is kept only
+// long enough to describe that outcome; nothing in the row reopens it.
 const instanceHealthState = {};
-const instanceHealthPayloads = {};
 // healthStampRendered is the timestamp signature the list currently displays.
 // tickInstanceHealthExpiry compares against it to repaint only when a check has
 // aged out of the green badge.
@@ -89,7 +88,7 @@ const instanceLinks = {};
 const INSTANCE_HEALTH_INTERVAL_MS = 30 * 1000;
 const INSTANCE_DISCONNECT_AFTER_MS = 5 * 60 * 1000;
 
-function recordInstanceHealth(id, tone, label, title, payload) {
+function recordInstanceHealth(id, tone, label, title) {
   if (!id) return;
   instanceHealthState[id] = {
     tone: tone === 'ok' || tone === 'bad' || tone === 'running' ? tone : 'pending',
@@ -97,7 +96,6 @@ function recordInstanceHealth(id, tone, label, title, payload) {
     title: title || '',
     checkedAt: (tone === 'ok' || tone === 'bad') ? Date.now() : 0,
   };
-  if (payload) instanceHealthPayloads[id] = payload;
   renderInstanceList();
 }
 
@@ -313,7 +311,6 @@ function applyInstanceList(list, defaultId) {
     instanceKinds[item.dockerId] = item.kind || '';
     instanceTargets[item.dockerId] = item.taaTarget || '';
   });
-  updateInstanceSummary(list);
   if (signature !== instanceListSignature || next !== instanceRenderedSelection) {
     instanceListSignature = signature;
     renderInstanceList();
@@ -328,31 +325,6 @@ function applyInstanceList(list, defaultId) {
   // state repaints the list: the selection and per-kind maps must already
   // describe this poll, not the one before it.
   syncInstanceConnectivity(list);
-}
-
-function updateInstanceSummary(list) {
-  const el = document.getElementById('instanceSummary');
-  if (!el) return;
-  if (!list.length) {
-    el.textContent = '暂无已注册实例';
-    return;
-  }
-  // The tally follows the rows: only a fresh passing check counts as 连通正常.
-  // Counting accepted registrations here would repeat the false claim the badge
-  // itself no longer makes — an accepted registration is not a live link.
-  const connected = list.filter((item) => instanceConnectionState(item).tone === 'ok').length;
-  const unverified = list.filter((item) => instanceConnectionState(item).label === '已注册').length;
-  const reconnecting = list.filter((item) => instanceConnectionState(item).label === '重连中').length;
-  const disconnected = list.filter((item) => instanceConnectionState(item).label === '断开连接').length;
-  let summary = '共 ' + list.length + ' 个实例，' + connected + ' 个连通正常';
-  if (unverified > 0) summary += '，' + unverified + ' 个已注册（连接未验证）';
-  if (reconnecting > 0) summary += '，' + reconnecting + ' 个重连中';
-  if (disconnected > 0) summary += '，' + disconnected + ' 个断开连接';
-  // Only say so when the inventory is what makes the list longer than the
-  // registrations: otherwise every page would carry a sentence about a
-  // distinction that is not in play.
-  const pending = list.filter((item) => item.expected && !item.received).length;
-  el.textContent = pending > 0 ? summary + '，' + pending + ' 个未连接' : summary;
 }
 
 // renderInstanceList paints one section per kind from instanceCache. Rows are
@@ -488,12 +460,6 @@ function buildInstanceRow(item) {
   actions.appendChild(logButton);
   actions.appendChild(instanceActionButton('公钥', () => openInstancePublicKey(id), !item.accepted, '查看该实例上报的 TAA 注册公钥'));
   actions.appendChild(instanceActionButton('注册返回', () => openInstanceRegisterBody(id), !item.received, '查看该实例的注册请求与平台返回'));
-  // Connectivity is not an action: the row's checks run on a timer from the
-  // moment the instance registers, so there is nothing for the operator to
-  // start. 查看结果 only opens the reply the latest check produced.
-  if (instanceHealthPayloads[id]) {
-    actions.appendChild(instanceActionButton('查看结果', () => { selectInstance(id); openHealthResult(id); }, false, '查看该实例最近一次连通性检查的返回'));
-  }
   if (item.kind === 'tee') {
     actions.appendChild(instanceActionButton('获取证明报告', () => runInstanceAttestation(id), false, '获取该实例的 CSV 远程证明报告'));
     // The report blob is one value in the page, so these two only exist on the
@@ -708,7 +674,7 @@ async function runInstanceConnectivityCheck(id) {
     current.state = 'ok';
     current.okAt = Date.now();
     current.firstFailureAt = 0;
-    recordInstanceHealth(id, 'ok', '连通正常', '连通性检查通过', result);
+    recordInstanceHealth(id, 'ok', '连通正常', '连通性检查通过');
   } else {
     recordInstanceConnectivityFailure(id, result);
   }
@@ -730,12 +696,12 @@ function recordInstanceConnectivityFailure(id, result) {
     link.state = 'disconnected';
     clearInstanceConnectivityTimer(link);
     recordInstanceHealth(id, 'bad', '连接断开', result.title + '：' + result.error +
-      '；已持续 ' + Math.round(downFor / 60000) + ' 分钟，停止检查', result);
+      '；已持续 ' + Math.round(downFor / 60000) + ' 分钟，停止检查');
     return;
   }
   link.state = 'reconnecting';
   recordInstanceHealth(id, 'bad', '连通异常', result.title + '：' + result.error +
-    '；自 ' + instanceClock(new Date(link.firstFailureAt).toISOString()) + ' 起持续失败，仍在重试', result);
+    '；自 ' + instanceClock(new Date(link.firstFailureAt).toISOString()) + ' 起持续失败，仍在重试');
 }
 
 function scheduleInstanceConnectivity(id) {
