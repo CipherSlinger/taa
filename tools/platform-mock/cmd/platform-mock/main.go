@@ -32,6 +32,7 @@ func main() {
 	flag.StringVar(&cfg.AuditEngine, "audit-engine", cfg.AuditEngine, "audit workbench static engine: semgrep or regex")
 	flag.StringVar(&cfg.SemgrepRules, "semgrep-rules", cfg.SemgrepRules, "semgrep rules file or directory")
 	flag.StringVar(&cfg.TerminalShell, "terminal-shell", cfg.TerminalShell, "shell the API tester's host terminal starts")
+	flag.StringVar(&cfg.ExpectedInstances, "instances", cfg.ExpectedInstances, "configured instance inventory, type:dockerId[,type:dockerId...]; entries that never register are listed as 未连接")
 	flag.Parse()
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()

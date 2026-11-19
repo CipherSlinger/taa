@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strings"
 	"testing"
 
 	"taa/pkg/crypto"
@@ -349,60 +350,34 @@ func TestInstancesEndpointReportsTheDerivedKind(t *testing.T) {
 	}
 }
 
-// A deleted Pod keeps its last registration forever; the console's delete
-// button is what drops it. The directory has to go with the in-memory entry,
-// or a restart would scan the same stale instance back in.
-func TestInstancesDeleteRemovesTheInstanceAndItsState(t *testing.T) {
+// The list is an inventory now, so there is no delete route: an instance whose
+// Pod is gone stays listed (未连接) instead of being forgotten, and nothing in
+// the console can remove a row the operator is still expected to run. This pins
+// both halves — the handler is gone and the route answers like any unhandled
+// path — so re-adding one silently would fail here.
+func TestInstancesDeleteRouteIsGone(t *testing.T) {
 	mgr := newInstanceManager(t.TempDir(), Config{})
 	b := mgr.getOrCreate("docker-gone")
 	b.register.set(registerState{Received: true, Accepted: true, DockerID: "docker-gone"})
 	if _, err := os.Stat(b.dir); err != nil {
 		t.Fatalf("instance directory was not created: %v", err)
 	}
-	mgr.getOrCreate("docker-keep").register.set(registerState{Received: true, Accepted: true, DockerID: "docker-keep"})
 
-	w := httptest.NewRecorder()
-	instancesDeleteHandler(mgr).ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/api/instances/delete?dockerId=docker-gone", nil))
-	if w.Code != http.StatusOK {
-		t.Fatalf("status = %d, body = %s", w.Code, w.Body.String())
+	if strings.Contains(frontendBundle, "/api/instances/delete") {
+		t.Fatal("the console still calls /api/instances/delete, so its 删除 action survived the inventory rework")
 	}
-	if mgr.lookup("docker-gone") != nil {
-		t.Fatal("the deleted instance is still in the manager")
-	}
-	if _, err := os.Stat(b.dir); !os.IsNotExist(err) {
-		t.Fatalf("instance directory still exists after delete: %v", err)
-	}
-	if mgr.lookup("docker-keep") == nil {
-		t.Fatal("deleting one instance removed another")
-	}
-}
-
-func TestInstancesDeleteValidatesTheRequest(t *testing.T) {
-	mgr := newInstanceManager(t.TempDir(), Config{})
-	mgr.getOrCreate("docker-keep").register.set(registerState{Received: true, Accepted: true, DockerID: "docker-keep"})
-	handler := instancesDeleteHandler(mgr)
-
-	w := httptest.NewRecorder()
-	handler.ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/api/instances/delete", nil))
-	if w.Code != http.StatusBadRequest {
-		t.Fatalf("missing dockerId status = %d, want 400; body = %s", w.Code, w.Body.String())
+	if strings.Contains(frontendBundle, "function deleteInstance(") {
+		t.Fatal("deleteInstance survived the inventory rework")
 	}
 
-	w = httptest.NewRecorder()
-	handler.ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/api/instances/delete?dockerId=missing", nil))
-	if w.Code != http.StatusNotFound {
-		t.Fatalf("unknown dockerId status = %d, want 404; body = %s", w.Code, w.Body.String())
+	// Nothing removed the instance as a side effect of the listing either: the
+	// row is still the recorded registration, which is what makes 未连接 the
+	// only thing that changes when the Pod disappears.
+	items, _ := instanceListPayload(mgr)
+	if len(items) != 1 || items[0].DockerID != "docker-gone" {
+		t.Fatalf("items = %+v, want the recorded instance still listed", items)
 	}
-
-	w = httptest.NewRecorder()
-	handler.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/api/instances/delete?dockerId=docker-keep", nil))
-	if w.Code != http.StatusMethodNotAllowed {
-		t.Fatalf("GET status = %d, want 405; body = %s", w.Code, w.Body.String())
-	}
-	if allow := w.Header().Get("Allow"); allow != http.MethodPost {
-		t.Fatalf("Allow = %q, want POST", allow)
-	}
-	if mgr.lookup("docker-keep") == nil {
-		t.Fatal("a rejected delete removed the instance")
+	if _, err := os.Stat(b.dir); err != nil {
+		t.Fatalf("the instance directory disappeared: %v", err)
 	}
 }

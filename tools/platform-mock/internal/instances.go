@@ -20,6 +20,12 @@ const instancesDirName = "instances"
 var (
 	errInstanceNotFound = errors.New("指定的 dockerId 不存在")
 	errNoInstance       = errors.New("no TAA instance registered yet")
+	// errExpectedNotRegistered is not a lookup failure: the dockerId is in the
+	// configured inventory, it just has not registered, so there is no address
+	// to call. It is reported apart from errInstanceNotFound because the two
+	// send an operator to different places — a missing inventory entry versus a
+	// Pod that has not come up.
+	errExpectedNotRegistered = errors.New("configured instance has not registered yet")
 )
 
 // legacyStateFiles are the files the single-instance layout kept in the state
@@ -378,39 +384,26 @@ func (m *instanceManager) getOrCreate(dockerID string) *instanceStores {
 	return b
 }
 
+// isExpected reports whether dockerID is named by the configured inventory.
+func (m *instanceManager) isExpected(dockerID string) bool {
+	for _, e := range m.expectedConfig() {
+		if e.DockerID == dockerID {
+			return true
+		}
+	}
+	return false
+}
+
 func (m *instanceManager) lookup(dockerID string) *instanceStores {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	return m.byID[dockerID]
 }
 
-// remove forgets one instance and deletes its state directory. It is the
-// operator's way to drop an instance whose Pod is gone: a deleted Pod sends
-// nothing, so without an explicit removal a stale registration would stay in
-// the selector forever. The empty-id legacy bundle is not an instance and is
-// refused.
-func (m *instanceManager) remove(dockerID string) error {
-	dockerID = strings.TrimSpace(dockerID)
-	if dockerID == "" {
-		return errInstanceNotFound
-	}
-	m.mu.Lock()
-	b, ok := m.byID[dockerID]
-	if !ok {
-		m.mu.Unlock()
-		return errInstanceNotFound
-	}
-	delete(m.byID, dockerID)
-	m.mu.Unlock()
-
-	if b.dir == "" {
-		return nil
-	}
-	if err := os.RemoveAll(b.dir); err != nil {
-		return fmt.Errorf("remove instance directory %s: %w", b.dir, err)
-	}
-	return nil
-}
+// There is no remove: the console lists the configured inventory now, so an
+// instance whose Pod is gone stays listed (未连接) instead of being dropped, and
+// removing a row would only hide an instance the operator still runs. Its
+// *records* can still be cleared through the per-instance reset routes.
 
 func (m *instanceManager) list() []*instanceStores {
 	m.mu.RLock()
@@ -546,6 +539,9 @@ func (m *instanceManager) targetFor(requestedID string) (string, string, error) 
 	if requestedID != "" {
 		b = m.lookup(requestedID)
 		if b == nil {
+			if m.isExpected(requestedID) {
+				return requestedID, "", errExpectedNotRegistered
+			}
 			return "", "", errInstanceNotFound
 		}
 	} else {

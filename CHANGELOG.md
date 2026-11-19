@@ -9,6 +9,34 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 ## [Unreleased]
 
 ### Added
+
+### Changed
+- **The platform-mock Lists The Instances It Expects, Not Only The Ones That Reported**: the 平台注册
+  card could only show an instance once it had registered, so an instance whose Pod never came up
+  was indistinguishable from one that was never deployed, and a Pod deleted after registering left a
+  row that stayed `已连接` until someone pressed 删除. The card is an inventory now. `-instances`
+  (`PLATFORM_MOCK_INSTANCES`, comma-separated `type:dockerId`, `--instances` on
+  `deploy-platform-mock.sh`) declares what the platform expects to receive — `tee`, `fhe` or
+  `data-anaylsis` — and every entry is listed whether or not it registered, in the configured order,
+  with `expected: true`. A registration is matched to its entry by exact `dockerId` and keeps the
+  configured type, because the type is not observable: the registration body carries no server type
+  field, `data-anaylsis` attests exactly like `tee`, and a TEE instance running without
+  `/dev/csv-guest` reports exactly like FHE, so `registrationKind` is a guess the inventory replaces
+  rather than supplements. A registration the inventory does not name is listed after it, so nothing
+  actually running is hidden; a malformed or unknown-type entry is logged and skipped; with no
+  inventory configured the endpoint behaves as before. `未连接` now covers both an entry that never
+  registered and a row whose 检查连通性 failed — both mean nothing is answering at that identity, and
+  the tooltip says which (尚未注册 versus an instance that may have been deleted) — and a failed check
+  therefore turns a previously connected row into 未连接 instead of the old `已断开`. The per-row 删除
+  action and `POST /api/instances/delete` are gone with the underlying `remove()`: the list is the
+  inventory, so removing a row would only hide an instance the operator still runs, and an instance
+  whose Pod is gone now reads 未连接 and recovers by itself when a Pod registers under the same
+  `dockerId` again. Clearing one instance's records stays available through its register/report
+  reset routes. A connectivity check addressed to an inventory entry that has not registered answers
+  `该实例在清单中，但尚未向平台注册` instead of `指定的 dockerId 不存在`, which sent the operator looking
+  for a typo in a name they had configured themselves. `defaultDockerId` is the first accepted
+  registration as before — never an entry that has not answered.
+
 - **The DCU Guest Resets The Card On The Way Out**: the host has no reset path for the K100_AI
   (`reset_method` is empty, the device does not advertise FLReset, and QEMU logs `vfio: Cannot reset
   device 0000:c3:00.0, no available reset mechanism` at both attach and detach), so every guest

@@ -104,6 +104,19 @@ type Config struct {
 	// /bin/bash. TERMINAL_SHELL overrides it; an empty value on a non-Linux
 	// build only changes the error the panel reports.
 	TerminalShell string
+	// ExpectedInstances is the configured inventory of instances the operator
+	// intends to run, written as a comma-separated "type:dockerId" list, e.g.
+	// "tee:kata-csv2-taa-test-0001,fhe:2c9280...,data-anaylsis:3fda00...".
+	// Every entry is listed in the console whether or not it has registered, so
+	// an instance that is missing shows up as 未连接 instead of being absent
+	// from a list that only knows what has reported.
+	//
+	// The type has to be configured rather than inferred: TAA's registration
+	// body carries no server type (see registrationKind), so the platform
+	// cannot tell a data-analysis instance from a tee one, and the console
+	// would otherwise list a configured-but-absent instance nowhere at all.
+	// Empty means "list whatever registers", the pre-inventory behaviour.
+	ExpectedInstances string
 }
 
 func (c Config) withDefaults() Config {
@@ -176,28 +189,30 @@ func envIntOrDefault(key string, fallback int) int {
 // resolving values from environment variables where applicable (STATE_DIR,
 // UPLOAD_DIR, TAA_POD, TAA_NS, TAA_PORT, LLM_POD, LLM_NS, LLM_PORT,
 // LLM_TARGET, LLM_POLL_SECONDS, PLATFORM_SM2_ID, PLATFORM_KEY_FILE,
-// CONSOLE_USER, CONSOLE_PASSWORD, TEELLM_TLS_ENDPOINT, TERMINAL_SHELL).
+// CONSOLE_USER, CONSOLE_PASSWORD, TEELLM_TLS_ENDPOINT, TERMINAL_SHELL,
+// PLATFORM_MOCK_INSTANCES).
 // PLATFORM_SM2_ID is deliberately the same variable TAA reads, so one exported
 // value configures both ends.
 func DefaultConfig() Config {
 	return Config{
-		StateDir:        envOrDefault("STATE_DIR", defaultStateDir),
-		UploadDir:       envOrDefault("UPLOAD_DIR", defaultUploadDir),
-		TAAPod:          envOrDefault("TAA_POD", defaultTAAPod),
-		TAANS:           envOrDefault("TAA_NS", ""),
-		TAAPort:         envOrDefault("TAA_PORT", defaultTAAPort),
-		LLMPod:          envOrDefault("LLM_POD", defaultLLMPod),
-		LLMNS:           envOrDefault("LLM_NS", ""),
-		LLMPort:         envOrDefault("LLM_PORT", defaultLLMPort),
-		LLMTarget:       envOrDefault("LLM_TARGET", ""),
-		LLMPollSeconds:  envIntOrDefault("LLM_POLL_SECONDS", defaultLLMPollSeconds),
-		SM2ID:           os.Getenv("PLATFORM_SM2_ID"),
-		PlatformKeyFile: envOrDefault("PLATFORM_KEY_FILE", ""),
-		ConsoleUser:     envOrDefault("CONSOLE_USER", defaultConsoleUser),
-		ConsolePassword: envOrDefault("CONSOLE_PASSWORD", defaultConsolePassword),
-		ConsoleTLSHost:  envOrDefault("TEELLM_TLS_ENDPOINT", ""),
-		AuditEngine:     envOrDefault("AUDIT_ENGINE", ""),
-		SemgrepRules:    envOrDefault("SEMGREP_RULES", ""),
-		TerminalShell:   envOrDefault("TERMINAL_SHELL", ""),
+		StateDir:          envOrDefault("STATE_DIR", defaultStateDir),
+		UploadDir:         envOrDefault("UPLOAD_DIR", defaultUploadDir),
+		TAAPod:            envOrDefault("TAA_POD", defaultTAAPod),
+		TAANS:             envOrDefault("TAA_NS", ""),
+		TAAPort:           envOrDefault("TAA_PORT", defaultTAAPort),
+		LLMPod:            envOrDefault("LLM_POD", defaultLLMPod),
+		LLMNS:             envOrDefault("LLM_NS", ""),
+		LLMPort:           envOrDefault("LLM_PORT", defaultLLMPort),
+		LLMTarget:         envOrDefault("LLM_TARGET", ""),
+		LLMPollSeconds:    envIntOrDefault("LLM_POLL_SECONDS", defaultLLMPollSeconds),
+		SM2ID:             os.Getenv("PLATFORM_SM2_ID"),
+		PlatformKeyFile:   envOrDefault("PLATFORM_KEY_FILE", ""),
+		ConsoleUser:       envOrDefault("CONSOLE_USER", defaultConsoleUser),
+		ConsolePassword:   envOrDefault("CONSOLE_PASSWORD", defaultConsolePassword),
+		ConsoleTLSHost:    envOrDefault("TEELLM_TLS_ENDPOINT", ""),
+		AuditEngine:       envOrDefault("AUDIT_ENGINE", ""),
+		SemgrepRules:      envOrDefault("SEMGREP_RULES", ""),
+		TerminalShell:     envOrDefault("TERMINAL_SHELL", ""),
+		ExpectedInstances: envOrDefault("PLATFORM_MOCK_INSTANCES", ""),
 	}.withDefaults()
 }

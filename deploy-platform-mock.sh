@@ -56,6 +56,11 @@ SEMGREP_RULES="${PLATFORM_MOCK_SEMGREP_RULES-__unset__}"
 SEMGREP_BIN_DIR="${PLATFORM_MOCK_SEMGREP_BIN_DIR-__unset__}"
 SEMGREP_RULES_SOURCE="${SEMGREP_RULES_SOURCE:-$PROJECT_DIR/models/audit/semgrep/rules}"
 SEMGREP_VERSION="${SEMGREP_VERSION:-1.177.0}"
+# The instance inventory the console lists. "type:dockerId" entries, comma
+# separated; a type is one of tee, fhe, data-anaylsis. An entry that never
+# registers is still listed, as 未连接, which is the point: the console shows
+# what this platform is configured to receive, not only what has reported.
+INSTANCES="${PLATFORM_MOCK_INSTANCES:-}"
 # TEE-LLM console account and secure listener. Empty means the binary's own
 # defaults: admin / teellm@2026, and a TLS endpoint derived from the LLM target
 # host on port 18443.
@@ -139,6 +144,9 @@ Common options:
                              (default <llm-target host>:18443)
   --audit-engine NAME        Audit workbench static engine: semgrep (default)
                              or regex
+  --instances LIST           Instance inventory, type:dockerId[,type:dockerId...]
+                             with type one of tee, fhe, data-anaylsis. Entries
+                             that never register are still listed (未连接).
   --semgrep-rules PATH       Remote semgrep rules file or directory (default
                              <remote-dir>/semgrep-rules); the local rule set is
                              uploaded there on start
@@ -213,6 +221,7 @@ parse_args() {
       --console-password) need_value "$@"; CONSOLE_PASSWORD="$2"; shift 2 ;;
       --tee-tls-endpoint) need_value "$@"; TEE_TLS_ENDPOINT="$2"; shift 2 ;;
       --audit-engine) need_value "$@"; AUDIT_ENGINE="$2"; shift 2 ;;
+      --instances) need_value "$@"; INSTANCES="$2"; shift 2 ;;
       --semgrep-rules) need_value "$@"; SEMGREP_RULES="$2"; shift 2 ;;
       --semgrep-bin-dir) need_value "$@"; SEMGREP_BIN_DIR="$2"; shift 2 ;;
       --allow-empty-attestation) ALLOW_EMPTY_ATTESTATION=1; shift ;;
@@ -373,6 +382,7 @@ build_mock_args() {
   [ -n "$PLATFORM_KEY_FILE" ] && MOCK_ARGS+=(-platform-key-file "$PLATFORM_KEY_FILE")
   [ -n "$AUDIT_ENGINE" ] && MOCK_ARGS+=(-audit-engine "$AUDIT_ENGINE")
   [ -n "$SEMGREP_RULES" ] && MOCK_ARGS+=(-semgrep-rules "$SEMGREP_RULES")
+  [ -n "$INSTANCES" ] && MOCK_ARGS+=(-instances "$INSTANCES")
 
   # The console reads these from the environment, and passing them this way
   # keeps the password out of the process arguments on the remote host.
@@ -486,6 +496,7 @@ start_remote() {
   fi
   log "console: user ${CONSOLE_USER:-admin}; TEE-TLS endpoint ${TEE_TLS_ENDPOINT:-(derived from the LLM target host on port 18443)}"
   log "audit engine: $AUDIT_ENGINE (semgrep rules $SEMGREP_RULES, CLI $SEMGREP_BIN_DIR)"
+  log "instance inventory: ${INSTANCES:-(none; the console lists whatever registers)}"
   if is_dry_run; then
     log "would start ${REMOTE_ENV_PREFIX}$REMOTE_BINARY on $REMOTE_TARGET with ${MOCK_ARGS[*]} (log $LOG_FILE)"
     return 0

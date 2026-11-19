@@ -331,27 +331,6 @@ func (s *keystore) setTaaPublicKeyFor(dockerID string, pub *teecrypto.SM2PublicK
 	return nil
 }
 
-// deleteTaaPublicKeyFor forgets one instance's key. The instance is gone, so
-// keeping its entry would only leave a signing identity nothing can use.
-func (s *keystore) deleteTaaPublicKeyFor(dockerID string) error {
-	if dockerID == "" {
-		return nil
-	}
-	s.mu.Lock()
-	if _, ok := s.taaPubs[dockerID]; !ok {
-		s.mu.Unlock()
-		return nil
-	}
-	delete(s.taaPubs, dockerID)
-	err := s.persistLocked()
-	s.mu.Unlock()
-	if err != nil {
-		return err
-	}
-	log.Printf("TAA public key removed: dockerId=%q", dockerID)
-	return nil
-}
-
 // setTaaPublicKey is a test-only compatibility wrapper around
 // setTaaPublicKeyFor for the pre-multi-instance single key.
 func (s *keystore) setTaaPublicKey(pub *teecrypto.SM2PublicKey) error {

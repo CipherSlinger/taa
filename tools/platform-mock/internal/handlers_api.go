@@ -3,7 +3,6 @@ package mock
 import (
 	"encoding/json"
 	"errors"
-	"log"
 	"net/http"
 )
 
@@ -14,6 +13,13 @@ func writeInstanceError(w http.ResponseWriter, err error) bool {
 	switch {
 	case errors.Is(err, errInstanceNotFound):
 		writeEnvelope(w, http.StatusNotFound, "指定的 dockerId 不存在", nil, http.StatusNotFound)
+		return true
+	case errors.Is(err, errExpectedNotRegistered):
+		// 404 like an unknown dockerId: from the caller's side there is nothing
+		// to call. The message is the difference — it says the instance is
+		// configured and simply has not registered, instead of implying the
+		// name is wrong.
+		writeEnvelope(w, http.StatusNotFound, "该实例在清单中，但尚未向平台注册，没有可用的 TAA 地址", nil, http.StatusNotFound)
 		return true
 	case errors.Is(err, errNoInstance):
 		writeEnvelope(w, http.StatusServiceUnavailable, "尚无 TAA 实例注册", nil, http.StatusServiceUnavailable)
@@ -41,9 +47,24 @@ func requireMethod(w http.ResponseWriter, r *http.Request, method string) bool {
 // Instance kinds the console can show. The registration has no explicit server
 // type field, so the kind is inferred from the report it carries.
 const (
-	instanceKindTEE = "tee"
-	instanceKindFHE = "fhe"
+	instanceKindTEE          = "tee"
+	instanceKindFHE          = "fhe"
+	instanceKindDataAnalysis = "data-anaylsis"
+	// instanceKindUnknown is the group a registration that matches no inventory
+	// entry and has no report to infer from is listed under.
+	instanceKindUnknown = ""
 )
+
+// validInstanceKind reports whether kind names a console instance type. The
+// spelling of data-anaylsis is TAA's own (ServerTypeDataAnalysis), typo
+// included; accepting a corrected spelling here would split the vocabulary.
+func validInstanceKind(kind string) bool {
+	switch kind {
+	case instanceKindTEE, instanceKindFHE, instanceKindDataAnalysis:
+		return true
+	}
+	return false
+}
 
 // registrationKind derives the instance kind from its registration.
 //
@@ -68,8 +89,13 @@ func registrationKind(reg registerState) string {
 
 // instanceSummary is the console's one-line view of a registered instance.
 type instanceSummary struct {
-	DockerID      string `json:"dockerId"`
-	Kind          string `json:"kind"`
+	DockerID string `json:"dockerId"`
+	Kind     string `json:"kind"`
+	// Expected marks a row that comes from the configured inventory rather than
+	// from something that registered. It is separate from Received so the
+	// console can tell "never registered" (未连接) from "registered but
+	// rejected" (注册失败) without a second list.
+	Expected      bool   `json:"expected"`
 	Accepted      bool   `json:"accepted"`
 	Received      bool   `json:"received"`
 	ReceivedAt    string `json:"receivedAt"`
@@ -112,8 +138,16 @@ func summarizeInstance(mgr *instanceManager, b *instanceStores) instanceSummary 
 	}
 }
 
+// instanceListPayload builds the console's list: everything that registered,
+// merged with the configured inventory so an instance that has not registered
+// is still listed (as 未连接) rather than absent.
+//
+// The default is the first accepted registration, as it always was. An
+// inventory entry that never registered is not a candidate: the console's own
+// requests would be addressed to an address nothing answers, and every panel
+// would read as broken instead of empty.
 func instanceListPayload(mgr *instanceManager) ([]instanceSummary, string) {
-	items := make([]instanceSummary, 0)
+	registered := make([]instanceSummary, 0)
 	for _, b := range mgr.list() {
 		// The empty-id legacy bundle is a write fallback, not an instance: the
 		// console cannot address it, so listing it would offer a phantom entry
@@ -121,15 +155,25 @@ func instanceListPayload(mgr *instanceManager) ([]instanceSummary, string) {
 		if b.dockerID == "" {
 			continue
 		}
-		items = append(items, summarizeInstance(mgr, b))
+		registered = append(registered, summarizeInstance(mgr, b))
 	}
+	items := mergeExpectedInstances(mgr, mgr.expectedConfig(), registered)
 	if len(items) == 0 {
 		return items, ""
 	}
-	// list() is already in default order and defaultBundle() picks its first
-	// non-empty bundle, so the first item is the default.
-	items[0].Default = true
-	return items, items[0].DockerID
+	// list() is already in default order, so the first accepted registration is
+	// also the first one here: inventory entries precede a registration only
+	// when they registered, and those carry their accepted flag.
+	defaultID := ""
+	for i := range items {
+		if !items[i].Received {
+			continue
+		}
+		items[i].Default = true
+		defaultID = items[i].DockerID
+		break
+	}
+	return items, defaultID
 }
 
 func instancesHandler(mgr *instanceManager) http.HandlerFunc {
@@ -143,37 +187,6 @@ func instancesHandler(mgr *instanceManager) http.HandlerFunc {
 			"instances":       items,
 			"defaultDockerId": defaultID,
 		}, 0)
-	}
-}
-
-// instancesDeleteHandler forgets an instance whose Pod is gone. Deletion is
-// explicit because registration has no expiry and nothing else removes a stale
-// entry from the selector.
-func instancesDeleteHandler(mgr *instanceManager) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		setCORS(w)
-		if !requireMethod(w, r, http.MethodPost) {
-			return
-		}
-		dockerID := requestedDockerID(r)
-		if dockerID == "" {
-			writeEnvelope(w, http.StatusBadRequest, "缺少 dockerId", nil, http.StatusBadRequest)
-			return
-		}
-		if err := mgr.remove(dockerID); err != nil {
-			if errors.Is(err, errInstanceNotFound) {
-				writeInstanceError(w, err)
-				return
-			}
-			writeEnvelope(w, http.StatusInternalServerError, err.Error(), nil, http.StatusInternalServerError)
-			return
-		}
-		if err := currentPlatformKeys().deleteTaaPublicKeyFor(dockerID); err != nil {
-			// The instance records are already gone; a key left behind only
-			// means a later same-id registration overwrites it.
-			log.Printf("remove TAA public key for %q failed: %v", dockerID, err)
-		}
-		writeEnvelope(w, http.StatusOK, "deleted", map[string]any{"dockerId": dockerID}, 0)
 	}
 }
 

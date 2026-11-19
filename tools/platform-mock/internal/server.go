@@ -99,6 +99,9 @@ func NewServer(cfg Config) *Server {
 	} else {
 		log.Printf("TAA reverse proxy: per-instance targets from registration (discovered fallback %q)", mgr.discoveredTarget)
 	}
+	if expected := mgr.expectedConfig(); len(expected) > 0 {
+		log.Printf("instance inventory: %s (entries that have not registered are listed as 未连接)", describeExpected(expected))
+	}
 
 	uploadDir := cfg.UploadDir
 	if abs, err := filepath.Abs(uploadDir); err == nil {
@@ -186,8 +189,10 @@ func NewServer(cfg Config) *Server {
 	// in one list.
 	mux.HandleFunc("/api/audit/console/submit", console.requireSession(auditSubmitHandler(localAudits, uploadDir)))
 
+	// There is no delete route: the list is an inventory now, so an instance
+	// whose Pod is gone stays listed and goes 未连接 instead of being forgotten.
+	// The registration reset routes still clear one instance's records.
 	mux.HandleFunc("/api/instances", instancesHandler(mgr))
-	mux.HandleFunc("/api/instances/delete", instancesDeleteHandler(mgr))
 	mux.HandleFunc("/api/dashboard/status", dashboardStatusHandler(mgr))
 	mux.HandleFunc("/api/register/status", registerStatusHandler(mgr))
 	mux.HandleFunc("/api/register/reset", registerResetHandler(mgr))

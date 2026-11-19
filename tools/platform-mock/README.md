@@ -77,6 +77,7 @@ up in its command line. Run `./deploy-platform-mock.sh --help` for the full list
 | `-platform-key-file` | `<state-dir>/platform-key.json` (or `$PLATFORM_KEY_FILE`) | Where the platform SM2 key pair (and the last registered TAA public key) is persisted. Generated on first use; a restart reuses the same pair. |
 | `-console-user` | `admin` (or `$CONSOLE_USER`) | Login name for the code audit workbench. |
 | `-console-password` | `teellm@2026` (or `$CONSOLE_PASSWORD`) | Login password for the code audit workbench. |
+| `-instances` | `""` (or `$PLATFORM_MOCK_INSTANCES`) | Instance inventory listed by the console: `type:dockerId[,type:dockerId...]`, type one of `tee`, `fhe`, `data-anaylsis`. Every entry is listed whether or not it registered; unmatched entries show 未连接. Empty lists whatever registers. |
 | `-terminal-shell` | `/bin/bash` (or `$TERMINAL_SHELL`) | Shell the API tester's host terminal starts. It runs as the user that started the mock, on the same host, with no console login of its own — the page's origin check is the only gate. |
 
 ## SM2 Envelope
@@ -250,19 +251,31 @@ flag: instance identity is the registration's `dockerId`.
   `?dockerId=`; absent means the most recently accepted registration. Global endpoints
   (`/api/instances`, `/api/uploads*`, `/api/crypto/generate-key`, `/api/crypto/decrypt`,
   `/api/request-logs/*`) ignore it. `GET /api/instances` returns the instance
-  list, each instance's derived `kind` (`tee` or `fhe`) and `defaultDockerId`. Selecting an
-  instance also switches the console panels to that kind.
+  list, each instance's `kind` and `defaultDockerId`. Selecting an instance also switches
+  the console panels to that kind.
+- **Instance inventory**: the console lists the instances the platform is configured to
+  receive, not only the ones that have reported. `-instances "tee:docker-a,fhe:docker-b,
+  data-anaylsis:docker-c"` (`PLATFORM_MOCK_INSTANCES`, comma separated `type:dockerId`)
+  declares that inventory; every entry is rendered whether or not it registered, in the
+  order given, with `expected: true` on the row. A registered instance is matched to its
+  entry by exact `dockerId` and keeps the configured `kind` — the type cannot be inferred
+  from the registration (see `registrationKind`; a data-analysis instance attests exactly
+  like a TEE one), and a TEE instance running without `/dev/csv-guest` reports exactly like
+  FHE. A registration the inventory does not name is listed after it, so nothing that is
+  actually running is hidden. A malformed or unknown-type entry is logged and skipped; with
+  no inventory configured the endpoint lists what registered, as before. The types are
+  `tee`, `fhe` and `data-anaylsis` (TAA's own spelling, `ServerTypeDataAnalysis`).
 - **Instance list**: the flow console renders that list as rows grouped by kind. Each row shows
   its own connection state — `已连接` once the platform accepted the registration, `注册失败` when
-  the report was rejected, `未注册` while the record has nothing yet — its registered TAA address,
-  and a 环境 chip with the last health check's outcome. It carries its own actions (公钥, 注册返回,
-  检查连通性, 查看结果 for the row whose check produced the held result, 获取证明报告 for TEE, 删除).
-  Those buttons address their row's `dockerId` directly; there is no separate detail row under the
-  list.
-- **Removing a stale instance**: `POST /api/instances/delete?dockerId=...` deletes that
-  instance's state directory and its stored TAA public key. The console's 删除实例 button
-  calls it. A Pod that has been deleted sends nothing, so this is the only way a stale entry
-  leaves the selector.
+  the report was rejected, `未连接` when the instance has not registered or its 检查连通性 failed
+  (the tooltip says which: 尚未注册 vs. an instance that may have been deleted), `未注册` only for a
+  record the inventory does not name — its registered TAA address, and a 环境 chip with the last
+  health check's outcome. It carries its own actions (公钥, 注册返回, 检查连通性, 查看结果 for the row
+  whose check produced the held result, 获取证明报告 for TEE). Those buttons address their row's
+  `dockerId` directly; there is no separate detail row under the list and no delete action:
+  the list is the configured inventory, so a row is not removed from here. An instance whose
+  Pod is gone reads 未连接 and comes back on its own when a Pod registers under the same
+  `dockerId` again; to clear one instance's *records*, use its register/report reset route.
 - **Proxying**: `/taa/*` proxies to the selected instance and strips `dockerId` before
   forwarding.
 

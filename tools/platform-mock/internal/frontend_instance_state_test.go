@@ -10,6 +10,11 @@ import (
 // unreachable, the row still showed 已连接. 已连接 describes the accepted
 // registration, which nothing polls, so a failed check must override it.
 //
+// The wording is 未连接, the same as an inventory entry that never registered:
+// the operator appointed the instance, so from the console's side both mean
+// "nothing is answering at that identity", and the tooltip carries the
+// difference (never registered vs. registered but unreachable).
+//
 // This is a source-level assertion because the bundle is plain browser JS; the
 // console logic is checked where it lives rather than by standing up a browser.
 func TestFrontendConnectionBadgeHonoursTheHealthCheck(t *testing.T) {
@@ -25,16 +30,19 @@ func TestFrontendConnectionBadgeHonoursTheHealthCheck(t *testing.T) {
 
 	// The failure branch must come first and must be reachable before the
 	// accepted-registration branch, or a failed check would be shadowed.
-	badIdx := strings.Index(fn, "'已断开'")
+	badIdx := strings.Index(fn, "health.tone === 'bad'")
 	acceptedIdx := strings.Index(fn, "item.accepted")
 	if badIdx == -1 {
-		t.Fatal("instanceConnectionState has no 已断开 state for a failed check")
+		t.Fatal("instanceConnectionState has no failed-check branch")
 	}
 	if acceptedIdx == -1 {
 		t.Fatal("instanceConnectionState no longer reads item.accepted")
 	}
 	if badIdx > acceptedIdx {
 		t.Fatal("the failed-check branch is shadowed by the accepted-registration branch")
+	}
+	if !strings.Contains(fn[badIdx:acceptedIdx], "'未连接'") {
+		t.Fatal("a failed check should read 未连接, the same as an instance that never registered")
 	}
 	// A passing check is worded apart from the registration badge, so the two
 	// facts cannot be read as one.

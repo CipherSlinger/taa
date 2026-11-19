@@ -134,8 +134,14 @@ function tickInstanceHealthExpiry() {
 
 // instanceConnectionState combines the registration fact with the health
 // result. A failing check wins: 已连接 would otherwise describe a connection
-// this console just proved is not there. A passing check is labelled 连通正常
-// rather than 已连接 so the two facts cannot be mistaken for each other.
+// this console just proved is not there.
+//
+// 未连接 is the wording for both "configured but never registered" and "the
+// check could not reach it". The operator appointed the instance in the
+// inventory, so from the console's side the two are the same fact — nothing is
+// answering at that identity — and the tooltip says which one it is. 未注册 is
+// kept for a row that is neither configured nor registered, which only happens
+// for a record left behind by a registration the inventory does not name.
 //
 // A passing check expires. Nothing observes an instance between checks, so a
 // green badge from ten minutes ago claims a connection nobody re-verified; once
@@ -145,12 +151,18 @@ const instanceHealthStaleMs = 90 * 1000;
 
 function instanceConnectionState(item) {
   const health = healthSlotFor(item && item.dockerId);
-  if (!item) return { label: '未注册', tone: 'pending', hint: '' };
+  if (!item) return { label: '未连接', tone: 'pending', hint: '' };
   if (health && health.tone === 'running') {
     return { label: '检查中', tone: 'pending', hint: '正在检查该实例是否可达' };
   }
   if (health && health.tone === 'bad') {
-    return { label: '已断开', tone: 'bad', hint: '连通性检查失败：平台已接受该实例的注册，但当前连不通' };
+    return {
+      label: '未连接',
+      tone: 'bad',
+      hint: item.received
+        ? '连通性检查失败：平台收到过该实例的注册，但当前连不通（实例可能已被删除）'
+        : '连通性检查失败，且平台从未收到该实例的注册',
+    };
   }
   if (health && health.tone === 'ok') {
     const age = Date.now() - (health.checkedAt || 0);
@@ -167,21 +179,25 @@ function instanceConnectionState(item) {
     return { label: '已连接', tone: 'ok', hint: '平台已接受该实例的注册（连通性未检查）' };
   }
   if (item.received) return { label: '注册失败', tone: 'bad', hint: '实例已上报，但平台未接受' };
+  if (item.expected) return { label: '未连接', tone: 'pending', hint: '清单中配置的实例，平台尚未收到它的注册请求' };
   return { label: '未注册', tone: 'pending', hint: '尚未收到该实例的注册请求' };
 }
 
-// INSTANCE_GROUPS is the fixed display order of the list. A kind the mock does
-// not infer (a record that never registered) still gets a section rather than
-// disappearing from the management view.
+// INSTANCE_GROUPS is the fixed display order of the list. The rows come from
+// the configured inventory merged with what registered, so a type with nothing
+// configured and nothing registered draws no section; a configured instance
+// whose Pod has not come up still draws its row, as 未连接.
 const INSTANCE_GROUPS = [
   { kind: 'tee', label: 'TEE 实例 · CSV 机密 VM' },
   { kind: 'fhe', label: 'FHE 实例 · GPU 宿主机' },
+  { kind: 'data-anaylsis', label: '数据分析实例 · CSV 机密 VM' },
   { kind: '', label: '未识别类型' },
 ];
 
 function instanceKindLabel(kind) {
   if (kind === 'tee') return 'TEE';
   if (kind === 'fhe') return 'FHE';
+  if (kind === 'data-anaylsis') return '数据分析';
   return '';
 }
 
@@ -242,6 +258,7 @@ function applyInstanceList(list, defaultId) {
     item.dockerId || '',
     item.accepted ? '1' : '0',
     item.received ? '1' : '0',
+    item.expected ? '1' : '0',
     item.kind || '',
     item.taaTarget || '',
     item.lastReportAt || '',
@@ -278,7 +295,12 @@ function updateInstanceSummary(list) {
     return;
   }
   const connected = list.filter((item) => item.accepted).length;
-  el.textContent = '共 ' + list.length + ' 个实例，' + connected + ' 个已连接';
+  const summary = '共 ' + list.length + ' 个实例，' + connected + ' 个已连接';
+  // Only say so when the inventory is what makes the list longer than the
+  // registrations: otherwise every page would carry a sentence about a
+  // distinction that is not in play.
+  const pending = list.filter((item) => item.expected && !item.received).length;
+  el.textContent = pending > 0 ? summary + '，' + pending + ' 个未连接' : summary;
 }
 
 // renderInstanceList paints one section per kind from instanceCache. Rows are
@@ -411,9 +433,10 @@ function buildInstanceRow(item) {
       actions.appendChild(instanceActionButton('查看返回', () => openInteractionModal('attestation', 'primary'), false, '查看证明接口的请求与返回'));
     }
   }
-  const del = instanceActionButton('删除', () => deleteInstance(id), false, '删除该实例的本地记录（Pod 已删除后清理）');
-  del.classList.add('danger');
-  actions.appendChild(del);
+  // No delete action: the list is the inventory of what this platform is
+  // configured to receive, so a row is not the operator's to remove here — an
+  // instance whose Pod is gone simply goes 未连接, and comes back on its own if
+  // a Pod registers under the same dockerId again.
 
   row.appendChild(main);
   row.appendChild(actions);
@@ -573,8 +596,7 @@ function initInstanceSelector() {
 }
 
 // refreshInstancePanels re-reads every instance-scoped panel. It is shared by
-// the selector's change handler and by deletion, where the selection moves to
-// the new default without a change event.
+// the selector's change handler.
 function refreshInstancePanels() {
   // A paused panel skips its fetch, so clear the flags before refreshing.
   if (typeof resetLogPauseForInstanceChange === 'function') resetLogPauseForInstanceChange();
@@ -592,38 +614,13 @@ function refreshInstancePanels() {
   }
 }
 
-// deleteInstance removes one instance's local records after its Pod is gone. A
-// deleted Pod sends nothing, so without this the list would keep offering an
-// instance that can never answer again.
-async function deleteInstance(id) {
-  if (!id) return;
-  if (!confirm('删除实例 ' + id + ' 的本地记录？\n这不会影响 Pod，只清理平台模拟器保存的注册与上报数据。')) {
-    return;
-  }
-  try {
-    const res = await fetch('/api/instances/delete?dockerId=' + encodeURIComponent(id), { method: 'POST' });
-    const data = await res.json().catch(() => ({}));
-    if (res.status !== 200 || data.error !== 0) {
-      alert('删除失败: ' + (data.msg || 'HTTP ' + res.status));
-      return;
-    }
-    // The selection itself must move to whatever remains before the refreshes
-    // run, and the list signature is reset so the rows are rebuilt even if
-    // another poll is already in flight.
-    if (id === currentInstanceDockerId) currentInstanceDockerId = '';
-    instanceListSignature = null;
-    await loadInstances();
-    refreshInstancePanels();
-  } catch (err) {
-    alert('删除失败: ' + err.message);
-  }
-}
-
-// deleteSelectedInstance survives as the console's instance-agnostic entry
-// point; the row buttons call deleteInstance(id) directly.
-function deleteSelectedInstance() {
-  return deleteInstance(currentDockerId());
-}
+// There is no deleteInstance / deleteSelectedInstance pair any more. The list
+// is the inventory the platform is configured to receive, so removing a row
+// would only make an instance the operator still runs disappear from the one
+// place that shows its state; an instance whose Pod is gone now simply reads
+// 未连接 and recovers by itself when a Pod registers under that dockerId again.
+// Clearing one instance's *records* is still possible: the register/report
+// reset endpoints are per-instance.
 
 function formatResp(r) {
   return JSON.stringify(r, null, 2);
