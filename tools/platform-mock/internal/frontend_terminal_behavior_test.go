@@ -137,6 +137,55 @@ process.stdout.write(JSON.stringify({ same, afterKeyword: writes, html: lastHtml
 	}
 }
 
+// terminalPollResult records the status URLs one pollTaaTerminals call issued
+// for each terminal state.
+type terminalPollResult struct {
+	Collapsed []string `json:"collapsed"`
+	Paused    []string `json:"paused"`
+	Active    []string `json:"active"`
+}
+
+// TestFrontendTerminalPollingIsGated pins the core polling contract: a
+// collapsed or paused terminal must issue no request at all, so an idle page
+// sends nothing. Only an expanded, unpaused terminal polls its dockerId.
+func TestFrontendTerminalPollingIsGated(t *testing.T) {
+	body := `const calls = [];
+globalThis.fetch = (url) => {
+  calls.push(String(url));
+  return Promise.resolve({ status: 404, ok: false, json: async () => ({}) });
+};
+const run = (expanded, paused) => {
+  calls.length = 0;
+  taaTerminals.clear();
+  const st = taaTerminalState('a');
+  st.expanded = expanded;
+  st.paused = paused;
+  pollTaaTerminals();
+  return calls.slice();
+};
+process.stdout.write(JSON.stringify({
+  collapsed: run(false, false),
+  paused: run(true, true),
+  active: run(true, false),
+}));`
+
+	var got terminalPollResult
+	decodeLogsHarness(t, body, &got)
+
+	if len(got.Collapsed) != 0 {
+		t.Errorf("collapsed terminal issued %d request(s): %v, want none", len(got.Collapsed), got.Collapsed)
+	}
+	if len(got.Paused) != 0 {
+		t.Errorf("paused terminal issued %d request(s): %v, want none", len(got.Paused), got.Paused)
+	}
+	if len(got.Active) != 1 {
+		t.Fatalf("expanded, unpaused terminal issued %d request(s): %v, want exactly 1", len(got.Active), got.Active)
+	}
+	if !strings.Contains(got.Active[0], "/api/taaLog/status?dockerId=a") {
+		t.Errorf("poll request %q does not address the terminal's own dockerId", got.Active[0])
+	}
+}
+
 // decodeLogsHarness runs body against the real static/js/logs.js and decodes its
 // JSON reply into out.
 func decodeLogsHarness(t *testing.T, body string, out any) {
