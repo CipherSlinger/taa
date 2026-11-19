@@ -65,11 +65,13 @@ let instanceTargets = {};
 // what its own 检查连通性 learned, and 查看结果 exists only where that result is
 // still the one `lastHealthData` holds.
 //
-// The badge separates two questions that used to share one colour. `tone` is the
-// registration the platform accepted — it does not change when the instance
-// stops answering, because nothing polls it. `health` is the outcome of this
-// session's connectivity check, and an instance whose check failed must never
-// keep showing 已连接 as if the check had succeeded.
+// The badge separates two questions. `tone`/`label` are the last health check
+// this session ran. The combined connection state adds the registration fact,
+// but an accepted registration is only a historical record: nothing here polls
+// an instance, so it proves the instance reported once, not that it answers
+// now. A row therefore reads 已注册 — registered, connectivity unverified —
+// until a check vouches otherwise, and never 已连接 merely because the
+// registration was accepted.
 const instanceHealthState = {};
 let lastHealthOwner = '';
 // instanceConnectionChecks counts 检查连通性 clicks per instance. A check is a
@@ -95,12 +97,32 @@ function recordInstanceHealth(id, tone, label, title) {
 
 // instanceHealthFor is the health chip's accessor: the last check's outcome, or
 // the "not checked yet" placeholder that the chip renders for a fresh row.
+//
+// A passing check expires here as well as in instanceConnectionState: the chip
+// is what the row shows under 环境, and a green 连通正常 from ten minutes ago
+// would vouch for a link nobody has re-verified just as the combined badge once
+// did. A failed check is kept, because "this identity did not answer when last
+// tried" stays useful until the operator retries.
 function instanceHealthFor(id) {
-  return healthSlotFor(id) || {
-    tone: 'pending',
-    label: '未检查',
-    title: '尚未对该实例执行连通性检查',
-  };
+  const slot = healthSlotFor(id);
+  if (!slot) {
+    return {
+      tone: 'pending',
+      label: '未检查',
+      title: '尚未对该实例执行连通性检查',
+    };
+  }
+  if (slot.tone === 'ok') {
+    const age = Date.now() - (slot.checkedAt || 0);
+    if (age > instanceHealthStaleMs) {
+      return {
+        tone: 'pending',
+        label: '已过期',
+        title: '上次连通性检查已超过 ' + Math.round(instanceHealthStaleMs / 1000) + ' 秒，结论不再显示',
+      };
+    }
+  }
+  return slot;
 }
 
 // healthSlotFor is the same lookup without the placeholder, for callers that
@@ -133,20 +155,24 @@ function tickInstanceHealthExpiry() {
 }
 
 // instanceConnectionState combines the registration fact with the health
-// result. A failing check wins: 已连接 would otherwise describe a connection
-// this console just proved is not there.
+// result. A failing check wins: an accepted registration must not hide a
+// connection this console just proved is not there.
 //
-// 未连接 is the wording for both "configured but never registered" and "the
-// check could not reach it". The operator appointed the instance in the
-// inventory, so from the console's side the two are the same fact — nothing is
-// answering at that identity — and the tooltip says which one it is. 未注册 is
-// kept for a row that is neither configured nor registered, which only happens
-// for a record left behind by a registration the inventory does not name.
+// 已连接 is not a label this function produces. Nothing observes an instance
+// unless the operator presses 检查连通性, so an accepted registration earns
+// 已注册 — the instance is in the inventory and reported once, and whether it
+// can still be reached is unknown — and only a fresh passing check earns
+// 连通正常. 未连接 is the wording for both "configured but never registered"
+// and "the check could not reach it": the operator appointed the instance, so
+// from the console's side the two are the same fact — nothing is answering at
+// that identity — and the tooltip says which one it is. 未注册 is kept for a
+// row that is neither configured nor registered, which only happens for a
+// record left behind by a registration the inventory does not name.
 //
 // A passing check expires. Nothing observes an instance between checks, so a
 // green badge from ten minutes ago claims a connection nobody re-verified; once
-// instanceHealthStaleMs has passed the row falls back to the registration
-// wording rather than keep vouching for a link it no longer knows about.
+// instanceHealthStaleMs has passed the row falls back to 已注册 rather than
+// keep vouching for a link it no longer knows about.
 const instanceHealthStaleMs = 90 * 1000;
 
 function instanceConnectionState(item) {
@@ -170,13 +196,13 @@ function instanceConnectionState(item) {
       return { label: '连通正常', tone: 'ok', hint: '连通性检查通过，且平台已接受该实例的注册' };
     }
     return {
-      label: '已连接',
-      tone: 'ok',
-      hint: '平台已接受该实例的注册；上次连通性检查已超过 ' + Math.round(instanceHealthStaleMs / 60000) + ' 分钟，结论不再显示',
+      label: '已注册',
+      tone: 'pending',
+      hint: '平台已接受该实例的注册；上次连通性检查已超过 ' + Math.round(instanceHealthStaleMs / 1000) + ' 秒，连接状态未知',
     };
   }
   if (item.accepted) {
-    return { label: '已连接', tone: 'ok', hint: '平台已接受该实例的注册（连通性未检查）' };
+    return { label: '已注册', tone: 'pending', hint: '平台已接受该实例的注册；本页尚未检查连通性，连接状态未知' };
   }
   if (item.received) return { label: '注册失败', tone: 'bad', hint: '实例已上报，但平台未接受' };
   if (item.expected) return { label: '未连接', tone: 'pending', hint: '清单中配置的实例，平台尚未收到它的注册请求' };
@@ -294,8 +320,13 @@ function updateInstanceSummary(list) {
     el.textContent = '暂无已注册实例';
     return;
   }
-  const connected = list.filter((item) => item.accepted).length;
-  const summary = '共 ' + list.length + ' 个实例，' + connected + ' 个已连接';
+  // The tally follows the rows: only a fresh passing check counts as 连通正常.
+  // Counting accepted registrations here would repeat the false claim the badge
+  // itself no longer makes — an accepted registration is not a live link.
+  const connected = list.filter((item) => instanceConnectionState(item).tone === 'ok').length;
+  const unverified = list.filter((item) => instanceConnectionState(item).label === '已注册').length;
+  let summary = '共 ' + list.length + ' 个实例，' + connected + ' 个连通正常';
+  if (unverified > 0) summary += '，' + unverified + ' 个已注册（连接未验证）';
   // Only say so when the inventory is what makes the list longer than the
   // registrations: otherwise every page would carry a sentence about a
   // distinction that is not in play.
@@ -435,8 +466,9 @@ function buildInstanceRow(item) {
   }
   // No delete action: the list is the inventory of what this platform is
   // configured to receive, so a row is not the operator's to remove here — an
-  // instance whose Pod is gone simply goes 未连接, and comes back on its own if
-  // a Pod registers under the same dockerId again.
+  // instance whose Pod is gone keeps its registration row (已注册) until a
+  // check marks it 未连接, and comes back on its own if a Pod registers under
+  // the same dockerId again.
 
   row.appendChild(main);
   row.appendChild(actions);
@@ -617,8 +649,9 @@ function refreshInstancePanels() {
 // There is no deleteInstance / deleteSelectedInstance pair any more. The list
 // is the inventory the platform is configured to receive, so removing a row
 // would only make an instance the operator still runs disappear from the one
-// place that shows its state; an instance whose Pod is gone now simply reads
-// 未连接 and recovers by itself when a Pod registers under that dockerId again.
+// place that shows its state; an instance whose Pod is gone keeps its 已注册
+// row until a check marks it 未连接, and recovers by itself when a Pod registers
+// under that dockerId again.
 // Clearing one instance's *records* is still possible: the register/report
 // reset endpoints are per-instance.
 
