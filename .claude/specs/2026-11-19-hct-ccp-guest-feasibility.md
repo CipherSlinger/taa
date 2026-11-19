@@ -1,8 +1,9 @@
 # HCT hardware CCP in the CSV2 guest — feasibility record
 
 Date: 2026-11-19
-Status: concluded — not reachable with the shipped Kata CSV kernel; software engine stays the
-operative path, `accel=ccp` remains implemented and gated.
+Status: concluded — not reachable with the shipped Kata CSV kernel, and rejected for TAA on
+security grounds (see Decision); software engine stays the operative path, `accel=ccp` remains
+implemented and gated.
 
 ## Question
 
@@ -99,6 +100,37 @@ TAA. The vendor does not document CAE/vCCP for CSV guests and routes them to vTK
 that changes, `crypto.hct.accel=sw` (libhct CIS/AVX software) or the gmsm `builtin` backend are
 the real options; `accel=ccp` is implemented, gated on `/dev/ccp*`, and degrades to software with
 the reason logged.
+
+## Decision (2026-11-19): the vCCP route is rejected for TAA
+
+Requirement: TAA's identity SM2 private key must remain confidential from the host.
+
+The vCCP cannot meet it, by construction:
+
+- The device is emulated by QEMU on the host. libhct marshals the private key into its command
+  buffers on every operation (`hct_ccp_sm2_gen_keypair` returns it; our bridge memcpy's it into
+  `SM2_CCP_PKEY_CTX::d_key`), and QEMU, which holds the CSV memory key, reads those buffers.
+  CSV2 has no HOSTDATA or any other encrypted guest-host channel, so the TEE does not cover
+  this path.
+- The exposure is not limited to the key: SM4 session keys and plaintext/ciphertext sent to
+  the vCCP cross the same boundary, so restricting only the key operations to software does
+  not fix it.
+- Vendor guidance agrees (`03. 密码技术/HCT版本说明和阅读指引.md:40`: `CSV虚拟机使用TKM`).
+
+Consequences:
+
+- `builtin` (gmsm) and `hct_sw` (libhct software) both keep the key in CSV2-encrypted guest
+  memory. Neither is more confidential than the other; the choice is performance and
+  compatibility.
+- `accel=ccp` stays implemented and gated, but has no compliant use in a CSV2 deployment.
+- The only vendor path for host-invisible keys is key-isolated vTKM: CSV2 requires Hygon 3/4
+  and firmware >= 2131, host kernel vTKM patches, and a QEMU carrying the vTKM patches
+  (`-device psp,vid=N -mem2 base=...,size=32M`). libhct 3.0.10 already exports the SDF API
+  (`SDF_*`, no separate psp/sdf package). It is not a drop-in transport: keys are used by
+  handle and cannot be exported, so the key operations and `DeriveSealingKey`
+  (`internal/store/sealed_state.go:107`, derived from the private scalar) would need
+  redesign. Whether our host meets the hardware, firmware and kernel requirements has not
+  been checked.
 
 ## Host state after the experiment
 

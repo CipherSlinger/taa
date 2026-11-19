@@ -1,8 +1,11 @@
 # Plan: make the hardware CCP reachable from the CSV2 guest
 
 Date: 2026-11-19
-Status: proposal, not started. Feasibility evidence in
-`.claude/specs/2026-11-19-hct-ccp-guest-feasibility.md`.
+Status: superseded (2026-11-19) — the vCCP route is rejected for TAA because the identity SM2
+private key must remain confidential from the host, and the emulated device exposes it. Kept as
+the experiment record and for its kernel/initrd findings; the decision and its reasoning are in
+`.claude/specs/2026-11-19-hct-ccp-guest-feasibility.md` ("Decision" section). Do not start
+Phase 0 for the identity key.
 
 ## Why this is possible at all
 
