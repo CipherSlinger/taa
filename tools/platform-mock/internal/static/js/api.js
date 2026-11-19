@@ -308,6 +308,9 @@ function applyInstanceList(list, defaultId) {
     instanceListSignature = signature;
     renderInstanceList();
   }
+  // Counts live outside the repaint signature: patching them in place keeps a
+  // single new log line from rebuilding the list under the operator's cursor.
+  if (typeof refreshInstanceLogBadges === 'function') refreshInstanceLogBadges();
   applySelectedInstanceKind();
   if (previous !== next) notifyInstanceChange(next);
   setInstanceSelectorVisibility(list.length > 0);
@@ -449,6 +452,17 @@ function buildInstanceRow(item) {
 
   const actions = document.createElement('div');
   actions.className = 'instance-row-actions';
+  // The TAA log is per instance: this toggle opens a terminal inside this row.
+  // It deliberately does not select the row — two instances are compared side
+  // by side, so opening one terminal must not move the rest of the console.
+  const logButton = instanceActionButton(
+    '日志 (' + (item.taaLogCount || 0) + ') ▾',
+    () => setTaaTerminalExpanded(id, !taaTerminalState(id).expanded),
+    false,
+    '展开/收起该实例的 TAA 运行日志；各实例的终端互相独立',
+  );
+  logButton.classList.add('instance-log-toggle');
+  actions.appendChild(logButton);
   actions.appendChild(instanceActionButton('公钥', () => openInstancePublicKey(id), !item.accepted, '查看该实例上报的 TAA 注册公钥'));
   actions.appendChild(instanceActionButton('注册返回', () => openInstanceRegisterBody(id), !item.received, '查看该实例的注册请求与平台返回'));
   actions.appendChild(instanceActionButton('检查连通性', () => runInstanceHealth(id), false, 'GET /v1/taa/health，结果写回该行的环境状态'));
@@ -472,6 +486,12 @@ function buildInstanceRow(item) {
 
   row.appendChild(main);
   row.appendChild(actions);
+  // A repaint (selection change or inventory change) rebuilds the row; the
+  // terminal comes back from the state map with its filter, keyword, pause and
+  // cached lines intact.
+  if (taaTerminalState(id).expanded) {
+    row.appendChild(buildTaaTerminal(item));
+  }
   return row;
 }
 
@@ -627,8 +647,9 @@ function initInstanceSelector() {
   setInterval(tickInstanceHealthExpiry, 5000);
 }
 
-// refreshInstancePanels re-reads every instance-scoped panel. It is shared by
-// the selector's change handler.
+// refreshInstancePanels re-reads every instance-scoped panel that follows the
+// selection. TAA log terminals are not in that set: each one belongs to its own
+// instance and keeps polling regardless of what is selected.
 function refreshInstancePanels() {
   // A paused panel skips its fetch, so clear the flags before refreshing.
   if (typeof resetLogPauseForInstanceChange === 'function') resetLogPauseForInstanceChange();
@@ -639,7 +660,6 @@ function refreshInstancePanels() {
   if (typeof refreshReportProgress === 'function') refreshReportProgress();
   if (typeof refreshDashboardStatus === 'function') refreshDashboardStatus();
   if (typeof fetchModelLogs === 'function') fetchModelLogs();
-  if (typeof fetchTaaLogs === 'function') fetchTaaLogs();
   // The selected instance decides the target, so the pill follows it.
   if (typeof detectTAAProxy === 'function') {
     detectTAAProxy();
@@ -882,9 +902,7 @@ const PollingManager = {
       if (typeof fetchModelLogs === 'function') {
         fetchModelLogs();
       }
-      if (typeof fetchTaaLogs === 'function') {
-        fetchTaaLogs();
-      }
+      if (typeof pollTaaTerminals === 'function') pollTaaTerminals();
       if (typeof refreshLLMStatus === 'function') {
         refreshLLMStatus();
       }

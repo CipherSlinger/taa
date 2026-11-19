@@ -100,3 +100,24 @@ func TestFrontendTaaLogFetchKeepsLinesOnFailure(t *testing.T) {
 		t.Fatal("a failed fetch clears the cached lines")
 	}
 }
+
+// TestFrontendTaaTerminalRowsAreWired pins that the terminal is mounted by the
+// row it belongs to, that its toggle does not select that row, and that the
+// page-wide fetch no longer runs on selection changes or on the medium poll
+// tier.
+func TestFrontendTaaTerminalRowsAreWired(t *testing.T) {
+	for _, want := range []string{
+		"function buildTaaTerminal(item)",
+		"instance-log-toggle",
+		"setTaaTerminalExpanded(id, !taaTerminalState(id).expanded)",
+		"if (typeof refreshInstanceLogBadges === 'function') refreshInstanceLogBadges();",
+		"if (typeof pollTaaTerminals === 'function') pollTaaTerminals();",
+	} {
+		if !strings.Contains(frontendBundle, want) {
+			t.Fatalf("frontendBundle missing %q", want)
+		}
+	}
+	if strings.Contains(frontendBundle, "if (typeof fetchTaaLogs === 'function') fetchTaaLogs();") {
+		t.Fatal("selection changes and the medium poll tier still fetch one page-wide TAA log")
+	}
+}

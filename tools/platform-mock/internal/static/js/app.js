@@ -2033,7 +2033,6 @@ document.addEventListener('DOMContentLoaded', () => {
   refreshReportProgress();
   refreshDashboardStatus();
   fetchModelLogs();
-  fetchTaaLogs();
   initLLMPanel();
   refreshLLMStatus();
 
