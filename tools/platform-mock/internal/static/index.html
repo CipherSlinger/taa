@@ -508,38 +508,38 @@
     <div id="fheSubmitResult" style="display:none;"></div>
   </section>
 
-      <!-- 模型终端日志 -->
-      <section class="card" id="card-modelLog">
-        <div class="card-head" style="margin-bottom:12px; padding-bottom:10px; gap:12px;">
-          <div class="card-title-group">
-            <h2 style="margin:0;">模型终端日志</h2>
-            <div class="status" style="font-size:13px;">
-              <span id="modelLogStatusDot" class="dot status-pill pending"></span>
-              <span id="modelLogStatusText">等待日志上报...</span>
-              <span class="muted" style="font-size:12px;">(/v1/taa/modelLog)</span>
-            </div>
-          </div>
-          <div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
-            <span class="muted" id="modelLogCount" style="font-size:13px;">0 条日志</span>
-            <span class="muted" id="modelLogLastSeq" style="font-size:13px;">最新 seq: 0</span>
-            <button onclick="fetchModelLogs()" style="padding:6px 12px; font-size:13px;">刷新</button>
-            <button class="secondary" id="modelLogPauseBtn" onclick="toggleModelLogPause()" style="padding:6px 12px; font-size:13px;">暂停</button>
-            <button class="danger" onclick="clearModelLogs()" style="padding:6px 12px; font-size:13px;">清空</button>
-          </div>
+  <!-- 模型终端日志 -->
+  <section class="card" id="card-modelLog">
+    <div class="card-head" style="margin-bottom:12px; padding-bottom:10px; gap:12px;">
+      <div class="card-title-group">
+        <h2 style="margin:0;">模型终端日志</h2>
+        <div class="status" style="font-size:13px;">
+          <span id="modelLogStatusDot" class="dot status-pill pending"></span>
+          <span id="modelLogStatusText">等待日志上报...</span>
+          <span class="muted" style="font-size:12px;">(/v1/taa/modelLog)</span>
         </div>
-        <div class="terminal-shell">
-          <div class="terminal-bar">
-            <div class="terminal-dots">
-              <span class="t-dot red"></span>
-              <span class="t-dot yellow"></span>
-              <span class="t-dot green"></span>
-            </div>
-            <span class="terminal-title">model-stdout-stderr</span>
-            <span class="muted" style="font-size:11px;">stdout / stderr</span>
-          </div>
-          <div id="modelLogOutput" class="log-window" style="min-height:220px; max-height:450px; overflow-y:auto; font-size:13px; line-height:1.6; padding:14px; margin:0; font-family:monospace; white-space:pre-wrap;"></div>
+      </div>
+      <div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
+        <span class="muted" id="modelLogCount" style="font-size:13px;">0 条日志</span>
+        <span class="muted" id="modelLogLastSeq" style="font-size:13px;">最新 seq: 0</span>
+        <button onclick="fetchModelLogs()" style="padding:6px 12px; font-size:13px;">刷新</button>
+        <button class="secondary" id="modelLogPauseBtn" onclick="toggleModelLogPause()" style="padding:6px 12px; font-size:13px;">暂停</button>
+        <button class="danger" onclick="clearModelLogs()" style="padding:6px 12px; font-size:13px;">清空</button>
+      </div>
+    </div>
+    <div class="terminal-shell">
+      <div class="terminal-bar">
+        <div class="terminal-dots">
+          <span class="t-dot red"></span>
+          <span class="t-dot yellow"></span>
+          <span class="t-dot green"></span>
         </div>
-      </section>
+        <span class="terminal-title">model-stdout-stderr</span>
+        <span class="muted" style="font-size:11px;">stdout / stderr</span>
+      </div>
+      <div id="modelLogOutput" class="log-window" style="min-height:220px; max-height:450px; overflow-y:auto; font-size:13px; line-height:1.6; padding:14px; margin:0; font-family:monospace; white-space:pre-wrap;"></div>
+    </div>
+  </section>
 
   </div><!-- /#workspaceFlow -->
   <div id="workspaceApi" class="workspace-panel" role="tabpanel" aria-labelledby="tabBtnApi" style="display:none;">

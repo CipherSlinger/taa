@@ -2395,6 +2395,22 @@ func TestTaaLogConsoleRendering(t *testing.T) {
 		}
 	}
 
+	// The model log card is a direct child of the flow workspace. It used to be
+	// nested in the removed .log-panels-grid, and a stray wrapper there would
+	// silently move the terminal into a container the layout no longer styles.
+	flowOpen := strings.Index(indexHTML, `id="workspaceFlow"`)
+	flowClose := strings.Index(indexHTML, `</div><!-- /#workspaceFlow -->`)
+	modelCard := strings.Index(indexHTML, `id="card-modelLog"`)
+	if flowOpen == -1 || flowClose == -1 || modelCard == -1 {
+		t.Fatalf("model log markers missing: flowOpen=%d card=%d flowClose=%d", flowOpen, modelCard, flowClose)
+	}
+	if !(flowOpen < modelCard && modelCard < flowClose) {
+		t.Fatalf("card-modelLog must be inside #workspaceFlow: flowOpen=%d card=%d flowClose=%d", flowOpen, modelCard, flowClose)
+	}
+	if strings.Contains(indexHTML, "log-panels-grid") {
+		t.Error("indexHTML still nests a card in the removed .log-panels-grid")
+	}
+
 	// The card titles live inside their cards, so neither label is emitted as a
 	// standalone heading above the section anymore.
 	if strings.Contains(html, `<h2>模型终端日志</h2>`) || strings.Contains(html, `<h2>TAA 运行日志</h2>`) {

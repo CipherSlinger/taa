@@ -1,4 +1,4 @@
-// ── Log Streaming Components (Model Log) ──
+// ── Log Streaming Components (Model Log & per-instance TAA terminals) ──
 
 let modelLogPaused = false;
 
@@ -354,10 +354,9 @@ function applyTaaTerminalView(root, st) {
       // dataset.rawText is HTML-entity-decoded by the parser, so the text must
       // be re-escaped before it goes back through innerHTML.
       const next = st.keyword ? highlightSearchMatches(escapeHtml(raw), st.keyword) : escapeHtml(raw);
-      const key = st.keyword + '\u0000' + raw;
-      if (msg && msg.dataset.renderedKey !== key) {
+      if (msg && msg.dataset.renderedKey !== st.keyword) {
         msg.innerHTML = next;
-        msg.dataset.renderedKey = key;
+        msg.dataset.renderedKey = st.keyword;
       }
     } else {
       row.style.display = 'none';
