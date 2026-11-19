@@ -34,20 +34,32 @@ static void ccp_sm2_set_pub(SM2_CCP_PKEY_CTX *c, const unsigned char *k, size_t 
 // wrapper implements plain SM3 burst (hct_ccp_sm3_digest_burst delegates to
 // the HMAC burst with an empty key). A zero-length input still needs a valid
 // data pointer, hence the empty-string substitution.
+//
+// The context must be initialised first: a zeroed HCT_SM3_AUTH_CTX is
+// rejected with -EINVAL (verified against hct_sw_sm3_digest_burst, which
+// shares the wrapper). Initialising it costs one library call and keeps the
+// burst contract explicit.
 static int ccp_sm3_sum(const unsigned char *data, size_t n, unsigned char *md)
 {
 	struct sm3_digest_burst blk;
 	HCT_SM3_AUTH_CTX ctx;
+	int rc;
 
 	memset(&blk, 0, sizeof(blk));
 	memset(&ctx, 0, sizeof(ctx));
+	rc = hct_ccp_sm3_digest_init(&ctx);
+	if (rc != 0) {
+		return rc;
+	}
 	blk.sm3_ctx = &ctx;
 	blk.data = n > 0 ? data : (const unsigned char *)"";
 	blk.count = (uint32_t)n;
 	blk.first = 1;
 	blk.final = 1;
 	blk.md = md;
-	return hct_ccp_sm3_digest_burst(&blk, 1);
+	rc = hct_ccp_sm3_digest_burst(&blk, 1);
+	hct_ccp_sm3_digest_cleanup(&ctx);
+	return rc;
 }
 */
 import "C"
