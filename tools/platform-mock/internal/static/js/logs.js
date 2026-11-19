@@ -63,12 +63,13 @@ function highlightSearchMatches(safeHtml, keyword) {
   return safeHtml.replace(reg, '<mark class="hl-match">$1</mark>');
 }
 
-function renderTaaLogEntry(e) {
+function renderTaaLogEntry(e, st) {
+  const view = st || { level: 'ALL', keyword: '' };
   const lvl = detectLogLevel(e.message);
   const safeMsg = escapeHtml(e.message);
-  const highlightedMsg = currentSearchKeyword ? highlightSearchMatches(safeMsg, currentSearchKeyword) : safeMsg;
-  const isMatch = !currentSearchKeyword || e.message.toLowerCase().includes(currentSearchKeyword.toLowerCase());
-  const isLvlMatch = (currentLogFilter === 'ALL' || lvl === currentLogFilter);
+  const highlightedMsg = view.keyword ? highlightSearchMatches(safeMsg, view.keyword) : safeMsg;
+  const isMatch = !view.keyword || e.message.toLowerCase().includes(view.keyword.toLowerCase());
+  const isLvlMatch = (view.level === 'ALL' || lvl === view.level);
   const displayStyle = (isMatch && isLvlMatch) ? '' : 'display:none;';
 
   return `<div class="log-row" data-seq="${e.seq}" data-level="${lvl}" data-raw-text="${safeMsg}" style="${displayStyle}"><span class="log-seq" style="color:#60a5fa; font-weight:600; margin-right:6px;">[seq=${e.seq}]</span><span class="log-lvl ${lvl.toLowerCase()}">${lvl}</span><span class="log-msg">${highlightedMsg}</span></div>`;
@@ -240,7 +241,7 @@ async function fetchTaaLogs() {
       return;
     }
 
-    output.innerHTML = entries.map(renderTaaLogEntry).join('');
+    output.innerHTML = entries.map((e) => renderTaaLogEntry(e, { level: currentLogFilter, keyword: currentSearchKeyword })).join('');
 
     if (currentSearchKeyword) {
       applyLogFilteringAndHighlight();
@@ -300,3 +301,365 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   });
 });
+
+// ── Per-instance TAA terminals ──
+//
+// A terminal belongs to one dockerId, not to the page's selection: two
+// instances can be watched side by side, each with its own pause, level
+// filter, search keyword and scroll lock. Nothing below reads
+// currentInstanceDockerId — a terminal only ever addresses the id it was built
+// for.
+const taaTerminals = new Map();
+
+function taaTerminalState(id) {
+  let st = taaTerminals.get(id);
+  if (!st) {
+    st = {
+      expanded: false,
+      paused: false,
+      level: 'ALL',
+      keyword: '',
+      autoScroll: true,
+      entries: [],
+      total: 0,
+      lastSeq: 0,
+      error: '',
+      loading: false,
+      fetchedAt: 0,
+    };
+    taaTerminals.set(id, st);
+  }
+  return st;
+}
+
+// findTaaTerminal / findInstanceRow scan instead of using a selector with the
+// dockerId interpolated: a registration can carry any string, and quotes or
+// brackets in it must not be able to change which node is found.
+function findTaaTerminal(id) {
+  const nodes = document.querySelectorAll('.instance-terminal');
+  for (const node of nodes) {
+    if (node.dataset.terminalFor === id) return node;
+  }
+  return null;
+}
+
+function findInstanceRow(id) {
+  const rows = document.querySelectorAll('.instance-row');
+  for (const row of rows) {
+    if (row.dataset.dockerId === id) return row;
+  }
+  return null;
+}
+
+function taaTerminalButton(label, kind, handler, title) {
+  const btn = document.createElement('button');
+  btn.type = 'button';
+  btn.className = kind + ' btn-sm';
+  btn.textContent = label;
+  if (title) btn.title = title;
+  btn.addEventListener('click', handler);
+  return btn;
+}
+
+function fetchTaaLogsFor(id) {
+  const st = taaTerminalState(id);
+  if (!st.expanded || st.paused || st.loading) return Promise.resolve();
+  st.loading = true;
+  const done = () => {
+    st.loading = false;
+    const root = findTaaTerminal(id);
+    if (root) paintTaaTerminal(root, id);
+    refreshInstanceLogBadges();
+  };
+  return fetch('/api/taaLog/status?dockerId=' + encodeURIComponent(id), { cache: 'no-store' })
+    .then((res) => {
+      if (!res.ok) throw new Error('status ' + res.status);
+      return res.json();
+    })
+    .then((data) => {
+      const result = responseResult(data);
+      if (!result || !Array.isArray(result.entries)) throw new Error('unexpected payload');
+      st.entries = result.entries;
+      st.total = result.totalCount != null ? result.totalCount : st.entries.length;
+      st.lastSeq = result.lastSeq != null
+        ? result.lastSeq
+        : (st.entries.length ? st.entries[st.entries.length - 1].seq : 0);
+      st.error = '';
+      st.fetchedAt = Date.now();
+    })
+    .catch(() => {
+      // Keep the lines already on screen: a failed poll is not a reason to
+      // blank a terminal the operator is reading.
+      st.error = '日志拉取失败';
+    })
+    .then(done);
+}
+
+// pollTaaTerminals is called by the medium polling tier. Collapsed and paused
+// terminals produce no request at all, so an idle page sends nothing.
+function pollTaaTerminals() {
+  taaTerminals.forEach((st, id) => {
+    if (st.expanded && !st.paused) fetchTaaLogsFor(id);
+  });
+}
+
+function setTaaTerminalExpanded(id, expanded) {
+  const st = taaTerminalState(id);
+  st.expanded = !!expanded;
+  const row = findInstanceRow(id);
+  if (row) {
+    const existing = row.querySelector('.instance-terminal');
+    if (existing) existing.remove();
+    if (st.expanded) {
+      const item = instanceCache.find((it) => (it.dockerId || '') === id) || { dockerId: id };
+      row.appendChild(buildTaaTerminal(item));
+      fetchTaaLogsFor(id);
+    }
+  }
+  refreshInstanceLogBadges();
+}
+
+function toggleTaaTerminalPause(id) {
+  const st = taaTerminalState(id);
+  st.paused = !st.paused;
+  const root = findTaaTerminal(id);
+  if (root) paintTaaTerminal(root, id);
+  if (!st.paused) fetchTaaLogsFor(id);
+}
+
+function setTaaTerminalFilter(id, level) {
+  const st = taaTerminalState(id);
+  st.level = level || 'ALL';
+  const root = findTaaTerminal(id);
+  if (!root) return;
+  root.querySelectorAll('.log-filter-btn').forEach((btn) => {
+    btn.classList.toggle('active', btn.dataset.level === st.level);
+  });
+  applyTaaTerminalView(root, st);
+}
+
+function onTaaTerminalSearch(id, value) {
+  const st = taaTerminalState(id);
+  st.keyword = (value || '').trim();
+  const root = findTaaTerminal(id);
+  if (root) applyTaaTerminalView(root, st);
+}
+
+function clearTaaTerminal(id) {
+  const st = taaTerminalState(id);
+  return fetch('/api/taaLog/reset?dockerId=' + encodeURIComponent(id), { method: 'POST' })
+    .then((res) => {
+      if (!res.ok) throw new Error('reset ' + res.status);
+      return res.json();
+    })
+    .then((data) => {
+      if (!data || data.error !== 0) throw new Error('reset rejected');
+      st.entries = [];
+      st.total = 0;
+      st.lastSeq = 0;
+      st.error = '';
+      st.fetchedAt = Date.now();
+    })
+    .catch(() => {
+      st.error = '清空失败';
+    })
+    .then(() => {
+      const root = findTaaTerminal(id);
+      if (root) paintTaaTerminal(root, id);
+      refreshInstanceLogBadges();
+    });
+}
+
+// applyTaaTerminalView re-applies one terminal's filter and keyword to the rows
+// already in its window. It takes the terminal root so the same call serves
+// every open terminal without a shared "current" state.
+function applyTaaTerminalView(root, st) {
+  const out = root.querySelector('.taa-terminal-output');
+  if (!out) return;
+  let matchCount = 0;
+  out.querySelectorAll('.log-row').forEach((row) => {
+    const raw = row.dataset.rawText || '';
+    const level = row.dataset.level || 'INFO';
+    const levelMatch = st.level === 'ALL' || level === st.level;
+    const keywordMatch = !st.keyword || raw.toLowerCase().includes(st.keyword.toLowerCase());
+    const msg = row.querySelector('.log-msg');
+    if (levelMatch && keywordMatch) {
+      row.style.display = '';
+      if (st.keyword) matchCount++;
+      if (msg) msg.innerHTML = st.keyword ? highlightSearchMatches(raw, st.keyword) : raw;
+    } else {
+      row.style.display = 'none';
+    }
+  });
+  const badge = root.querySelector('.taa-terminal-match-count');
+  if (badge) badge.textContent = st.keyword ? matchCount + ' 条' : '';
+}
+
+// buildTaaTerminal mounts one instance's terminal. Every control closes over
+// `id`, so no action can be sent to a neighbouring row.
+function buildTaaTerminal(item) {
+  const id = item.dockerId || '';
+  const st = taaTerminalState(id);
+  const wrap = document.createElement('div');
+  wrap.className = 'instance-terminal';
+  wrap.dataset.terminalFor = id;
+
+  const shell = document.createElement('div');
+  shell.className = 'terminal-shell';
+
+  const bar = document.createElement('div');
+  bar.className = 'terminal-bar';
+  const left = document.createElement('div');
+  left.className = 'terminal-bar-left';
+  const dots = document.createElement('div');
+  dots.className = 'terminal-dots';
+  ['red', 'yellow', 'green'].forEach((color) => {
+    const dot = document.createElement('span');
+    dot.className = 't-dot ' + color;
+    dots.appendChild(dot);
+  });
+  left.appendChild(dots);
+  const title = document.createElement('span');
+  title.className = 'terminal-title';
+  title.textContent = 'taa-syslog · ' + (id || '(legacy)');
+  left.appendChild(title);
+  const stream = document.createElement('span');
+  stream.className = 'muted';
+  stream.style.fontSize = '11px';
+  stream.textContent = 'stdout / stderr';
+  left.appendChild(stream);
+  bar.appendChild(left);
+
+  const actions = document.createElement('div');
+  actions.className = 'terminal-bar-actions';
+  const status = document.createElement('span');
+  status.className = 'status taa-terminal-status';
+  const statusDot = document.createElement('span');
+  statusDot.className = 'dot status-pill pending taa-terminal-status-dot';
+  const statusText = document.createElement('span');
+  statusText.className = 'taa-terminal-status-text';
+  statusText.textContent = '等待日志上报...';
+  status.appendChild(statusDot);
+  status.appendChild(statusText);
+  actions.appendChild(status);
+  const countEl = document.createElement('span');
+  countEl.className = 'muted taa-terminal-count';
+  countEl.style.fontSize = '12px';
+  actions.appendChild(countEl);
+  const seqEl = document.createElement('span');
+  seqEl.className = 'muted taa-terminal-seq';
+  seqEl.style.fontSize = '12px';
+  actions.appendChild(seqEl);
+  actions.appendChild(taaTerminalButton('刷新', 'secondary', () => fetchTaaLogsFor(id), '立即重新拉取该实例的 TAA 日志'));
+  const pauseBtn = taaTerminalButton('暂停', 'secondary', () => toggleTaaTerminalPause(id), '暂停后该终端停止轮询，不影响其他实例');
+  pauseBtn.classList.add('taa-terminal-pause');
+  actions.appendChild(pauseBtn);
+  actions.appendChild(taaTerminalButton('清空', 'danger', () => clearTaaTerminal(id), '只清空该实例的 TAA 日志'));
+  bar.appendChild(actions);
+  shell.appendChild(bar);
+
+  const toolbar = document.createElement('div');
+  toolbar.className = 'terminal-toolbar';
+  const filterGroup = document.createElement('div');
+  filterGroup.className = 'log-filter-group';
+  filterGroup.setAttribute('role', 'group');
+  filterGroup.setAttribute('aria-label', '日志等级过滤');
+  [['ALL', '全部'], ['INFO', 'INFO'], ['WARN', 'WARN'], ['ERROR', 'ERROR']].forEach(([level, label]) => {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'log-filter-btn' + (st.level === level ? ' active' : '');
+    btn.dataset.level = level;
+    btn.textContent = label;
+    btn.addEventListener('click', () => setTaaTerminalFilter(id, level));
+    filterGroup.appendChild(btn);
+  });
+  toolbar.appendChild(filterGroup);
+  const searchBox = document.createElement('div');
+  searchBox.className = 'terminal-search-box';
+  const search = document.createElement('input');
+  search.type = 'text';
+  search.className = 'taa-terminal-search';
+  search.placeholder = '搜索日志... (/)';
+  search.value = st.keyword;
+  search.addEventListener('input', () => onTaaTerminalSearch(id, search.value));
+  searchBox.appendChild(search);
+  const matchCount = document.createElement('span');
+  matchCount.className = 'taa-terminal-match-count';
+  searchBox.appendChild(matchCount);
+  toolbar.appendChild(searchBox);
+  shell.appendChild(toolbar);
+
+  const out = document.createElement('div');
+  out.className = 'log-window taa-terminal-output';
+  out.addEventListener('scroll', () => {
+    st.autoScroll = out.scrollHeight - out.scrollTop - out.clientHeight <= 40;
+  });
+  shell.appendChild(out);
+
+  wrap.appendChild(shell);
+  paintTaaTerminal(wrap, id);
+  return wrap;
+}
+
+// paintTaaTerminal redraws one terminal from its state. It is safe to call on
+// a detached node (buildTaaTerminal does), so it never looks the terminal up by
+// id itself.
+function paintTaaTerminal(root, id) {
+  const st = taaTerminalState(id);
+  const countEl = root.querySelector('.taa-terminal-count');
+  if (countEl) countEl.textContent = st.total + ' 条日志';
+  const seqEl = root.querySelector('.taa-terminal-seq');
+  if (seqEl) seqEl.textContent = '最新 seq: ' + st.lastSeq;
+
+  const dot = root.querySelector('.taa-terminal-status-dot');
+  const statusText = root.querySelector('.taa-terminal-status-text');
+  if (dot && statusText) {
+    if (st.error) {
+      dot.className = 'dot status-pill bad taa-terminal-status-dot';
+      statusText.textContent = st.error;
+    } else if (st.entries.length > 0) {
+      dot.className = 'dot ok status-pill ok taa-terminal-status-dot';
+      statusText.textContent = '日志接收中';
+    } else {
+      dot.className = 'dot status-pill pending taa-terminal-status-dot';
+      statusText.textContent = '等待日志上报...';
+    }
+  }
+
+  const pauseBtn = root.querySelector('.taa-terminal-pause');
+  if (pauseBtn) {
+    pauseBtn.textContent = st.paused ? '继续' : '暂停';
+    pauseBtn.className = (st.paused ? 'success' : 'secondary') + ' btn-sm taa-terminal-pause';
+  }
+  root.querySelectorAll('.log-filter-btn').forEach((btn) => {
+    btn.classList.toggle('active', btn.dataset.level === st.level);
+  });
+  const search = root.querySelector('.taa-terminal-search');
+  if (search && search.value !== st.keyword) search.value = st.keyword;
+
+  const out = root.querySelector('.taa-terminal-output');
+  if (!out) return;
+  if (st.entries.length === 0) {
+    out.innerHTML = '<div class="taa-terminal-empty" style="color:#6b7280; text-align:center; padding:40px 0;">该实例暂无 TAA 日志。(/v1/taa/taaLog)</div>';
+  } else {
+    out.innerHTML = st.entries.map((e) => renderTaaLogEntry(e, st)).join('');
+  }
+  applyTaaTerminalView(root, st);
+  if (st.autoScroll) out.scrollTop = out.scrollHeight;
+}
+
+// refreshInstanceLogBadges keeps the collapsed row's count current without
+// touching the list signature: a new log line must not repaint every row (that
+// would drop focus from a search box in an open terminal).
+function refreshInstanceLogBadges() {
+  document.querySelectorAll('.instance-row').forEach((row) => {
+    const id = row.dataset.dockerId || '';
+    const btn = row.querySelector('.instance-log-toggle');
+    if (!btn) return;
+    const st = taaTerminals.get(id);
+    const item = (typeof instanceCache !== 'undefined' ? instanceCache : [])
+      .find((it) => (it.dockerId || '') === id);
+    const count = st && st.fetchedAt ? st.total : ((item && item.taaLogCount) || 0);
+    btn.textContent = '日志 (' + count + ') ' + (st && st.expanded ? '▴' : '▾');
+  });
+}
