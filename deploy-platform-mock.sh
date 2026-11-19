@@ -58,7 +58,7 @@ PLATFORM_KEY_FILE="${PLATFORM_KEY_FILE:-}"
 AUDIT_ENGINE="${PLATFORM_MOCK_AUDIT_ENGINE:-semgrep}"
 SEMGREP_RULES="${PLATFORM_MOCK_SEMGREP_RULES-__unset__}"
 SEMGREP_BIN_DIR="${PLATFORM_MOCK_SEMGREP_BIN_DIR-__unset__}"
-SEMGREP_RULES_SOURCE="${SEMGREP_RULES_SOURCE:-$PROJECT_DIR/models/audit/semgrep/rules}"
+SEMGREP_RULES_SOURCE="${SEMGREP_RULES_SOURCE:-$PROJECT_DIR/teeaudit/models/audit/semgrep/rules}"
 SEMGREP_VERSION="${SEMGREP_VERSION:-1.177.0}"
 # The instance inventory the console lists. "type:dockerId" entries, comma
 # separated; a type is one of tee, fhe, data-anaylsis. An entry that never
@@ -325,7 +325,7 @@ resolve_defaults() {
     # a different binary than the build produced.
     [ "$LOG_FILE" = "$REMOTE_DIR/platform-mock.log" ] && LOG_FILE="$PROJECT_DIR/bin/platform-mock.log"
     [ "$PID_FILE" = "$REMOTE_DIR/platform-mock.pid" ] && PID_FILE="$PROJECT_DIR/bin/platform-mock.pid"
-    [ "$SEMGREP_RULES" = "$REMOTE_DIR/semgrep-rules" ] && SEMGREP_RULES="$PROJECT_DIR/models/audit/semgrep/rules"
+    [ "$SEMGREP_RULES" = "$REMOTE_DIR/semgrep-rules" ] && SEMGREP_RULES="$PROJECT_DIR/teeaudit/models/audit/semgrep/rules"
     [ "$SEMGREP_BIN_DIR" = "$REMOTE_DIR/sgvenv/bin" ] && SEMGREP_BIN_DIR=""
     REMOTE_BINARY="$BINARY_PATH"
     # REMOTE_DIR is still used as a scratch root (the start step creates it), and

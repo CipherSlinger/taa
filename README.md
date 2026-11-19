@@ -268,7 +268,7 @@ neither rolls back the import nor withholds training because of it (`/v1/taa/rep
    - LLM analyzes whether flagged snippets represent malicious intent or benign ML operations (e.g., standard PyTorch checkpoint saving).
    - Features circuit breaker protection, jittered exponential backoff retries, and strict fail-closed verdicts.
 
-> **Roadmap — not part of the runtime audit path yet**: migrating Tier 1 from regex matching to a Semgrep AST + inter-procedural taint engine is tracked in `TODO` (静态代码扫描引擎升级). The Semgrep and CPG engines already exist in the offline audit benchmark harness (`models/audit/`, 22 rules across Python/Go/Shell, selectable via `audit_benchmark_eval.py --engine regex|semgrep`); they are evaluation tooling and are not wired into the TAA runtime audit path. Target architecture: `.claude/specs/2026-09-17-semgrep-audit-engine-design.md`.
+> **Roadmap — not part of the runtime audit path yet**: migrating Tier 1 from regex matching to a Semgrep AST + inter-procedural taint engine is tracked in `TODO` (静态代码扫描引擎升级). The Semgrep and CPG engines already exist in the offline audit benchmark harness (`teeaudit/models/audit/`, 22 rules across Python/Go/Shell, selectable via `audit_benchmark_eval.py --engine regex|semgrep`); they are evaluation tooling and are not wired into the TAA runtime audit path. Target architecture: `.claude/specs/2026-09-17-semgrep-audit-engine-design.md`.
 
 ### 4. Binary Audit Channel
 
@@ -729,7 +729,7 @@ the container exits with that status.
 > host (`REMOTE_SEMGREP_BUNDLE`, default `$REMOTE_DIR/semgrep-bundle.tar.gz`, built with
 > `deploy/guest-build/build-semgrep-payload-container.sh`; set `SEMGREP_BUNDLE` to a local archive to
 > have it uploaded first), and the rules are streamed from this checkout
-> (`models/audit/semgrep/rules`) on every deploy. A missing archive fails the deploy immediately
+> (`teeaudit/models/audit/semgrep/rules`) on every deploy. A missing archive fails the deploy immediately
 > with the recipe to build it, instead of running into the readiness timeout through the daemon's
 > 10s restart loop. The payload lands in the Pod's writable layer, so a recreated Pod needs another
 > deploy.
@@ -756,7 +756,7 @@ the container exits with that status.
 >
 > The archive's embedded `MANIFEST` is checked against `SEMGREP_VERSION` (1.177.0) so a stale bundle
 > is rejected rather than shipped, the rules are copied from `SEMGREP_RULES_SOURCE`
-> (`models/audit/semgrep/rules`) into the path the template names, and the same bounded offline scan
+> (`teeaudit/models/audit/semgrep/rules`) into the path the template names, and the same bounded offline scan
 > probe the remote path runs has to pass — semgrep being *present* is not the same as semgrep being
 > *able to run the rules*. Overrides: `SEMGREP_PAYLOAD_BUNDLE`, `CONTAINER_SEMGREP_DIR`,
 > `SEMGREP_VERSION`.
@@ -947,7 +947,7 @@ address.
 
 **Local mode.** `--local` runs the same lifecycle on this host instead of over SSH, with no upload:
 the binary under `bin/` is used in place, state/log/pid default to `bin/`, semgrep is taken from
-`PATH` and the rules from the working copy's `models/audit/semgrep/rules`. Since there is no
+`PATH` and the rules from the working copy's `teeaudit/models/audit/semgrep/rules`. Since there is no
 `--host`, `--llm-host` supplies the node address for the `--llm-target` default (`--llm-target`
 still overrides it). A local mock that is not on the cluster network needs `--instance-targets`
 for every instance it must dial.

@@ -192,7 +192,7 @@ The platform mock provides an embedded single-page Web console accessible by ope
     engine facts and the rule set. The static engine is selected with `-audit-engine`:
     `semgrep` (default, matching production TAA) or
     `regex`. Semgrep scans the YAML rules under `-semgrep-rules` (default
-    `<stateDir>/semgrep-rules`, uploaded from `models/audit/semgrep/rules` by
+    `<stateDir>/semgrep-rules`, uploaded from `teeaudit/models/audit/semgrep/rules` by
     `deploy-platform-mock.sh`); the card shows that directory, the YAML file count and the CLI
     path. When the CLI or the rules are missing on the host the workbench falls back to the
     built-in regex engine and the card states the reason plus the configured engine. The

@@ -389,7 +389,7 @@ DNS label（≤63 字符）、命名空间与 RuntimeClass 存在、宿主端口
 mock 不必和集群同网段，也可以直接跑在开发机或有 NodePort 路由的主机上。`--local` 用本地
 shell 代替 SSH 执行同一套生命周期（构建、启动、停止、重启、状态、就绪轮询），不再上传任何文件：
 `bin/` 下构建出的二进制原地运行，state/log/pid 默认落在项目的 `bin/` 目录，semgrep 直接取
-`PATH` 中的（如 `~/.local/bin/semgrep`），规则用工作副本的 `models/audit/semgrep/rules`。
+`PATH` 中的（如 `~/.local/bin/semgrep`），规则用工作副本的 `teeaudit/models/audit/semgrep/rules`。
 本机模式没有 `--host`，`--llm-target` 的默认值改由 `--llm-host` 给出，两者都不给则启动即报错。
 不在此集群网络时，每个要拨的实例都要用 `--instance-targets` 指定地址。
 

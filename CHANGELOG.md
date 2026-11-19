@@ -9,6 +9,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 ## [Unreleased]
 
 ### Added
+- **The Audit Rules, Tooling and Evidence Moved Into `teeaudit`**: `models/audit` — the Semgrep
+  rule set, the benchmark and CPG tooling, the corpus manifests and the evaluation evidence —
+  now lives at `teeaudit/models/audit`, next to the runtime that consumes it. The relative layout
+  is unchanged on purpose: every tool derives its repository root as `parents[3]` and
+  `semgrep_runner.py` defaults to `../semgrep/rules`, so a wholesale move keeps those defaults
+  correct, while splitting the tree would have silently pointed them at missing directories. The
+  three deploy scripts that read the rules from the working copy now name the `teeaudit/` prefix,
+  and a root `conftest.py` puts `teeaudit/` on `sys.path` so `from models.audit.tools...` still
+  resolves (the `models` namespace package merges `teeaudit/models` with the root `models/`, which
+  keeps `models/examples`). Git carries the same 743 files TAA tracked, about 61 MB; the 1.2 GB of
+  corpora, research material and run output stay local and ignored, under the same force-add
+  convention as before. `teeaudit/models/go.mod` exists only as a boundary: the corpus holds 248
+  `.go` files written as Semgrep fixtures that import packages this project does not depend on,
+  and the boundary both keeps `go build ./...` from walking them — which is what previously forced
+  every root build to be scoped — and keeps the data out of the module zip a `go get` downloads.
 - **platform-mock：实例连通性改为自动定时检查，失效进入重连/断开状态。** 实例行上的
   「检查连通性」按钮取消——连通行不行不该靠操作者记得去点。平台接受实例注册、控制台观察到后（列
   表每 5 秒拉取一次 `/api/instances`），该行立刻开始检查，此后每 30 秒 `GET /v1/taa/health` 一次；

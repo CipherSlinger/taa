@@ -228,7 +228,7 @@ TAA_READY_INTERVAL="${TAA_READY_INTERVAL:-2}"
 # part of it: they evolve with every commit, so they are streamed from this checkout instead.
 REMOTE_SEMGREP_BUNDLE="${REMOTE_SEMGREP_BUNDLE:-$REMOTE_DIR/semgrep-bundle.tar.gz}"
 SEMGREP_BUNDLE="${SEMGREP_BUNDLE:-}"
-SEMGREP_RULES_SOURCE="${SEMGREP_RULES_SOURCE:-$PROJECT_DIR/models/audit/semgrep/rules}"
+SEMGREP_RULES_SOURCE="${SEMGREP_RULES_SOURCE:-$PROJECT_DIR/teeaudit/models/audit/semgrep/rules}"
 
 # The container-shaped semgrep payload, built by deploy/guest-build/build-semgrep-payload-container.sh.
 # It carries site-packages and the semgrep wrapper but not the rules, which are streamed separately

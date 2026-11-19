@@ -48,7 +48,7 @@
 #
 # Environment (all optional):
 #   SEMGREP_VERSION      1.177.0 (keep in step with deploy.sh --scan-engine semgrep)
-#   SEMGREP_RULES_SRC    $ROOT_DIR/models/audit/semgrep/rules
+#   SEMGREP_RULES_SRC    $ROOT_DIR/teeaudit/models/audit/semgrep/rules
 #   SEMGREP_PAYLOAD_DIR  $SCRIPT_DIR/semgrep-payload
 #   BASE_INITRD          $SCRIPT_DIR/base/kata-containers-initrd-confidential-csv.img
 #   PYTHON_IMAGE         python:3.12-slim-bullseye  (glibc 2.31, shared build)
@@ -67,7 +67,7 @@ if [[ ! -f "$ROOT_DIR/go.mod" ]]; then
 fi
 
 SEMGREP_VERSION="${SEMGREP_VERSION:-1.177.0}"
-SEMGREP_RULES_SRC="${SEMGREP_RULES_SRC:-$ROOT_DIR/models/audit/semgrep/rules}"
+SEMGREP_RULES_SRC="${SEMGREP_RULES_SRC:-$ROOT_DIR/teeaudit/models/audit/semgrep/rules}"
 SEMGREP_PAYLOAD_DIR="${SEMGREP_PAYLOAD_DIR:-$SCRIPT_DIR/semgrep-payload}"
 BASE_INITRD="${BASE_INITRD:-$SCRIPT_DIR/base/kata-containers-initrd-confidential-csv.img}"
 PYTHON_IMAGE="${PYTHON_IMAGE:-python:3.12-slim-bullseye}"

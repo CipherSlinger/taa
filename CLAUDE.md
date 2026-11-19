@@ -14,12 +14,15 @@ Guidance for Claude Code in this repository.
 
 Gotchas:
 
-- **Never use `./...` from the repo root.** `models/audit/holdout-sources/` holds Semgrep rule
-  fixtures written in Go that are not real packages, so `go build/vet/test ./...` fails before
-  running anything. Always scope to `cmd`, `internal`, `pkg`.
-- Python tests under `tests/` and `models/audit/tools/` are pytest-based and must run from the
-  repo root (imports resolve as `models.audit.tools.*`). The system `python3` has no pytest;
-  use e.g. `~/.venv/bin/python -m pytest tests/test_cpg_builder.py` (single test: append
+- **`./...` is safe at the root now**, but keep scoping to `cmd`, `internal`, `pkg` out of habit.
+  The Semgrep fixtures written in Go (`models/audit/holdout-sources/`) — 248 files that are not
+  real packages — moved to `teeaudit/models/` behind a nested `go.mod`, so Go no longer walks
+  them from either module.
+- Python tests under `tests/` and `teeaudit/models/audit/tools/` are pytest-based and must run
+  from the repo root. The audit tree now lives in the submodule, so the root `conftest.py` puts
+  `teeaudit/` on `sys.path`; imports still resolve as `models.audit.tools.*` (the `models`
+  namespace package merges `teeaudit/models` and the root `models/`). The system `python3` has no
+  pytest; use e.g. `~/.venv/bin/python -m pytest tests/test_cpg_builder.py` (single test: append
   `::Class::method`).
 - `go.work` spans three workspace modules (`taa`, `teeaudit`, `tools/sdk`); `teeaudit/teetls` is a
   replace target rather than a member, because every module that needs it replaces it. Resolving
@@ -53,7 +56,9 @@ userspace process in the guest** — before `kata-agent`, before networking.
 - **Code audit** (`teeaudit/` submodule, package `codeaudit`): Tier 1 is a `StaticEngine` (built-in
   regex scanner or
   offline Semgrep CLI, chosen by `codeAudit.codeScan.engine` at startup; missing rules path falls
-  back to regex with a warning, unknown engine is refused). Tier 2 asks the TEE-LLM gateway to
+  back to regex with a warning, unknown engine is refused). The rules, the benchmark tooling and
+  the evaluation evidence live in the same submodule under `teeaudit/models/audit/`; deploy
+  scripts read the rules from that path in the working copy. Tier 2 asks the TEE-LLM gateway to
   adjudicate each Tier 1 finding; `FailClosed` rejects the import when the gateway is unreachable.
   The binary channel (`binary_*.go`) runs independently of the engine; `BIN_001` (packed
   executable) is HIGH and blocks regardless of arbitration. Pass decision is
