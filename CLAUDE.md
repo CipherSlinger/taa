@@ -23,6 +23,8 @@ Gotchas:
   `::Class::method`).
 - `go.work` spans three workspace modules (`taa`, `teeaudit`, `tools/sdk`); `teellm/teetls` is a
   replace target rather than a member, because both `taa` and `teeaudit` replace it.
+- `teellm/` and `teeaudit/` are submodules. A fresh clone needs
+  `git submodule update --init --recursive` before any build; the deploy scripts do not do it.
 
 ## Architecture (essentials)
 
