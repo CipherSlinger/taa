@@ -98,6 +98,24 @@ type Config struct {
 	// of them. Empty means <StateDir>/semgrep-rules, which is where
 	// deploy-platform-mock.sh uploads the repository's rule set.
 	SemgrepRules string
+	// HostSSH is the machine the host panel describes, written as an SSH
+	// destination ("[user@]host[:port]"). Empty means "the machine the mock
+	// runs on", which is the original behaviour and needs no ssh.
+	//
+	// It exists because the console and the Hygon host are no longer necessarily
+	// the same machine, and the host panel's whole premise is that its numbers
+	// describe one real host. Reading /proc/meminfo locally while the Pods come
+	// from a remote kubectl would be the one combination that is worse than
+	// showing nothing, so the probe source is all-or-nothing.
+	HostSSH string
+	// HostSSHPassword is the password for HostSSH, passed to sshpass through the
+	// environment (never argv). Empty means key authentication, and ssh is then
+	// told BatchMode=yes so a missing key fails fast instead of prompting.
+	HostSSHPassword string
+	// HostSSHOptions is extra arguments for the ssh client, one per word, e.g.
+	// "-o StrictHostKeyChecking=no -i /root/.ssh/id_ed25519". Only used with
+	// HostSSH.
+	HostSSHOptions string
 	// TerminalShell is the shell the host terminal panel starts. It runs as the
 	// user that started the mock, on the same machine, behind the console
 	// session — so it is the operator's own shell, not a sandbox. Empty means
@@ -202,8 +220,9 @@ func envIntOrDefault(key string, fallback int) int {
 // resolving values from environment variables where applicable (STATE_DIR,
 // UPLOAD_DIR, TAA_POD, TAA_NS, TAA_PORT, LLM_POD, LLM_NS, LLM_PORT,
 // LLM_TARGET, LLM_POLL_SECONDS, PLATFORM_SM2_ID, PLATFORM_KEY_FILE,
-// CONSOLE_USER, CONSOLE_PASSWORD, TEELLM_TLS_ENDPOINT, TERMINAL_SHELL,
-// PLATFORM_MOCK_INSTANCES, PLATFORM_MOCK_INSTANCE_TARGETS).
+// CONSOLE_USER, CONSOLE_PASSWORD, TEELLM_TLS_ENDPOINT, TERMINAL_SHELL, HOST_SSH,
+// HOST_SSH_PASSWORD, HOST_SSH_OPTIONS, PLATFORM_MOCK_INSTANCES,
+// PLATFORM_MOCK_INSTANCE_TARGETS).
 // PLATFORM_SM2_ID is deliberately the same variable TAA reads, so one exported
 // value configures both ends.
 func DefaultConfig() Config {
@@ -226,6 +245,9 @@ func DefaultConfig() Config {
 		AuditEngine:       envOrDefault("AUDIT_ENGINE", ""),
 		SemgrepRules:      envOrDefault("SEMGREP_RULES", ""),
 		TerminalShell:     envOrDefault("TERMINAL_SHELL", ""),
+		HostSSH:           envOrDefault("HOST_SSH", ""),
+		HostSSHPassword:   envOrDefault("HOST_SSH_PASSWORD", ""),
+		HostSSHOptions:    envOrDefault("HOST_SSH_OPTIONS", ""),
 		ExpectedInstances: envOrDefault("PLATFORM_MOCK_INSTANCES", ""),
 		InstanceTargets:   envOrDefault("PLATFORM_MOCK_INSTANCE_TARGETS", ""),
 	}.withDefaults()

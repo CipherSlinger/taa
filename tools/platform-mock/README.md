@@ -59,7 +59,11 @@ contains the TEE-LLM module), `--console-user` /
 `--console-password` set the login (default `admin` / `teellm@2026`) and
 `--tee-tls-endpoint HOST:PORT` overrides the secure listener (default `<llm-target host>:18443`);
 they are passed to the remote process through the environment, so the password does not show
-up in its command line. Run `./deploy-platform-mock.sh --help` for the full list.
+up in its command line. `--host-ssh [user@]host[:port]` points the host panel at a machine other
+than the one the mock runs on: the panel then reads `/proc/meminfo` and runs `kubectl` there over
+SSH, so its numbers and its label agree. It needs non-interactive SSH from the mock's user (a key
+or `--host-ssh-password`, which reaches `sshpass` through the environment). Run
+`./deploy-platform-mock.sh --help` for the full list.
 
 ## Command-Line Flags
 
@@ -79,6 +83,9 @@ up in its command line. Run `./deploy-platform-mock.sh --help` for the full list
 | `-console-password` | `teellm@2026` (or `$CONSOLE_PASSWORD`) | Login password for the code audit workbench. |
 | `-instances` | `""` (or `$PLATFORM_MOCK_INSTANCES`) | Instance inventory listed by the console: `type:dockerId[,type:dockerId...]`, type one of `tee`, `fhe`, `data-anaylsis`. Every entry is listed whether or not it registered; unmatched entries show 未连接. Empty lists whatever registers. |
 | `-terminal-shell` | `/bin/bash` (or `$TERMINAL_SHELL`) | Shell the API tester's host terminal starts. It runs as the user that started the mock, on the same host, with no console login of its own — the page's origin check is the only gate. |
+| `-host-ssh` | `""` (or `$HOST_SSH`) | Machine whose memory and Pods the host panel shows, as `[user@]host[:port]`. Empty means the machine the mock runs on. Non-empty runs the panel's `/proc/meminfo` read and `kubectl get pods -A` on that host over SSH, so the panel's numbers match its label — the case that matters when the mock is deployed away from the Hygon host. Both halves always come from the same machine; a probe failure is shown, never silently replaced by local values. |
+| `HOST_SSH_PASSWORD` (env only) | `""` | Password for `-host-ssh`, handed to `sshpass` through `SSHPASS` (never argv, which is why it has no flag). Empty means key authentication and `BatchMode=yes`, so a missing key fails within the connect timeout instead of prompting. |
+| `-host-ssh-options` | `""` (or `$HOST_SSH_OPTIONS`) | Extra `ssh` arguments for `-host-ssh`, one per word, e.g. `-o StrictHostKeyChecking=no -i /root/.ssh/id_ed25519`. |
 
 ## SM2 Envelope
 
@@ -116,6 +123,12 @@ The platform mock provides an embedded single-page Web console accessible by ope
 
 - **Static Asset Embedding**: The UI assets are statically bundled into the binary using Go `embed.FS` from `internal/static/`.
 - **Node Status & Attestation**: Displays registered node metadata, ephemeral SM2 public key, and CSV hardware attestation report validation status.
+- **Host Panel**: the top bar shows the memory left on the machine the Pods run on and a
+  namespace-filtered Pod table, read from `/proc/meminfo` plus `kubectl get pods -A`. Which
+  machine that is comes from `-host-ssh`: empty reads the machine the mock runs on, a target
+  runs the same two reads there over SSH (the label beside the title says which). The editable
+  IP field is display/copy only — it is pre-filled with the detected address of the machine
+  being read, and it never changes how the mock addresses TAA.
 - **Model Ingress & Audit**: Upload model packages, inspect static AST rule violations, and observe Ollama LLM semantic verification outcomes. The console shows the platform SM2 key pair the mock generated and persisted at startup (the same pair its envelopes use), and the regenerate button rotates that pair and overwrites the key file; loading the page never rotates it.
 - **Real-Time Progress & Logs**: Displays real-time progress bars, streamed terminal logs (`modelLog`), and TAA daemon operational logs (`taaLog`).
 - **Execution Control**: Send graceful stop commands (`/v1/taa/stopTraining`) to interrupt running workloads.
@@ -311,6 +324,9 @@ tools/platform-mock/
 │   ├── keystore.go              # Platform SM2 key pair + registered TAA public key (persisted)
 │   ├── proxy.go                 # TAA reverse proxy and Kubernetes pod discovery
 │   ├── store.go                 # Thread-safe in-memory state and log ring buffer
+│   ├── host_status.go           # Host panel: snapshot cache and /api/host/status
+│   ├── host_probe.go            # Where the panel reads: this machine or a host over SSH
+│   ├── host_terminal.go         # API tester's shell, always on the mock's own machine
 │   └── static/                  # Embedded Web console assets (embed.FS)
 │       ├── index.html           # Main dashboard template
 │       ├── css/                 # Stylesheets (layout, components, variables, audit-console)

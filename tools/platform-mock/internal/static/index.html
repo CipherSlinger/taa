@@ -34,14 +34,16 @@
 
   <div id="workspaceFlow" class="workspace-panel" role="tabpanel" aria-labelledby="tabBtnFlow">
 
-  <!-- The machine the mock itself runs on. This is the host an operator logs into
-       and the host TAA must be told about (PLATFORM_IP), so its address leads the
-       page. The address is detected and remembered per browser: retyping it
-       affects what the page shows and what the copy actions hand out, never how
-       the mock addresses TAA - that stays derived from each instance. -->
+  <!-- The host the panel describes. By default that is the machine the mock
+       itself runs on; started with -host-ssh it is that host, read over SSH.
+       The address is detected and remembered per browser: retyping it affects
+       what the page shows and what the copy actions hand out, never how the
+       mock addresses TAA - that stays derived from each instance. The label
+       beside the title says which machine the numbers actually came from. -->
   <section class="card host-bar" id="card-host">
     <div class="host-bar-head">
       <span class="host-bar-title">远程海光服务器</span>
+      <span id="hostTargetLabel" class="host-bar-target muted"></span>
       <label for="hostIpInput" class="host-bar-label">IP</label>
       <input id="hostIpInput" class="host-bar-ip" spellcheck="false" autocomplete="off"
              onchange="onHostIpEdit(this.value)" placeholder="检测中…">
@@ -671,7 +673,7 @@
         </div>
       </div>
       <p class="host-terminal-hint" id="hostTerminalHint">
-        在 mock 所在机器上开一个 shell（当前用户即启动 mock 的用户），用来直接运行上方的 curl 命令。这里不走 SSH，也不需要宿主机的登录口令，点“连接”即可。连接期间会定时保活，只看不输入也不会断开。
+        在 mock 所在机器上开一个 shell（当前用户即启动 mock 的用户），用来直接运行上方的 curl 命令。这里不走 SSH，也不需要宿主机的登录口令，点“连接”即可。上方宿主机面板若以 -host-ssh 配置了远程采集，也仍然只影响面板，这个终端始终开在 mock 所在机器。连接期间会定时保活，只看不输入也不会断开。
       </p>
       <div class="host-terminal-screen" id="hostTerminalScreen"></div>
     </section>

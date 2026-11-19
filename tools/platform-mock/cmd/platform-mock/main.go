@@ -32,6 +32,10 @@ func main() {
 	flag.StringVar(&cfg.AuditEngine, "audit-engine", cfg.AuditEngine, "audit workbench static engine: semgrep or regex")
 	flag.StringVar(&cfg.SemgrepRules, "semgrep-rules", cfg.SemgrepRules, "semgrep rules file or directory")
 	flag.StringVar(&cfg.TerminalShell, "terminal-shell", cfg.TerminalShell, "shell the API tester's host terminal starts")
+	flag.StringVar(&cfg.HostSSH, "host-ssh", cfg.HostSSH, "host the panel reads over SSH, [user@]host[:port]; empty = this machine")
+	flag.StringVar(&cfg.HostSSHOptions, "host-ssh-options", cfg.HostSSHOptions, "extra ssh arguments for -host-ssh, one per word")
+	// The SSH password has no flag on purpose: it arrives as HOST_SSH_PASSWORD so
+	// it cannot be read out of this process's argv.
 	flag.StringVar(&cfg.ExpectedInstances, "instances", cfg.ExpectedInstances, "configured instance inventory, type:dockerId[,type:dockerId...]; entries that never register are listed as 未连接")
 	flag.StringVar(&cfg.InstanceTargets, "instance-targets", cfg.InstanceTargets, "per-instance address override, dockerId=URL[,dockerId=URL...]; outranks the address derived from the registration's source IP (use it when the platform is on another network)")
 	flag.Parse()

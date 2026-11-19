@@ -56,6 +56,28 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
   Scope is `pkg/crypto` only: TAA's binary still links gmsm through `teellm/teetls`, and the
   helper's SW backend does not change the key-material boundary — private keys are still generated
   in, and returned to, the guest (that guarantee belongs to TKM/vTKM, not HCT).
+- **The platform-mock Host Panel Can Read Another Machine (`-host-ssh`)**: the panel that shows the
+  Hygon host's memory and Pods used to read the machine the mock itself ran on — `/proc/meminfo`
+  plus a local `kubectl get pods -A` — and its editable IP field only changed what the page
+  displayed. Once the mock moved off the cluster host (running on a workstation, see the
+  `--local` entry below) the panel was labelled 远程海光服务器 while every number in it came from
+  the machine doing the displaying, and no setting could point it at the real host. `-host-ssh
+  [user@]host[:port]` (`HOST_SSH`, `--host-ssh` on `deploy-platform-mock.sh`) makes the panel run
+  those same two reads on the named host over SSH, so the numbers and the label finally agree. The
+  source is all-or-nothing by construction — the memory figure and the Pod list always come from
+  one machine, because the one combination that is worse than an empty panel is one host's memory
+  under another host's Pods. The address the panel reports becomes the remote address (that is what
+  an operator copies into TAA's `PLATFORM_IP`), and a new `target` field in
+  `/api/host/status` says `local` or `ssh` with the destination. A malformed destination does not
+  fall back to the local machine: it starts a probe that reports its own reason, so the fallback
+  cannot reintroduce the mislabel. SSH credentials are never in argv — key auth is the default
+  (`BatchMode=yes`, so a missing key fails in the connect timeout instead of waiting on a tty that
+  is not there), and `HOST_SSH_PASSWORD` reaches `sshpass` through `SSHPASS`. ssh's own failures
+  (exit 255) are reported as connection failures rather than echoed as if `kubectl` had said them.
+  Because an SSH read costs a handshake and a remote `kubectl`, the snapshot cache now collects off
+  the request path: a poll past the TTL gets the last snapshot and starts one background refresh,
+  and only a snapshot older than the grace window (30 s) makes a poll wait. The host terminal in the
+  API tester is unchanged — it still runs a shell on the mock's own machine, and the page says so.
 - **The platform-mock Can Be Told Where Each Instance Answers (`-instance-targets`)**: the address the
   mock dials for an instance was derived from the registration's source IP and the TAA port, which is
   the instance's own address only while the platform shares a network with the Pod. A registration

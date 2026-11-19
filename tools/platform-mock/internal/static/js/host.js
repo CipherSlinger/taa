@@ -1,9 +1,12 @@
 // ── Host bar ──
 //
-// The machine the mock runs on. Everything shown here comes from
-// GET /api/host/status: the mock reads /proc/meminfo and asks kubectl for the
-// Pods, so the panel describes the real host rather than what an instance
-// claims about itself.
+// The machine the panel describes. Everything shown here comes from
+// GET /api/host/status. Where that number was read is the mock's choice at
+// startup: on this machine by default, or on the host named by -host-ssh, where
+// the same /proc/meminfo and the same kubectl run over SSH. The server's
+// `target` field says which, and the label beside the title shows it — a panel
+// whose numbers came from somewhere other than its label is exactly the
+// confusion that field prevents.
 //
 // The address field is the one value an operator can edit. It is detected once
 // and then remembered per browser, because the detected address of a machine
@@ -76,6 +79,14 @@ function fmtPodAge(seconds) {
 
 function renderHostStatus(status) {
   if (!status) return;
+  const target = status.target || {};
+  const targetLabel = document.getElementById('hostTargetLabel');
+  if (targetLabel) {
+    targetLabel.textContent = target.label || '';
+    targetLabel.title = target.mode === 'ssh'
+      ? '内存与 Pod 列表经 SSH 从 ' + (target.host || '') + ' 采集'
+      : '内存与 Pod 列表在本机采集';
+  }
   const ipInput = document.getElementById('hostIpInput');
   if (ipInput && document.activeElement !== ipInput) {
     const shown = hostDisplayedIP();

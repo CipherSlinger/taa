@@ -16,10 +16,10 @@ import (
 	"time"
 )
 
-// The console runs next to the machine it drives: the mock lives on the Hygon
-// host, so the host facts it shows (address, memory left, the Pods that exist)
-// are read here rather than collected from a remote agent. Two sources are used,
-// both local and read-only: the kernel's own /proc/meminfo and kubectl.
+// The console describes one machine: its address, the memory left and the Pods
+// running on it. Which machine that is comes from the probe (host_probe.go) —
+// this process's own /proc/meminfo and kubectl by default, or a Hygon host
+// reached over SSH when the mock does not run beside the cluster.
 //
 // Everything in this file is display material. A missing kubectl or an
 // unreadable /proc degrades one row of the panel; it never fails a request
@@ -78,6 +78,7 @@ type hostStatus struct {
 	HostIP        string             `json:"hostIp"`
 	HostIPs       []string           `json:"hostIps"`
 	Hostname      string             `json:"hostname"`
+	Target        hostTarget         `json:"target"`
 	Memory        hostMemory         `json:"memory"`
 	MemoryError   string             `json:"memoryError,omitempty"`
 	Pods          []hostPod          `json:"pods"`
@@ -96,6 +97,7 @@ type hostSnapshot struct {
 	HostIP      string
 	HostIPs     []string
 	Hostname    string
+	Target      hostTarget
 	Memory      hostMemory
 	MemoryError string
 	Pods        []hostPod
@@ -103,32 +105,93 @@ type hostSnapshot struct {
 	CollectedAt string
 }
 
-// hostStatusCache keeps kubectl off the polling path. The console polls every
+// hostStatusCache keeps the probe off the polling path. The console polls every
 // few seconds and each browser tab polls independently, so without a short TTL
 // one page left open would fork a kubectl process per viewer per interval.
+//
+// The collection also runs off the request path: a local kubectl answers in
+// milliseconds, but an SSH probe pays a handshake and a remote kubectl, and one
+// that has lost the host would otherwise stall every poll for its whole budget.
+// A poll past the TTL gets the last good snapshot and starts one background
+// refresh; the next poll picks up the result.
 type hostStatusCache struct {
-	mu        sync.Mutex
-	namespace string
-	ttl       time.Duration
-	at        time.Time
-	last      hostSnapshot
-	now       func() time.Time
+	mu       sync.Mutex
+	probe    hostProbe
+	grace    time.Duration
+	ttl      time.Duration
+	at       time.Time
+	last     hostSnapshot
+	now      func() time.Time
+	inFlight bool
+	// refresh is a field so a test can make collection synchronous.
+	refresh func()
 }
 
-func newHostStatusCache(namespace string, ttl time.Duration) *hostStatusCache {
-	return &hostStatusCache{namespace: namespace, ttl: ttl, now: time.Now}
+// hostStatusGrace is how long a snapshot may be served after its TTL while a
+// background refresh runs. Only a collection that outlasts it makes a poll wait.
+const hostStatusGrace = 30 * time.Second
+
+func newHostStatusCache(probe hostProbe, ttl time.Duration) *hostStatusCache {
+	if probe == nil {
+		probe = localHostProbe{}
+	}
+	c := &hostStatusCache{probe: probe, ttl: ttl, grace: hostStatusGrace, now: time.Now}
+	c.refresh = c.collect
+	return c
 }
 
 func (c *hostStatusCache) get() hostSnapshot {
 	c.mu.Lock()
-	defer c.mu.Unlock()
-	now := c.now()
-	if !c.at.IsZero() && now.Sub(c.at) < c.ttl {
-		return c.last
+	age := c.now().Sub(c.at)
+	// Fresh enough, or stale but still inside the grace window: answer now.
+	if !c.at.IsZero() && age < c.ttl {
+		snapshot := c.last
+		c.mu.Unlock()
+		return snapshot
 	}
-	c.last = collectHostSnapshot(c.namespace)
-	c.at = now
-	return c.last
+	if !c.at.IsZero() && age < c.ttl+c.grace {
+		c.startRefreshLocked()
+		snapshot := c.last
+		c.mu.Unlock()
+		return snapshot
+	}
+	// Cold start, or the last answer is too old to pass off as current. One
+	// caller collects; a concurrent poll gets whatever is there rather than
+	// queueing a second probe behind the first.
+	if c.inFlight {
+		snapshot := c.last
+		c.mu.Unlock()
+		return snapshot
+	}
+	c.inFlight = true
+	c.mu.Unlock()
+	c.refresh()
+	c.mu.Lock()
+	snapshot := c.last
+	c.mu.Unlock()
+	return snapshot
+}
+
+// startRefreshLocked launches one background collection, never two at once.
+// The caller holds the lock.
+func (c *hostStatusCache) startRefreshLocked() {
+	if c.inFlight {
+		return
+	}
+	c.inFlight = true
+	go c.refresh()
+}
+
+// collect reads the probe and replaces the snapshot. It takes the lock only to
+// publish, so a request reading the previous snapshot is never blocked behind
+// an SSH handshake.
+func (c *hostStatusCache) collect() {
+	snapshot := collectHostSnapshot(c.probe)
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.last = snapshot
+	c.at = c.now()
+	c.inFlight = false
 }
 
 // hostStatusHandler serves the host panel. It is a plain console endpoint, not
@@ -156,6 +219,7 @@ func (s hostSnapshot) forNamespace(namespace string) hostStatus {
 		HostIP:      s.HostIP,
 		HostIPs:     s.HostIPs,
 		Hostname:    s.Hostname,
+		Target:      s.Target,
 		Memory:      s.Memory,
 		MemoryError: s.MemoryError,
 		PodsError:   s.PodsError,
@@ -214,29 +278,56 @@ func namespaceCounts(pods []hostPod) []hostPodNamespace {
 	return out
 }
 
-func collectHostSnapshot(namespace string) hostSnapshot {
+func collectHostSnapshot(probe hostProbe) hostSnapshot {
+	// No deadline here: each probe read carries its own budget (the local
+	// kubectl timeout, the SSH probe's connect and total timeouts), so a slow
+	// memory read cannot eat the Pod list's allowance.
+	ctx := context.Background()
 	snapshot := hostSnapshot{
+		Target:      probe.Describe(),
 		HostIPs:     hostIPs(),
 		CollectedAt: time.Now().Format(time.RFC3339),
 	}
 	if len(snapshot.HostIPs) > 0 {
 		snapshot.HostIP = snapshot.HostIPs[0]
 	}
-	if name, err := os.Hostname(); err == nil {
-		snapshot.Hostname = name
+	// The address and name the panel shows are the machine the operator reaches,
+	// which is not this process's own once the panel reads a host over SSH. The
+	// local hostname is deliberately not used there: showing this machine's name
+	// beside a remote address is the same mislabel the probe exists to end.
+	if snapshot.Target.Mode == "ssh" && snapshot.Target.Host != "" {
+		remoteHost := hostOfTarget(snapshot.Target.Host)
+		snapshot.HostIP = remoteHost
+		snapshot.HostIPs = []string{remoteHost}
+		snapshot.Hostname = remoteHost
+	} else {
+		if name, err := os.Hostname(); err == nil {
+			snapshot.Hostname = name
+		}
 	}
-	mem, err := readHostMemory()
+	mem, err := probe.Memory(ctx)
 	if err != nil {
 		snapshot.MemoryError = err.Error()
 	} else {
 		snapshot.Memory = mem
 	}
-	pods, err := listHostPods(namespace, hostKubectlTimeout)
+	// Pods are read with no namespace: the snapshot holds the whole cluster and
+	// forNamespace filters it per request, so switching the dropdown costs no
+	// probe. A remote read is expensive enough that this matters more.
+	pods, err := probe.Pods(ctx, "")
 	if err != nil {
 		snapshot.PodsError = err.Error()
 	}
 	snapshot.Pods = pods
 	return snapshot
+}
+
+// hostOfTarget drops the "user@" half of an SSH destination for display.
+func hostOfTarget(target string) string {
+	if at := strings.LastIndex(target, "@"); at >= 0 && at < len(target)-1 {
+		return target[at+1:]
+	}
+	return target
 }
 
 // hostIPs returns the host's non-loopback IPv4 addresses, best first.
@@ -301,8 +392,15 @@ func readHostMemory() (hostMemory, error) {
 	if err != nil {
 		return hostMemory{}, err
 	}
+	return parseHostMemory(string(data))
+}
+
+// parseHostMemory reads the fields the panel renders out of /proc/meminfo. It is
+// shared with the SSH probe, which fetches the same file from the far side: the
+// kernel's format is the part both ends agree on.
+func parseHostMemory(text string) (hostMemory, error) {
 	var mem hostMemory
-	for _, line := range strings.Split(string(data), "\n") {
+	for _, line := range strings.Split(text, "\n") {
 		fields := strings.Fields(line)
 		if len(fields) < 2 {
 			continue
@@ -336,8 +434,8 @@ func readHostMemory() (hostMemory, error) {
 // Failure is returned rather than swallowed: "no Pods" and "kubectl is not
 // installed" look identical in an empty table, and they call for different
 // operator action.
-func listHostPods(namespace string, timeout time.Duration) ([]hostPod, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+func listHostPods(ctx context.Context, namespace string) ([]hostPod, error) {
+	ctx, cancel := context.WithTimeout(ctx, hostKubectlTimeout)
 	defer cancel()
 	args := []string{"get", "pods", "-o", "json"}
 	if strings.TrimSpace(namespace) != "" {

@@ -72,6 +72,14 @@ INSTANCES="${PLATFORM_MOCK_INSTANCES:-}"
 # derive the same (wrong) address. A NodePort Service per instance (deploy.sh
 # creates one) gives a stable address; record it here.
 INSTANCE_TARGETS="${PLATFORM_MOCK_INSTANCE_TARGETS:-}"
+# Whose memory and Pods the console's host panel shows, as an SSH destination.
+# Empty means the machine the mock runs on. Set it when the mock is deployed
+# away from the Hygon host it is meant to describe (e.g. local mode on a
+# workstation): the panel then reads /proc/meminfo and runs kubectl over SSH on
+# the named host, so its numbers and its label finally agree.
+HOST_SSH="${PLATFORM_MOCK_HOST_SSH:-${HOST_SSH:-}}"
+HOST_SSH_PASSWORD="${PLATFORM_MOCK_HOST_SSH_PASSWORD:-${HOST_SSH_PASSWORD:-}}"
+HOST_SSH_OPTIONS="${PLATFORM_MOCK_HOST_SSH_OPTIONS:-${HOST_SSH_OPTIONS:-}}"
 # Deploy on this host instead of over SSH. The mock then runs as a local process
 # and, when it is not on the cluster network, needs --instance-targets for every
 # instance whose Pod it must dial.
@@ -172,6 +180,17 @@ Common options:
                              derived from a registration's source IP; needed when
                              the mock is not on the cluster network (the derived
                              address would name the NAT that relayed it).
+  --host-ssh SPEC            Host whose memory and Pods the console's host panel
+                             shows, as [user@]host[:port]. Empty (default) means
+                             the machine the mock runs on. Use it when the mock
+                             is deployed away from the Hygon host: the probe then
+                             runs there over SSH, so the panel's numbers match
+                             its label. Requires non-interactive SSH from the
+                             mock's user, or --host-ssh-password.
+  --host-ssh-password PASS   Password for --host-ssh, handed to sshpass through
+                             the environment (never argv). Prefer a key.
+  --host-ssh-options OPTS    Extra ssh arguments for --host-ssh, e.g.
+                             "-o StrictHostKeyChecking=no -i /root/.ssh/id"
   --semgrep-rules PATH       Remote semgrep rules file or directory (default
                              <remote-dir>/semgrep-rules); the local rule set is
                              uploaded there on start
@@ -253,6 +272,9 @@ parse_args() {
       --audit-engine) need_value "$@"; AUDIT_ENGINE="$2"; shift 2 ;;
       --instances) need_value "$@"; INSTANCES="$2"; shift 2 ;;
       --instance-targets) need_value "$@"; INSTANCE_TARGETS="$2"; shift 2 ;;
+      --host-ssh) need_value "$@"; HOST_SSH="$2"; shift 2 ;;
+      --host-ssh-password) need_value "$@"; HOST_SSH_PASSWORD="$2"; shift 2 ;;
+      --host-ssh-options) need_value "$@"; HOST_SSH_OPTIONS="$2"; shift 2 ;;
       --local) LOCAL_MODE=1; shift ;;
       --semgrep-rules) need_value "$@"; SEMGREP_RULES="$2"; shift 2 ;;
       --semgrep-bin-dir) need_value "$@"; SEMGREP_BIN_DIR="$2"; shift 2 ;;
@@ -467,6 +489,8 @@ build_mock_args() {
   [ -n "$SEMGREP_RULES" ] && MOCK_ARGS+=(-semgrep-rules "$SEMGREP_RULES")
   [ -n "$INSTANCES" ] && MOCK_ARGS+=(-instances "$INSTANCES")
   [ -n "$INSTANCE_TARGETS" ] && MOCK_ARGS+=(-instance-targets "$INSTANCE_TARGETS")
+  [ -n "$HOST_SSH" ] && MOCK_ARGS+=(-host-ssh "$HOST_SSH")
+  [ -n "$HOST_SSH_OPTIONS" ] && MOCK_ARGS+=(-host-ssh-options "$HOST_SSH_OPTIONS")
 
   # The console reads these from the environment, and passing them this way
   # keeps the password out of the process arguments on the remote host.
@@ -474,6 +498,9 @@ build_mock_args() {
   [ -n "$CONSOLE_USER" ] && REMOTE_ENV_PREFIX+="CONSOLE_USER=$(shell_quote "$CONSOLE_USER") "
   [ -n "$CONSOLE_PASSWORD" ] && REMOTE_ENV_PREFIX+="CONSOLE_PASSWORD=$(shell_quote "$CONSOLE_PASSWORD") "
   [ -n "$TEE_TLS_ENDPOINT" ] && REMOTE_ENV_PREFIX+="TEELLM_TLS_ENDPOINT=$(shell_quote "$TEE_TLS_ENDPOINT") "
+  # The host panel's SSH password takes the same route: the daemon reads it from
+  # the environment, so it is absent from the mock's argv and from `ps`.
+  [ -n "$HOST_SSH_PASSWORD" ] && REMOTE_ENV_PREFIX+="HOST_SSH_PASSWORD=$(shell_quote "$HOST_SSH_PASSWORD") "
   # The adapter resolves "semgrep" through PATH, so the venv's bin directory
   # must be in the process environment rather than named on the command line.
   # $PATH stays unexpanded here so the remote shell composes the final value.
@@ -596,6 +623,7 @@ start_remote() {
   log "audit engine: $AUDIT_ENGINE (semgrep rules $SEMGREP_RULES, CLI $SEMGREP_BIN_DIR)"
   log "instance inventory: ${INSTANCES:-(none; the console lists whatever registers)}"
   log "instance targets: ${INSTANCE_TARGETS:-(none; every address is derived from its registration)}"
+  log "host panel source: ${HOST_SSH:-(this machine; pass --host-ssh to read a remote host)}"
   if is_dry_run; then
     log "would start ${REMOTE_ENV_PREFIX}$REMOTE_BINARY on $(host_label) with ${MOCK_ARGS[*]} (log $LOG_FILE)"
     return 0

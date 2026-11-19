@@ -215,10 +215,12 @@ func NewServer(cfg Config) *Server {
 	mux.HandleFunc("/api/taaLog/reset", taaLogResetHandler(mgr))
 	mux.HandleFunc("/api/taa-target", taaTargetHandler(mgr))
 	mux.HandleFunc("/api/taa/open-response", taOpenResponseHandler)
-	// The host panel reads the machine the mock runs on: its address, the memory
-	// left and the Pods that exist. kubectl is behind a short TTL because every
-	// open console tab polls it.
-	hostStatus := newHostStatusCache("", hostStatusTTL)
+	// The host panel describes one machine: its address, the memory left and the
+	// Pods that exist. Which machine is newHostProbe's choice — by default the
+	// one the mock runs on, or a host named by -host-ssh. The snapshot is behind
+	// a short TTL and collected off the request path, because every open console
+	// tab polls it.
+	hostStatus := newHostStatusCache(newHostProbe(cfg), hostStatusTTL)
 	mux.HandleFunc("/api/host/status", hostStatusHandler(hostStatus))
 	mux.HandleFunc("/api/upload", uploadHandler(cfg.Addr, uploadDir, mgr))
 	// Resumable variant of the same upload: a large file is sent as a series of
@@ -250,7 +252,8 @@ func NewServer(cfg Config) *Server {
 	// route that does not exist.
 	mux.Handle("/taa/", loggingReverseProxyHandler(http.StripPrefix("/taa", dynamicTAAProxyHandler(mgr, newProxyPool()))))
 
-	// The host terminal runs a shell on this machine, so it is gated by the same
+	// The host terminal runs a shell on this machine — always, even when the host
+	// panel above reads a different one over SSH — so it is gated by the same
 	// console session as the TEE-LLM and audit tabs: one sign-in covers all three.
 	// The terminal has no console login of its own: it is part of the console page
 	// the operator already has open. The origin check inside the handler is what

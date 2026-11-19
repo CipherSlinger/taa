@@ -71,7 +71,7 @@ func TestDescribeKubectlErrorKeepsTheUsefulLine(t *testing.T) {
 }
 
 func TestHostStatusHandlerAnswersWithTheEnvelopeShape(t *testing.T) {
-	cache := newHostStatusCache("", hostStatusTTL)
+	cache := newHostStatusCache(localHostProbe{}, hostStatusTTL)
 	cache.now = func() time.Time { return timeFixed }
 	cache.last = hostSnapshot{HostIP: "10.0.0.9"}
 	cache.at = timeFixed
