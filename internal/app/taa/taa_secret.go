@@ -35,7 +35,10 @@ func deriveTAASecretSM4Key(hwKey []byte, contract string) ([]byte, error) {
 	material = append(material, contract...)
 	defer clear(material)
 
-	sum := teecrypto.SM3Sum(material)
+	sum, err := teecrypto.SM3SumChecked(material)
+	if err != nil {
+		return nil, fmt.Errorf("derive taaSecretKey: %w", err)
+	}
 	defer clear(sum[:])
 
 	key := make([]byte, taaSecretSM4KeySize)
