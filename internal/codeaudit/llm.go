@@ -139,6 +139,11 @@ func buildTEETLSConfig(cfg LLMConfig) *teetls.Config {
 		SkipChainVerify:               cfg.SkipChainVerify,
 		ExpectedMeasurements:          expected,
 		VerifyMutualAttestation:       cfg.RequireMutualAttest,
+		// The gateway's chain is anchored on the same vendor pair the local
+		// report is checked against. Explicit paths keep the handshake from
+		// falling back to downloading the chain from the vendor KDS.
+		HRKCertPath:    cfg.HRKCertPath,
+		HSKCekCertPath: cfg.HSKCekCertPath,
 	}
 	if cfg.SkipChainVerify && !cfg.InsecureSkipVerify {
 		log.Printf("[WARN] [codeaudit] certificate chain verification disabled (attestation.skipChainVerify); only the report's embedded PEK signature is checked")

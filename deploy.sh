@@ -195,6 +195,11 @@ TAA_CONFIG_FILE="taa-config.json"
 TAA_PRODUCTION_CONFIG_TEMPLATE="${TAA_PRODUCTION_CONFIG_TEMPLATE:-$PROJECT_DIR/configs/taa-production.json}"
 REMOTE_TAA_CONFIG_PATH="${REMOTE_TAA_CONFIG_PATH:-$REMOTE_DIR/$TAA_CONFIG_FILE}"
 CONTAINER_TAA_CONFIG_PATH="${CONTAINER_TAA_CONFIG_PATH:-$TAA_WORKDIR/$TAA_CONFIG_FILE}"
+# The vendor certificate chain TAA uses to anchor its attestation report and the TEE-LLM
+# handshake. TAA reads it from $TAA_WORKDIR/certs, so every path that builds or updates a
+# container must install these files, and a missing one has to fail loudly.
+DEPLOY_CERTS_DIR="${DEPLOY_CERTS_DIR:-$PROJECT_DIR/deploy/certs}"
+CONTAINER_CERTS_DIR="${CONTAINER_CERTS_DIR:-$TAA_WORKDIR/certs}"
 CONTRACT_ID="${CONTRACT_ID:-}"
 TAA_LOG_FILE="${TAA_LOG_FILE:-$TAA_WORKDIR/taa.log}"
 CLI_MODEL=""
@@ -985,11 +990,16 @@ save_local_docker_image() {
   provision_local_scan_engine "$builder_container" "$prod_config_template"
 
   step "deploying taa binary and production config"
+  require_file "vendor attestation certificate (hrk)" "$DEPLOY_CERTS_DIR/hrk.cert"
+  require_file "vendor attestation certificate (hsk_cek)" "$DEPLOY_CERTS_DIR/hsk_cek.cert"
   spin_task "copying runtime files into container" bash -c '
     set -euo pipefail
     docker cp "$1" "$2:/root/taa/taa"
     docker cp "$3" "$2:/root/taa/taa-config.json"
-  ' _ "$TAA_BINARY_PATH" "$builder_container" "$prod_config_source"
+    docker cp "$4" "$2:/root/taa/certs/hrk.cert"
+    docker cp "$5" "$2:/root/taa/certs/hsk_cek.cert"
+  ' _ "$TAA_BINARY_PATH" "$builder_container" "$prod_config_source" \
+    "$DEPLOY_CERTS_DIR/hrk.cert" "$DEPLOY_CERTS_DIR/hsk_cek.cert"
 
   step "committing container to production image: $target_image"
   local commit_msg="Production image packaged from base $(basename "$base_archive") with $(basename "$prod_config_template") at $(date -u +%Y-%m-%dT%H:%M:%SZ)"
@@ -2091,7 +2101,9 @@ verify_pod_contents() {
     info "--image was given, so only the presence of the payload is checked"
     local spec label path
     for spec in "taa binary:$TAA_WORKDIR/taa" "taa supervisor:$TAA_SUPERVISOR_CONTAINER" \
-                "taa config:$CONTAINER_TAA_CONFIG_PATH"; do
+                "taa config:$CONTAINER_TAA_CONFIG_PATH" \
+                "taa hrk cert:$CONTAINER_CERTS_DIR/hrk.cert" \
+                "taa hsk_cek cert:$CONTAINER_CERTS_DIR/hsk_cek.cert"; do
       label="${spec%%:*}"; path="${spec#*:}"
       remote_ssh "$(container_exec) test -s '$path'" >/dev/null 2>&1 ||
         VERIFY_FAILURES+=("$label: not present in the Pod ($path)")
@@ -2105,6 +2117,8 @@ verify_pod_contents() {
     verify_pod_file "taa supervisor" "$TAA_SUPERVISOR_CONTAINER" "$TAA_SUPERVISOR_SOURCE"
     verify_pod_file "taa config" "$CONTAINER_TAA_CONFIG_PATH" \
       "$LOCAL_RUN_DIR/export-production-taa-config.json" "$LOCAL_RUN_DIR/deploy-taa-config.json"
+    verify_pod_file "taa hrk cert" "$CONTAINER_CERTS_DIR/hrk.cert" "$DEPLOY_CERTS_DIR/hrk.cert"
+    verify_pod_file "taa hsk_cek cert" "$CONTAINER_CERTS_DIR/hsk_cek.cert" "$DEPLOY_CERTS_DIR/hsk_cek.cert"
   fi
 
   # Presence, not a run: semgrep's own verification belongs to provisioning, where a failure can
@@ -2260,8 +2274,13 @@ if [[ "$DEPLOY_TAA" == true ]]; then
   render_deploy_config "$REMOTE_TAA_CONFIG_SOURCE"
 
   step "uploading taa and config to remote host"
+  require_file "vendor attestation certificate (hrk)" "$DEPLOY_CERTS_DIR/hrk.cert"
+  require_file "vendor attestation certificate (hsk_cek)" "$DEPLOY_CERTS_DIR/hsk_cek.cert"
   sshpass -p "$REMOTE_PASSWORD" scp "${SSH_OPTS[@]}" "$TAA_BINARY_PATH" "${REMOTE_USER}@${REMOTE_HOST}:$REMOTE_DIR/$BINARY_NAME.new"
   sshpass -p "$REMOTE_PASSWORD" scp "${SSH_OPTS[@]}" "$REMOTE_TAA_CONFIG_SOURCE" "${REMOTE_USER}@${REMOTE_HOST}:$REMOTE_TAA_CONFIG_PATH.new"
+  remote_ssh "mkdir -p '$REMOTE_DIR/certs'"
+  sshpass -p "$REMOTE_PASSWORD" scp "${SSH_OPTS[@]}" "$DEPLOY_CERTS_DIR/hrk.cert" "${REMOTE_USER}@${REMOTE_HOST}:$REMOTE_DIR/certs/hrk.cert"
+  sshpass -p "$REMOTE_PASSWORD" scp "${SSH_OPTS[@]}" "$DEPLOY_CERTS_DIR/hsk_cek.cert" "${REMOTE_USER}@${REMOTE_HOST}:$REMOTE_DIR/certs/hsk_cek.cert"
 
   step "replacing remote taa and config"
   remote_ssh "mv '$REMOTE_DIR/$BINARY_NAME.new' '$REMOTE_DIR/$BINARY_NAME' && mv '$REMOTE_TAA_CONFIG_PATH.new' '$REMOTE_TAA_CONFIG_PATH' && chmod +x '$REMOTE_DIR/$BINARY_NAME'"
@@ -2290,8 +2309,11 @@ if [[ "$DEPLOY_TAA" == true ]]; then
   fi
 
   step "copying runtime files into container"
+  remote_ssh "$(container_exec) sh -lc 'mkdir -p $CONTAINER_CERTS_DIR'"
   remote_ssh "$(container_cp "$REMOTE_DIR/$BINARY_NAME" "$TAA_WORKDIR/$BINARY_NAME")"
   remote_ssh "$(container_cp "$REMOTE_TAA_CONFIG_PATH" "$CONTAINER_TAA_CONFIG_PATH")"
+  remote_ssh "$(container_cp "$REMOTE_DIR/certs/hrk.cert" "$CONTAINER_CERTS_DIR/hrk.cert")"
+  remote_ssh "$(container_cp "$REMOTE_DIR/certs/hsk_cek.cert" "$CONTAINER_CERTS_DIR/hsk_cek.cert")"
   remote_ssh "$(container_exec) sh -lc 'chmod +x $TAA_WORKDIR/$BINARY_NAME'"
 
   step "verifying copied files inside container"

@@ -241,13 +241,20 @@ PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TEELLM_DIR="${TEELLM_DIR:-$PROJECT_DIR/teellm}"
 
 # Paths inside the TEE-LLM Pod. The image carries no TAA payload, so the service tree lives under
-# /opt/teellm: /root/taa belongs to the TAA images and must not appear in an inference image.
+# /opt/teellm. The one exception under the TAA layout is the vendor certificate chain at
+# /root/taa/certs, which the service needs; nothing else from /root/taa belongs in an inference image.
 TEELLM_WORKDIR="${TEELLM_WORKDIR:-/opt/teellm}"
 TEELLM_OLLAMA_DIR="${TEELLM_OLLAMA_DIR:-/opt/teellm/ollama}"
 # Older image revisions ship the same ollama bundle under this name. It carries the identical
 # runtime (only the model set differs), so a container that still has it can be migrated into
 # $TEELLM_OLLAMA_DIR instead of streaming the runtime in again.
 CONTAINER_LEGACY_OLLAMA_DIR="${CONTAINER_LEGACY_OLLAMA_DIR:-$TEELLM_WORKDIR/ollama-qwen2.5-coder-0.5b}"
+
+# Hygon vendor certificate chain (HRK root and HSK-CEK intermediate). The service uses these files to
+# anchor verification of a client's attestation chain, and its hardware evidence provider reads them
+# when generating its own certificate. The in-Pod path is the service's default, so it must match.
+TEELLM_CERTS_SRC_DIR="${TEELLM_CERTS_SRC_DIR:-$PROJECT_DIR/deploy/certs}"
+TEELLM_POD_CERTS_DIR="${TEELLM_POD_CERTS_DIR:-/root/taa/certs}"
 
 # TEE-LLM and Ollama ports & endpoints
 TEELLM_PORT=8443
@@ -281,10 +288,10 @@ K_NS="${TARGET_NAMESPACE:+-n $TARGET_NAMESPACE}"
 # ── Dedicated TEE-LLM Pod ─────────────────────────────────────
 # The TEE-LLM service needs /dev/csv-guest to produce a real CSV attestation; a plain docker
 # container has no such device, so teellm-service falls back to a mock evidence provider that
-# signs its own report. TAA verifies only the report's PEK signature and skips the certificate
-# chain, so it cannot tell that mock report from hardware at the handshake -- which is why the
-# deployment itself refuses to run without the device. A kata-qemu-csv2 Pod has it, because its
-# guest init creates it -- which is the whole reason this Pod exists, and why create
+# signs its own report. The handshake now walks the vendor chain, so a mock report would also be
+# rejected, but the device check stays: the service exists to attest hardware, and a deployment
+# that can only ever fail verification is not a deployment. A kata-qemu-csv2 Pod has the device,
+# because its guest init creates it -- which is the whole reason this Pod exists, and why create
 # deploys into it rather than into the TAA Pod that a plain start targets by default (that Pod has
 # the device too, but it is not where teellm-service should run, and aiming the deployment at it
 # would make every later gate pass while the service never reaches the Pod the endpoint points
@@ -604,6 +611,8 @@ build_teellm_pod_image() {
   require_file "TEE-LLM supervisor" "$TEELLM_SUPERVISOR_SCRIPT"
   require_file "TEE-LLM service config" "$TEELLM_DIR/configs/teellm-production.json"
   require_file "TEE-LLM model index" "$TEELLM_DIR/configs/models.json"
+  require_file "Hygon HRK certificate" "$TEELLM_CERTS_SRC_DIR/hrk.cert"
+  require_file "Hygon HSK-CEK certificate" "$TEELLM_CERTS_SRC_DIR/hsk_cek.cert"
   require_file "ollama binary" "$OLLAMA_LOCAL_DIR/ollama"
   require_file "ollama launcher" "$OLLAMA_LOCAL_DIR/start-ollama.sh"
   require_file "ollama manifest for $OLLAMA_MODEL" "$OLLAMA_LOCAL_DIR/$manifest_rel"
@@ -629,7 +638,8 @@ build_teellm_pod_image() {
   clean_base_source="$(docker image inspect --format '{{if .Config.Labels}}{{index .Config.Labels "tee-llm.base-source"}}{{end}}' "$clean_base" 2>/dev/null || true)"
 
   # The TAA images carry /root/taa (the taa binary and its autostart wrapper); an inference image
-  # must contain neither. An empty build context keeps docker from packing the multi-GB archives
+  # must contain no TAA payload. The vendor chain is copied back in afterwards, at /root/taa/certs
+  # only. An empty build context keeps docker from packing the multi-GB archives
   # that sit in deploy/ into the build.
   if [[ "$clean_base_source" != "$source_base_id" ]]; then
     step "building the TAA-free base image: $clean_base"
@@ -689,7 +699,7 @@ PY
 
   # The committed image is a pure function of what is put into it, and importing the ollama
   # payload into a container plus committing the multi-gigabyte layer takes minutes. Fingerprint
-  # every input the commit depends on -- the base image actually used, the model name, the four
+  # every input the commit depends on -- the base image actually used, the model name, the source
   # files copied in, the exact byte stream the payload step imports and the commit instructions
   # themselves -- and store it as a label on the image. A matching label means a rebuild would
   # produce the identical image, so the builder phase is skipped entirely. The payload digest is
@@ -717,7 +727,8 @@ PY
       printf 'base-source %s\n' "$source_base_id"
       printf 'model %s\n' "$OLLAMA_MODEL"
       for p in "$TEELLM_DIR/bin/teellm-service" "$TEELLM_SUPERVISOR_SCRIPT" \
-               "$TEELLM_DIR/configs/teellm-production.json" "$TEELLM_DIR/configs/models.json"; do
+               "$TEELLM_DIR/configs/teellm-production.json" "$TEELLM_DIR/configs/models.json" \
+               "$TEELLM_CERTS_SRC_DIR/hrk.cert" "$TEELLM_CERTS_SRC_DIR/hsk_cek.cert"; do
         printf 'source %s %s %s\n' "${p##*/}" "$(stat -c '%u:%g %a %s' "$p")" \
           "$(sha256sum "$p" | cut -d' ' -f1)"
       done
@@ -774,6 +785,11 @@ PY
     docker cp "$TEELLM_SUPERVISOR_SCRIPT" "$builder_container:/opt/teellm/teellm-supervisor.sh"
     docker cp "$TEELLM_DIR/configs/teellm-production.json" "$builder_container:/opt/teellm/configs/teellm-production.json"
     docker cp "$TEELLM_DIR/configs/models.json" "$builder_container:/opt/teellm/configs/models.json"
+    # The service needs the vendor chain at startup, both to verify a client's attestation chain and
+    # to sign the certificate it presents as hardware evidence, so it is part of the image payload.
+    docker exec -i "$builder_container" sh -c "mkdir -p '$TEELLM_POD_CERTS_DIR'"
+    docker cp "$TEELLM_CERTS_SRC_DIR/hrk.cert" "$builder_container:$TEELLM_POD_CERTS_DIR/hrk.cert"
+    docker cp "$TEELLM_CERTS_SRC_DIR/hsk_cek.cert" "$builder_container:$TEELLM_POD_CERTS_DIR/hsk_cek.cert"
 
     step "streaming the ollama runtime and model into the image (${payload_mb}MB)"
     tar -C "$OLLAMA_LOCAL_DIR" -cf - -T "$file_list" |
@@ -3219,6 +3235,8 @@ verify_pod_image_contents() {
     "$TEELLM_WORKDIR/configs/teellm-production.json" \
     "$TEELLM_WORKDIR/configs/models.json" \
     "$TEELLM_WORKDIR/.teellm-model" \
+    "$TEELLM_POD_CERTS_DIR/hrk.cert" \
+    "$TEELLM_POD_CERTS_DIR/hsk_cek.cert" \
     "$TEELLM_OLLAMA_DIR/ollama" \
     "$TEELLM_OLLAMA_DIR/start-ollama.sh" \
     "$TEELLM_OLLAMA_DIR/lib/ollama/libllama-server-impl.so"; do
@@ -3295,6 +3313,10 @@ deploy_teellm() {
 
     # Deploy the binary and configuration to the remote host, then into the Pod
     step "preparing and uploading configuration and binary"
+    # The vendor chain is part of what the service needs to start with mutual attestation enabled.
+    # Checked before anything is uploaded or written, so a missing file fails the run here.
+    require_file "Hygon HRK certificate" "$TEELLM_CERTS_SRC_DIR/hrk.cert"
+    require_file "Hygon HSK-CEK certificate" "$TEELLM_CERTS_SRC_DIR/hsk_cek.cert"
     local cfg_template="${TEELLM_CONFIG_PATH:-$TEELLM_DIR/configs/teellm-production.json}"
     local tmp_cfg
     tmp_cfg="$(mktemp /tmp/teellm_cfg.XXXXXX)"
@@ -3303,12 +3325,15 @@ deploy_teellm() {
     prepare_config "$cfg_template" "$tmp_cfg" "$OLLAMA_MODEL" "$TEELLM_PORT"
 
     remote_ssh "mkdir -p '$REMOTE_DIR/configs'"
+    remote_ssh "mkdir -p '$REMOTE_DIR/certs'"
     sshpass -p "$REMOTE_PASSWORD" scp "${SSH_OPTS[@]}" "$TEELLM_DIR/bin/teellm-service" "${REMOTE_USER}@${REMOTE_HOST}:$REMOTE_DIR/teellm-service.new"
     sshpass -p "$REMOTE_PASSWORD" scp "${SSH_OPTS[@]}" "$TEELLM_SUPERVISOR_SCRIPT" "${REMOTE_USER}@${REMOTE_HOST}:$REMOTE_DIR/teellm-supervisor.sh"
     sshpass -p "$REMOTE_PASSWORD" scp "${SSH_OPTS[@]}" "$tmp_cfg" "${REMOTE_USER}@${REMOTE_HOST}:$REMOTE_DIR/configs/teellm-production.json"
     if [[ -f "$TEELLM_DIR/configs/models.json" ]]; then
       sshpass -p "$REMOTE_PASSWORD" scp "${SSH_OPTS[@]}" "$TEELLM_DIR/configs/models.json" "${REMOTE_USER}@${REMOTE_HOST}:$REMOTE_DIR/configs/models.json"
     fi
+    sshpass -p "$REMOTE_PASSWORD" scp "${SSH_OPTS[@]}" "$TEELLM_CERTS_SRC_DIR/hrk.cert" "${REMOTE_USER}@${REMOTE_HOST}:$REMOTE_DIR/certs/hrk.cert"
+    sshpass -p "$REMOTE_PASSWORD" scp "${SSH_OPTS[@]}" "$TEELLM_CERTS_SRC_DIR/hsk_cek.cert" "${REMOTE_USER}@${REMOTE_HOST}:$REMOTE_DIR/certs/hsk_cek.cert"
     rm -f "$tmp_cfg"
     TEMP_CONFIG_FILE=""
 
@@ -3322,6 +3347,11 @@ deploy_teellm() {
     if [[ -f "$TEELLM_DIR/configs/models.json" ]]; then
       remote_ssh "$(container_cp "$REMOTE_DIR/configs/models.json" "$TEELLM_WORKDIR/configs/models.json")"
     fi
+    # The service reads the vendor chain from $TEELLM_POD_CERTS_DIR at startup, both to anchor a
+    # client's attestation chain and to sign its own hardware evidence certificate.
+    remote_ssh "$(container_exec) sh -lc 'mkdir -p \"$TEELLM_POD_CERTS_DIR\"'"
+    remote_ssh "$(container_cp "$REMOTE_DIR/certs/hrk.cert" "$TEELLM_POD_CERTS_DIR/hrk.cert")"
+    remote_ssh "$(container_cp "$REMOTE_DIR/certs/hsk_cek.cert" "$TEELLM_POD_CERTS_DIR/hsk_cek.cert")"
     remote_ssh "$(container_exec) sh -lc 'chmod +x \"$TEELLM_WORKDIR/teellm-service\"'"
 
     # The supervisor is the Pod's PID 1 and the only thing that starts or restarts a daemon. It is

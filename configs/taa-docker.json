@@ -43,14 +43,12 @@
     "llm": {
       "enabled": true,
       "attestation": {
-        "enabled": true,
-        "skipChainVerify": true
+        "enabled": true
       },
       "endpoint": "https://127.0.0.1:8443",
       "model": "qwen2.5-coder:7b",
       "failClosed": true,
-      "requestTimeoutMs": 120000,
-      "insecureSkipVerify": true
+      "requestTimeoutMs": 120000
     }
   }
 }

@@ -214,6 +214,37 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
   "the card is still computing".
 
 ### Changed
+- **The Attestation Chain Is Walked Again, And Every Packaging Path Carries A Machine's Own**:
+  verifying only the signature embedded in the report's PEK proves that the PEK signed the bytes
+  that follow it — something anyone able to write the report can produce — and says nothing about
+  where that PEK came from, which is the question attestation exists to answer. TAA's boot
+  self-check therefore walks HRK → HSK/CEK → PEK again, reading `hrk.cert` and `hsk_cek.cert` from
+  the first directory that holds both, searched in order `/root/taa/certs`, `/etc/taa/certs`,
+  `deploy/certs`. A missing pair is an error, not a silent fallback to the weaker check; the caller
+  still only logs a WARNING and carries on with `verifiedPass=false`, so the process starts, though
+  the instance registers with the platform as unattested until a chain matching its report is
+  installed. The shipped templates stop opting out of the chain the code already
+  required: `configs/taa-production.json` and `configs/taa-docker.json` no longer set
+  `codeAudit.llm.attestation.skipChainVerify` (previously `true`), and `taa-docker.json` no longer
+  sets `insecureSkipVerify`. The TAA → TEE-LLM handshake now verifies the gateway's certificate
+  chain by default, which is what the code defaults already said (`skipChainVerify=false`,
+  `insecureSkipVerify=false`); the template overrides existed only because no image carried the
+  vendor files. The TEE-side packaging paths now install `deploy/certs/hrk.cert` and
+  `deploy/certs/hsk_cek.cert` at `/root/taa/certs` — the TAA production image built by
+  `deploy.sh save`, the remote TAA container, the CSV2 initrd guest rootfs (`build-initrd.sh`) and
+  the TEE-LLM Pod (`deploy-llm.sh`) — and a missing file fails that build or deploy instead of
+  shipping an artifact whose chain is knowably absent. `teellm-service` drops its own hardcoded
+  `InsecureSkipAttestationVerify: true`: a client that requests mutual attestation is now actually
+  verified against the chain and its CSV evidence instead of being accepted blindly, while mutual
+  attestation stays off by default (neither side requires it, and
+  `codeAudit.llm.requireMutualAttest` remains `false`). `teellm/configs/teellm-production.json`
+  moves `attestation.mode` from `"strict"` to `"permissive"`, because strict rejects every verified
+  peer when no expected measurement is configured, and the service has no setting for one. **The
+  chain is per machine.** `deploy/certs` holds the development host's pair, so a deployment on any
+  other machine reports `verifiedPass=false` and the TAA → TEE-LLM handshake fails, which
+  `failClosed=true` turns into rejected imports; such a deployment must install its own
+  `hrk.cert`/`hsk_cek.cert` at `/root/taa/certs`. Adding the files to the initrd changes its bytes,
+  so the guest's boot MEASUREMENT changes too.
 - **The Platform-Mock Host Terminal Keeps An Idle Tab Connected**: the panel used to close a shell
   after 30 minutes without a frame from the browser, and "no frame" includes an operator who only
   reads output, so a long observation killed its own session. The server now sends a WebSocket ping

@@ -633,10 +633,10 @@ func TestLoadStartupConfigTemplateFiles(t *testing.T) {
 		// other assertion here, since those pin values the defaults already have.
 		wantRulesPath string
 		wantLLMModel  string
-		// wantSkipChainVerify pins that the shipped templates verify only the
-		// report's PEK signature. The images no longer carry the vendor
-		// certificates, so a template that left the chain required would fail
-		// the TEE-LLM handshake at every audit.
+		// wantSkipChainVerify pins that the shipped templates require the
+		// vendor chain: every packaging path installs deploy/certs under
+		// /root/taa/certs, so a template that skipped the chain would give up
+		// the only check that ties the gateway to a genuine platform.
 		wantSkipChainVerify bool
 	}{
 		{
@@ -656,7 +656,7 @@ func TestLoadStartupConfigTemplateFiles(t *testing.T) {
 			wantDockerID:         "",
 			wantRulesPath:        "/opt/taa/semgrep/rules",
 			wantLLMModel:         "qwen2.5-coder:7b",
-			wantSkipChainVerify:  true,
+			wantSkipChainVerify:  false,
 		},
 		{
 			relPath:              "../../configs/taa-docker.json",
@@ -676,7 +676,7 @@ func TestLoadStartupConfigTemplateFiles(t *testing.T) {
 			wantLLMTimeoutMs:     120000,
 			wantRulesPath:        "/opt/taa/semgrep/rules",
 			wantLLMModel:         "qwen2.5-coder:7b",
-			wantSkipChainVerify:  true,
+			wantSkipChainVerify:  false,
 		},
 	}
 

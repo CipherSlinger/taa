@@ -191,7 +191,7 @@ flowchart TB
 │   ├── fhe/handoff/                  # FHE delivery bundle: base image archive, models, client, docs
 │   ├── teellm-supervisor.sh          # TEE-LLM Pod supervisor (teellm-service + ollama)
 │   ├── base/                         # Base image archives (inputs: taa-env, jupyter-nologin-full)
-│   ├── certs/                        # Hygon CSV certificate chain fixtures (hrk.cert, hsk_cek.cert) for pkg/csvattest tests and the csv2-vm chain smoke run
+│   ├── certs/                        # Hygon CSV certificate chain (hrk.cert, hsk_cek.cert) of one machine: the packaging source for /root/taa/certs in TEE images, the remote container and the initrd; fixtures for pkg/csvattest tests and the csv2-vm chain smoke run
 │   ├── out/                          # Packaged image archives produced by the deploy scripts
 │   └── manifest/docker/              # Base environment Dockerfiles & build assets
 ├── models/                           # Bundled offline models & runtimes (e.g., Ollama / Qwen)
@@ -242,7 +242,7 @@ Both `/v1/taa/import` and `/v1/taa/importModel` accept either shape. With `?data
 - **SM2**: Used for asymmetric identity authentication, key exchange, and digital envelope key encapsulation.
 - **SM3**: Cryptographic hash function used for digest calculation, model checksums, and attestation binding.
 - **SM4-GCM**: High-throughput authenticated symmetric encryption protecting datasets, model weights, and exported training results.
-- **RFC 8998 TEE-TLS 1.3 ShangMi**: Mutual attestation and TLS 1.3 channel (`TLS_SM4_GCM_SM3`, cipher suite `0x00c6`) securing intra-TEE microservice communication between TAA and `teellm-service`. Enclave hardware attestation evidence is cryptographically bound into X.509 certificate extensions (OID `1.3.6.1.4.1.58270.1.1`).
+- **RFC 8998 TEE-TLS 1.3 ShangMi**: Mutual attestation (off by default — neither side requires it; when a client does request it, `teellm-service` verifies that client's certificate and CSV evidence) and TLS 1.3 channel (`TLS_SM4_GCM_SM3`, cipher suite `0x00c6`) securing intra-TEE microservice communication between TAA and `teellm-service`. Enclave hardware attestation evidence is cryptographically bound into X.509 certificate extensions (OID `1.3.6.1.4.1.58270.1.1`).
 
 ### 3. Two-Tier Defense-in-Depth Code Security Audit
 
@@ -370,7 +370,6 @@ TAA reads its configuration from `taa-config.json` located in its working direct
       "enabled": true,
       "attestation": {
         "enabled": true,
-        "skipChainVerify": true,
         "measurement": ""
       },
       "endpoint": "https://127.0.0.1:8443",
@@ -420,7 +419,7 @@ TAA reads its configuration from `taa-config.json` located in its working direct
 | `codeAudit.llm.temperature` | unset | Sampling temperature sent with each verify request, in `[0, 2]`. Unset leaves the choice to the inference service, which decodes deterministically so the same finding always yields the same verdict. Setting anything other than `0` re-enables sampling: identical findings may then be judged differently, and a single `MALICIOUS` verdict under `failClosed` fails the audit. A non-zero value is therefore logged as a startup warning. Out-of-range values are rejected at startup |
 | `codeAudit.llm.insecureSkipVerify` | `false` | Skips TLS CA certificate verification (set to `true` only for local Docker testing) |
 | `codeAudit.llm.attestation.measurement` | unset | Expected measurement digest from the gateway's attestation report. Non-empty requires a match or the handshake fails. Empty or absent skips the measurement comparison and logs a warning; the trust chain and key binding are still verified (unless `insecureSkipVerify` is set) |
-| `codeAudit.llm.attestation.skipChainVerify` | `false` | `true` verifies only the PEK signature embedded in the gateway's report and skips the HRK → HSK/CEK chain behind it, so no vendor certificate files are needed; the public-key binding and measurement checks still run. It logs a startup warning because nothing then proves the report descends from a Hygon root. `insecureSkipVerify` is the stronger switch and also skips these checks |
+| `codeAudit.llm.attestation.skipChainVerify` | `false` | `true` verifies only the PEK signature embedded in the gateway's report and skips the HRK → HSK/CEK chain behind it; the public-key binding and measurement checks still run. It logs a startup warning because nothing then proves the report descends from a Hygon root. The shipped templates leave it `false`, and the packaging paths for a TEE instance install the vendor pair at `/root/taa/certs` (the lookup also accepts `/etc/taa/certs` and a checkout's `deploy/certs`). `insecureSkipVerify` is the stronger switch and also skips these checks |
 | `fhe.endpoint` | **required** | String. FHE API base URL, an absolute `http`/`https` URL with a host, e.g. `http://127.0.0.1:58996` |
 | `fhe.dataDir` | **required** | String. The shared directory, given as the local path of the same bind mount the FHE containers see as `/data` |
 | `fhe.keyCacheDir` | **required** | String. Holds eval keys by content digest, so a repeat user never re-downloads several gigabytes |
@@ -498,8 +497,8 @@ does not reach it, so `TAASECRETKEY` there needs an additional injection path.
 
 ### Configuration Templates
 
-- **`configs/taa-docker.json`**: For local Docker container testing. Uses standard `/root/taa/...` and `/opt/taa/...` container paths, with explicit `platform` configuration (including `publicKey`, left empty for the deployment to fill), an empty `attestation.measurement`, `attestation.skipChainVerify: true`, and `insecureSkipVerify: true`. It keeps the default `tee` role, so a container run on a host without `/dev/csv-guest` now waits at startup for that node and never reaches the HTTP server — the same rule that keeps production instances from sealing with the SM2-derived key for one boot.
-- **`configs/taa-production.json`**: For production Kubernetes Pods. It is the one template for the `tee` training, `tee` inference and `data-anaylsis` roles: it carries the `tee`-shaped audit block, and the loader turns the audit off for `data-anaylsis` from the role alone, including moving the data path to `/home/jovyan/systemAuthData`, which the jupyter base image's runtime reads — the deployment injects `CONTRACT_TYPE` into the Pod instead of rendering a config copy. It omits `platform.ip`/`platform.dockerID` so those are dynamically injected by the orchestration platform via environment variables, and carries a `platform` block only to declare `publicKey`; keeps attestation enabled, leaves `attestation.measurement` unset so the measurement comparison is skipped with a startup warning, and sets `attestation.skipChainVerify` so the handshake checks only the report's embedded PEK signature — the image no longer carries the vendor certificates, so a required chain would fail every audit.
+- **`configs/taa-docker.json`**: For local Docker container testing. Uses standard `/root/taa/...` and `/opt/taa/...` container paths, with explicit `platform` configuration (including `publicKey`, left empty for the deployment to fill) and an empty `attestation.measurement`. It leaves `attestation.skipChainVerify` and `insecureSkipVerify` at their `false` defaults, so the handshake verifies the gateway's certificate chain; a local run therefore needs the machine's `hrk.cert`/`hsk_cek.cert` under `/root/taa/certs` (or `/etc/taa/certs`), which the packaged images provide. It keeps the default `tee` role, so a container run on a host without `/dev/csv-guest` now waits at startup for that node and never reaches the HTTP server — the same rule that keeps production instances from sealing with the SM2-derived key for one boot.
+- **`configs/taa-production.json`**: For production Kubernetes Pods. It is the one template for the `tee` training, `tee` inference and `data-anaylsis` roles: it carries the `tee`-shaped audit block, and the loader turns the audit off for `data-anaylsis` from the role alone, including moving the data path to `/home/jovyan/systemAuthData`, which the jupyter base image's runtime reads — the deployment injects `CONTRACT_TYPE` into the Pod instead of rendering a config copy. It omits `platform.ip`/`platform.dockerID` so those are dynamically injected by the orchestration platform via environment variables, and carries a `platform` block only to declare `publicKey`; keeps attestation enabled, leaves `attestation.measurement` unset so the measurement comparison is skipped with a startup warning, and leaves `attestation.skipChainVerify` at its `false` default, so the handshake walks the HRK → HSK/CEK → PEK chain. The packaging paths for these roles copy `deploy/certs` to `/root/taa/certs`; that pair belongs to one machine, so a deployment on another host must install its own before the self-check and the gateway handshake can verify.
 - **`configs/taa-fhe.json`**: For an `fhe` instance — the GPU host co-located with the FHE service. Sets `server.type: "fhe"` and the `fhe` section, and carries a `platform` block (`127.0.0.1:18081`, `taa-fhe`, empty `publicKey`) naming the mock used in end-to-end testing; on this instance type the environment overrides `ip` and `dockerID`, so the block is the fallback rather than the last word (the public key already follows an environment-wins rule on every instance type). The callback address is not configured: TAA derives it at startup as `http://127.0.0.1:<port>` from `server.addr`, and the callback endpoint is unauthenticated but loopback-only. `deploy-fhe.sh` renders the template before starting taa — and `taa save` bakes the same rendered result into the image — and that is where `fhe.dataDir` and `storage.keys` come from: the data directory is the tree the FHE entrypoint reads as `/data`, and `storage.keys` sits on a bind the FHE side does not mount at all, so the SM2 key pair and the sealed instance state stay out of the FHE service's reach.
 The CSV2 initrd runs `configs/taa-production.json` as well; it no longer has a template of its own. Everything that differs between deployments — registration identity, platform public key, SM2 ID, contract, LLM endpoint — travels on the kernel command line as `taa.<key>=<value>` tokens. The delivery package writes them into the `io.katacontainers.config.hypervisor.kernel_params` annotation of its test Pod; Kata appends that annotation to the runtime config's own parameters, so one host can run Pods with different identities and the installed config stays identity-free. `/etc/default/taa.env` is written at image build time (`build-initrd.sh`) and is only the fallback, because the Pod's environment does not reach the initrd. Each key is the environment variable's own name in lower case, and `taa-init` upper-cases it before exporting (`taa.taa_llm_endpoint` → `TAA_LLM_ENDPOINT`, `taa.taasecretkey` → `TAASECRETKEY`); there is no allow-list in the guest, so a setting TAA starts reading needs no boot-script change. Changing the identity is an edit of `test/test-pod.yaml` followed by `sudo bash test/create-test-pod.sh`; a consumer Pod must carry the same annotation, which `install.sh` prints.
 
@@ -569,7 +568,7 @@ The six Pod actions are mutually exclusive and share one vocabulary across `depl
 - **`stop`**: Stops TAA inside an existing Pod. The Pod is left in place.
 - **`probe`**: Waits for TAA to answer inside an existing Pod; exits non-zero on timeout.
 - **`delete`**: Deletes the Pod this deployment created, together with its guest writable layer. A Pod named with `--pod` is refused.
-- **`save`**: A standalone packaging action (`./deploy.sh save`) that deploys nothing. Assembles a **TAA-only production image — TAA plus the code scan engine** — and exports it as an archive. It removes every TEE-LLM and ollama artifact the base image may carry (asserting each is gone), installs the supervisor from `deploy/taa-supervisor.sh` instead of inheriting the base image's copy, provisions semgrep offline from a payload archive and verifies it with a real scan, then copies the binary, certificates and generated production config (`configs/taa-production.json`) before `docker commit` + `docker save`. TEE-LLM and ollama are **not** in this image; deploy them separately with `./deploy-llm.sh`. The generated config's `codeAudit.llm.endpoint` is the template's value verbatim — nothing is discovered on the packaging host — so a deployment that needs a different address sets `LLM_IP` at container startup.
+- **`save`**: A standalone packaging action (`./deploy.sh save`) that deploys nothing. Assembles a **TAA-only production image — TAA plus the code scan engine** — and exports it as an archive. It removes every TEE-LLM and ollama artifact the base image may carry (asserting each is gone), installs the supervisor from `deploy/taa-supervisor.sh` instead of inheriting the base image's copy, provisions semgrep offline from a payload archive and verifies it with a real scan, then copies the binary, the vendor chain (`deploy/certs/hrk.cert` and `hsk_cek.cert` into `/root/taa/certs`, failing if either is missing) and the generated production config (`configs/taa-production.json`) before `docker commit` + `docker save`. TEE-LLM and ollama are **not** in this image; deploy them separately with `./deploy-llm.sh`. The generated config's `codeAudit.llm.endpoint` is the template's value verbatim — nothing is discovered on the packaging host — so a deployment that needs a different address sets `LLM_IP` at container startup.
 
 ### 3. Component Selection and Platform Address
 
@@ -630,7 +629,8 @@ the container exits with that status.
 
 > **Creation installs nothing into the Pod.** The image is the Pod's only definition of what it
 > runs, so `create` verifies it instead of copying over it: the service and the
-> supervisor (both executable), both configs, `.teellm-model`, the ollama binary, its start script
+> supervisor (both executable), both configs, the vendor chain (`/root/taa/certs/hrk.cert` and
+> `hsk_cek.cert`), `.teellm-model`, the ollama binary, its start script
 > and `libllama-server-impl.so`, plus every blob the model's manifest names at the recorded size.
 > A missing item is listed and the run stops with a non-zero exit; nothing is `kubectl cp`-ed in.
 > `./deploy-llm.sh update` remains the path that installs into an existing Pod, and
@@ -901,6 +901,24 @@ go run ./tools/platform-mock/cmd/platform-mock -addr 0.0.0.0:18081 -taa-target h
 `deploy-fhe.sh` do not start the mock at all, so its build/start logic lives here alone. `start` rebuilds
 unless `--skip-build` is given, `restart` stops then starts, and `status` exits non-zero when
 the instance is neither running nor answering `/api/register/status`.
+
+**Multi-instance addressing.** Without `--taa-target`, the mock derives each instance's address from
+its registration's source IP and `--taa-port`. That derivation only names the instance while the
+mock shares a network with the Pod: a registration relayed through a NAT (a Kata Pod dialling another
+host is masqueraded to that host's IP) arrives with a rewritten source, so the derived address names
+the relay. `--instance-targets "dockerId=URL,..."` (`PLATFORM_MOCK_INSTANCE_TARGETS`) records the real
+address per instance — typically the instance's NodePort Service, see
+[Deployment & Operation](#deployment--operation-deploysh) — and outranks the derivation, the
+single-instance `--taa-target` fallback and Pod discovery; the address shown in the console and
+returned by `/api/taa-target` is the configured one. Instances without an entry keep the derived
+address.
+
+**Local mode.** `--local` runs the same lifecycle on this host instead of over SSH, with no upload:
+the binary under `bin/` is used in place, state/log/pid default to `bin/`, semgrep is taken from
+`PATH` and the rules from the working copy's `models/audit/semgrep/rules`. Since there is no
+`--host`, `--llm-host` supplies the node address for the `--llm-target` default (`--llm-target`
+still overrides it). A local mock that is not on the cluster network needs `--instance-targets`
+for every instance it must dial.
 
 ### Web Console Capabilities
 

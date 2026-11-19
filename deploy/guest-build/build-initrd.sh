@@ -301,6 +301,9 @@ TAA_INIT_SRC="${TAA_INIT_SRC:-$SCRIPT_DIR/taa-init.sh}"
 # /etc/default/taa.env instead, so the file stays role-shaped rather than
 # deployment-shaped.
 TAA_CONFIG_SRC="${TAA_CONFIG_SRC:-$ROOT_DIR/configs/taa-production.json}"
+# Vendor attestation chain, installed into the guest at /root/taa/certs so TAA can anchor its
+# attestation report without the rootfs depending on anything mounted from the host.
+TAA_CERTS_SRC_DIR="${TAA_CERTS_SRC_DIR:-$ROOT_DIR/deploy/certs}"
 BASE_INITRD="${BASE_INITRD:-$SCRIPT_DIR/base/kata-containers-initrd-confidential-csv.img}"
 OUT_DIR="${OUT_DIR:-$SCRIPT_DIR/out}"
 # Per role: the built image differs between roles (the semgrep payload, the
@@ -813,6 +816,15 @@ check_build_inputs() {
   for input in "$TAA_INIT_SRC" "$TAA_CONFIG_SRC"; do
     if [[ ! -f "$input" ]]; then
       echo "error: missing build input: $input" >&2
+      exit 1
+    fi
+  done
+
+  local cert
+  for cert in "$TAA_CERTS_SRC_DIR/hrk.cert" "$TAA_CERTS_SRC_DIR/hsk_cek.cert"; do
+    if [[ ! -f "$cert" ]]; then
+      echo "error: missing vendor attestation certificate: $cert" >&2
+      echo "hint: TAA verifies the attestation certificate chain at boot; restore deploy/certs/hrk.cert and deploy/certs/hsk_cek.cert" >&2
       exit 1
     fi
   done
@@ -1336,6 +1348,12 @@ build_initrd() {
 
   local stage="$BUILD_WORK_DIR/taa"
   mkdir -p "$stage/usr/local/bin" "$stage/etc/taa"
+
+  # TAA verifies the attestation certificate chain at boot and defaults to /root/taa/certs, so the
+  # guest rootfs must carry the same machine's chain.
+  install -d "$stage/root/taa/certs"
+  install -m 0644 "$TAA_CERTS_SRC_DIR/hrk.cert" "$stage/root/taa/certs/hrk.cert"
+  install -m 0644 "$TAA_CERTS_SRC_DIR/hsk_cek.cert" "$stage/root/taa/certs/hsk_cek.cert"
 
   echo "注入 TAA"
   install -m 0755 "$TAA_SRC" "$stage/usr/local/bin/taa"

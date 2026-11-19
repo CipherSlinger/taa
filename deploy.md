@@ -428,7 +428,8 @@ tag，Pod 会在 guest 启动之后停在 ImagePullBackOff；此时查询失败�
 
 **打包新增**
 
-`/root/taa/taa`（静态二进制，不吃 glibc）、两份证明证书、`taa-supervisor.sh`、
+`/root/taa/taa`（静态二进制，不吃 glibc）、两份证明证书
+（`hrk.cert`、`hsk_cek.cert`，落在 `/root/taa/certs`）、`taa-supervisor.sh`、
 渲染后的 `taa-config.json`、`/opt/taa/semgrep/{pylib,MANIFEST,rules}`。
 `semgrep` 的 wrapper 是 `exec /usr/bin/python3` —— 解释器就来自上表的基础镜像，
 bundle 只带 `pylib`（66 个 wheel）。supervisor 的单例锁用 `flock`，也在基础镜像里。
@@ -548,7 +549,8 @@ kubelet 的 restartPolicy 处理重启；TAA 自己退出只在 10s 后重启循
 
 **打包新增**
 
-`teellm-service`、`teellm-supervisor.sh`、两份配置、两份证书、`ollama` + `start-ollama.sh` +
+`teellm-service`、`teellm-supervisor.sh`、两份配置、两份证书（`hrk.cert`、`hsk_cek.cert`，
+落在 `/root/taa/certs`）、`ollama` + `start-ollama.sh` +
 `lib/ollama` 顶层 30 项（排除 cuda/mlx/vulkan/include）、`qwen2.5-coder:7b` 的 5 个 blob、
 `.teellm-model`，以及 6 个 soname 软链（缺则 exit 127）。
 
@@ -623,7 +625,9 @@ netns 都能用，所以 guest 侧一个 manager 就够所有容器用；CDI hoo
 
 `usr/local/bin/taa`（必须静态链接 —— 基座 glibc 2.35，动态链接会随打包机漂移）、
 `usr/local/bin/taa-init`、`etc/taa/taa-config.json`、
-`etc/default/taa.env`；DCU 角色另加
+`etc/default/taa.env`、`root/taa/certs/{hrk.cert,hsk_cek.cert}`（TAA 开机自检和
+TAA→TEE-LLM 握手都要走这条链；`deploy/certs` 只是开发机那一份，换机器要换成本机自己的链）；
+DCU 角色另加
 `usr/share/oci/hooks/prestart/guest-hycu-cdi-generator.sh`；选中 semgrep 时整棵
 `semgrep-payload/rootfs`（4242 文件，**自带 `python3.12`**，不依赖基座）。
 
