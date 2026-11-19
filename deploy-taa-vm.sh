@@ -54,6 +54,38 @@ if [[ ! -x "$BUILD_INITRD" ]]; then
   exit 1
 fi
 
+# ── Arguments ────────────────────────────────────────────────────────────────
+#
+# One behaviour, no subcommands: prepare the package and put it on the host.
+# Anything that decides *what* to run lives in deploy/guest-build/build-initrd.sh
+# (build, fetch-base, render, upload, launch); this script only runs the fixed
+# push sequence the team uses.
+usage() {
+  sed -n '2,/^set -euo pipefail$/p' "${BASH_SOURCE[0]}" | sed '$d' | sed 's/^# \{0,1\}//'
+}
+
+# The role is passed straight through to build-initrd.sh, which owns the
+# mapping and the defaults, so there is nothing to restate here -- only to
+# reject early, before any build work, if the argument is not one.
+#
+# Parsed before build-initrd.sh is asked for its settings: the package
+# directory, the runtime handler and the host-side paths are all derived from
+# the role, so asking first resolved the default role's package and made the
+# closing hint name package-train even after package-infer had been uploaded.
+case "${1:-}" in
+  "") ;;
+  -h|--help) usage; exit 0 ;;
+  # The misspelling shipped in an earlier request; canonicalise it here so the
+  # rest of the flow only ever sees one spelling, as build-initrd.sh does too.
+  taa-infer-duc) export TAA_ROLE=taa-infer-dcu ;;
+  taa-train|taa-infer|taa-analysis|taa-train-dcu|taa-infer-dcu) export TAA_ROLE="$1" ;;
+  *)
+    echo "error: unknown role or argument: $1" >&2
+    echo "hint: ./deploy-taa-vm.sh [taa-train|taa-infer|taa-analysis|taa-train-dcu|taa-infer-dcu]; '$0 --help' explains the flow" >&2
+    exit 1
+    ;;
+esac
+
 # ── Host-side install root ───────────────────────────────────────────────────
 #
 # Everything this flow puts on the target host lives under one directory, with
@@ -95,7 +127,8 @@ export TAA_SRC
 TAA_BIN="$TAA_SRC"
 
 # Pull the resolved settings from build-initrd.sh instead of restating them here.
-# That output is %q-quoted, so this eval is safe even for values with spaces.
+# That output is %q-quoted, so this eval is safe even for values with spaces. It
+# also carries REMOTE_USER and REMOTE_HOST, which the ssh target below needs.
 eval "$("$BUILD_INITRD" print-config)"
 
 REMOTE="${REMOTE_USER}@${REMOTE_HOST}"
@@ -139,33 +172,6 @@ export TAA_PLATFORM_IP TAA_DOCKER_ID TAA_LLM_ENDPOINT
 # GET on this path is a read. POST on it rotates the platform key pair, which
 # would invalidate every image built against the old one -- never use it here.
 PLATFORM_KEY_ENDPOINT="${PLATFORM_KEY_ENDPOINT:-http://${TAA_PLATFORM_IP}/api/crypto/generate-key}"
-
-# ── Arguments ────────────────────────────────────────────────────────────────
-#
-# One behaviour, no subcommands: prepare the package and put it on the host.
-# Anything that decides *what* to run lives in deploy/guest-build/build-initrd.sh
-# (build, fetch-base, render, upload, launch); this script only runs the fixed
-# push sequence the team uses.
-usage() {
-  sed -n '2,/^set -euo pipefail$/p' "${BASH_SOURCE[0]}" | sed '$d' | sed 's/^# \{0,1\}//'
-}
-
-# The role is passed straight through to build-initrd.sh, which owns the
-# mapping and the defaults, so there is nothing to restate here -- only to
-# reject early, before any build work, if the argument is not one.
-case "${1:-}" in
-  "") ;;
-  -h|--help) usage; exit 0 ;;
-  # The misspelling shipped in an earlier request; canonicalise it here so the
-  # rest of the flow only ever sees one spelling, as build-initrd.sh does too.
-  taa-infer-duc) export TAA_ROLE=taa-infer-dcu ;;
-  taa-train|taa-infer|taa-analysis|taa-train-dcu|taa-infer-dcu) export TAA_ROLE="$1" ;;
-  *)
-    echo "error: unknown role or argument: $1" >&2
-    echo "hint: ./deploy-taa-vm.sh [taa-train|taa-infer|taa-analysis|taa-train-dcu|taa-infer-dcu]; '$0 --help' explains the flow" >&2
-    exit 1
-    ;;
-esac
 
 require_cmd() {
   local cmd
