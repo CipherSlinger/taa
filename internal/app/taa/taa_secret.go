@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"strings"
 
-	teecrypto "taa/pkg/crypto"
+	teecrypto "github.com/CipherSlinger/teeaudit/pkg/crypto"
 )
 
 const (

@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"taa/internal/codeaudit"
+	"github.com/CipherSlinger/teeaudit/codeaudit"
 )
 
 // auditTestClock returns a clock that advances one minute per call, so the

@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"taa/internal/hctproto"
+	"github.com/CipherSlinger/teeaudit/hctproto"
 )
 
 // fakeEngine implements every operation so it can stand in for a complete

@@ -8,8 +8,8 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/CipherSlinger/teeaudit/pkg/crypto"
 	"taa/internal/platform/envelope"
-	"taa/pkg/crypto"
 )
 
 // testManagerWith builds an instance manager whose bundle uses dockerID and a

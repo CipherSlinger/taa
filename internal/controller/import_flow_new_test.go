@@ -18,8 +18,8 @@ import (
 	"testing"
 	"time"
 
-	"taa/internal/codeaudit"
-	teecrypto "taa/pkg/crypto"
+	"github.com/CipherSlinger/teeaudit/codeaudit"
+	teecrypto "github.com/CipherSlinger/teeaudit/pkg/crypto"
 )
 
 type importedReportPayload struct {

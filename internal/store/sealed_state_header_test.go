@@ -7,8 +7,8 @@ import (
 	"path/filepath"
 	"testing"
 
+	teecrypto "github.com/CipherSlinger/teeaudit/pkg/crypto"
 	"taa/internal/store"
-	teecrypto "taa/pkg/crypto"
 )
 
 func writeLegacyState(t *testing.T, path, key string) {

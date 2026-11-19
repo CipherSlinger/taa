@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	teecrypto "taa/pkg/crypto"
+	teecrypto "github.com/CipherSlinger/teeaudit/pkg/crypto"
 )
 
 // TestExportIgnoresRequestPublicKeyOnFHEInstance pins the plaintext-export

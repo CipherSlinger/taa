@@ -15,7 +15,7 @@ import (
 	"strings"
 	"time"
 
-	"taa/pkg/crypto"
+	"github.com/CipherSlinger/teeaudit/pkg/crypto"
 )
 
 const (

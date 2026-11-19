@@ -8,7 +8,7 @@ import (
 	"strconv"
 	"strings"
 
-	"taa/pkg/crypto"
+	"github.com/CipherSlinger/teeaudit/pkg/crypto"
 )
 
 // cryptoGenerateKeyHandler exposes the platform SM2 key pair the mock uses for

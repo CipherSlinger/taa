@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"taa/pkg/crypto"
+	"github.com/CipherSlinger/teeaudit/pkg/crypto"
 )
 
 type envelopeAPIResponse struct {

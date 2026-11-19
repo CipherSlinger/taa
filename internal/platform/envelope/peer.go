@@ -6,7 +6,7 @@ import (
 	"errors"
 	"fmt"
 
-	teecrypto "taa/pkg/crypto"
+	teecrypto "github.com/CipherSlinger/teeaudit/pkg/crypto"
 )
 
 // SealForPlatform produces an envelope on the platform's behalf: encrypted to

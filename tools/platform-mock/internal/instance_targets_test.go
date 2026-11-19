@@ -5,7 +5,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"taa/pkg/crypto"
+	"github.com/CipherSlinger/teeaudit/pkg/crypto"
 )
 
 // TestParseInstanceTargets pins the accepted form and the entries that are

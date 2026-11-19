@@ -8,10 +8,10 @@ import (
 	"strings"
 	"time"
 
+	teecrypto "github.com/CipherSlinger/teeaudit/pkg/crypto"
 	"taa/internal/fhe"
 	"taa/internal/platform"
 	"taa/internal/resource"
-	teecrypto "taa/pkg/crypto"
 )
 
 // fheResultArchiveName is the file name the FHE service gives its result

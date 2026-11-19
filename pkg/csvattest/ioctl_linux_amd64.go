@@ -9,7 +9,7 @@ import (
 	"syscall"
 	"unsafe"
 
-	taacrypto "taa/pkg/crypto"
+	taacrypto "github.com/CipherSlinger/teeaudit/pkg/crypto"
 )
 
 type defaultPlatformOps struct{}

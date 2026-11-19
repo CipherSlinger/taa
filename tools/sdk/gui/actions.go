@@ -10,7 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"taa/pkg/crypto"
+	"github.com/CipherSlinger/teeaudit/pkg/crypto"
 )
 
 func generateSM4KeyBase64() (string, error) {

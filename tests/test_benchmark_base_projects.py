@@ -13,7 +13,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[1]
 BASE_PROJECTS_DIR = REPO_ROOT / "models" / "audit" / "benchmarks" / "base-projects"
 
-# 13 production static security rules (mirrored from internal/codeaudit/rules.go)
+# 13 production static security rules (mirrored from teeaudit/codeaudit/rules.go)
 PRODUCTION_STATIC_RULES = [
     {
         "id": "NET_001",

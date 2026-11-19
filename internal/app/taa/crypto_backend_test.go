@@ -8,8 +8,8 @@ import (
 	"strings"
 	"testing"
 
+	teecrypto "github.com/CipherSlinger/teeaudit/pkg/crypto"
 	"taa/internal/config"
-	teecrypto "taa/pkg/crypto"
 )
 
 // selectCryptoBackend is the startup gate in front of the crypto seam. These

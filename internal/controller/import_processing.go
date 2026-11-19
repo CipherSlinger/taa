@@ -15,12 +15,12 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"taa/internal/codeaudit"
+	"github.com/CipherSlinger/teeaudit/codeaudit"
+	"github.com/CipherSlinger/teeaudit/llmclient"
+	teecrypto "github.com/CipherSlinger/teeaudit/pkg/crypto"
 	"taa/internal/execenv"
-	"taa/internal/llmclient"
 	"taa/internal/resource"
 	"taa/internal/runtime"
-	teecrypto "taa/pkg/crypto"
 	pkgerrors "taa/pkg/errors"
 	"taa/pkg/utils"
 )

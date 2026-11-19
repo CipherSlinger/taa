@@ -14,7 +14,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
-	"taa/internal/codeaudit"
+	"github.com/CipherSlinger/teeaudit/codeaudit"
 )
 
 // auditRuleSpec is one Tier 1 rule as the workbench shows and edits it.

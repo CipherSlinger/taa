@@ -8,7 +8,7 @@ import (
 	"fmt"
 	"testing"
 
-	taacrypto "taa/pkg/crypto"
+	taacrypto "github.com/CipherSlinger/teeaudit/pkg/crypto"
 )
 
 type fakeOps struct {

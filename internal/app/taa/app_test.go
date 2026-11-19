@@ -12,11 +12,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/CipherSlinger/teeaudit/codeaudit"
+	teecrypto "github.com/CipherSlinger/teeaudit/pkg/crypto"
 	"github.com/CipherSlinger/teetls"
 	"taa/internal/attestation"
-	"taa/internal/codeaudit"
 	"taa/internal/config"
-	teecrypto "taa/pkg/crypto"
 )
 
 // TestDeriveUserDataAndKeyPair 校验国密 SM2 密钥生成与 UserData 派生逻辑：

@@ -8,8 +8,8 @@ import (
 	"path/filepath"
 	"testing"
 
+	teecrypto "github.com/CipherSlinger/teeaudit/pkg/crypto"
 	"taa/internal/store"
-	teecrypto "taa/pkg/crypto"
 )
 
 func testHardwareKey() []byte {

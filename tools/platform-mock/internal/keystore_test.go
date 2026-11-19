@@ -4,8 +4,8 @@ import (
 	"encoding/json"
 	"testing"
 
+	"github.com/CipherSlinger/teeaudit/pkg/crypto"
 	"taa/internal/platform/envelope"
-	"taa/pkg/crypto"
 )
 
 // A restart must keep the platform key: every running TAA has cached the public

@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"taa/pkg/crypto"
+	"github.com/CipherSlinger/teeaudit/pkg/crypto"
 )
 
 // twoInstanceRouting registers docker-a and docker-b behind sealed backends and

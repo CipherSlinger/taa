@@ -4,8 +4,8 @@ import (
 	"strings"
 	"testing"
 
+	teecrypto "github.com/CipherSlinger/teeaudit/pkg/crypto"
 	"taa/internal/config"
-	teecrypto "taa/pkg/crypto"
 )
 
 func TestResolveEnvelopeKeys(t *testing.T) {

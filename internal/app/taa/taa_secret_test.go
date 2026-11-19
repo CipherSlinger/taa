@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	teecrypto "taa/pkg/crypto"
+	teecrypto "github.com/CipherSlinger/teeaudit/pkg/crypto"
 )
 
 func TestDeriveTAASecretSM4KeyMatchesProtocol(t *testing.T) {

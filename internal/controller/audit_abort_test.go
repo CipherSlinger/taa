@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"taa/internal/codeaudit"
+	"github.com/CipherSlinger/teeaudit/codeaudit"
 )
 
 // blockingAuditEngine blocks the audit's static scan until the audit context is

@@ -9,7 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	teecrypto "taa/pkg/crypto"
+	teecrypto "github.com/CipherSlinger/teeaudit/pkg/crypto"
 )
 
 // fheSubmitRequest is the body of POST /api/fhe/submit. Both files are named by

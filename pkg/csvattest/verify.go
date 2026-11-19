@@ -14,7 +14,7 @@ import (
 	"strings"
 	"time"
 
-	taacrypto "taa/pkg/crypto"
+	taacrypto "github.com/CipherSlinger/teeaudit/pkg/crypto"
 )
 
 var DownloadCertFunc = DownloadCert

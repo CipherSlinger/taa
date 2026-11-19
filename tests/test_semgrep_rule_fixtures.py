@@ -75,9 +75,9 @@ class TestSemgrepRuleFixtures(unittest.TestCase):
         self.assertNotIn("FIL_001", rule_ids)
 
     def test_medium_rules_keep_baseline_severity(self):
-        # FIL_001 and DYN_001 are MEDIUM in internal/codeaudit/rules.go.
+        # FIL_001 and DYN_001 are MEDIUM in teeaudit/codeaudit/rules.go.
         # Severity is not cosmetic: under the production gate policy
-        # (internal/codeaudit/verifier.go:160-178) a HIGH finding blocks unless
+        # (teeaudit/codeaudit/verifier.go:160-178) a HIGH finding blocks unless
         # the LLM returns BENIGN, while a MEDIUM one is counted but never
         # blocks. Semgrep's ERROR maps to HIGH, so a rule ported without this
         # correction becomes able to block where the baseline rule cannot.

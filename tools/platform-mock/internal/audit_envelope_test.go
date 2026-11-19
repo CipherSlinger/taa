@@ -8,7 +8,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	teecrypto "taa/pkg/crypto"
+	teecrypto "github.com/CipherSlinger/teeaudit/pkg/crypto"
 )
 
 // TestWorkbenchKeysRoundTrip pins the envelope shape against TAA's reader: what

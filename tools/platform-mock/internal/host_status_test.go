@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/CipherSlinger/teeaudit/pkg/crypto"
 	"taa/internal/platform/envelope"
-	"taa/pkg/crypto"
 )
 
 // ── host status ─────────────────────────────────────────────────────────

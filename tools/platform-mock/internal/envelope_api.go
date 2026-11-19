@@ -8,8 +8,8 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/CipherSlinger/teeaudit/pkg/crypto"
 	"taa/internal/platform/envelope"
-	"taa/pkg/crypto"
 )
 
 // maxOpenResponseBytes bounds the sealed body the open-response route reads. A

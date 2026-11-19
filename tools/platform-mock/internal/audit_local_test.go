@@ -15,7 +15,7 @@ import (
 	"testing"
 	"time"
 
-	"taa/internal/codeaudit"
+	"github.com/CipherSlinger/teeaudit/codeaudit"
 )
 
 // localAuditRig builds a runner over a private store and a temp upload

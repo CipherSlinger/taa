@@ -169,14 +169,14 @@ sequenceDiagram
 | 启动编排 | `internal/app/taa/` | 配置加载、密钥解析、证明报告、注册重试、崩溃恢复、HTTP 服务装配 |
 | 控制器 | `internal/controller/` | HTTP 路由、导入/导出/审计/阶段切换、上报、状态与索引 |
 | 远程证明 | `internal/attestation/` + `pkg/csvattest/` | 进程内经 ioctl 读取 CSV 硬件报告，解析与内嵌 PEK 签名自校验 |
-| 代码安全审计 | `internal/codeaudit/`（含 `cpg/`、`testdata/`） | 静态引擎（regex / semgrep）、二进制审计通道、LLM 语义验证、结果泄露检测 |
+| 代码安全审计 | `teeaudit/codeaudit/`（含 `cpg/`、`testdata/`） | 静态引擎（regex / semgrep）、二进制审计通道、LLM 语义验证、结果泄露检测 |
 | FHE 编排 | `internal/fhe/` | FHE 服务客户端、任务布局、eval key 缓存、进度轮询与回调 |
 | 运行时 | `internal/runtime/` | `runtimeConfig` 解析、子进程编排、日志/进度遥测 |
 | 资源处理 | `internal/resource/` | 下载、信封解封、解包、SM3 校验、导入索引 |
 | 平台客户端 | `internal/platform/` | 注册与各类上报的 HTTP 封装；出站请求在此统一加 SM2 信封 |
 | 消息信封 | `internal/platform/envelope/` | 双向 `{cipher,sign}` 封装（TAA 主动上报时外层再加 `dockerId`）：SM2 C1C3C2 加解密 + DER 签名（对明文签名），不含 HTTP 逻辑 |
 | 密封状态 | `internal/store/` | 受保护运行状态的密封持久化与密钥漂移处理 |
-| 加密工具 | `pkg/crypto/` | SM2 信封加密/解密、SM4-GCM、SM3、证书与密钥工具 |
+| 加密工具 | `teeaudit/pkg/crypto/` | SM2 信封加密/解密、SM4-GCM、SM3、证书与密钥工具 |
 | LLM 推理服务 | `teellm/`（独立 go.work 模块） | `teellm-service` 网关 + Ollama/Qwen，供代码审计的语义验证 |
 | 平台模拟器 | `tools/platform-mock/` | 模拟器 HTTP 服务、反向代理与嵌入控制台 |
 | CSV2 机密 VM 工具 | `tools/csv2-vm/` | 机密 VM 启动脚本与 DCU 测试 Pod 清单 |
@@ -505,21 +505,21 @@ TAA 作为服务端注册的路由（`internal/controller/router.go`）：
 
 | 文件 | 行数 | 职责 |
 |------|------|------|
-| `internal/codeaudit/audit.go` | 844 | 报告组装、风险分级、文件级报告与结论 |
-| `internal/codeaudit/scanner.go` | 380 | regex 引擎：遍历源码匹配规则 |
-| `internal/codeaudit/rules.go` | 374 | 内置安全规则与 `Finding` 类型 |
-| `internal/codeaudit/engine.go` | 168 | `StaticEngine` 抽象与引擎选择（regex / semgrep） |
-| `internal/codeaudit/semgrep_engine.go` | 674 | Semgrep CLI 适配器：规则、超时、内存上限与结果映射 |
-| `internal/codeaudit/binary_scanner.go` | 430 | 二进制审计通道编排与覆盖缺口统计 |
-| `internal/codeaudit/binary_detect.go` | 241 | 文件类型识别（pickle、可执行载荷等） |
-| `internal/codeaudit/binary_evidence.go` | 2125 | 二进制证据提取（pickle opcode、归档成员、熵分析等） |
-| `internal/codeaudit/binary_rules.go` | 603 | 二进制证据的阻断规则 |
-| `internal/codeaudit/llm.go` | 235 | TEE-LLM 客户端（TEE-TLS / 普通 TLS、熔断与冷却） |
-| `internal/codeaudit/verifier.go` | 655 | 审计主流程：静态扫描 → 二进制通道 → 合并 → LLM 验证 → 报告 |
-| `internal/codeaudit/context_slice.go` | 118 | 为 LLM 判定裁剪代码上下文窗口 |
-| `internal/codeaudit/result_checker.go` | 211 | 训练结果明文泄露检测 |
-| `internal/codeaudit/walk.go` | 31 | 模型目录遍历的公共入口 |
-| `internal/codeaudit/cpg_analysis.go` | 247 | CPG（代码属性图）适配器；`cpg/` 为组件级实现，当前未作为可配置引擎暴露 |
+| `teeaudit/codeaudit/audit.go` | 844 | 报告组装、风险分级、文件级报告与结论 |
+| `teeaudit/codeaudit/scanner.go` | 380 | regex 引擎：遍历源码匹配规则 |
+| `teeaudit/codeaudit/rules.go` | 374 | 内置安全规则与 `Finding` 类型 |
+| `teeaudit/codeaudit/engine.go` | 168 | `StaticEngine` 抽象与引擎选择（regex / semgrep） |
+| `teeaudit/codeaudit/semgrep_engine.go` | 674 | Semgrep CLI 适配器：规则、超时、内存上限与结果映射 |
+| `teeaudit/codeaudit/binary_scanner.go` | 430 | 二进制审计通道编排与覆盖缺口统计 |
+| `teeaudit/codeaudit/binary_detect.go` | 241 | 文件类型识别（pickle、可执行载荷等） |
+| `teeaudit/codeaudit/binary_evidence.go` | 2125 | 二进制证据提取（pickle opcode、归档成员、熵分析等） |
+| `teeaudit/codeaudit/binary_rules.go` | 603 | 二进制证据的阻断规则 |
+| `teeaudit/codeaudit/llm.go` | 235 | TEE-LLM 客户端（TEE-TLS / 普通 TLS、熔断与冷却） |
+| `teeaudit/codeaudit/verifier.go` | 655 | 审计主流程：静态扫描 → 二进制通道 → 合并 → LLM 验证 → 报告 |
+| `teeaudit/codeaudit/context_slice.go` | 118 | 为 LLM 判定裁剪代码上下文窗口 |
+| `teeaudit/codeaudit/result_checker.go` | 211 | 训练结果明文泄露检测 |
+| `teeaudit/codeaudit/walk.go` | 31 | 模型目录遍历的公共入口 |
+| `teeaudit/codeaudit/cpg_analysis.go` | 247 | CPG（代码属性图）适配器；`cpg/` 为组件级实现，当前未作为可配置引擎暴露 |
 
 ## 7. 远程证明
 
@@ -733,6 +733,7 @@ taa/
 ├── models/                      模型项目与审计语料
 ├── tests/                       集成与回归测试脚本
 ├── teellm/                      TEE-LLM 独立 go.work 子模块（含 models/ollama）
+├── teeaudit/                    审计运行时独立模块（codeaudit / llmclient / pkg/crypto / hct*，含嵌套 teetls）
 ├── go.mod / go.work             模块与工作区定义
 ├── deploy.sh / deploy-fhe.sh / deploy-dataanaylsis.sh / deploy-llm.sh
 ├── deploy-taa-vm.sh

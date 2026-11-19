@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	teecrypto "taa/pkg/crypto"
+	teecrypto "github.com/CipherSlinger/teeaudit/pkg/crypto"
 )
 
 // Model delivery accepts the same two shapes as data delivery: the SM2 key envelope

@@ -10,7 +10,7 @@ import (
 	"os/signal"
 	"syscall"
 
-	"taa/internal/hctproto"
+	"github.com/CipherSlinger/teeaudit/hctproto"
 )
 
 const buildID = "taa-hct-helper-1"

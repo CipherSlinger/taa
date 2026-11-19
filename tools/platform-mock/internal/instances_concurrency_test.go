@@ -8,8 +8,8 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/CipherSlinger/teeaudit/pkg/crypto"
 	"taa/internal/platform/envelope"
-	"taa/pkg/crypto"
 )
 
 // TestConcurrentInstancesStayIsolated registers two instances and drives their

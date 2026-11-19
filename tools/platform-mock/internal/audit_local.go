@@ -14,7 +14,7 @@ import (
 
 	"github.com/CipherSlinger/teetls"
 
-	"taa/internal/codeaudit"
+	"github.com/CipherSlinger/teeaudit/codeaudit"
 	"taa/internal/resource"
 )
 

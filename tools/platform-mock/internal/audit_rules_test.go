@@ -10,7 +10,7 @@ import (
 	"strings"
 	"testing"
 
-	"taa/internal/codeaudit"
+	"github.com/CipherSlinger/teeaudit/codeaudit"
 )
 
 // writeFakeSemgrep puts an executable named semgrep on a private PATH. The

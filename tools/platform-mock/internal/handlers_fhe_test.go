@@ -13,7 +13,7 @@ import (
 	"strings"
 	"testing"
 
-	"taa/pkg/crypto"
+	"github.com/CipherSlinger/teeaudit/pkg/crypto"
 )
 
 const (

@@ -1,3 +1,7 @@
 [submodule "teellm"]
 	path = teellm
 	url = https://github.com/CipherSlinger/teellm.git
+
+[submodule "teeaudit"]
+	path = teeaudit
+	url = https://github.com/CipherSlinger/teeaudit.git

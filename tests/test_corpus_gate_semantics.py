@@ -3,7 +3,7 @@
 
 Spec 9.8 registers a divergence the engine comparison cannot see past: the
 production gate blocks only when a HIGH finding survives arbitration
-(`report.Passed = highCount == 0`, `internal/codeaudit/verifier.go:160-178`),
+(`report.Passed = highCount == 0`, `teeaudit/codeaudit/verifier.go:160-178`),
 whereas the Python evaluation mirror treats HIGH and MEDIUM alike - both arm a
 suspicion when no verdict exonerates, and both can be exonerated by a BENIGN
 verdict. Severity is therefore load-bearing in production and decorative in the

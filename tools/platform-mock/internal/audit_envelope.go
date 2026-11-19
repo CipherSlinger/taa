@@ -11,7 +11,7 @@ import (
 	"strings"
 	"sync"
 
-	teecrypto "taa/pkg/crypto"
+	teecrypto "github.com/CipherSlinger/teeaudit/pkg/crypto"
 )
 
 // The workbench reproduces TAA's ciphertext ingress instead of handing the audit

@@ -9,9 +9,9 @@ import (
 	"os"
 	"time"
 
+	teecrypto "github.com/CipherSlinger/teeaudit/pkg/crypto"
 	"taa/internal/attestation"
 	"taa/internal/resource"
-	teecrypto "taa/pkg/crypto"
 	pkgerrors "taa/pkg/errors"
 )
 

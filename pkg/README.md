@@ -51,7 +51,7 @@
 | 原模块路径 | 功能描述 | 业务解耦度 | 迁移目标 | 迁移状态 |
 |---|---|:---:|---|:---:|
 | `filetree/` | **多模态数据集目录树解析与 Schema 提取**<br>通过魔数识别 CSV/TSV/XLSX/JSON/SQLite/Parquet/图片/PDF/压缩包，防 Zip Bomb 与内存溢出。 | **100% 纯轮子** | `pkg/filetree` | **已完成** |
-| `crypto/` | **国密 SM2/SM3/SM4-GCM 加密与安全信封**<br>实现了 SM4-GCM 对称加解密、SM2 密钥生成/加解密/PEM 解析、国密混合信封封装及防目录逃逸的归档解压。 | **100% 纯轮子** | `pkg/crypto` | **已完成** (含根目录兼容过渡垫片) |
+| `crypto/` | **国密 SM2/SM3/SM4-GCM 加密与安全信封**<br>实现了 SM4-GCM 对称加解密、SM2 密钥生成/加解密/PEM 解析、国密混合信封封装及防目录逃逸的归档解压。 | **100% 纯轮子** | `teeaudit/pkg/crypto` | **已迁出**（随审计运行时抽为独立模块 `github.com/CipherSlinger/teeaudit`） |
 | `internal/controller/log_store.go`<br>`internal/app/mock/server.go` (内嵌) | **有界结构化内存日志记录器**<br>支持增量获取、日志上限丢弃与 ANSI 彩色终端输出。 | **100% 纯轮子** | `pkg/logger` | **已完成** |
 | `internal/controller/import_helpers.go`<br>`internal/controller/route.go` | **文件目录操作与文件名清洗**<br>包含 `copyDir`、`copyFile`、`cleanDirContents`、`safeFilenamePart`。 | **100% 纯轮子** | `pkg/utils` | **已完成** |
 | `attestation/csv_go/` | **海光 CSV TEE 纯 Go 底层通信与证书链验证**<br>封装 `/dev/csv-guest` IOCTL，解析 CSV 证明报告并验证 HRK→HSK→CEK→PEK 证书链。 | **硬件驱动级轮子** | `pkg/csvattest` | **已完成** |

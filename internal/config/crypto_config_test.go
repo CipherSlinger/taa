@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	teecrypto "taa/pkg/crypto"
+	teecrypto "github.com/CipherSlinger/teeaudit/pkg/crypto"
 )
 
 // The crypto block is a top-level section: every role performs SM2/SM3/SM4

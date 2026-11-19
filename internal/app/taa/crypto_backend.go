@@ -6,8 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 
+	teecrypto "github.com/CipherSlinger/teeaudit/pkg/crypto"
 	"taa/internal/config"
-	teecrypto "taa/pkg/crypto"
 )
 
 // selectCryptoBackend installs the configured SM2/SM3/SM4 backend. It runs

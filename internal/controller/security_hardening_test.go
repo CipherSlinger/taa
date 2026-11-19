@@ -11,7 +11,7 @@ import (
 	"strings"
 	"testing"
 
-	teecrypto "taa/pkg/crypto"
+	teecrypto "github.com/CipherSlinger/teeaudit/pkg/crypto"
 )
 
 // 1. 阶段切换强互斥门禁测试

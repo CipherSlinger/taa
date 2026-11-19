@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"taa/pkg/crypto"
+	"github.com/CipherSlinger/teeaudit/pkg/crypto"
 )
 
 // TestUploadListKeepsTheDataKeyEnvelope covers the regression behind an import

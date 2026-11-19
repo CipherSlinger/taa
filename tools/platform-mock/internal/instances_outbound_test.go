@@ -8,8 +8,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/CipherSlinger/teeaudit/pkg/crypto"
 	"taa/internal/platform/envelope"
-	"taa/pkg/crypto"
 )
 
 // sealedBackend answers every request with a sealed body that echoes which

@@ -17,7 +17,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"taa/pkg/crypto"
+	"github.com/CipherSlinger/teeaudit/pkg/crypto"
 	"teecrypto/attestation"
 )
 

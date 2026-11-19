@@ -20,9 +20,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/CipherSlinger/teeaudit/codeaudit"
+	"github.com/CipherSlinger/teeaudit/llmclient"
 	"github.com/CipherSlinger/teetls"
-	"taa/internal/codeaudit"
-	"taa/internal/llmclient"
 )
 
 // treeEntry is one file's identity in a package snapshot: its path relative to

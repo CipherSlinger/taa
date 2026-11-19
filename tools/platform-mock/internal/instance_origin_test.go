@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"taa/pkg/crypto"
+	"github.com/CipherSlinger/teeaudit/pkg/crypto"
 )
 
 // TestInstanceSummaryRecordsWhereTheRegistrationCameFrom pins the two facts

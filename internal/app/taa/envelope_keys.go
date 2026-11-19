@@ -5,9 +5,9 @@ import (
 	"log"
 	"strings"
 
+	teecrypto "github.com/CipherSlinger/teeaudit/pkg/crypto"
 	"taa/internal/config"
 	"taa/internal/platform/envelope"
-	teecrypto "taa/pkg/crypto"
 )
 
 // resolveEnvelopeKeys assembles the TAA <-> platform envelope key material from

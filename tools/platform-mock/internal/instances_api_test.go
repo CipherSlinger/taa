@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"taa/pkg/crypto"
+	"github.com/CipherSlinger/teeaudit/pkg/crypto"
 )
 
 func TestInstancesEndpointListsEveryInstanceAndMarksTheDefault(t *testing.T) {

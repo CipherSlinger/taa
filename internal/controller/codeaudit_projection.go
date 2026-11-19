@@ -3,7 +3,7 @@ package controller
 import (
 	"encoding/json"
 
-	"taa/internal/codeaudit"
+	"github.com/CipherSlinger/teeaudit/codeaudit"
 )
 
 // setLastAudit records the latest audit result. It is generation-gated so a

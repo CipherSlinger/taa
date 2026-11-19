@@ -8,8 +8,8 @@ import (
 	"strings"
 	"time"
 
+	teecrypto "github.com/CipherSlinger/teeaudit/pkg/crypto"
 	"taa/internal/store"
-	teecrypto "taa/pkg/crypto"
 )
 
 // startupKeyMaterial groups everything the startup flow derives from the TAA

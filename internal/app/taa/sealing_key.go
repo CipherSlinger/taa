@@ -7,8 +7,8 @@ import (
 	"log"
 	"os"
 
+	teecrypto "github.com/CipherSlinger/teeaudit/pkg/crypto"
 	"taa/internal/store"
-	teecrypto "taa/pkg/crypto"
 	"taa/pkg/csvattest"
 )
 

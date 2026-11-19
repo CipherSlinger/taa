@@ -12,7 +12,7 @@ import (
 	"errors"
 	"fmt"
 
-	teecrypto "taa/pkg/crypto"
+	teecrypto "github.com/CipherSlinger/teeaudit/pkg/crypto"
 )
 
 // Envelope is the outer message both directions share.

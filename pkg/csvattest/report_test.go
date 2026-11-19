@@ -6,7 +6,7 @@ import (
 	"errors"
 	"testing"
 
-	taacrypto "taa/pkg/crypto"
+	taacrypto "github.com/CipherSlinger/teeaudit/pkg/crypto"
 )
 
 func TestConstantsMatchCSVABI(t *testing.T) {

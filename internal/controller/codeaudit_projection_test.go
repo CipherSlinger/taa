@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"testing"
 
-	"taa/internal/codeaudit"
+	"github.com/CipherSlinger/teeaudit/codeaudit"
 )
 
 // The report field is the only carrier of the audit's timing to the platform:

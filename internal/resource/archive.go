@@ -14,7 +14,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"taa/pkg/archiveentry"
+	"github.com/CipherSlinger/teeaudit/pkg/archiveentry"
 	pkgerrors "taa/pkg/errors"
 	filetree "taa/pkg/filetree"
 	"taa/pkg/utils"

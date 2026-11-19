@@ -9,8 +9,8 @@ import (
 	"path/filepath"
 	"strings"
 
+	teecrypto "github.com/CipherSlinger/teeaudit/pkg/crypto"
 	"taa/internal/resource"
-	teecrypto "taa/pkg/crypto"
 	pkgerrors "taa/pkg/errors"
 	"taa/pkg/utils"
 )

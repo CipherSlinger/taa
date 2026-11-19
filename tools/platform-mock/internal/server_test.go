@@ -16,7 +16,7 @@ import (
 	"testing"
 	"time"
 
-	"taa/pkg/crypto"
+	"github.com/CipherSlinger/teeaudit/pkg/crypto"
 )
 
 func TestIndexHandlerHeaders(t *testing.T) {

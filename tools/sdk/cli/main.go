@@ -9,7 +9,7 @@ import (
 	"strconv"
 	"strings"
 
-	"taa/pkg/crypto"
+	"github.com/CipherSlinger/teeaudit/pkg/crypto"
 )
 
 // fatal 打印错误信息并退出程序。

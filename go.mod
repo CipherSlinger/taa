@@ -3,6 +3,7 @@ module taa
 go 1.22
 
 require (
+	github.com/CipherSlinger/teeaudit v0.0.0-00010101000000-000000000000
 	github.com/CipherSlinger/teetls v0.1.0
 	github.com/fraugster/parquet-go v0.12.0
 	github.com/gorilla/websocket v1.5.3
@@ -14,6 +15,8 @@ require (
 )
 
 replace github.com/CipherSlinger/teetls => ./teellm/teetls
+
+replace github.com/CipherSlinger/teeaudit => ./teeaudit
 
 require (
 	github.com/apache/thrift v0.16.0 // indirect

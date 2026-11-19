@@ -515,7 +515,7 @@ def utc_now() -> str:
 # whether a file parses, rule 6 counts findings without looking at what they
 # are or how the run concluded.
 
-# Mirrors internal/codeaudit/scanner.go:23. The Go engine truncates its static
+# Mirrors teeaudit/codeaudit/scanner.go:23. The Go engine truncates its static
 # findings here, and the comparison is `>=`, so a sample with exactly this many
 # findings is already marked truncated - which makes ProvesCleanScan false and
 # breaks the parity proof for a reason unrelated to rule drift. The Python arm

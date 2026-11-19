@@ -385,7 +385,7 @@ CALL_RULES: Tuple[CallRule, ...] = (
     # pickle.loads, and the other two artefacts are load-shaped; pickle.dump is
     # a writer and is reached through EMB_004 instead, where the rule table puts
     # it. _pickle is listed explicitly because rules.yaml:208-209 names it while
-    # internal/codeaudit/rules.go does not -- an asymmetry this table has to
+    # teeaudit/codeaudit/rules.go does not -- an asymmetry this table has to
     # rule on rather than inherit. The ruling: _pickle is in scope, because it
     # is the same construct, so the regex arm's miss on it is a real miss.
     CallRule("OBF_001", "pickle.load/<loads>", _r(r"^(pickle|cPickle|_pickle)\.(load|loads|Unpickler)$"),

@@ -7,7 +7,7 @@ import (
 	"sort"
 	"testing"
 
-	"taa/internal/codeaudit"
+	"github.com/CipherSlinger/teeaudit/codeaudit"
 	"taa/internal/resource"
 )
 

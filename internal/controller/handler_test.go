@@ -18,11 +18,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/CipherSlinger/teeaudit/codeaudit"
+	teecrypto "github.com/CipherSlinger/teeaudit/pkg/crypto"
 	"taa/internal/attestation"
-	"taa/internal/codeaudit"
 	"taa/internal/platform/envelope"
 	"taa/internal/resource"
-	teecrypto "taa/pkg/crypto"
 	pkgerrors "taa/pkg/errors"
 )
 

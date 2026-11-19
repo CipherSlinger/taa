@@ -12,16 +12,16 @@ import (
 	"strings"
 	"time"
 
+	"github.com/CipherSlinger/teeaudit/codeaudit"
+	"github.com/CipherSlinger/teeaudit/llmclient"
+	teecrypto "github.com/CipherSlinger/teeaudit/pkg/crypto"
 	"taa/internal/attestation"
-	"taa/internal/codeaudit"
 	"taa/internal/config"
 	"taa/internal/controller"
 	"taa/internal/deployment"
 	"taa/internal/fhe"
-	"taa/internal/llmclient"
 	"taa/internal/platform"
 	"taa/internal/store"
-	teecrypto "taa/pkg/crypto"
 )
 
 // ============================================================================

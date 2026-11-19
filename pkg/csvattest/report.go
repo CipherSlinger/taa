@@ -6,7 +6,7 @@ import (
 	"encoding/binary"
 	"fmt"
 
-	taacrypto "taa/pkg/crypto"
+	taacrypto "github.com/CipherSlinger/teeaudit/pkg/crypto"
 )
 
 func UnmaskWords(data []byte, anonce uint32) []byte {

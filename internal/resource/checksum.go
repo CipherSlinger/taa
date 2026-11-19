@@ -8,7 +8,7 @@ import (
 	"sort"
 	"strings"
 
-	teecrypto "taa/pkg/crypto"
+	teecrypto "github.com/CipherSlinger/teeaudit/pkg/crypto"
 	pkgerrors "taa/pkg/errors"
 )
 

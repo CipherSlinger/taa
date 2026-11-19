@@ -151,7 +151,6 @@ flowchart TB
 │   ├── app/taa/                      # TAA daemon startup, registration & HTTP assembly
 │   ├── controller/                   # HTTP routing, state machine, import/export/attestation APIs
 │   ├── attestation/                  # CSV attestation report parsing & certificate chain validation
-│   ├── codeaudit/                    # Two-tier security audit: static rule scanner + TEE-LLM client
 │   ├── runtime/                      # Subprocess execution sandbox, process groups & output reader
 │   ├── resource/                     # Resource package decompression, verification & file tree
 │   ├── platform/                     # Unified HTTP client for platform callbacks
@@ -159,7 +158,6 @@ flowchart TB
 │   └── store/                        # In-memory and persistent state storage
 ├── pkg/                              # Reusable public packages
 │   ├── csvattest/                    # Pure-Go Hygon CSV guest ioctl driver (/dev/csv-guest)
-│   ├── crypto/                       # SM2, SM3, SM4-GCM envelope encryption & key utilities
 │   ├── logger/                       # Structured JSON & console logger with monotonic sequence IDs
 │   ├── filetree/                     # Directory tree scanner and ASCII formatting
 │   ├── errors/                       # Unified error definitions and codes
@@ -170,6 +168,14 @@ flowchart TB
 │   ├── deploy/                       # TEE-LLM container supervisor and start scripts
 │   ├── models/ollama/                # Offline Ollama runtime & model weight bundle
 │   └── teetls/                       # RFC 8998 TLS 1.3 ShangMi protocol library (nested submodule)
+├── teeaudit/                         # Model code-audit runtime & its crypto/HCT dependencies (git submodule)
+│   ├── codeaudit/                    # Two-tier security audit: static engine + TEE-LLM arbitration
+│   │   └── cpg/                      # Python AST → code-property graph, taint, evidence slicing
+│   ├── llmclient/                    # Inference client, circuit breaker & retries
+│   ├── pkg/crypto/                   # SM2, SM3, SM4-GCM envelope encryption & key utilities
+│   ├── pkg/archiveentry/             # Archive-member policy (metadata filter, zip-slip helpers)
+│   ├── hctclient/ + hctproto/        # Wire protocol & client for the taa-hct-helper process
+│   └── teetls/                       # RFC 8998 ShangMi TLS (nested submodule, shared with teellm)
 ├── tools/                            # Auxiliary developer and platform tools
 │   ├── platform-mock/                # Test management platform emulator & Web console
 ���   │   ├── cmd/platform-mock/        # CLI entry point (main.go)
@@ -198,7 +204,7 @@ flowchart TB
 ├── docs/                             # Architecture specifications & API design documents
 ├── deploy.sh                         # Unified multi-mode deployment, lifecycle & packaging script
 ├── deploy-llm.sh                     # TEE-LLM service deployment & model management script
-├── go.work                           # Go workspace definition (orchestrating taa, teellm, teetls, sdk)
+├── go.work                           # Go workspace definition (orchestrating taa, teeaudit, sdk)
 └── go.mod                            # Go module definition (Go 1.22+)
 ```
 
@@ -251,7 +257,7 @@ background, in parallel with training, and its result is a reference the platfor
 neither rolls back the import nor withholds training because of it (`/v1/taa/reportAudit`, codes
 `0` pass / `1` fail / `2` no verdict; the package is always left exactly as uploaded).
 
-1. **Tier 1: Built-in Static Rule Scanner (`internal/codeaudit`)**:
+1. **Tier 1: Built-in Static Rule Scanner (`teeaudit/codeaudit`)**:
    - 13 built-in pattern rules scanning Python source files (`.py`).
    - Detects command execution (`os.system`, `os.popen`, `subprocess`), network egress (`requests`, `urllib`, raw sockets), sensitive file and environment variable access, obfuscation/deserialization (`base64`, `pickle`, `marshal`), dynamic code execution (`eval`, `exec`, `__import__`), persistence mechanisms (`crontab`, `systemctl`), and result-embedded plaintext data (writing raw datasets into output artifacts or logs).
    - Each finding carries the matched line plus a physical ±3 line context window, which is what gets forwarded to Tier 2.
@@ -273,7 +279,7 @@ Alongside source auditing, the import audit also walks the **binary files** in a
 - **Identification**: by file content (ELF / zip container / gzip / pickle / numpy / other binary), with the extension only as a supplement. Renaming the suffix does not bypass it; a binary file named `.py` is claimed as well. A file is read as a pickle when its head carries a pickle magic, when its name says `.pkl`/`.pickle`/`.joblib`, or - for the magic-less protocols 0 and 1 - when the head parses as a protocol 0/1 pickle stream carrying a `module.attribute` target. Only that third test yields to the source arm: a `.py` is vetoed from the head sniff and stays with the source channel, while a `.py` whose head carries a pickle magic, and any file named `.pkl`/`.pickle`/`.joblib`, is claimed as a pickle anyway - the claim rests on content the source reader would never look at, and a claimed file's text reading is dropped.
 - **Evidence**: ELF dynamic-import symbols and `DT_NEEDED`, section layout and Shannon entropy, printable strings, container members (at most one level of recursion inside zip/gzip), pickle `GLOBAL`/`STACK_GLOBAL`/`INST` targets (read with a memo-table opcode interpreter). Every file and every container member is read end to end - there is no size switch and no read budget - so a payload in the middle of a large file, or appended past a zip trailer, cannot hide behind a threshold. The cost is proportional to size at the measured 338 MB/s (a 3 GiB shard is about nine seconds) and is paid on the asynchronous audit path.
 - **Verdict**: evidence lines are matched against the rule table and produce a `Finding` tagged with `binary_kind` / `evidence_source` / `binary_offset`. **Structural evidence** (ELF dynamic symbols, `DT_NEEDED`) goes through the shared rules `NET_002`/`CMD_001`/`DYN_001`, whose severity is read from the source rule table rather than restated; the binary-only rules are `BIN_001` (near-random executable-section entropy, HIGH), `BIN_002` (`memfd_create`/`fexecve`, HIGH) and `PKL_001` (pickle deserialization execution, HIGH). **A name is not a call**: `NET_002`, `CMD_001` and `BIN_002` take their evidence only from `.dynsym` and `DT_NEEDED`, which a linker fills with every symbol the object might reference, so those three report HIGH only when the same file also carries a corroborator - entropy evidence or a resolved pickle target (`BIN_001` or `PKL_001`) - and LOW otherwise, with the count recorded as `presence_downgraded`. The rule table itself is untouched: the id and the severity it resolves to are still the shared table's, because the downgrade acts on the finding and never on the rule. **String evidence** does not share the source arm's ids - `CMD_002`/`PER_002`/`FIL_002`/`ENV_002` are four independent LOW families, for the reason below: a finding can be HIGH only when it is backed by a structure a file cannot produce by accident, and a string constant is not; the source arm's same-named families `CMD_001`/`PER_001`/`FIL_001`/`ENV_001` are HIGH/MEDIUM in the shared table, and borrowing them would lift "a certain word appeared in some literal" to blocking severity. `OBF_001` has **no** family in the binary arm: its old pattern `^[A-Za-z0-9+/]{120,}={0,2}$` fired on 23 of 28 legitimate shared libraries (long base64-alphabet strings are everywhere in `.pyc` constant pools and binary data), and neither narrowing the alphabet nor raising the floor fixes it, so only the source arm's call-site version is kept.
-- **Review**: binary findings go down the same LLM path as source findings; file-level analysis uses a binary-specific prompt (the existing prompt targets Python source and does not apply). **Honesty**: the file-level branch is reachable only when the caller implements `FileAnalyzer`, and the production `LLMClient` (`internal/llmclient.Client`) has no `AnalyzeFile`, so today it is driven only by test mocks and is not live behavior - exactly the existing situation of the source file path, which this plan does not change.
+- **Review**: binary findings go down the same LLM path as source findings; file-level analysis uses a binary-specific prompt (the existing prompt targets Python source and does not apply). **Honesty**: the file-level branch is reachable only when the caller implements `FileAnalyzer`, and the production `LLMClient` (`teeaudit/llmclient.Client`) has no `AnalyzeFile`, so today it is driven only by test mocks and is not live behavior - exactly the existing situation of the source file path, which this plan does not change.
 - **Completeness**: `scan_metadata.binary` records `files_count` / `kinds` / `bounded_executable` / `bounded_data` / `incomplete` / `errored` / `findings_capped` / `findings_dropped` / `max_findings` / `presence_downgraded`. Any gap that lands on a format that can execute (ELF, archive, pickle, compressed) makes `ProvesCleanScan()` false - a truncated structural extraction, a capped listing, an unreadable file, or a whole-pass failure - and under fail-closed that withholds the pass. The remaining ways to truncate are the memory guards, not coverage settings: a container member declaring more than 256 MiB decompressed, an expanded stream past the same bound, or a listing at 50000 distinct lines. They exist because a Go OOM is a fatal error no handler can catch, so a cut the report can see is the only fail-closed answer to a bomb; the same cut on a pure data file (raw blob, tensor) is recorded but does not withhold. The split is by kind rather than by which bound fired: a capped listing is the matcher's input, so on an executable kind it can drop blocking evidence, while on a data kind it can only drop LOW free-string lines. **The finding cap is not part of completeness**: reaching it writes only `findings_capped`/`findings_dropped`, not `scan_metadata.truncated`, and never withholds the pass; the cap spends only the LOW tier, and the findings that can withhold it - HIGH and MEDIUM - are kept regardless of the budget.
 - **Configuration**: `codeAudit.binaryAudit.enabled` (default `true`), `highEntropyThreshold`, `maxFindings` (default 50, independent of the source arm's 200; it is a listing budget, so lowering it drops only LOW findings and never a finding that can withhold the pass - HIGH or MEDIUM). Coverage is not configurable: the old `maxArchiveMembers`, `maxFullScanBytes` and `maxStreamBytes` coverage limits were removed and a config that still sets them is rejected at startup with a message naming each one, so an operator who was relying on a cut learns it is gone instead of silently losing it. Turning the channel off rolls back: the audit behaves byte-for-byte as before it was introduced.
 - **Boundaries**: PE/Mach-O are not structurally parsed (not loaded on this platform), xz/zstd/bzip2/7z containers and tar are not opened, plain-text non-source files are not audited, nested archives recurse only one level, and the pickle interpreter runs only on streams claimed as pickle - by magic, by name, or by a protocol 0/1 target the head parses to. One residual boundary follows from the claim being made about the 4 KiB head: a protocol 0/1 stream whose `module.attribute` target lies past the head (say, a protocol 1 stream that pushes a large BINSTRING before its GLOBAL) is claimed only by extension, so only a `.pkl`/`.pickle`/`.joblib` name reaches the interpreter; next to it is the source-named residual: a protocol 0/1 pickle named `.py` is not claimed by the binary channel at all - `.py` is not in the pickle extension set and the source veto runs ahead of the head sniff - so it stays with the source arm, which reads it as Python text and never runs the pickle interpreter; and a pickle appended past the end of a non-pickle file whose head carries no pickle magic is not claimed at all.
@@ -978,6 +984,10 @@ go build -o bin/platform-mock ./tools/platform-mock/cmd/platform-mock
 
 # Build decoupled TEE-LLM microservice
 (cd teellm && go build -o bin/teellm-service ./cmd/teellm-service)
+
+# Build / test the audit runtime (own module; teetls is a nested submodule)
+(cd teeaudit && GOWORK=off go build ./...)
+(cd teeaudit && GOWORK=off go test ./...)
 
 # Build TEE Crypto SDK CLI
 (cd tools/sdk && go build -o bin/teecrypto-cli ./cmd/teecrypto-cli)

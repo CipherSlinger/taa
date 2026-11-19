@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	teecrypto "taa/pkg/crypto"
+	teecrypto "github.com/CipherSlinger/teeaudit/pkg/crypto"
 	"taa/pkg/csvattest"
 )
 

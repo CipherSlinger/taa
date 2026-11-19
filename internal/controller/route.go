@@ -15,14 +15,14 @@ import (
 	"sync"
 	"time"
 
-	"taa/internal/codeaudit"
+	"github.com/CipherSlinger/teeaudit/codeaudit"
+	teecrypto "github.com/CipherSlinger/teeaudit/pkg/crypto"
 	"taa/internal/config"
 	"taa/internal/deployment"
 	"taa/internal/execenv"
 	"taa/internal/fhe"
 	"taa/internal/platform/envelope"
 	"taa/internal/runtime"
-	teecrypto "taa/pkg/crypto"
 	pkgerrors "taa/pkg/errors"
 )
 

@@ -10,7 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	teecrypto "taa/pkg/crypto"
+	teecrypto "github.com/CipherSlinger/teeaudit/pkg/crypto"
 )
 
 // DecryptResourceEnvelope 从磁盘密文文件中读取国密 SM2+SM4-GCM 封装密文并解密，

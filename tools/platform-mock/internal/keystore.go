@@ -9,8 +9,8 @@ import (
 	"strings"
 	"sync"
 
+	teecrypto "github.com/CipherSlinger/teeaudit/pkg/crypto"
 	"taa/internal/platform/envelope"
-	teecrypto "taa/pkg/crypto"
 )
 
 // platformKeyState is the on-disk form of the keystore. The platform pair is

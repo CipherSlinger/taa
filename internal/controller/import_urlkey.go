@@ -3,8 +3,8 @@ package controller
 import (
 	"fmt"
 
+	teecrypto "github.com/CipherSlinger/teeaudit/pkg/crypto"
 	"taa/internal/resource"
-	teecrypto "taa/pkg/crypto"
 )
 
 // unwrapDataKeyCipherFromURL splits the SM2 data key envelope out of a resource

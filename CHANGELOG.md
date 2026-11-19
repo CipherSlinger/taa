@@ -9,6 +9,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 ## [Unreleased]
 
 ### Added
+- **The Code-Audit Runtime Is Now Its Own Module and Repository (`teeaudit`)**: the audit path is
+  no longer a private package of the daemon. `internal/codeaudit` (with `cpg/`), `internal/llmclient`,
+  `pkg/crypto`, `pkg/archiveentry`, `internal/hctclient` and `internal/hctproto` moved into the
+  `CipherSlinger/teeaudit` repository, mounted here as a submodule and consumed via
+  `replace github.com/CipherSlinger/teeaudit => ./teeaudit`. The HCT packages moved with `crypto`
+  rather than staying behind because `pkg/crypto`'s HCT backend imports them, and Go's internal
+  visibility rule forbids a module from importing another module's `internal/` tree — leaving them
+  in TAA would have made the separation uncompilable. `teetls` is a nested submodule of `teeaudit`
+  pinned to the same commit as `teellm/teetls` (`06a8123`). Because `taa` and `teeaudit` each
+  replace `teetls` with a different relative path, `go.work` lists `teetls` as a replace target
+  instead of a workspace member (a module cannot be both), and its own tests keep running under
+  `GOWORK=off`. The SDK follows the move through `replace github.com/CipherSlinger/teeaudit =>
+  ../../teeaudit`, and `teellm` is untouched.
 - **Each Instance Can Publish a NodePort Service (`deploy`)**: a platform that runs outside the
   cluster cannot dial a Kata Pod's address. A Pod dialling another host is SNAT'd by Cilium to
   that host's IP, so the registration's source address names the NAT (here `172.16.10.178`), not

@@ -12,9 +12,9 @@ import (
 	"strings"
 	"time"
 
+	teecrypto "github.com/CipherSlinger/teeaudit/pkg/crypto"
 	"taa/internal/fhe"
 	"taa/internal/resource"
-	teecrypto "taa/pkg/crypto"
 	pkgerrors "taa/pkg/errors"
 )
 

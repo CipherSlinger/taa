@@ -13,7 +13,7 @@ import (
 	"testing"
 	"time"
 
-	teecrypto "taa/pkg/crypto"
+	teecrypto "github.com/CipherSlinger/teeaudit/pkg/crypto"
 )
 
 // urlKeyResource seals a plaintext archive into the new shape: the envelope goes

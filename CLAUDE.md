@@ -7,6 +7,7 @@ Guidance for Claude Code in this repository.
 - Build TAA: `CGO_ENABLED=0 GOOS=linux go build -o bin/taa ./cmd/taa` (keep it static — the CSV2 initrd build rejects a dynamically linked binary)
 - Build Platform-Mock: `go build -o bin/platform-mock ./tools/platform-mock/cmd/platform-mock`
 - Build TEE-LLM: `(cd teellm && go build -o bin/teellm-service ./cmd/teellm-service)`
+- Build / test TEE-Audit: `(cd teeaudit && GOWORK=off go build ./...)` / `(cd teeaudit && GOWORK=off go test ./...)`
 - Tests: `go test ./cmd/... ./internal/... ./pkg/...`
 - One test: `go test ./internal/controller/ -run TestPhase1Reimport -count=1`
 - Format / vet: `gofmt -w .` and `go vet ./cmd/... ./internal/... ./pkg/...`
@@ -20,7 +21,8 @@ Gotchas:
   repo root (imports resolve as `models.audit.tools.*`). The system `python3` has no pytest;
   use e.g. `~/.venv/bin/python -m pytest tests/test_cpg_builder.py` (single test: append
   `::Class::method`).
-- `go.work` spans four modules (`taa`, `teellm`, `teellm/teetls`, `tools/sdk`).
+- `go.work` spans three workspace modules (`taa`, `teeaudit`, `tools/sdk`); `teellm/teetls` is a
+  replace target rather than a member, because both `taa` and `teeaudit` replace it.
 
 ## Architecture (essentials)
 
@@ -44,7 +46,8 @@ userspace process in the guest** — before `kata-agent`, before networking.
 - **Persistent state** (`internal/store`): SM4-GCM sealed JSON keyed by the SM2 private scalar or
   the CSV sealing key, monotonic sequence number, `AuditPending` marker so a crash-interrupted
   audit is still reported after restart.
-- **Code audit** (`internal/codeaudit`): Tier 1 is a `StaticEngine` (built-in regex scanner or
+- **Code audit** (`teeaudit/` submodule, package `codeaudit`): Tier 1 is a `StaticEngine` (built-in
+  regex scanner or
   offline Semgrep CLI, chosen by `codeAudit.codeScan.engine` at startup; missing rules path falls
   back to regex with a warning, unknown engine is refused). Tier 2 asks the TEE-LLM gateway to
   adjudicate each Tier 1 finding; `FailClosed` rejects the import when the gateway is unreachable.
@@ -58,6 +61,10 @@ userspace process in the guest** — before `kata-agent`, before networking.
   index mapping `requestId/taskId` to data/result directories.
 - `teellm/` is a git submodule (plus nested `teetls`) providing the inference gateway and the
   ShangMi TLS stack; deployed separately via `deploy-llm.sh`, not part of the TAA image.
+- `teeaudit/` is a git submodule (GitHub `CipherSlinger/teeaudit`, plus nested `teetls`) holding
+  the whole audit path: `codeaudit` (+ `codeaudit/cpg`), `llmclient`, and the `pkg/crypto`,
+  `pkg/archiveentry`, `hctclient`, `hctproto` packages those depend on. TAA consumes it through
+  `github.com/CipherSlinger/teeaudit/...` and a `replace` to `./teeaudit`.
 
 ## Deployment
 

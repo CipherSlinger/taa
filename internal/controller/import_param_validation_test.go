@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	teecrypto "taa/pkg/crypto"
+	teecrypto "github.com/CipherSlinger/teeaudit/pkg/crypto"
 )
 
 func waitForIdle(t *testing.T, state *TAAState) {

@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
+	teecrypto "github.com/CipherSlinger/teeaudit/pkg/crypto"
 	"taa/internal/store"
-	teecrypto "taa/pkg/crypto"
 )
 
 func TestStateStore_SealAndUnseal(t *testing.T) {

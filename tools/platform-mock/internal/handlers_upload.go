@@ -16,7 +16,7 @@ import (
 	"strings"
 	"time"
 
-	"taa/pkg/crypto"
+	"github.com/CipherSlinger/teeaudit/pkg/crypto"
 )
 
 func registerUploadDeleteRoutes(mux *http.ServeMux, uploadDir string) {

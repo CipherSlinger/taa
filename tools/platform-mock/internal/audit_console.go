@@ -6,7 +6,7 @@ import (
 	"strconv"
 	"strings"
 
-	"taa/internal/codeaudit"
+	"github.com/CipherSlinger/teeaudit/codeaudit"
 )
 
 const (

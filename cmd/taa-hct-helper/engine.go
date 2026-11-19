@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"io"
 
-	"taa/internal/hctproto"
+	"github.com/CipherSlinger/teeaudit/hctproto"
 )
 
 // errAuthFailed marks a failed SM4-GCM tag check. The server maps it to

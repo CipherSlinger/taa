@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"taa/internal/codeaudit"
+	"github.com/CipherSlinger/teeaudit/codeaudit"
 	"taa/internal/config"
 )
 

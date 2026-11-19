@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"math/big"
 
+	teecrypto "github.com/CipherSlinger/teeaudit/pkg/crypto"
 	"taa/internal/attestation"
-	teecrypto "taa/pkg/crypto"
 )
 
 func formatAttestationValuesUserDataPEM(reportValues string, userData []byte) (string, error) {

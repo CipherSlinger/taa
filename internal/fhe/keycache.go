@@ -13,8 +13,8 @@ import (
 	"syscall"
 	"time"
 
+	teecrypto "github.com/CipherSlinger/teeaudit/pkg/crypto"
 	"taa/internal/resource"
-	teecrypto "taa/pkg/crypto"
 )
 
 // hashFileSM3 is the digest used for every content-addressed name in this

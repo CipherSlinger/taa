@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	taacrypto "taa/pkg/crypto"
+	taacrypto "github.com/CipherSlinger/teeaudit/pkg/crypto"
 	"taa/pkg/csvattest"
 )
 
