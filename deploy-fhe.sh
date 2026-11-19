@@ -123,6 +123,11 @@ FHE_POD_MEMORY="${FHE_POD_MEMORY:-8Gi}"
 # One DCU/GPU for the FHE worker. Empty removes the resource line, which is what
 # a CPU-only deployment needs.
 FHE_POD_GPU="${FHE_POD_GPU-1}"
+# A GPU Pod created while the node cannot allocate one is Failed for good, so
+# create waits for the node to advertise a healthy slot first. Kubelet needs
+# 2-3 minutes after a boot to get the device plugin registered again.
+FHE_POD_GPU_WAIT_TIMEOUT="${FHE_POD_GPU_WAIT_TIMEOUT:-600}"
+FHE_POD_GPU_POLL_INTERVAL="${FHE_POD_GPU_POLL_INTERVAL:-5}"
 FHE_POD_PULL_POLICY_WAS_SET="${FHE_POD_PULL_POLICY+set}"
 FHE_POD_PULL_POLICY="${FHE_POD_PULL_POLICY:-}"
 FHE_POD_READY_TIMEOUT="${FHE_POD_READY_TIMEOUT:-900}"
@@ -758,6 +763,13 @@ Environment:
       Kata sizes the guest from these, and CSV2 memory is resident from boot.
   FHE_POD_GPU=${FHE_POD_GPU-1}
       Value of the nvidia.com/gpu limit (default: 1); empty omits the limit.
+  FHE_POD_GPU_WAIT_TIMEOUT=${FHE_POD_GPU_WAIT_TIMEOUT}
+      Seconds create waits for the node to advertise that many healthy
+      nvidia.com/gpu slots before it creates the Pod (default: 600, polled
+      every FHE_POD_GPU_POLL_INTERVAL=${FHE_POD_GPU_POLL_INTERVAL}s). After a
+      node boot kubelet has the resource registered but no healthy devices
+      until the device plugin re-registers; a GPU Pod admitted in that window
+      is Failed for good with "no healthy devices present".
   FHE_POD_NODE=${FHE_POD_NODE}, FHE_POD_RUNTIME_CLASS=${FHE_POD_RUNTIME_CLASS}
       Node and runtime class the Pod is created with.
   FHE_POD_PULL_POLICY=${FHE_POD_PULL_POLICY}
@@ -1823,6 +1835,42 @@ verify_pod_contents() {
   log "verified the Pod carries this run's taa, supervisor and model tree"
 }
 
+# Kubelet publishes the *healthy* device count as `allocatable`; `capacity` also
+# counts unhealthy devices, so a node that just rebooted can show capacity 3 and
+# allocatable 0. A GPU Pod admitted in that window never starts: kubelet writes
+# "Allocate failed due to no healthy devices present; cannot allocate unhealthy
+# devices nvidia.com/gpu" and fails the Pod for good. The nvidia device plugin
+# re-registers 2-3 minutes after kubelet starts, so create waits for the slot
+# instead of leaving a Failed Pod behind.
+node_gpu_allocatable() {
+  local node="$1" value
+  value="$(host_capture "$(shell_quote "${POD_KCTL[@]}" get node "$node" -o 'jsonpath={.status.allocatable.nvidia\.com/gpu}')" 2>/dev/null || true)"
+  case "$value" in
+    ''|*[!0-9]*) printf '0' ;;
+    *) printf '%s' "$value" ;;
+  esac
+}
+
+wait_for_gpu_allocatable() {
+  local node="$FHE_POD_NODE" want="$FHE_POD_GPU" deadline available
+  case "$want" in
+    ''|*[!0-9]*) die "FHE_POD_GPU must be a number, got '$want'" ;;
+  esac
+  deadline=$((SECONDS + FHE_POD_GPU_WAIT_TIMEOUT))
+  while :; do
+    available="$(node_gpu_allocatable "$node")"
+    if [ "$available" -ge "$want" ]; then
+      log "node $node advertises $available x nvidia.com/gpu"
+      return 0
+    fi
+    if [ "$SECONDS" -ge "$deadline" ]; then
+      warn "node $node advertises $available of $want nvidia.com/gpu after ${FHE_POD_GPU_WAIT_TIMEOUT}s"
+      return 1
+    fi
+    sleep "$FHE_POD_GPU_POLL_INTERVAL"
+  done
+}
+
 pod_create() {
   local pod_image registry_image
   pod_image="$(fhe_pod_image_reference)"
@@ -1887,12 +1935,19 @@ pod_create() {
   step "creating the Pod $POD_NAMESPACE/$TARGET_POD (runtimeClassName: $FHE_POD_RUNTIME_CLASS, node: $FHE_POD_NODE, image: $pod_image)"
   if is_dry_run; then
     log "dry-run: the manifest is at $POD_MANIFEST_TMP"
+    [ -z "$FHE_POD_GPU" ] \
+      || log "would wait up to ${FHE_POD_GPU_WAIT_TIMEOUT}s for node $FHE_POD_NODE to advertise $FHE_POD_GPU x nvidia.com/gpu before creating the Pod"
   else
     if host_sh "$(shell_quote "${POD_KCTL[@]}" get pod "$TARGET_POD")" >/dev/null 2>&1; then
       log "Pod $POD_NAMESPACE/$TARGET_POD already exists; verifying it instead of creating a second one"
       require_pod_fhe_role
       rm -f "$POD_MANIFEST_TMP"
     else
+      if [ -n "$FHE_POD_GPU" ]; then
+        step "waiting for node $FHE_POD_NODE to advertise $FHE_POD_GPU x nvidia.com/gpu"
+        wait_for_gpu_allocatable \
+          || die "node $FHE_POD_NODE did not advertise $FHE_POD_GPU x nvidia.com/gpu within ${FHE_POD_GPU_WAIT_TIMEOUT}s; a Pod created now would stay Failed with 'no healthy devices present' (the device plugin re-registers 2-3 minutes after a node boot)"
+      fi
       # create, not apply: the name was verified absent a moment ago, and create
       # turns a race with another operator into an error instead of silently
       # rewriting a Pod whose spec is immutable.

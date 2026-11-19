@@ -106,4 +106,16 @@ fi
 grep -q 'host_sh_stdin "$(shell_quote "${POD_KCTL\[@\]}" create -f -)"' "$DEPLOY" \
   || fail "the Pod manifest is no longer piped through host_sh_stdin"
 
+# ── create waits for a healthy GPU slot before it creates the Pod ────────────
+# A GPU Pod admitted while the device plugin is still re-registering after a
+# node boot is Failed for good ("no healthy devices present"), so create has to
+# wait until the node advertises an allocatable slot.
+run_capture out env "${CREATE_ENV[@]}" "$DEPLOY" -n
+grep -q 'would wait up to .* for node .* to advertise 1 x nvidia\.com/gpu' <<<"$out" \
+  || fail "create no longer waits for a healthy nvidia.com/gpu slot before creating the Pod"
+
+run_capture out env "${CREATE_ENV[@]}" FHE_POD_GPU= "$DEPLOY" -n
+grep -q 'nvidia.com/gpu' <<<"$out" \
+  && fail "a CPU-only create still waits for a GPU slot"
+
 echo "PASS: deploy-fhe.sh defaults to create, keeps start and stop a switch, refuses --pod on create/delete and offers the container path only through --target"

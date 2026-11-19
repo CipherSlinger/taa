@@ -171,6 +171,10 @@ FHE 数据根、重启 supervisor 并等健康检查），`start`/`stop` 只通�
 Pod 规格与来源用 `FHE_POD_NAME`、`FHE_POD_CPU`、`FHE_POD_MEMORY`、`FHE_POD_GPU`、
 `FHE_POD_NODE`、`FHE_POD_RUNTIME_CLASS`、`FHE_POD_PULL_POLICY` 调整，镜像推送目标是
 `FHE_IMAGE_REGISTRY`（默认 `<REMOTE_HOST>:31313`）；平台不在 docker 网桥网关时用 `PLATFORM_IP`。
+`create` 在申请 GPU 时会先等 `FHE_POD_NODE` 的 `status.allocatable["nvidia.com/gpu"]` 达到
+`FHE_POD_GPU`（默认最多等 `FHE_POD_GPU_WAIT_TIMEOUT=600` 秒），因为节点重启后的 2–3 分钟内
+device plugin 还没重新注册，此时创建的 GPU Pod 会被 kubelet 判成
+`UnexpectedAdmissionError` 且不会重试。
 其余挂载、端口、GPU、就绪超时等见 `./deploy-fhe.sh --help`。
 
 ## 数据分析角色：`deploy-dataanaylsis.sh`
