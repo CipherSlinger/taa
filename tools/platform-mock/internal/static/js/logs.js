@@ -393,8 +393,9 @@ function fetchTaaLogsFor(id, force) {
     })
     .catch(() => {
       // Keep the lines already on screen: a failed poll is not a reason to
-      // blank a terminal the operator is reading.
-      st.error = '日志拉取失败';
+      // blank a terminal the operator is reading. A reply from before a clear
+      // is stale and must not paint an error over the fresh, empty terminal.
+      if (gen === st.generation) st.error = '日志拉取失败';
     })
     .then(done);
 }
