@@ -25,6 +25,9 @@
       "containerId": ""
     }
   },
+  "crypto": {
+    "backend": "builtin"
+  },
   "codeAudit": {
     "enabled": true,
     "codeScan": {

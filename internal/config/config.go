@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	teecrypto "taa/pkg/crypto"
 	"taa/pkg/csvattest"
 )
 
@@ -100,6 +101,31 @@ type StartupConfig struct {
 	// nested because every one of these settings exists for the code audit and
 	// nothing else: TAA has no other use for a model.
 	LLM LLMConfig
+	// Crypto selects the implementation behind SM2/SM3/SM4. It is a top-level
+	// section rather than part of codeAudit because every role uses crypto
+	// (state sealing, attestation, the platform envelope), including the ones
+	// whose roleCapabilities drop the audit blocks.
+	Crypto CryptoConfig
+}
+
+// CryptoConfig selects the cryptographic backend. The empty backend means
+// "builtin", so a config written before this section existed keeps working.
+type CryptoConfig struct {
+	// Backend is "builtin" (gmsm, pure Go) or "hct" (Hygon HCT 3.0.10 through
+	// the taa-hct-helper process).
+	Backend string
+	HCT     HCTCryptoConfig
+}
+
+// HCTCryptoConfig describes how TAA reaches the helper. The helper is started
+// through an explicit dynamic loader because TAA itself stays statically
+// linked and the initrd does not populate /etc/ld.so.cache.
+type HCTCryptoConfig struct {
+	HelperPath     string
+	LoaderPath     string
+	LibDir         string
+	Accel          string
+	RequireVersion string
 }
 
 // The values runtime.execution.mode accepts.
@@ -278,6 +304,7 @@ type startupConfigFile struct {
 	Storage   startupStorageConfigFile   `json:"storage"`
 	Model     startupModelConfigFile     `json:"model"`
 	Runtime   startupRuntimeConfigFile   `json:"runtime"`
+	Crypto    startupCryptoConfigFile    `json:"crypto"`
 	CodeAudit startupCodeAuditConfigFile `json:"codeAudit"`
 	// FHE is a pointer because "absent" and "present but empty" must be
 	// distinguishable: a type=fhe instance with no section at all is a different
@@ -333,6 +360,20 @@ type startupPlatformConfigFile struct {
 // model's own runtimeConfig).
 type startupRuntimeConfigFile struct {
 	Execution startupExecutionConfigFile `json:"execution"`
+}
+
+// startupCryptoConfigFile is the top-level crypto block.
+type startupCryptoConfigFile struct {
+	Backend string                      `json:"backend"`
+	HCT     *startupHCTCryptoConfigFile `json:"hct"`
+}
+
+type startupHCTCryptoConfigFile struct {
+	HelperPath     string `json:"helperPath"`
+	LoaderPath     string `json:"loaderPath"`
+	LibDir         string `json:"libDir"`
+	Accel          string `json:"accel"`
+	RequireVersion string `json:"requireVersion"`
 }
 
 // startupExecutionConfigFile is the runtime.execution block.
@@ -739,6 +780,9 @@ func validateStartupConfig(cfg StartupConfig) error {
 	if err := validateFHEConfig(cfg); err != nil {
 		return err
 	}
+	if err := validateCrypto(cfg); err != nil {
+		return err
+	}
 	if err := validateCodeScanEngine(cfg); err != nil {
 		return err
 	}
@@ -753,6 +797,38 @@ func validateStartupConfig(cfg StartupConfig) error {
 	}
 	if err := validateExecution(cfg); err != nil {
 		return err
+	}
+	return nil
+}
+
+// validateCrypto rejects a backend or accel that cannot mean what it says. It
+// deliberately does not probe the helper: a missing helper must fail startup,
+// and startup is where the probe has the context to say so; the config layer
+// only rules out values TAA would never accept.
+func validateCrypto(cfg StartupConfig) error {
+	backend := strings.ToLower(strings.TrimSpace(cfg.Crypto.Backend))
+	switch backend {
+	case "", teecrypto.BackendBuiltin:
+	case teecrypto.BackendHCT:
+		for _, field := range []struct{ name, value string }{
+			{"crypto.hct.helperPath", cfg.Crypto.HCT.HelperPath},
+			{"crypto.hct.loaderPath", cfg.Crypto.HCT.LoaderPath},
+			{"crypto.hct.libDir", cfg.Crypto.HCT.LibDir},
+		} {
+			if !filepath.IsAbs(field.value) {
+				return fmt.Errorf("%s must be an absolute path, got %q", field.name, field.value)
+			}
+		}
+	default:
+		return fmt.Errorf("unsupported crypto.backend %q: must be one of %s, %s",
+			cfg.Crypto.Backend, teecrypto.BackendBuiltin, teecrypto.BackendHCT)
+	}
+
+	switch accel := strings.ToLower(strings.TrimSpace(cfg.Crypto.HCT.Accel)); accel {
+	case "", teecrypto.HCTAccelSW, teecrypto.HCTAccelCCP:
+	default:
+		return fmt.Errorf("unsupported crypto.hct.accel %q: must be one of %s, %s",
+			cfg.Crypto.HCT.Accel, teecrypto.HCTAccelSW, teecrypto.HCTAccelCCP)
 	}
 	return nil
 }
@@ -1009,6 +1085,16 @@ func defaultStartupConfig() StartupConfig {
 		ModelProgressDir:   "/opt/taa/output/progress/progress.json",
 		KeysDir:            "/root/taa/keys",
 		Execution:          ExecutionConfig{Mode: ExecutionModeAuto},
+		Crypto: CryptoConfig{
+			Backend: teecrypto.BackendBuiltin,
+			HCT: HCTCryptoConfig{
+				HelperPath:     "/usr/local/bin/taa-hct-helper",
+				LoaderPath:     "/usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2",
+				LibDir:         "/opt/hygon/hct/lib64",
+				Accel:          teecrypto.HCTAccelSW,
+				RequireVersion: teecrypto.HCTDefaultVersion,
+			},
+		},
 		LLM: LLMConfig{
 			Enabled:             true,
 			AttestationEnabled:  true,
@@ -1153,6 +1239,30 @@ func applyStartupConfigFile(cfg *StartupConfig, fileCfg startupConfigFile) {
 	} {
 		if trimmed := strings.TrimSpace(field.src); trimmed != "" {
 			*field.dst = trimmed
+		}
+	}
+
+	// Selecting the crypto backend is a deployment property, not a role
+	// capability: even an fhe instance seals state and talks to the platform.
+	if trimmed := strings.ToLower(strings.TrimSpace(fileCfg.Crypto.Backend)); trimmed != "" {
+		cfg.Crypto.Backend = trimmed
+	}
+	if hct := fileCfg.Crypto.HCT; hct != nil {
+		for _, field := range []struct {
+			dst *string
+			src string
+		}{
+			{&cfg.Crypto.HCT.HelperPath, hct.HelperPath},
+			{&cfg.Crypto.HCT.LoaderPath, hct.LoaderPath},
+			{&cfg.Crypto.HCT.LibDir, hct.LibDir},
+			{&cfg.Crypto.HCT.RequireVersion, hct.RequireVersion},
+		} {
+			if trimmed := strings.TrimSpace(field.src); trimmed != "" {
+				*field.dst = trimmed
+			}
+		}
+		if trimmed := strings.ToLower(strings.TrimSpace(hct.Accel)); trimmed != "" {
+			cfg.Crypto.HCT.Accel = trimmed
 		}
 	}
 

@@ -100,6 +100,15 @@ func RunWithConfig(ctx context.Context, cfg config.StartupConfig) error {
 	logDeploymentShape(dep)
 	logExecutionPolicy(cfg, dep)
 
+	// 0b. Install the configured crypto backend before anything uses SM2/SM3/SM4.
+	// The SM2 key pair, the state sealing key and the attestation report all
+	// depend on it, and a configured HCT backend that cannot start must fail
+	// here instead of writing keys with the wrong implementation.
+	if err := selectCryptoBackend(cfg); err != nil {
+		return err
+	}
+	defer teecrypto.CloseBackend()
+
 	// 1. If LLM code audit is enabled, probe inference service readiness.
 	//
 	// The probe's verdict is advisory, even with failClosed set. It runs before the HTTP
@@ -137,6 +146,12 @@ func RunWithConfig(ctx context.Context, cfg config.StartupConfig) error {
 	sealingSource, err := awaitStateSealingKeySource(ctx, cfg.ServerType, csvGuestDevicePath)
 	if err != nil {
 		return err
+	}
+	// The device wait above can last minutes on a Kata CSV2 Pod (the node is
+	// created by a postStart hook). Re-probe the crypto backend so a helper
+	// that died during the wait is caught before it is used for key material.
+	if err := teecrypto.CheckBackend(ctx); err != nil {
+		return fmt.Errorf("crypto backend unavailable after device wait: %w", err)
 	}
 	material, err := resolveStartupKeyMaterial(
 		keysDir, sealingSource, cfg.Contract,
