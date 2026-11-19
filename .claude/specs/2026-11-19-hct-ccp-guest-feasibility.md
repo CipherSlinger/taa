@@ -40,12 +40,15 @@ the CSV2 Kata confidential VM it is deployed in, instead of the `hct_sw_*` softw
    and no `ccp_share`; `grep -i ccp|hygon` over the guest kernel config finds no CCP driver.
    On the host `/dev/ccp_share` is a misc device (10:259) supplied by the kernel `ccp` module
    (417792 bytes, loaded with the vCCPs), not by the HCT package.
-5. `hct_ccp_init` opens `/dev/ccp_share` first. Running the built helper on a machine without the
-   HCT daemon prints:
+5. `hct_ccp_init` opens the accelerator's shared-config node before enumerating devices. Which
+   node it opens depends on the detected driver mode (see below): `/dev/ccp_share` when the vCCP
+   is seen bound to `vfio-pci`, otherwise `/dev/hct_share`. Running the built helper where such a
+   device was visible printed:
    `[error] hct_shared_cfg_init(743): fail to open /dev/ccp_share, errno 2` →
-   `[error] hct_ccp_init(307): fail to init ccp` and the helper logs
+   `[error] hct_ccp_init(307): fail to init ccp` and the helper logged
    `accel ccp unavailable, falling back to sw: hct_ccp_init rc=-1 (no usable CCP device?)`,
-   then completes the full selftest on the software engine. This is the intended degradation.
+   then completed the full selftest on the software engine. In the CSV2 guest neither node exists,
+   so the same failure occurs one node name over. This is the intended degradation.
 6. Emulated IOMMU as an alternative to the kernel option does not work here. A training-class
    kata-config with `-device intel-iommu,caching-mode=on,device-iotlb=off` plus
    `intel_iommu=on iommu=pt` boots QEMU, but the guest never completes the kata-agent handshake;
@@ -53,7 +56,32 @@ the CSV2 Kata confidential VM it is deployed in, instead of the `hct_sw_*` softw
    `Interrupt Mask set, irq is not generated` (same failure with `intremap=on`).
 7. `hct.ko` built against the guest's kernel config (vermagic `6.6.0+ SMP mod_unload`) is a pure
    misc module: it registers `hct_noiommu` and `hct_mig` and pulls in no PCI, DMA or vfio symbol.
-   It has no device to drive in this guest.
+   It has no device to drive in this guest. `/dev/hct_noiommu` is not a fallback switch — libhct
+   only uses it for page write-back attributes and the SME mask — and neither misc node provides
+   the shared-config/DMA channel the CCP path needs.
+
+## How libhct 3.0.10 picks its path (disassembly)
+
+Checked directly against the shipped `libhct.so` (BuildID
+`dbf4b5a2a1331cc0d490b5a44e46741c9c6c7756`) to be sure there is no configuration knob we missed:
+
+- **Selection is by probing, not configuration.** `vfio_noiommu_is_enabled` (0x1c4670) opens
+  `/sys/module/vfio/parameters/enable_unsafe_noiommu_mode`; `hct_shared_used_driver_mode`
+  (0x1a39f0) walks `/sys/bus/pci/drivers/hct` and `/sys/bus/pci/drivers/vfio-pci` for a `0000:*`
+  entry whose vendor is `0x1d94` and whose device is one of `1456 1486 14a6 14c6 1468 14b8 14d8`.
+  It returns 4 (vfio-pci), 3 (hct driver), 2 (no-IOMMU mode already latched) or 1 (nothing bound).
+  `/etc/hct_config` keys and `HCT_*` variables cover logging, sleeps, key sources, CPU affinity
+  and `ccp_reserved`; none of them can choose the device interface.
+- **Per-device dispatch is by bound driver name** in the table at 0x892bc0:
+  `vfio-pci` / `vfio_mdev` / `hct_mdev` → `vfio_setup_device` (0x1c1da0, the VFIO ioctl sequence
+  `0x3b64`–`0x3b6a`, with iommu type 8 = NOIOMMU only when the module parameter allows it);
+  `ccp-crypto` → `ccp_setup_device` (0xf3570, sysfs BAR mapping plus a 96 MiB
+  `/dev/shm/hccp-dma-mem` segment, and it still calls the VFIO DMA-map helper on that route).
+  Every branch therefore needs either a working VFIO binding or a kernel driver bound to the vCCP.
+- **The shared-config node** is `/dev/ccp_share` when the detected mode is 4, `/dev/hct_share`
+  otherwise (0x1a3d04–0x1a3d25). It is used for the version handshake (`ioctl 0xc0204301`,
+  op 6, requires ≥ `0.6`) and, through the same ioctl, DMA map/unmap. Nothing in this guest
+  registers either name.
 
 ## Conclusion
 
@@ -65,11 +93,12 @@ The hardware path is blocked at the kernel boundary, not in TAA:
 - no guest-side CCP driver exists to provide `/dev/ccp_share`, and `hct.ko` does not.
 
 Making it work would mean rebuilding the Kata CSV guest kernel with `CONFIG_VFIO_NOIOMMU` (or
-fixing the emulated IOMMU under SEV) **and** shipping a guest CCP driver that can front the
-`1d94:1468` vCCP. The vendor does not document CAE/vCCP for CSV guests and routes them to vTKM
-instead. Until that changes, `crypto.hct.accel=sw` (libhct CIS/AVX software) or the gmsm
-`builtin` backend are the real options; `accel=ccp` is implemented, gated on `/dev/ccp*`, and
-degrades to software with the reason logged.
+fixing the emulated IOMMU under SEV) **and** shipping a guest-side provider for the
+`/dev/hct_share` control node (plus a vCCP driver for the `ccp-crypto` route); both are outside
+TAA. The vendor does not document CAE/vCCP for CSV guests and routes them to vTKM instead. Until
+that changes, `crypto.hct.accel=sw` (libhct CIS/AVX software) or the gmsm `builtin` backend are
+the real options; `accel=ccp` is implemented, gated on `/dev/ccp*`, and degrades to software with
+the reason logged.
 
 ## Host state after the experiment
 
