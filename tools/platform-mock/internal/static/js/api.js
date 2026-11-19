@@ -456,8 +456,13 @@ function buildInstanceRow(item) {
   // It deliberately does not select the row — two instances are compared side
   // by side, so opening one terminal must not move the rest of the console.
   const logButton = instanceActionButton(
-    '日志 (' + (item.taaLogCount || 0) + ') ▾',
-    () => setTaaTerminalExpanded(id, !taaTerminalState(id).expanded),
+    typeof taaLogBadgeText === 'function'
+      ? taaLogBadgeText(id, item)
+      : '日志 (' + (item.taaLogCount || 0) + ') ▾',
+    () => {
+      if (typeof taaTerminalState !== 'function' || typeof setTaaTerminalExpanded !== 'function') return;
+      setTaaTerminalExpanded(id, !taaTerminalState(id).expanded);
+    },
     false,
     '展开/收起该实例的 TAA 运行日志；各实例的终端互相独立',
   );
@@ -489,7 +494,7 @@ function buildInstanceRow(item) {
   // A repaint (selection change or inventory change) rebuilds the row; the
   // terminal comes back from the state map with its filter, keyword, pause and
   // cached lines intact.
-  if (taaTerminalState(id).expanded) {
+  if (typeof buildTaaTerminal === 'function' && typeof taaTerminalState === 'function' && taaTerminalState(id).expanded) {
     row.appendChild(buildTaaTerminal(item));
   }
   return row;

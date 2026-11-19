@@ -53,8 +53,18 @@ func TestFrontendTaaTerminalScrollIsPerTerminal(t *testing.T) {
 	if !strings.Contains(fn, "st.autoScroll =") {
 		t.Fatal("buildTaaTerminal does not record this terminal's scroll lock")
 	}
-	if !strings.Contains(frontendFunction(t, "paintTaaTerminal"), "st.autoScroll") {
+	if !strings.Contains(fn, "st.scrollTop =") {
+		t.Fatal("buildTaaTerminal does not remember this terminal's scroll position")
+	}
+	if !strings.Contains(fn, "requestAnimationFrame") {
+		t.Fatal("buildTaaTerminal does not restore the scroll position once mounted")
+	}
+	paint := frontendFunction(t, "paintTaaTerminal")
+	if !strings.Contains(paint, "st.autoScroll") {
 		t.Fatal("paintTaaTerminal does not honour this terminal's scroll lock")
+	}
+	if !strings.Contains(paint, "st.scrollTop") {
+		t.Fatal("paintTaaTerminal does not restore the remembered scroll position")
 	}
 }
 
@@ -117,7 +127,33 @@ func TestFrontendTaaTerminalRowsAreWired(t *testing.T) {
 			t.Fatalf("frontendBundle missing %q", want)
 		}
 	}
-	if strings.Contains(frontendBundle, "if (typeof fetchTaaLogs === 'function') fetchTaaLogs();") {
-		t.Fatal("selection changes and the medium poll tier still fetch one page-wide TAA log")
+	if strings.Contains(frontendBundle, "fetchTaaLogs();") {
+		t.Fatal("a page-wide TAA log fetch is still wired to selection changes or polling")
+	}
+	rowBuilder := frontendFunction(t, "buildInstanceRow")
+	// "toggle does not select": look only at the log toggle itself, since the
+	// row's identity button legitimately selects.
+	toggleStart := strings.Index(rowBuilder, "const logButton")
+	toggleEnd := strings.Index(rowBuilder, "actions.appendChild(logButton)")
+	if toggleStart == -1 || toggleEnd == -1 || toggleEnd < toggleStart {
+		t.Fatal("cannot delimit the log toggle in buildInstanceRow")
+	}
+	if strings.Contains(rowBuilder[toggleStart:toggleEnd], "selectInstance") {
+		t.Fatal("the log toggle's row builder selects the instance it opens")
+	}
+	for _, want := range []string{"taaLogBadgeText(id, item)"} {
+		if !strings.Contains(rowBuilder, want) {
+			t.Fatalf("buildInstanceRow does not use %q", want)
+		}
+	}
+	badgeFn := frontendFunction(t, "taaLogBadgeText")
+	if !strings.Contains(badgeFn, "st.expanded && st.fetchedAt") {
+		t.Fatal("the row badge does not fall back to the server count once collapsed")
+	}
+	if !strings.Contains(frontendFunction(t, "refreshInstanceLogBadges"), "taaLogBadgeText(id, item)") {
+		t.Fatal("in-place badge refresh does not share the row builder's badge text")
+	}
+	if strings.Count(frontendFunction(t, "pollTaaTerminals"), "fetchTaaLogsFor(id") != 1 {
+		t.Fatal("pollTaaTerminals must reach fetchTaaLogsFor only through the expanded/paused guard")
 	}
 }

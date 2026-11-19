@@ -319,6 +319,7 @@ function taaTerminalState(id) {
       level: 'ALL',
       keyword: '',
       autoScroll: true,
+      scrollTop: 0,
       entries: [],
       total: 0,
       lastSeq: 0,
@@ -495,7 +496,8 @@ function applyTaaTerminalView(root, st) {
       if (st.keyword) matchCount++;
       // dataset.rawText is HTML-entity-decoded by the parser, so the text must
       // be re-escaped before it goes back through innerHTML.
-      if (msg) msg.innerHTML = st.keyword ? highlightSearchMatches(escapeHtml(raw), st.keyword) : escapeHtml(raw);
+      const next = st.keyword ? highlightSearchMatches(escapeHtml(raw), st.keyword) : escapeHtml(raw);
+      if (msg && msg.innerHTML !== next) msg.innerHTML = next;
     } else {
       row.style.display = 'none';
     }
@@ -602,11 +604,19 @@ function buildTaaTerminal(item) {
   out.className = 'log-window taa-terminal-output';
   out.addEventListener('scroll', () => {
     st.autoScroll = out.scrollHeight - out.scrollTop - out.clientHeight <= 40;
+    st.scrollTop = out.scrollTop;
   });
   shell.appendChild(out);
 
   wrap.appendChild(shell);
   paintTaaTerminal(wrap, id);
+  // A detached node has no layout box, so scrollTop read/writes above are
+  // inert. Restore the remembered position after the caller has mounted it.
+  requestAnimationFrame(() => {
+    if (!wrap.isConnected) return;
+    const mounted = wrap.querySelector('.taa-terminal-output');
+    if (mounted) mounted.scrollTop = st.autoScroll ? mounted.scrollHeight : (st.scrollTop || 0);
+  });
   return wrap;
 }
 
@@ -648,7 +658,6 @@ function paintTaaTerminal(root, id) {
 
   const out = root.querySelector('.taa-terminal-output');
   if (!out) return;
-  const scrollTop = out.scrollTop;
   const nextSeq = String(st.lastSeq);
   const nextCount = String(st.entries.length);
   if (out.dataset.renderedSeq !== nextSeq || out.dataset.renderedCount !== nextCount) {
@@ -662,7 +671,18 @@ function paintTaaTerminal(root, id) {
   }
   applyTaaTerminalView(root, st);
   if (st.autoScroll) out.scrollTop = out.scrollHeight;
-  else out.scrollTop = scrollTop;
+  else out.scrollTop = st.scrollTop || 0;
+}
+
+// taaLogBadgeText is shared by the row builder and the in-place badge refresh.
+// An open terminal shows its own live total (its polling is fresher than the
+// list payload); a collapsed row shows the server-reported count from the last
+// /api/instances reply.
+function taaLogBadgeText(id, item) {
+  const st = taaTerminals.get(id);
+  const live = st && st.expanded && st.fetchedAt;
+  const count = live ? st.total : ((item && item.taaLogCount) || 0);
+  return '日志 (' + count + ') ' + (st && st.expanded ? '▴' : '▾');
 }
 
 // refreshInstanceLogBadges keeps the collapsed row's count current without
@@ -673,10 +693,8 @@ function refreshInstanceLogBadges() {
     const id = row.dataset.dockerId || '';
     const btn = row.querySelector('.instance-log-toggle');
     if (!btn) return;
-    const st = taaTerminals.get(id);
     const item = (typeof instanceCache !== 'undefined' ? instanceCache : [])
       .find((it) => (it.dockerId || '') === id);
-    const count = st && st.fetchedAt ? st.total : ((item && item.taaLogCount) || 0);
-    btn.textContent = '日志 (' + count + ') ' + (st && st.expanded ? '▴' : '▾');
+    btn.textContent = taaLogBadgeText(id, item);
   });
 }
