@@ -582,6 +582,80 @@ if problems:
 PY
 echo "ok   k8s: manifests carry the handler, node, image and annotations"
 
+# ── 4a. instance publication ───────────────────────────────────────────────
+# A platform outside the cluster network cannot dial a Pod address: a Pod
+# dialling out is SNAT'd to the node, and its own address is only routable on
+# the cluster network. The package therefore renders a NodePort Service and the
+# Pod carries the label it selects. What matters here is that the two agree, so
+# a typo cannot produce a Service that publishes nothing.
+publish_pkg="$tmp_dir/publish/pkg"
+env "${common_env[@]}" REMOTE_HOST=invalid.invalid DIST_DIR="$publish_pkg" \
+  TAA_INSTANCE_ID=fixture-instance-id TAA_SERVICE_NODE_PORT=31234 \
+  "$BUILD" render >/dev/null
+python3 - "$publish_pkg/test/test-pod.yaml" "$publish_pkg/test/taa-service.yaml" <<'PY'
+import json, sys
+pod = json.load(open(sys.argv[1]))
+svc = json.load(open(sys.argv[2]))
+problems = []
+if svc.get("kind") != "Service" or svc["spec"].get("type") != "NodePort":
+    problems.append(f"service: {svc}")
+if svc["metadata"]["name"] != "taa-fixture-instance-id":
+    problems.append(f"service name: {svc['metadata']['name']}")
+if svc["spec"].get("selector") != {"taa-instance-id": "fixture-instance-id"}:
+    problems.append(f"selector: {svc['spec'].get('selector')}")
+if pod["metadata"].get("labels") != {"taa-instance-id": "fixture-instance-id"}:
+    problems.append(f"pod labels: {pod['metadata'].get('labels')}")
+port = (svc["spec"].get("ports") or [{}])[0]
+if (port.get("nodePort"), port.get("port"), port.get("targetPort")) != (31234, 6001, 6001):
+    problems.append(f"ports: {port}")
+if problems:
+    print("\n".join(problems), file=sys.stderr)
+    sys.exit(1)
+PY
+echo "ok   publish: the Pod's label is the Service's selector, on the rendered NodePort"
+
+# Empty TAA_SERVICE_NODE_PORT keeps the old shape: a label (it is the instance
+# identity, useful to any consumer) but no Service, so a cluster that cannot
+# spare a NodePort is unaffected.
+unpublished_pkg="$tmp_dir/publish-none/pkg"
+env "${common_env[@]}" REMOTE_HOST=invalid.invalid DIST_DIR="$unpublished_pkg" \
+  TAA_INSTANCE_ID=fixture-instance-id TAA_SERVICE_NODE_PORT= \
+  "$BUILD" render >/dev/null
+check "publish: an empty node port renders no Service" "absent" \
+  "$([[ -e "$unpublished_pkg/test/taa-service.yaml" ]] && echo present || echo absent)"
+check "publish: the instance label survives without a Service" "fixture-instance-id" \
+  "$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["metadata"]["labels"]["taa-instance-id"])' \
+    "$unpublished_pkg/test/test-pod.yaml")"
+
+# The identity defaults to the one already on the kernel command line, so a
+# package cannot end up with a Service selecting a name TAA never registers.
+check "publish: the instance id defaults to the registered identity" "fixture-docker-id" \
+  "$(env "${common_env[@]}" REMOTE_HOST=invalid.invalid "$BUILD" print-config |
+    sed -n 's/^TAA_INSTANCE_ID=//p' | tr -d "'")"
+
+# A Service naming a port the guest does not listen on publishes nothing, so an
+# out-of-range value must fail the render, not the deployment.
+out="$(env "${common_env[@]}" REMOTE_HOST=invalid.invalid DIST_DIR="$tmp_dir/publish-bad/pkg" \
+  TAA_INSTANCE_ID=fixture-instance-id TAA_SERVICE_NODE_PORT=8080 "$BUILD" render 2>&1 || true)"
+check_contains "publish: an out-of-range node port is refused" \
+  'not a NodePort number' "$out"
+out="$(env "${common_env[@]}" REMOTE_HOST=invalid.invalid DIST_DIR="$tmp_dir/publish-bad2/pkg" \
+  TAA_INSTANCE_ID='bad id' TAA_SERVICE_NODE_PORT=31235 "$BUILD" render 2>&1 || true)"
+check_contains "publish: a malformed instance id is refused" \
+  'not a Kubernetes label value' "$out"
+
+# The Service is operator-adjustable (its port may already be taken on the
+# host), so it must not be pinned by SHA256SUMS -- the same rule the Pod
+# manifest follows.
+check_absent "publish: SHA256SUMS does not pin the Service manifest" 'taa-service.yaml' \
+  "$(cat "$publish_pkg/SHA256SUMS")"
+check_absent "publish: SHA256SUMS does not pin the Pod manifest" 'test-pod.yaml' \
+  "$(cat "$publish_pkg/SHA256SUMS")"
+check_contains "publish: create-test-pod.sh applies the Service" \
+  'kubectl apply -f "$service_manifest"' "$(cat "$publish_pkg/test/create-test-pod.sh")"
+check_contains "publish: delete-test-pod.sh deletes the Service" \
+  'kubectl delete svc "$SERVICE_NAME"' "$(cat "$publish_pkg/test/delete-test-pod.sh")"
+
 pkg2="$tmp_dir/a/pkg2"
 env "${common_env[@]}" TEST_NODE_NAME="" TEST_POD_ANNOTATIONS="{}" \
   DIST_DIR="$pkg2" REMOTE_HOST=invalid.invalid "$BUILD" render >/dev/null

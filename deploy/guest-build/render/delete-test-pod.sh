@@ -139,12 +139,38 @@ if ! TEST_POD_NAME="$(python3 "$tmp_pod_name" "$pkg_dir")"; then
   exit 1
 fi
 
+# The Service is removed whether or not the Pod still exists. It is named after
+# the instance identity, not the Pod, so a Pod deleted by hand (or evicted)
+# leaves the Service behind holding a NodePort that the next instance cannot
+# take -- and nothing in the cluster says where it came from.
+tmp_service_name="$(mktemp /tmp/taa-svc.XXXXXX.py)"
+cat > "$tmp_service_name" <<'SVC_PY'
+import json, sys
+from pathlib import Path
+
+manifest = Path(sys.argv[1]) / "test" / "taa-service.yaml"
+if not manifest.is_file():
+    raise SystemExit(0)
+try:
+    print(json.loads(manifest.read_text()).get("metadata", {}).get("name", ""))
+except json.JSONDecodeError as exc:
+    raise SystemExit(f"{manifest}: not valid JSON ({exc})")
+SVC_PY
+SERVICE_NAME="$(python3 "$tmp_service_name" "$pkg_dir" || true)"
+rm -f "$tmp_service_name"
+
 if ! kubectl get pod "$TEST_POD_NAME" >/dev/null 2>&1; then
   echo "测试 Pod 不存在，无需删除: $TEST_POD_NAME"
+  if [[ -n "$SERVICE_NAME" ]]; then
+    kubectl delete svc "$SERVICE_NAME" --ignore-not-found
+  fi
   exit 0
 fi
 
 quiesce_dcu
 kubectl delete pod "$TEST_POD_NAME" --ignore-not-found --wait=true
 wait_dcu_vfio_release || true
+if [[ -n "$SERVICE_NAME" ]]; then
+  kubectl delete svc "$SERVICE_NAME" --ignore-not-found
+fi
 echo "已删除测试 Pod: $TEST_POD_NAME"

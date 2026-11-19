@@ -366,6 +366,11 @@ TAA_ADDR_DEFAULT="0.0.0.0:6001"
 TAA_ADDR="${TAA_ADDR:-$TAA_ADDR_DEFAULT}"
 TAA_PLATFORM_IP="${TAA_PLATFORM_IP:-}"
 TAA_DOCKER_ID="${TAA_DOCKER_ID:-}"
+# The port inside the guest that the NodePort Service targets. Derived from
+# TAA_ADDR rather than configured separately: publishing a port the guest does
+# not listen on yields a Service with no working endpoint, which reads as a
+# platform failure rather than a configuration one.
+TAA_PORT="${TAA_ADDR##*:}"
 ALLOW_MISSING_TAA_ENV="${ALLOW_MISSING_TAA_ENV:-0}"
 
 # The deployment's startup settings. The Pod's environment cannot reach the
@@ -529,6 +534,23 @@ RESTART_KUBELET="${RESTART_KUBELET:-0}"
 DIST_DIR="${DIST_DIR:-$SCRIPT_DIR/dist/$RUNTIME_HANDLER}"
 TEST_NODE_NAME="${TEST_NODE_NAME:-}"
 TEST_POD_NAME="${TEST_POD_NAME:-$(role_test_pod_name)}"
+# The registered instance identity. It is both the test Pod's `taa-instance-id`
+# label and the selector of the NodePort Service the package renders, and it is
+# the DOCKER_ID TAA registers with -- so the platform's inventory, the Service
+# and the registration all name one instance. Defaults to the identity that goes
+# on the kernel command line, which is the same name by construction.
+TAA_INSTANCE_ID="${TAA_INSTANCE_ID:-$TAA_DOCKER_ID}"
+# Shared with deploy.sh and render.py. Fixed rather than configurable: the label
+# key has to match in the Pod manifest, the Service selector and deploy.sh's,
+# and a value that differs in one place produces a Service that publishes
+# nothing without any error.
+INSTANCE_LABEL_KEY="taa-instance-id"
+# Where the instance is published when the platform is not on the cluster
+# network. Empty renders no Service, which is the old behaviour: reachable at
+# the Pod's own address (or through deploy.sh's NodePort, which allocates the
+# name the same way). A fixed port has to travel with the package because the
+# platform records the address.
+TAA_SERVICE_NODE_PORT="${TAA_SERVICE_NODE_PORT:-}"
 # The numeric uid the rendered test Pod runs as. Empty means "whatever the image
 # declares". The data-analysis base names its user (jovyan), and under the nydus
 # guest-pull snapshotter containerd resolves that name against an /etc/passwd the
@@ -646,6 +668,8 @@ Environment overrides:
   TEST_POD_NAME=$TEST_POD_NAME                        (default: from TAA_ROLE)
   TEST_IMAGE=$TEST_IMAGE                              (default: from TAA_ROLE)
   TEST_POD_RUN_AS_USER=${TEST_POD_RUN_AS_USER:-(image default)}
+  TAA_INSTANCE_ID=$TAA_INSTANCE_ID                    (default: TAA_DOCKER_ID)
+  TAA_SERVICE_NODE_PORT=$TAA_SERVICE_NODE_PORT        (empty: render no Service)
   REMOTE_USER=$REMOTE_USER
   REMOTE_HOST=$REMOTE_HOST
   REMOTE_BASE_INITRD_SRC=$REMOTE_BASE_INITRD_SRC
@@ -1932,6 +1956,28 @@ render_package() {
     echo "error: TEST_IMAGE must not contain newlines" >&2
     exit 1
   fi
+  # Validated here rather than in the renderer so the failure names the option
+  # the operator set, and because a bad value would produce a Service that
+  # selects nothing: the same silent-empty-Endpoints failure as an unlabelled Pod.
+  if [[ -n "$TAA_INSTANCE_ID" ]]; then
+    if [[ ${#TAA_INSTANCE_ID} -gt 63 || ! "$TAA_INSTANCE_ID" =~ ^[A-Za-z0-9]([A-Za-z0-9._-]*[A-Za-z0-9])?$ ]]; then
+      echo "error: TAA_INSTANCE_ID is not a Kubernetes label value: $TAA_INSTANCE_ID" >&2
+      echo "hint: at most 63 characters of alphanumerics, '-', '_' and '.', starting and ending alphanumeric" >&2
+      exit 1
+    fi
+  fi
+  if [[ -n "$TAA_SERVICE_NODE_PORT" ]]; then
+    if [[ ! "$TAA_SERVICE_NODE_PORT" =~ ^[0-9]+$ ]] ||
+       (( TAA_SERVICE_NODE_PORT < 30000 || TAA_SERVICE_NODE_PORT > 32767 )); then
+      echo "error: TAA_SERVICE_NODE_PORT is not a NodePort number (30000-32767): $TAA_SERVICE_NODE_PORT" >&2
+      exit 1
+    fi
+    if [[ -z "$TAA_INSTANCE_ID" ]]; then
+      echo "error: TAA_SERVICE_NODE_PORT is set but TAA_INSTANCE_ID is empty" >&2
+      echo "hint: the Service selects the Pod by TAA_INSTANCE_ID; without one it would publish nothing" >&2
+      exit 1
+    fi
+  fi
 
   # The guest's deployment identity travels on the kernel command line. taa-init
   # parses `taa.<key>=<value>` out of /proc/cmdline and lets those values override
@@ -2054,6 +2100,14 @@ render_package() {
   for param in ${kernel_params[@]+"${kernel_params[@]}"}; do
     identity_args+=(--kernel-param "$param")
   done
+  # The NodePort Service is what lets a platform outside the cluster network
+  # dial this instance. Empty TAA_SERVICE_NODE_PORT renders none, and an empty
+  # TAA_INSTANCE_ID means there is no identity for the selector anyway.
+  local -a publish_args=()
+  if [[ -n "$TAA_INSTANCE_ID" ]]; then
+    publish_args=(--instance-id "$TAA_INSTANCE_ID" --taa-port "$TAA_PORT")
+    [[ -n "$TAA_SERVICE_NODE_PORT" ]] && publish_args+=(--node-port "$TAA_SERVICE_NODE_PORT")
+  fi
   python3 "$RENDER_DIR/render.py" k8s \
     --handler "$RUNTIME_HANDLER" \
     --pod "$TEST_POD_NAME" \
@@ -2063,6 +2117,7 @@ render_package() {
     "${identity_args[@]+"${identity_args[@]}"}" \
     "${run_as_args[@]+"${run_as_args[@]}"}" \
     "${device_args[@]+"${device_args[@]}"}" \
+    "${publish_args[@]+"${publish_args[@]}"}" \
     --out-dir "$out_dir/k8s" \
     --pod-dir "$out_dir/test"
 
@@ -2186,7 +2241,8 @@ TAA 运行在 Kata CSV2 机密 VM 的 initrd 里，自证通过后才放行 kata
 - \`k8s/runtimeclass.yaml\` — 运行时类：Pod 用 \`runtimeClassName\` 选中本 handler。使用该
   runtime 的每个 Pod 都需要它，由 install.sh 安装
 - \`test/\` — 测试 Pod：\`test-pod.yaml\`、\`create-test-pod.sh\`（创建并等待 Ready，
-  核对 QEMU 用的 initrd 与 MEASUREMENT）、\`delete-test-pod.sh\`（删除测试 Pod）。
+  核对 QEMU 用的 initrd 与 MEASUREMENT）、\`delete-test-pod.sh\`（删除测试 Pod 与它
+  的 Service）。$(if [[ -n "$TAA_SERVICE_NODE_PORT" ]]; then printf -- '\n  `taa-service.yaml` —— 本实例的 NodePort Service（nodePort `%s`），创建脚本会 apply，删除脚本会连同 Pod 一起删；Service 按 `%s` 标签选中 Pod，所以同身份重建 Pod 地址不变。' "$TAA_SERVICE_NODE_PORT" "$INSTANCE_LABEL_KEY"; else printf -- '\n  本包**不带** `taa-service.yaml`（渲染时 TAA_SERVICE_NODE_PORT 为空）：实例只能通过 Pod 地址访问，平台若在集群网络之外，需要给它一条 NodePort（`deploy.sh` 会按同样的名字与选择器建）。'; fi)
   **部署身份就写在 \`test-pod.yaml\` 的 \`kernel_params\` 注解里**（见下文）。
   CoCo 客户机由 CDH 自己拉镜像，注册表 CA 经 \`cc_init_data\` 注解投递，而这个值逐宿主
   不同，所以包里不带它：创建脚本在宿主机上读一条填进去
@@ -2196,7 +2252,8 @@ TAA 运行在 Kata CSV2 机密 VM 的 initrd 里，自证通过后才放行 kata
   内嵌在自己身上，不单独带度量脚本
 $(if [[ -n "$TEST_IMAGE_ARCHIVE" ]]; then printf -- '- `%s/` — 测试 Pod 镜像的 `docker save` 归档。CoCo guest 由 CDH 自己从 registry 拉镜像，宿主机 docker 不在那条路径上，所以 install.sh 会先查 registry，缺这个 tag 时导入归档并推送过去\n' "$PACKAGE_IMAGE_SUBDIR"; fi)
 - \`SHA256SUMS\` — 不可变文件的校验和（\`test/test-pod.yaml\` 不在其中：它是运维要改
-  的文件，部署身份就在里面）
+  的文件，部署身份就在里面；\`test/taa-service.yaml\` 同理，它的 nodePort 可能需要
+  按宿主机已占用的端口调整）
 
 包内**不含**完整的 containerd runtimes 快照：所有 TAA 交付包共用包目录上一级的
 \`zz-taa-runtimes.toml\`（默认 \`/root/taa-images/zz-taa-runtimes.toml\`，可用
@@ -2301,12 +2358,14 @@ spec:
 $measure_section
 EOF
 
-  # The test Pod is excluded: its kernel_params annotation is the deployment
-  # identity, the one file an operator is meant to edit on the target host.
-  # Everything else is immutable, including the Kata config -- install.sh no
-  # longer re-renders it and refuses to run if any pinned file differs.
+  # The test Pod and its Service are excluded: the Pod's kernel_params
+  # annotation is the deployment identity, and the Service's nodePort may have
+  # to move to a free one. They are the two files an operator is meant to edit
+  # on the target host. Everything else is immutable, including the Kata config
+  # -- install.sh no longer re-renders it and refuses to run if any pinned file
+  # differs.
   (cd "$out_dir" && find . -type f ! -name SHA256SUMS \
-    ! -path "./test/test-pod.yaml" -print0 |
+    ! -path "./test/test-pod.yaml" ! -path "./test/taa-service.yaml" -print0 |
     LC_ALL=C sort -z | xargs -0 sha256sum > SHA256SUMS)
 
   echo "交付包: $out_dir"
@@ -2486,6 +2545,7 @@ case "$cmd" in
                CONTAINERD_CONFIG KATA_CONFIG_TEMPLATE DIST_DIR \
                TEST_NODE_NAME TEST_POD_NAME TEST_IMAGE TEST_IMAGE_ARCHIVE TEST_POD_ANNOTATIONS \
                TEST_POD_RUN_AS_USER TEST_POD_DEVICE_RESOURCE \
+               TAA_INSTANCE_ID TAA_SERVICE_NODE_PORT TAA_PORT \
                DCU_PAYLOAD_DIR DCU_REMOTE_IMAGE \
                HCT_PAYLOAD_DIR TAA_CRYPTO_BACKEND TAA_HCT_ACCEL \
                OUT_DIR INITRD_OUT SEED_DIR BASE_INITRD; do

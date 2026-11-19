@@ -9,6 +9,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 ## [Unreleased]
 
 ### Added
+- **Each Instance Can Publish a NodePort Service (`deploy`)**: a platform that runs outside the
+  cluster cannot dial a Kata Pod's address. A Pod dialling another host is SNAT'd by Cilium to
+  that host's IP, so the registration's source address names the NAT (here `172.16.10.178`), not
+  the Pod, and the address platform-mock derives is the same wrong one for every instance. The
+  package can now carry `test/taa-service.yaml`: a NodePort Service named after the instance
+  identity (`taa-<dockerId>`, with `.`/`_` folded to `-` and lowercased for DNS-1035), selecting
+  the Pod by the `taa-instance-id` label and publishing `TAA_ADDR`'s port. Selection by label is
+  what makes it survive Pod recreation — a hostPort dies with the Pod it was declared on.
+  `TAA_INSTANCE_ID` defaults to the registered identity (`TAA_DOCKER_ID`), `TAA_SERVICE_NODE_PORT`
+  is optional (30000-32767) and is deliberately left out of `SHA256SUMS` together with
+  `test-pod.yaml`, because both are operator-editable per deployment. `create-test-pod.sh` applies
+  the Service and prints the address to record in platform-mock's `--instance-targets`;
+  `delete-test-pod.sh` removes the Service even when the Pod is already gone, since a hand-deleted
+  Pod would otherwise leave the NodePort orphaned under a name nothing on the host explains.
 - **TAA Can Run Its SM2/SM3/SM4 on Hygon HCT 3.0.10, With the gmsm Software Implementation as the
   Fallback (`crypto`)**: TAA's cryptographic calls go through a `Backend` seam in `pkg/crypto`
   whose default remains the pure-Go gmsm implementation; the new `hct` backend reaches Hygon's

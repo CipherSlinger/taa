@@ -750,6 +750,34 @@ kubectl delete pod "$TEST_POD_NAME" --ignore-not-found --wait=true
 wait_dcu_vfio_release
 kubectl apply -f "$pod_manifest"
 
+# The service is a separate object and is applied, not created: a Pod
+# recreated under the same instance identity must keep the address the platform
+# already recorded. An absent file means the package was rendered without a
+# NodePort, and the instance is reachable at its Pod address only.
+service_manifest="$pkg_dir/test/taa-service.yaml"
+if [[ -f "$service_manifest" ]]; then
+  service_name="$(python3 - "$service_manifest" <<'PY'
+import json, sys
+print(json.load(open(sys.argv[1]))["metadata"]["name"])
+PY
+)"
+  # A port already owned by another Service fails here rather than silently
+  # publishing nothing. The Pod is running at this point, so the message says
+  # which half failed.
+  if ! kubectl apply -f "$service_manifest"; then
+    echo "error: 无法创建 NodePort Service $service_name" >&2
+    echo "hint: 该 nodePort 可能已被别的 Service 占用；kubectl get svc -A 查看后改 test/taa-service.yaml 重试" >&2
+    exit 1
+  fi
+  node_port="$(kubectl get svc "$service_name" -o jsonpath='{.spec.ports[0].nodePort}' 2>/dev/null || true)"
+  if [[ -n "$node_port" ]]; then
+    echo "NodePort: $node_port  ->  http://$(hostname -I 2>/dev/null | awk '{print $1}'):$node_port"
+    echo "  平台若在集群网络之外，请把这个地址写进它的实例目标列表"
+  else
+    echo "warning: 未能从集群读回 nodePort；用 kubectl get svc $service_name 查看" >&2
+  fi
+fi
+
 echo
 echo "== 2. 等待测试 Pod Ready =="
 ready_timeout="${POD_READY_TIMEOUT:-1800}"

@@ -22,6 +22,37 @@ RDINIT = "rdinit=/usr/local/bin/taa-init"
 # runtime config every Pod on the host shares.
 KERNEL_PARAMS_ANNOTATION = "io.katacontainers.config.hypervisor.kernel_params"
 
+# The label that ties a Pod to its published address. It carries the registered
+# instance identity (DOCKER_ID), not the Pod name: the platform's inventory, the
+# Service's selector and TAA's registration all name the same instance, so a Pod
+# recreated under the same identity keeps its address without a second edit.
+# deploy.sh uses the same key and the same Service naming.
+INSTANCE_LABEL_KEY = "taa-instance-id"
+LABEL_VALUE_RE = re.compile(r"^[A-Za-z0-9]([A-Za-z0-9._-]*[A-Za-z0-9])?$")
+NODE_PORT_MIN, NODE_PORT_MAX = 30000, 32767
+
+
+def validate_instance_id(value):
+    """Refuse an instance id Kubernetes could not hold as a label value."""
+    if not value:
+        return
+    if len(value) > 63 or not LABEL_VALUE_RE.match(value):
+        raise SystemExit(
+            f"--instance-id {value!r} is not a Kubernetes label value "
+            "(at most 63 characters, alphanumerics, '-', '_' and '.')"
+        )
+
+
+def instance_service_name(instance_id):
+    """Return the Service name for an instance id.
+
+    A Service name is a DNS-1035 label: stricter than a label value (it must
+    start with a letter and may not contain '.'). The `taa-` prefix supplies the
+    leading letter; the rest is folded to lower case. deploy.sh derives the name
+    the same way, so whichever path created the Service, the other one finds it.
+    """
+    return "taa-" + instance_id.translate(str.maketrans("._", "--")).lower()
+
 
 def toml_string(value):
     return json.dumps(value)
@@ -726,7 +757,8 @@ def pod_kernel_params(path):
 
 
 def render_k8s(handler, pod_name, node_name, image, annotations_json, out_dir,
-               run_as_user="", pod_dir="", device_resources=None, kernel_params=()):
+               run_as_user="", pod_dir="", device_resources=None, kernel_params=(),
+               instance_id="", taa_port=6001, node_port=None):
     try:
         annotations = json.loads(annotations_json)
     except json.JSONDecodeError as exc:
@@ -748,9 +780,51 @@ def render_k8s(handler, pod_name, node_name, image, annotations_json, out_dir,
             ([existing] if existing else []) + list(kernel_params)
         )
 
+    validate_instance_id(instance_id)
     metadata = {"name": pod_name}
     if annotations:
         metadata["annotations"] = annotations
+    # The instance label is what the NodePort Service selects. An empty id means
+    # the operator has not named the instance, so no label and no Service: a
+    # Service selecting on an empty label value would collect nothing and the
+    # failure would only show up as an empty Endpoints list.
+    if instance_id:
+        metadata["labels"] = {INSTANCE_LABEL_KEY: instance_id}
+
+    service = None
+    if instance_id and node_port:
+        if not (NODE_PORT_MIN <= node_port <= NODE_PORT_MAX):
+            raise SystemExit(
+                f"--node-port {node_port} is outside the NodePort range "
+                f"{NODE_PORT_MIN}-{NODE_PORT_MAX}"
+            )
+        if not (1 <= taa_port <= 65535):
+            raise SystemExit(f"--taa-port {taa_port} is not a TCP port")
+        service = {
+            "apiVersion": "v1",
+            "kind": "Service",
+            "metadata": {
+                "name": instance_service_name(instance_id),
+                "labels": {"app": "taa"},
+            },
+            "spec": {
+                "type": "NodePort",
+                "selector": {INSTANCE_LABEL_KEY: instance_id},
+                # NodePort rather than hostPort: a hostPort is DNAT'd to one Pod
+                # IP by the CNI portmap plugin and dies with that Pod, so a
+                # recreated instance would need its address changed. The NodePort
+                # follows the label.
+                "ports": [
+                    {
+                        "name": "taa",
+                        "port": taa_port,
+                        "targetPort": taa_port,
+                        "protocol": "TCP",
+                        "nodePort": node_port,
+                    }
+                ],
+            },
+        }
 
     runtimeclass = {
         "apiVersion": "node.k8s.io/v1",
@@ -805,6 +879,11 @@ def render_k8s(handler, pod_name, node_name, image, annotations_json, out_dir,
     pod_out = Path(pod_dir) if pod_dir else out
     pod_out.mkdir(parents=True, exist_ok=True)
     (pod_out / "test-pod.yaml").write_text(json.dumps(pod, indent=2) + "\n")
+    # The Service lives beside the Pod, not with the RuntimeClass: it publishes
+    # this instance's address and goes away with it, while the RuntimeClass is
+    # used by every consumer Pod on the host.
+    if service is not None:
+        (pod_out / "taa-service.yaml").write_text(json.dumps(service, indent=2) + "\n")
 
 
 def main(argv=None):
@@ -953,6 +1032,24 @@ def main(argv=None):
         help="append one kernel parameter to the Pod's kernel_params annotation "
         "(repeatable); Kata appends the annotation to the config's own params",
     )
+    k8s.add_argument(
+        "--instance-id",
+        default="",
+        help=f"the registered instance identity; it becomes the Pod's {INSTANCE_LABEL_KEY} "
+        "label and the selector of the rendered NodePort Service (empty: neither)",
+    )
+    k8s.add_argument(
+        "--taa-port",
+        type=int,
+        default=6001,
+        help="the port TAA listens on inside the Pod, and the Service port (default 6001)",
+    )
+    k8s.add_argument(
+        "--node-port",
+        type=int,
+        default=0,
+        help="publish the instance on this NodePort (30000-32767); 0 renders no Service",
+    )
 
     podk = sub.add_parser(
         "pod-kernel-params", help="print a Pod manifest's kernel_params annotation"
@@ -1026,6 +1123,9 @@ def main(argv=None):
             args.pod_dir,
             parse_device_resources(args.device_resource),
             args.kernel_param,
+            args.instance_id,
+            args.taa_port,
+            args.node_port,
         )
     elif args.command == "pod-kernel-params":
         print(pod_kernel_params(args.pod))
