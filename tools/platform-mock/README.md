@@ -286,21 +286,28 @@ flag: instance identity is the registration's `dockerId`.
   no inventory configured the endpoint lists what registered, as before. The types are
   `tee`, `fhe` and `data-anaylsis` (TAA's own spelling, `ServerTypeDataAnalysis`).
 - **Instance list**: the flow console renders that list as rows grouped by kind. Each row shows
-  its own connection state — `已注册` once the platform accepted the registration (the instance
-  reported once; whether it answers now is unverified), `注册失败` when the report was rejected,
-  `连通正常` only after a fresh passing 检查连通性, `未连接` when the instance has not registered
-  or its check failed (the tooltip says which: 尚未注册 vs. an instance that may have been
-  deleted), `未注册` only for a record the inventory does not name — its registered TAA address,
-  and a 环境 chip with the last health check's outcome. `已连接` is never used for a bare
-  registration: nothing in the mock polls an instance, so an accepted registration is a
-  historical fact, not evidence of a live link. A passing check expires after 90 seconds and
-  the row falls back to `已注册`; a failed one is kept until the operator retries. It carries its
-  own actions (日志, 公钥, 注册返回, 检查连通性, 查看结果 for the row whose check produced the held
-  result, 获取证明报告 for TEE). 日志 toggles an inline terminal under that row; it belongs to the
+  its own connection state — `检查中` while the first check runs, `连通正常` after a recent
+  passing check, `重连中` when a check fails and the console keeps retrying, `断开连接` once
+  five minutes have passed without an answer, `注册失败` when the registration was rejected,
+  `未连接` when the instance has not registered, `未注册` only for a record the inventory does
+  not name — its registered TAA address, and a 环境 chip with the last health check's outcome.
+  Connectivity is automatic: an accepted registration observed in the five-second list poll
+  starts a per-instance `GET /v1/taa/health` every 30 seconds, addressed by that row's
+  `dockerId` through the mock's `/taa` proxy, so checking one row never moves the selection.
+  A rejected registration is not probed — it stays `注册失败`. A failing
+  check turns the row `重连中`; the deadline runs from the first failure, so a link that never
+  returns becomes `断开连接` exactly five minutes after it was lost, and the console stops
+  checking it. Only a new registration (the platform rewrites `receivedAt` on every POST)
+  starts the checks again. `已连接` is never used for a bare registration: a registration is a
+  historical fact, and the periodic checks are what turn it into `连通正常`. A passing check
+  expires after 90 seconds and the row falls back to `已注册`; a failed one is kept until the
+  next check replaces it. It carries its
+  own actions (日志, 公钥, 注册返回, 查看结果 for a row whose check produced a reply,
+  获取证明报告 for TEE). 日志 toggles an inline terminal under that row; it belongs to the
   row's `dockerId`, not to the selection, and carries its own pause, filter, search and scroll. Those buttons address their row's `dockerId` directly; there is
   no separate detail row under the list and no delete action: the list is the configured
-  inventory, so a row is not removed from here. An instance whose Pod is gone keeps its `已注册`
-  row until a check marks it `未连接`, and comes back on its own when a Pod registers under the
+  inventory, so a row is not removed from here. An instance whose Pod is gone keeps its row,
+  turns `重连中` and then `断开连接`, and comes back on its own when a Pod registers under the
   same `dockerId` again; to clear one instance's *records*, use its register/report reset route.
 - **Proxying**: `/taa/*` proxies to the selected instance and strips `dockerId` before
   forwarding.

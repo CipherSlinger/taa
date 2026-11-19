@@ -2016,17 +2016,16 @@ func TestHealthCheckIntegratedIntoRegistration(t *testing.T) {
 	// Integrated elements and functions should be present
 	for _, want := range []string{
 		`id="card-attestation"`,
-		// A row's check passes its own instance and a sequence number, so the
-		// call site is testHealth({...}) rather than a bare testHealth().
-		"testHealth(",
-		"openHealthResultModal",
-		"lastHealthData",
+		// Connectivity is checked on a timer rather than pressed per row, so the
+		// health path is the scheduler plus the per-instance reply viewer.
+		"syncInstanceConnectivity(",
+		"openHealthResult(",
+		"instanceHealthPayloads",
 		// The address and health state moved into the rows themselves.
 		"recordInstanceHealth(",
 		"instanceHealthFor(",
 		"instance-target",
 		"instance-health",
-		"lastHealthOwner",
 	} {
 		if !strings.Contains(frontendBundle, want) {
 			t.Fatalf("frontendBundle missing integrated element or function %q", want)
@@ -3014,7 +3013,7 @@ func TestConsoleModeFollowsTheSelectedInstance(t *testing.T) {
 		"function applyConsoleKind(",
 		"applySelectedInstanceKind();",
 		"applyConsoleKind(instanceKinds[currentInstanceDockerId])",
-		"runInstanceHealth(",
+		"syncInstanceConnectivity(",
 	} {
 		if !strings.Contains(frontendBundle, want) {
 			t.Errorf("frontendBundle missing %q, so the selected instance never sets the mode", want)

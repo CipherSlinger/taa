@@ -5,53 +5,86 @@ import (
 	"testing"
 )
 
-// TestFrontendConnectionBadgeHonoursTheHealthCheck pins the behaviour the
-// console was reported to get wrong: an instance whose registration was
-// accepted hours ago still showed 已连接 even though nothing was answering.
-// An accepted registration is a historical fact, not evidence of a live link:
-// nothing in this mock polls an instance, so the default row must say 已注册 and
-// only a fresh passing check may claim connectivity.
-//
-// A failed check reads 未连接, the same as an inventory entry that never
-// registered: the operator appointed the instance, so from the console's side
-// both mean "nothing is answering at that identity", and the tooltip carries
-// the difference (never registered vs. registered but unreachable).
+// TestFrontendConnectionBadgeHonoursTheHealthCheck pins the row's precedence:
+// what the console itself observed (instanceLinks) wins over the registration
+// fact, and an accepted registration never earns a connected label on its own.
+// A registration is a historical record — the console's periodic checks are
+// what turn it into 连通正常 — and a link the checks just lost must read 重连中
+// or 断开连接, never 已连接.
 //
 // This is a source-level assertion because the bundle is plain browser JS; the
 // console logic is checked where it lives rather than by standing up a browser.
 func TestFrontendConnectionBadgeHonoursTheHealthCheck(t *testing.T) {
 	fn := frontendFunction(t, "instanceConnectionState")
 
-	// The failure branch must come first and must be reachable before the
-	// accepted-registration branch, or a failed check would be shadowed.
-	badIdx := strings.Index(fn, "health.tone === 'bad'")
+	// The link state must be consulted before the registration fact, or a lost
+	// link would be shadowed by the accepted registration that preceded it.
+	linkIdx := strings.Index(fn, "instanceLinks[item.dockerId]")
 	acceptedIdx := strings.Index(fn, "item.accepted")
-	if badIdx == -1 {
-		t.Fatal("instanceConnectionState has no failed-check branch")
+	if linkIdx == -1 {
+		t.Fatal("instanceConnectionState no longer reads the observed link state")
 	}
 	if acceptedIdx == -1 {
 		t.Fatal("instanceConnectionState no longer reads item.accepted")
 	}
-	if badIdx > acceptedIdx {
-		t.Fatal("the failed-check branch is shadowed by the accepted-registration branch")
+	if linkIdx > acceptedIdx {
+		t.Fatal("the link state is shadowed by the accepted-registration branch")
 	}
-	if !strings.Contains(fn[badIdx:acceptedIdx], "'未连接'") {
-		t.Fatal("a failed check should read 未连接, the same as an instance that never registered")
+	linkBranch := fn[linkIdx:acceptedIdx]
+	for _, want := range []string{"'重连中'", "'断开连接'", "'连通正常'", "'检查中'"} {
+		if !strings.Contains(linkBranch, want) {
+			t.Fatalf("the link branch is missing %q", want)
+		}
 	}
-	// A passing check is worded apart from the registration badge, so the two
-	// facts cannot be read as one.
-	if !strings.Contains(fn, "'连通正常'") {
-		t.Fatal("a passing check should read 连通正常, not reuse 已连接")
-	}
-	// The accepted-registration fallback (and everything after it) must not
-	// claim a connection. 已注册 says exactly what is known: the instance
-	// reported once, and whether it can still be reached is unverified.
+	// An accepted registration whose first check has not landed yet is 已注册:
+	// accepted is a fact about the past, and the row must not claim more.
 	acceptedBranch := fn[acceptedIdx:]
 	if !strings.Contains(acceptedBranch, "'已注册'") {
-		t.Fatal("an accepted registration without a fresh check should read 已注册")
+		t.Fatal("an accepted registration without a finished check should read 已注册")
 	}
-	if strings.Contains(acceptedBranch, "'已连接'") {
-		t.Fatal("an accepted registration must not be rendered as 已连接; nothing polls the instance")
+	if strings.Contains(fn, "'已连接'") {
+		t.Fatal("an instance must never be rendered as 已连接; the row reports what the checks observed")
+	}
+}
+
+// TestFrontendConnectivityIsCheckedOnATimer pins the automatic loop the row
+// states depend on: a registration observed in the five-second list poll starts
+// a per-instance check, the reply is discarded if a newer registration
+// superseded it, and every check is addressed by dockerId so it cannot report
+// the selected row's answer under another row's name.
+func TestFrontendConnectivityIsCheckedOnATimer(t *testing.T) {
+	for _, want := range []string{
+		"const instanceLinks = {};",
+		"const INSTANCE_HEALTH_INTERVAL_MS = 30 * 1000;",
+		"const INSTANCE_DISCONNECT_AFTER_MS = 5 * 60 * 1000;",
+		"function syncInstanceConnectivity(list)",
+		"syncInstanceConnectivity(list);",
+		// A new registration is what starts (or restarts) the checks.
+		"link.registrationAt !== at",
+		"function runInstanceConnectivityCheck(id)",
+		"current.generation !== generation",
+		"function scheduleInstanceConnectivity(id)",
+		// 断开连接 stops the timer; only a registration starts it again.
+		"link.state === 'disconnected'",
+		"function probeInstanceHealth(id)",
+		"/taa/v1/taa/health?dockerId=",
+		"encodeURIComponent(id)",
+		// The five-minute rule is a state transition, not a separate timer.
+		"downFor >= INSTANCE_DISCONNECT_AFTER_MS",
+		"link.state = 'disconnected'",
+	} {
+		if !strings.Contains(frontendBundle, want) {
+			t.Fatalf("frontendBundle missing %q", want)
+		}
+	}
+	// Connectivity is no longer an operator action: the row has no check button.
+	if strings.Contains(frontendBundle, `instanceActionButton('检查连通性'`) {
+		t.Fatal("the 检查连通性 row action survived; checks are automatic")
+	}
+	// 查看结果 reads the row's own reply rather than a single global result.
+	viewer := frontendFunction(t, "openHealthResult")
+	if !strings.Contains(viewer, "instanceHealthPayloads[id]") {
+		t.Fatal("openHealthResult does not read the per-instance reply it was opened for")
 	}
 }
 
@@ -72,35 +105,13 @@ func TestFrontendConnectionSummaryCountsOnlyVerifiedLinks(t *testing.T) {
 	}
 }
 
-// TestFrontendHealthCheckIsSequenced pins the guard against a stale reply: a
-// slow earlier check must not overwrite the result of a newer one, and its
-// result must land on the row that asked for it.
-func TestFrontendHealthCheckIsSequenced(t *testing.T) {
-	for _, want := range []string{
-		"const instanceConnectionChecks = {};",
-		"function runInstanceHealth(id)",
-		"instanceConnectionChecks[checkId] === checkSeq",
-		"await testHealth({ instanceId: id, seq: seq });",
-	} {
-		if !strings.Contains(frontendBundle, want) {
-			t.Fatalf("frontendBundle missing %q", want)
-		}
-	}
-	// A stale reply returns before touching the shared result, so 查看结果 keeps
-	// showing the newest check rather than an older one that arrived late.
-	stale := strings.Index(frontendBundle, "if (!isCurrent()) return;")
-	if stale == -1 {
-		t.Fatal("testHealth does not discard a stale reply")
-	}
-}
-
 // TestFrontendHealthBadgeExpires pins that a green badge does not outlive the
-// check that produced it: nothing observes an instance between checks, so a
-// ten-minute-old 连通正常 would be vouching for a link nobody re-verified.
+// check that produced it: 连通正常 claims a link the console observed recently,
+// and a check from ten minutes ago is not that claim.
 func TestFrontendHealthBadgeExpires(t *testing.T) {
 	for _, want := range []string{
 		"const instanceHealthStaleMs =",
-		"Date.now() - (health.checkedAt || 0)",
+		"Date.now() - (slot.checkedAt || 0)",
 		"function tickInstanceHealthExpiry()",
 		"setInterval(tickInstanceHealthExpiry",
 	} {

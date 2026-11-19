@@ -179,8 +179,9 @@ func TestFrontendGroupsDataAnalysisInstances(t *testing.T) {
 			t.Fatalf("frontendBundle missing %q", want)
 		}
 	}
-	// 未连接 is the wording for both an unregistered inventory entry and a
-	// failed check, and the tooltip has to still tell them apart.
+	// 未连接 is the wording for an unregistered inventory entry; a registered
+	// instance whose checks fail reads 重连中 and then 断开连接, and the
+	// tooltips have to tell those apart from "never registered".
 	start := strings.Index(frontendBundle, "function instanceConnectionState(")
 	if start == -1 {
 		t.Fatal("frontendBundle missing instanceConnectionState")
@@ -190,6 +191,8 @@ func TestFrontendGroupsDataAnalysisInstances(t *testing.T) {
 	for _, want := range []string{
 		"item.expected",
 		"'未连接'",
+		"'重连中'",
+		"'断开连接'",
 		"实例可能已被删除",
 	} {
 		if !containsAll(fn, want) {

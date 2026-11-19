@@ -3,7 +3,6 @@
 // Global State
 const resultBodies = {};
 const interactionStore = {};
-let lastHealthData = null;
 let lastRegisterData = null;
 let lastReportResData = null;
 let reportResHistory = [];
@@ -990,17 +989,6 @@ function showResultRunning(elId, text) {
   }
 }
 
-// setHealthState records the outcome on the row that ran the check. There is no
-// shared detail row any more: the state is keyed by the selected instance and
-// painted by renderInstanceList() when the row is rebuilt.
-// setHealthState writes the result onto the row that asked. checkId is the
-// instance the check was started for; without it the selected instance is
-// assumed, which is right for a check started from the detail panels.
-function setHealthState(tone, title, labelText, checkId) {
-  const id = checkId || (typeof currentDockerId === 'function' ? currentDockerId() : '');
-  if (typeof recordInstanceHealth === 'function') recordInstanceHealth(id, tone, labelText, title);
-}
-
 // ── Dynamic Command & Env Rows ──
 function addModelCommandRow(btn) {
   const container = document.getElementById('importModelCommandsList');
@@ -1740,64 +1728,36 @@ async function refreshDashboardStatus() {
 window.refreshDashboardStatus = refreshDashboardStatus;
 
 // ── TAA API Triggers ──
-// check is optional: {instanceId, seq}. A row's 检查连通性 passes it so a slow
-// reply cannot overwrite a newer check, and so the result lands on the row that
-// asked rather than on whatever instance happens to be selected by then.
-async function testHealth(check) {
-  const checkId = check && check.instanceId;
-  const checkSeq = check && check.seq;
-  const isCurrent = () => {
-    if (!checkId || checkSeq === undefined) return true;
-    return instanceConnectionChecks[checkId] === checkSeq;
-  };
-  // The running marker goes to the same row the result will, so a check started
-  // from a row that is not the selected one cannot stall elsewhere's badge.
-  setHealthState('running', '检查中', '检查中...', checkId);
-  recordInteraction('health', {
-    title: '健康检查 (GET /v1/taa/health)',
-    primaryLabel: '返回内容',
-    secondaryLabel: '请求体',
-    primaryContent: null,
-    secondaryContent: '{}',
-    endpoint: '/v1/taa/health',
-    reqBody: {},
-  });
-  try {
-    const r = await postToTAA('/v1/taa/health', {}, 10000);
-    if (!isCurrent()) return; // a newer check owns this row now
-    const ok = r.status === 200 && r.data && r.data.error === 0;
-    lastHealthData = r.data != null ? r.data : { status: r.status, raw: r };
-    setHealthState(ok ? 'ok' : 'bad', ok ? '连通正常' : '连通异常', ok ? '连通正常' : 'HTTP ' + r.status, checkId);
-    recordInteraction('health', { primaryContent: lastHealthData, respBody: lastHealthData, statusCode: r.status });
-  } catch (e) {
-    if (!isCurrent()) return;
-    const msg = e.name === 'AbortError'
-      ? '请求超时（10s）：TAA 服务响应过慢或不可达。\n请确认：\n1. TAA 服务地址是否正确\n2. TAA 服务是否已启动\n3. 浏览器能否直接访问该地址'
-      : '请求失败: ' + e.message + '\n\n可能原因：\n1. TAA 服务地址不正确或服务未启动\n2. 网络不通\n3. 混合内容安全限制';
-    lastHealthData = {
-      error: -1,
-      msg: e.message || '网络请求异常',
-      detail: msg,
-    };
-    setHealthState('bad', '不可达', '不可达', checkId);
-    recordInteraction('health', { primaryContent: lastHealthData, respBody: lastHealthData, statusCode: 500 });
-  } finally {
-    // The row is rebuilt so 查看结果 appears next to this instance's 检查连通性.
-    renderInstanceList();
-  }
-}
-
-function openHealthResultModal() {
-  if (!lastHealthData) {
+// openHealthResult shows the reply one instance's automatic check produced.
+// Connectivity is not triggered from here any more: every registered row is
+// checked on a timer by the console (see syncInstanceConnectivity), so the only
+// remaining health action is reading the reply that check left behind.
+function openHealthResult(id) {
+  const entry = (typeof instanceHealthPayloads !== 'undefined' && instanceHealthPayloads[id]) || null;
+  const request = 'GET /v1/taa/health?dockerId=' + encodeURIComponent(id || '');
+  if (!entry) {
     recordInteraction('health', {
-      title: '健康检查 (GET /v1/taa/health)',
+      title: '健康检查 (' + request + ')',
       primaryLabel: '返回内容',
       secondaryLabel: '请求体',
-      primaryContent: '暂未执行健康检查，请先点击【检查连通性】。',
+      primaryContent: '该实例尚未产生连通性检查结果。',
       secondaryContent: '{}',
-      endpoint: '/v1/taa/health',
+      endpoint: request,
     });
+    openInteractionDrawer('health', 'primary');
+    return;
   }
+  recordInteraction('health', {
+    title: '健康检查 (' + request + ')',
+    primaryLabel: '返回内容',
+    secondaryLabel: '请求体',
+    primaryContent: entry.data,
+    secondaryContent: '{}',
+    endpoint: request,
+    reqBody: {},
+    respBody: entry.data,
+    statusCode: entry.status,
+  });
   openInteractionDrawer('health', 'primary');
 }
 

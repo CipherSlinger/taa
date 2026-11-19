@@ -60,30 +60,36 @@ let instanceKinds = {};
 // to TAA; through the mock's /taa proxy it would be sealed a second time.
 let instanceTargets = {};
 
-// instanceHealthState is the last health check each row produced. Health is an
-// action, not a polled fact, so it is not part of /api/instances: the row shows
-// what its own 检查连通性 learned, and 查看结果 exists only where that result is
-// still the one `lastHealthData` holds.
-//
-// The badge separates two questions. `tone`/`label` are the last health check
-// this session ran. The combined connection state adds the registration fact,
-// but an accepted registration is only a historical record: nothing here polls
-// an instance, so it proves the instance reported once, not that it answers
-// now. A row therefore reads 已注册 — registered, connectivity unverified —
-// until a check vouches otherwise, and never 已连接 merely because the
-// registration was accepted.
+// instanceHealthState is what the 环境 chip shows for each row: the outcome of
+// the last connectivity check the console ran. 查看结果 reads the raw response
+// from instanceHealthPayloads, so the drawer always shows the row's own reply.
 const instanceHealthState = {};
-let lastHealthOwner = '';
-// instanceConnectionChecks counts 检查连通性 clicks per instance. A check is a
-// slow round trip, and the reply from an earlier click must not overwrite the
-// result of a later one.
-const instanceConnectionChecks = {};
+const instanceHealthPayloads = {};
 // healthStampRendered is the timestamp signature the list currently displays.
 // tickInstanceHealthExpiry compares against it to repaint only when a check has
 // aged out of the green badge.
 let healthStampRendered = '';
 
-function recordInstanceHealth(id, tone, label, title) {
+// instanceLinks is the console's link state for each registered instance.
+//
+// A registration is not a connection: it says the instance reported once, not
+// that anything is answering now. So the console checks every registered
+// instance itself, on a timer, and the row says what that check last saw.
+//
+//	检查中 → 连通正常, or
+//	检查中 → 重连中 → (five minutes without a reply) → 断开连接
+//
+// 断开连接 stops the checks; only a new registration starts them again. The
+// timer is what makes the row truthful without an operator pressing anything.
+//
+// Each check is addressed with ?dockerId= through the mock's /taa proxy. The
+// direct address in getTaaAddr() belongs to the *selected* row, so using it for
+// another row would report one instance's answer under another instance's name.
+const instanceLinks = {};
+const INSTANCE_HEALTH_INTERVAL_MS = 30 * 1000;
+const INSTANCE_DISCONNECT_AFTER_MS = 5 * 60 * 1000;
+
+function recordInstanceHealth(id, tone, label, title, payload) {
   if (!id) return;
   instanceHealthState[id] = {
     tone: tone === 'ok' || tone === 'bad' || tone === 'running' ? tone : 'pending',
@@ -91,7 +97,7 @@ function recordInstanceHealth(id, tone, label, title) {
     title: title || '',
     checkedAt: (tone === 'ok' || tone === 'bad') ? Date.now() : 0,
   };
-  if (tone === 'ok' || tone === 'bad') lastHealthOwner = id;
+  if (payload) instanceHealthPayloads[id] = payload;
   renderInstanceList();
 }
 
@@ -100,9 +106,9 @@ function recordInstanceHealth(id, tone, label, title) {
 //
 // A passing check expires here as well as in instanceConnectionState: the chip
 // is what the row shows under 环境, and a green 连通正常 from ten minutes ago
-// would vouch for a link nobody has re-verified just as the combined badge once
-// did. A failed check is kept, because "this identity did not answer when last
-// tried" stays useful until the operator retries.
+// would vouch for a link nobody has re-verified. A failed check is kept,
+// because "this identity did not answer when last tried" stays useful until
+// the next automatic check replaces it.
 function instanceHealthFor(id) {
   const slot = healthSlotFor(id);
   if (!slot) {
@@ -154,55 +160,59 @@ function tickInstanceHealthExpiry() {
   renderInstanceList();
 }
 
-// instanceConnectionState combines the registration fact with the health
-// result. A failing check wins: an accepted registration must not hide a
-// connection this console just proved is not there.
+// instanceConnectionState combines the link state with the registration fact.
+// The link state wins: it is what the console last observed, and an accepted
+// registration must not hide a link the checks just proved is not there.
 //
-// 已连接 is not a label this function produces. Nothing observes an instance
-// unless the operator presses 检查连通性, so an accepted registration earns
-// 已注册 — the instance is in the inventory and reported once, and whether it
-// can still be reached is unknown — and only a fresh passing check earns
-// 连通正常. 未连接 is the wording for both "configured but never registered"
-// and "the check could not reach it": the operator appointed the instance, so
-// from the console's side the two are the same fact — nothing is answering at
-// that identity — and the tooltip says which one it is. 未注册 is kept for a
-// row that is neither configured nor registered, which only happens for a
-// record left behind by a registration the inventory does not name.
-//
-// A passing check expires. Nothing observes an instance between checks, so a
-// green badge from ten minutes ago claims a connection nobody re-verified; once
-// instanceHealthStaleMs has passed the row falls back to 已注册 rather than
-// keep vouching for a link it no longer knows about.
+// 已连接 is not a label this function produces. 连通正常 is earned by a recent
+// passing check; an accepted registration whose first check has not finished
+// yet reads 已注册. A failing check reads 重连中 while the console keeps
+// retrying, and 断开连接 once five minutes have passed without an answer, at
+// which point the console stops checking until the instance registers again.
+// 未注册 and 注册失败 are kept for rows with no accepted registration, which
+// only happens for a configured inventory entry or a rejected registration.
 const instanceHealthStaleMs = 90 * 1000;
 
 function instanceConnectionState(item) {
-  const health = healthSlotFor(item && item.dockerId);
   if (!item) return { label: '未连接', tone: 'pending', hint: '' };
-  if (health && health.tone === 'running') {
-    return { label: '检查中', tone: 'pending', hint: '正在检查该实例是否可达' };
-  }
-  if (health && health.tone === 'bad') {
-    return {
-      label: '未连接',
-      tone: 'bad',
-      hint: item.received
-        ? '连通性检查失败：平台收到过该实例的注册，但当前连不通（实例可能已被删除）'
-        : '连通性检查失败，且平台从未收到该实例的注册',
-    };
-  }
-  if (health && health.tone === 'ok') {
-    const age = Date.now() - (health.checkedAt || 0);
-    if (age <= instanceHealthStaleMs) {
-      return { label: '连通正常', tone: 'ok', hint: '连通性检查通过，且平台已接受该实例的注册' };
+  const link = instanceLinks[item.dockerId];
+  if (link) {
+    if (link.state === 'disconnected') {
+      return {
+        label: '断开连接',
+        tone: 'bad',
+        hint: '连通性检查连续失败超过 ' + Math.round(INSTANCE_DISCONNECT_AFTER_MS / 60000) +
+          ' 分钟，已停止检查；实例再次注册后会自动恢复定时检查',
+      };
     }
-    return {
-      label: '已注册',
-      tone: 'pending',
-      hint: '平台已接受该实例的注册；上次连通性检查已超过 ' + Math.round(instanceHealthStaleMs / 1000) + ' 秒，连接状态未知',
-    };
+    if (link.state === 'reconnecting') {
+      const downFor = Math.max(0, Date.now() - (link.firstFailureAt || Date.now()));
+      const left = Math.max(0, INSTANCE_DISCONNECT_AFTER_MS - downFor);
+      return {
+        label: '重连中',
+        tone: 'pending',
+        hint: '最近一次连通性检查失败，正在重试；实例可能已被删除或尚未就绪。已持续 ' + Math.round(downFor / 1000) +
+          ' 秒，' + Math.round(left / 60000 * 10) / 10 + ' 分钟后仍不可达将标记为断开连接',
+      };
+    }
+    if (link.state === 'probing') {
+      return { label: '检查中', tone: 'pending', hint: '正在检查该实例是否可达' };
+    }
+    if (link.state === 'ok') {
+      const age = Date.now() - (link.okAt || 0);
+      if (age <= instanceHealthStaleMs) {
+        return { label: '连通正常', tone: 'ok', hint: '最近一次连通性检查通过' };
+      }
+      return {
+        label: '已注册',
+        tone: 'pending',
+        hint: '平台已接受该实例的注册；最近一次连通性检查已超过 ' +
+          Math.round(instanceHealthStaleMs / 1000) + ' 秒，正在等下一次检查',
+      };
+    }
   }
   if (item.accepted) {
-    return { label: '已注册', tone: 'pending', hint: '平台已接受该实例的注册；本页尚未检查连通性，连接状态未知' };
+    return { label: '已注册', tone: 'pending', hint: '平台已接受该实例的注册，正在等待首次连通性检查' };
   }
   if (item.received) return { label: '注册失败', tone: 'bad', hint: '实例已上报，但平台未接受' };
   if (item.expected) return { label: '未连接', tone: 'pending', hint: '清单中配置的实例，平台尚未收到它的注册请求' };
@@ -314,6 +324,10 @@ function applyInstanceList(list, defaultId) {
   applySelectedInstanceKind();
   if (previous !== next) notifyInstanceChange(next);
   setInstanceSelectorVisibility(list.length > 0);
+  // Last, because a row that just registered is checked now and its 检查中
+  // state repaints the list: the selection and per-kind maps must already
+  // describe this poll, not the one before it.
+  syncInstanceConnectivity(list);
 }
 
 function updateInstanceSummary(list) {
@@ -328,8 +342,12 @@ function updateInstanceSummary(list) {
   // itself no longer makes — an accepted registration is not a live link.
   const connected = list.filter((item) => instanceConnectionState(item).tone === 'ok').length;
   const unverified = list.filter((item) => instanceConnectionState(item).label === '已注册').length;
+  const reconnecting = list.filter((item) => instanceConnectionState(item).label === '重连中').length;
+  const disconnected = list.filter((item) => instanceConnectionState(item).label === '断开连接').length;
   let summary = '共 ' + list.length + ' 个实例，' + connected + ' 个连通正常';
   if (unverified > 0) summary += '，' + unverified + ' 个已注册（连接未验证）';
+  if (reconnecting > 0) summary += '，' + reconnecting + ' 个重连中';
+  if (disconnected > 0) summary += '，' + disconnected + ' 个断开连接';
   // Only say so when the inventory is what makes the list longer than the
   // registrations: otherwise every page would carry a sentence about a
   // distinction that is not in play.
@@ -470,9 +488,11 @@ function buildInstanceRow(item) {
   actions.appendChild(logButton);
   actions.appendChild(instanceActionButton('公钥', () => openInstancePublicKey(id), !item.accepted, '查看该实例上报的 TAA 注册公钥'));
   actions.appendChild(instanceActionButton('注册返回', () => openInstanceRegisterBody(id), !item.received, '查看该实例的注册请求与平台返回'));
-  actions.appendChild(instanceActionButton('检查连通性', () => runInstanceHealth(id), false, 'GET /v1/taa/health，结果写回该行的环境状态'));
-  if (lastHealthOwner === id && typeof lastHealthData !== 'undefined' && lastHealthData) {
-    actions.appendChild(instanceActionButton('查看结果', () => { selectInstance(id); openHealthResultModal(); }, false, '查看该实例最近一次连通性检查的返回'));
+  // Connectivity is not an action: the row's checks run on a timer from the
+  // moment the instance registers, so there is nothing for the operator to
+  // start. 查看结果 only opens the reply the latest check produced.
+  if (instanceHealthPayloads[id]) {
+    actions.appendChild(instanceActionButton('查看结果', () => { selectInstance(id); openHealthResult(id); }, false, '查看该实例最近一次连通性检查的返回'));
   }
   if (item.kind === 'tee') {
     actions.appendChild(instanceActionButton('获取证明报告', () => runInstanceAttestation(id), false, '获取该实例的 CSV 远程证明报告'));
@@ -485,9 +505,9 @@ function buildInstanceRow(item) {
   }
   // No delete action: the list is the inventory of what this platform is
   // configured to receive, so a row is not the operator's to remove here — an
-  // instance whose Pod is gone keeps its registration row (已注册) until a
-  // check marks it 未连接, and comes back on its own if a Pod registers under
-  // the same dockerId again.
+  // instance whose Pod is gone keeps its registration row until the automatic
+  // checks mark it 重连中 and then 断开连接, and comes back on its own if a Pod
+  // registers under the same dockerId again.
 
   row.appendChild(main);
   row.appendChild(actions);
@@ -579,23 +599,202 @@ async function runInstanceAttestation(id) {
   }
 }
 
-// runInstanceHealth does the same for the health check: the result is written
-// into that row's 连接状态 badge, where the row's own 查看结果 then reads it.
+// ── Automatic connectivity checks ──
 //
-// A check is a 10 s round trip. Clicking again before the first reply arrives
-// used to leave the row at whatever the slow reply said, so each click takes a
-// sequence number and only the newest one is allowed to record a result.
-async function runInstanceHealth(id) {
-  if (!id) return;
-  selectInstance(id);
-  const seq = (instanceConnectionChecks[id] || 0) + 1;
-  instanceConnectionChecks[id] = seq;
+// The console is the only party that decides what a row says, so it is also
+// the party that observes the link. A registration starts a per-instance timer;
+// each tick asks that instance's /v1/taa/health through the mock's proxy and
+// records what came back. Nothing here moves the selection: the check is
+// addressed with the row's own dockerId.
+
+// syncInstanceConnectivity starts, resumes and stops the timers. The instance
+// list is polled every five seconds, which is where a registration is observed:
+// the platform rewrites the registration record's receivedAt on every POST, and
+// a value this page has not seen for that row is either the first registration
+// or a new one. Both restart the checks — that is the only way out of 断开连接.
+//
+// Date.now-free comparison is deliberate: receivedAt has one-second resolution,
+// so two registrations inside the same second are indistinguishable here. TAA
+// registers once at boot, and the worse outcome is a check that keeps running,
+// not a stopped one.
+function syncInstanceConnectivity(list) {
+  const registered = {};
+  list.forEach((item) => {
+    const id = item.dockerId || '';
+    // Only an accepted registration starts checks. A rejected one stays 注册失败:
+    // its link is not what the platform needs to know about it, and a passing
+    // health check must not paint over the rejection.
+    if (!id || !item.accepted) return;
+    registered[id] = true;
+    let link = instanceLinks[id];
+    if (!link) {
+      link = instanceLinks[id] = {
+        state: 'idle',
+        registrationAt: null,
+        firstFailureAt: 0,
+        okAt: 0,
+        timer: null,
+        inFlight: false,
+        generation: 0,
+      };
+    }
+    const at = item.receivedAt || '';
+    if (link.registrationAt !== at) {
+      link.registrationAt = at;
+      startInstanceConnectivity(id);
+    }
+  });
+  Object.keys(instanceLinks).forEach((id) => {
+    if (registered[id]) return;
+    stopInstanceConnectivity(id);
+    delete instanceLinks[id];
+  });
+}
+
+// startInstanceConnectivity (re)starts the loop for one instance. Any failure
+// timer from the previous registration is dropped: a registration that lands
+// while the row is 断开连接 is new evidence that the instance is alive.
+function startInstanceConnectivity(id) {
+  const link = instanceLinks[id];
+  if (!link) return;
+  clearInstanceConnectivityTimer(link);
+  link.generation += 1;
+  // The reply still in flight belongs to the previous generation; dropping the
+  // flag is what lets the new check run instead of bouncing off it.
+  link.inFlight = false;
+  link.state = 'probing';
+  link.firstFailureAt = 0;
+  link.okAt = 0;
   recordInstanceHealth(id, 'running', '检查中', '连通性检查进行中');
+  runInstanceConnectivityCheck(id);
+}
+
+// stopInstanceConnectivity forgets an instance that left the list. The
+// generation bump makes any reply still in flight land nowhere.
+function stopInstanceConnectivity(id) {
+  const link = instanceLinks[id];
+  if (!link) return;
+  clearInstanceConnectivityTimer(link);
+  link.generation += 1;
+  link.inFlight = false;
+}
+
+function clearInstanceConnectivityTimer(link) {
+  if (link.timer) {
+    clearTimeout(link.timer);
+    link.timer = null;
+  }
+}
+
+// runInstanceConnectivityCheck is one probe. The generation is captured before
+// the request: a reply from an earlier registration must not overwrite the
+// state of a newer one, which is the same stale-reply rule the manual check
+// needed when two clicks overlapped.
+async function runInstanceConnectivityCheck(id) {
+  const link = instanceLinks[id];
+  if (!link || link.inFlight) return;
+  const generation = link.generation;
+  link.inFlight = true;
+  let result;
   try {
-    if (typeof detectTAAProxy === 'function') await detectTAAProxy();
-    await testHealth({ instanceId: id, seq: seq });
+    result = await probeInstanceHealth(id);
   } finally {
-    renderInstanceList();
+    const current = instanceLinks[id];
+    if (current && current.generation === generation) current.inFlight = false;
+  }
+  const current = instanceLinks[id];
+  if (!current || current.generation !== generation) return;
+  if (result.ok) {
+    current.state = 'ok';
+    current.okAt = Date.now();
+    current.firstFailureAt = 0;
+    recordInstanceHealth(id, 'ok', '连通正常', '连通性检查通过', result);
+  } else {
+    recordInstanceConnectivityFailure(id, result);
+  }
+  scheduleInstanceConnectivity(id);
+}
+
+// recordInstanceConnectivityFailure moves the row to 重连中, or to 断开连接
+// once the link has been down for the whole five-minute window. The transition
+// is measured from the first failure, not from the last: periodic failures do
+// not extend the deadline, so an instance that never comes back is marked
+// 断开连接 exactly five minutes after it was lost.
+function recordInstanceConnectivityFailure(id, result) {
+  const link = instanceLinks[id];
+  if (!link) return;
+  const now = Date.now();
+  if (!link.firstFailureAt) link.firstFailureAt = now;
+  const downFor = now - link.firstFailureAt;
+  if (downFor >= INSTANCE_DISCONNECT_AFTER_MS) {
+    link.state = 'disconnected';
+    clearInstanceConnectivityTimer(link);
+    recordInstanceHealth(id, 'bad', '连接断开', result.title + '：' + result.error +
+      '；已持续 ' + Math.round(downFor / 60000) + ' 分钟，停止检查', result);
+    return;
+  }
+  link.state = 'reconnecting';
+  recordInstanceHealth(id, 'bad', '连通异常', result.title + '：' + result.error +
+    '；自 ' + instanceClock(new Date(link.firstFailureAt).toISOString()) + ' 起持续失败，仍在重试', result);
+}
+
+function scheduleInstanceConnectivity(id) {
+  const link = instanceLinks[id];
+  if (!link || link.state === 'disconnected') return;
+  clearInstanceConnectivityTimer(link);
+  link.timer = setTimeout(() => {
+    link.timer = null;
+    // A hidden tab shows nothing, so it does no probing either; the next
+    // visible tick picks the schedule back up.
+    if (document.hidden) {
+      scheduleInstanceConnectivity(id);
+      return;
+    }
+    runInstanceConnectivityCheck(id);
+  }, INSTANCE_HEALTH_INTERVAL_MS);
+}
+
+// probeInstanceHealth asks one instance whether it answers. It goes through the
+// mock's /taa proxy with the row's own dockerId rather than getTaaAddr(): the
+// latter is the selected row's address, and a background check of another row
+// through it would report the selected instance's answer under this row's name.
+async function probeInstanceHealth(id) {
+  const url = location.origin + '/taa/v1/taa/health?dockerId=' + encodeURIComponent(id);
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 10000);
+  try {
+    const resp = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: '{}',
+      signal: controller.signal,
+    });
+    const text = await resp.text();
+    let data;
+    try {
+      data = JSON.parse(text);
+    } catch (_) {
+      data = text;
+    }
+    const ok = resp.status === 200 && data && data.error === 0;
+    return {
+      ok: ok,
+      status: resp.status,
+      data: data,
+      title: ok ? '连通性检查通过' : 'HTTP ' + resp.status,
+      error: ok ? '' : String((data && data.msg) || ('HTTP ' + resp.status)),
+    };
+  } catch (e) {
+    const timeout = e && e.name === 'AbortError';
+    return {
+      ok: false,
+      status: 0,
+      data: { error: -1, msg: timeout ? '请求超时（10s）' : ((e && e.message) || '网络请求异常') },
+      title: timeout ? '请求超时' : '请求失败',
+      error: timeout ? '10 秒内未响应' : ((e && e.message) || '网络请求异常'),
+    };
+  } finally {
+    clearTimeout(timer);
   }
 }
 
