@@ -29,9 +29,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
   `crypto backend: builtin (original software implementation, gmsm)`, or a `degraded from hct to
   builtin` line carrying the helper error. The helper, not the configuration, is the authority on
   that report: the handshake carries the accel it actually started with plus a per-operation
-  engine map, and each operation is dispatched through a capability-selecting router. The router
-  is the seam a future CCP engine plugs into — an engine that covers only part of the interface is
-  skipped for the operations it cannot serve instead of being reported as the whole backend. A helper that dies while TAA is running degrades the
+  engine map, and each operation is dispatched through a capability-selecting router. The router now
+  carries a second engine: a `ccp` backend over the hardware `hct_ccp_*` API (`crypto.hct.accel=ccp`,
+  helper flag `--accel ccp`) that serves SM2, streaming and one-shot SM3, and SM4-GCM; HMAC-SM3 stays
+  on the software engine because the CCP header exposes only a burst call with no incremental
+  interface. Asking for `ccp` can never fail startup: TAA checks for a `/dev/ccp*` device before it
+  starts the helper, and the helper itself degrades to a pure software router with the reason on
+  stderr if `hct_ccp_init` fails — its first act is opening the accelerator manager's `/dev/ccp_share`.
+  The hardware path is not reachable from the CSV2 guest TAA runs in: QEMU started with
+  `-device hct` does present the vCCP as PCI `1d94:1468` (verified through `/proc/bus/pci/devices`
+  inside a running Kata Pod), but the Kata CSV kernel ships without `CONFIG_VFIO_NOIOMMU`, which
+  blocks the vendor's documented vfio-pci-noiommu binding of the vCCP, an emulated `intel-iommu`
+  under SEV never completes the guest boot, and nothing in the guest provides `/dev/ccp_share`.
+  The vendor documentation likewise routes CSV guests to vTKM rather than CAE. An engine that
+  covers only part of the interface is skipped for the operations it cannot serve instead of being
+  reported as the whole backend. A helper that dies while TAA is running degrades the
   same way: stateless operations (SM2 key generation/encrypt/decrypt/sign/verify, SM3, HMAC,
   whole Seal/Open) are replayed once on the software implementation because no output has
   escaped, while a stream already consumed by the helper fails that one operation and leaves the

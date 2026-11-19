@@ -1,0 +1,83 @@
+# HCT hardware CCP in the CSV2 guest — feasibility record
+
+Date: 2026-11-19
+Status: concluded — not reachable with the shipped Kata CSV kernel; software engine stays the
+operative path, `accel=ccp` remains implemented and gated.
+
+## Question
+
+Can TAA run its SM2/SM3/SM4 on the Hygon hardware coprocessor (HCT `hct_ccp_*` API) from inside
+the CSV2 Kata confidential VM it is deployed in, instead of the `hct_sw_*` software engine?
+
+## What the vendor documents say
+
+- Guest procedure (`docs/c86-devkit/03. 密码技术/02. 用户指南/HCT-3.x 指南/02. 虚拟化部署.md:198-213`):
+  install the HCT package in the guest, build and load `hct.ko` ("虚拟机中，hct驱动依然需要加载
+  （但无需绑定）"), then
+  `Guest中使用HCT套件，vCCP需要绑定为vfio-pci noiommu驱动模式，hctconfig工具会检查虚拟化环境并自动做相应的配置。`
+- Requirement for that mode (`HCT-2.x 指南/01. 主机环境搭建.md:199`):
+  `（1）确保内核CONFIG_VFIO_NOIOMMU配置为打开状态`.
+- Version guidance (`03. 密码技术/HCT版本说明和阅读指引.md:40`): `CSV虚拟机使用TKM` — CSV guests are
+  routed to vTKM; no CAE/vCCP procedure exists for them, and no caveat says it is unsupported.
+
+## What was measured on host 172.16.10.178
+
+1. HCT 3.0.10 installed on the host; `hctd` running; vCCPs created
+   (`/dev/hct/vccp{0,1}_{0..3}` are regular files created by the daemon, not char devices).
+2. The patched QEMU (`/opt/kata/bin/qemu-system-x86_64`, `-device hct,dev=/dev/hct/vccpN_M,help`
+   lists `dev`, `sysfsdev`, `vsock-device`, `x-max-bounce-buffer-size`) **does** present the vCCP
+   to the guest: inside a running Kata Pod, `/proc/bus/pci/devices` shows four functions
+   `1d94:1468` at `00:38`, `00:40`, `00:48`, `00:50` for a sandbox started with
+   `-device hct,dev=/dev/hct/vccp0_{0..3}` (this is how the infer-class wrapper was wired).
+   The container's `/sys/bus/pci/devices` is filtered and shows only the host bridge — use
+   `/proc/bus/pci/devices`.
+3. The guest kernel (`/opt/kata/share/kata-containers/config-6.6.0+-153-confidential-csv`, and
+   the same config read at runtime through `/proc/config.gz`) has
+   `# CONFIG_VFIO_NOIOMMU is not set`; `/sys/module/vfio/parameters/enable_unsafe_noiommu_mode`
+   does not exist, so vfio-pci cannot take the vCCP without an IOMMU group.
+4. Nothing in the guest provides the accelerator interface libhct needs:
+   `/proc/misc` in the guest lists `cpu_dma_latency, vsock, csv-guest, device-mapper, vfio, ...`
+   and no `ccp_share`; `grep -i ccp|hygon` over the guest kernel config finds no CCP driver.
+   On the host `/dev/ccp_share` is a misc device (10:259) supplied by the kernel `ccp` module
+   (417792 bytes, loaded with the vCCPs), not by the HCT package.
+5. `hct_ccp_init` opens `/dev/ccp_share` first. Running the built helper on a machine without the
+   HCT daemon prints:
+   `[error] hct_shared_cfg_init(743): fail to open /dev/ccp_share, errno 2` →
+   `[error] hct_ccp_init(307): fail to init ccp` and the helper logs
+   `accel ccp unavailable, falling back to sw: hct_ccp_init rc=-1 (no usable CCP device?)`,
+   then completes the full selftest on the software engine. This is the intended degradation.
+6. Emulated IOMMU as an alternative to the kernel option does not work here. A training-class
+   kata-config with `-device intel-iommu,caching-mode=on,device-iotlb=off` plus
+   `intel_iommu=on iommu=pt` boots QEMU, but the guest never completes the kata-agent handshake;
+   QEMU logs `vtd_process_inv_desc: invalid inv desc: hi=0, lo=0 (unknown type)` and
+   `Interrupt Mask set, irq is not generated` (same failure with `intremap=on`).
+7. `hct.ko` built against the guest's kernel config (vermagic `6.6.0+ SMP mod_unload`) is a pure
+   misc module: it registers `hct_noiommu` and `hct_mig` and pulls in no PCI, DMA or vfio symbol.
+   It has no device to drive in this guest.
+
+## Conclusion
+
+The hardware path is blocked at the kernel boundary, not in TAA:
+
+- the documented vCCP binding needs `CONFIG_VFIO_NOIOMMU`, which the Kata CSV kernel does not
+  compile in;
+- the only substitute, an emulated vIOMMU, does not survive the CSV/SEV boot;
+- no guest-side CCP driver exists to provide `/dev/ccp_share`, and `hct.ko` does not.
+
+Making it work would mean rebuilding the Kata CSV guest kernel with `CONFIG_VFIO_NOIOMMU` (or
+fixing the emulated IOMMU under SEV) **and** shipping a guest CCP driver that can front the
+`1d94:1468` vCCP. The vendor does not document CAE/vCCP for CSV guests and routes them to vTKM
+instead. Until that changes, `crypto.hct.accel=sw` (libhct CIS/AVX software) or the gmsm
+`builtin` backend are the real options; `accel=ccp` is implemented, gated on `/dev/ccp*`, and
+degrades to software with the reason logged.
+
+## Host state after the experiment
+
+- `kata-config.toml` for the train and infer runtime classes restored from
+  `kata-config.toml.bak-iommu` / `.bak-hct` (path back to `/opt/kata/bin/qemu-system-x86_64`,
+  original `kernel_params`, `dial_timeout = 90`).
+- Probe Pods (`hct-probe`, `hct-probe-iommu`) deleted.
+- The `qemu-hct-*.sh` wrappers and `kata-config.toml.bak*` copies are left in
+  `/root/taa-images/package-{train,infer}/` as artifacts; they are not referenced by any config.
+- HCT 3.0.10 stays installed on the host and `hctd` keeps running (installing it was a goal in
+  itself; it is not needed by the CSV2 guest path).
