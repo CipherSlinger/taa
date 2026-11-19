@@ -131,9 +131,11 @@ The platform mock provides an embedded single-page Web console accessible by ope
   IP / 用户 / 密码 fields change it while the mock runs: 连接 posts them to
   `POST /api/host/target`, which builds an SSH probe from them and answers with that host's
   first read, so a wrong host or password reports its error immediately; 本机 switches back to
-  the local machine. The password is used for the connection only — never written to disk,
-  never echoed back, held in memory just as long as that target is active. The mock still
-  addresses TAA from each instance's registration, never from these fields.
+  the local machine, and a successful switch opens the Pod table on the `default` namespace
+  (where the TAA and DCU test Pods live) rather than on whatever filter was in use. The password
+  is used for the connection only — never written to disk, never echoed back, held in memory just
+  as long as that target is active. The mock still addresses TAA from each instance's
+  registration, never from these fields.
 - **Model Ingress & Audit**: Upload model packages, inspect static AST rule violations, and observe Ollama LLM semantic verification outcomes. The console shows the platform SM2 key pair the mock generated and persisted at startup (the same pair its envelopes use), and the regenerate button rotates that pair and overwrites the key file; loading the page never rotates it.
 - **Real-Time Progress & Logs**: Displays real-time progress bars, streamed terminal logs (`modelLog`), and one inline TAA log terminal per instance (`taaLog`). Each terminal is addressed by its own `dockerId`, so two instances can be watched side by side with independent pause, level filter, search and scroll; a collapsed or paused terminal sends no background polls (an explicit 刷新 still fetches). The `日志 (N)` row button shows the instance's retained line count.
 - **Execution Control**: Send graceful stop commands (`/v1/taa/stopTraining`) to interrupt running workloads.

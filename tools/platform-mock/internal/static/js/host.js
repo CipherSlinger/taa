@@ -330,6 +330,14 @@ async function submitHostTarget(body) {
     }
     hostStatusLast = payload.result || {};
     renderHostStatus(hostStatusLast);
+    // Every connection opens on `default`: the TAA and DCU test Pods live there,
+    // and a just-connected panel showing the cluster-wide list reads as if the
+    // wrong machine answered. The POST answers with an unfiltered snapshot, so
+    // this second request narrows it; the snapshot is fresh, so it costs no SSH
+    // read. A host without a default namespace resolves back to all.
+    hostNamespace = HOST_NS_DEFAULT;
+    hostStoreSet(HOST_NS_STORAGE_KEY, hostNamespace);
+    await refreshHostStatus();
     const failure = hostStatusLast.memoryError || hostStatusLast.podsError;
     if (failure) {
       showToast({ type: 'error', title: 'SSH 采集失败', message: failure });
