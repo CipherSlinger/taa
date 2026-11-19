@@ -14,7 +14,10 @@ require (
 	modernc.org/sqlite v1.30.1
 )
 
-replace github.com/CipherSlinger/teetls => ./teellm/teetls
+// Resolve teetls through the teeaudit submodule rather than teellm/teetls: the
+// audit module already carries it, and this keeps a build of TAA from requiring
+// the 22 GB teellm checkout, which only the deployment scripts need.
+replace github.com/CipherSlinger/teetls => ./teeaudit/teetls
 
 replace github.com/CipherSlinger/teeaudit => ./teeaudit
 

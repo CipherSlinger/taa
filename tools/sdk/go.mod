@@ -12,4 +12,4 @@ replace github.com/CipherSlinger/teeaudit => ../../teeaudit
 // teeaudit's own replace for teetls does not reach this module: replace
 // directives are honoured only in the main module, so a standalone build of
 // the SDK needs its own.
-replace github.com/CipherSlinger/teetls => ../../teellm/teetls
+replace github.com/CipherSlinger/teetls => ../../teeaudit/teetls

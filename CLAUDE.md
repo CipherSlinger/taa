@@ -21,10 +21,12 @@ Gotchas:
   repo root (imports resolve as `models.audit.tools.*`). The system `python3` has no pytest;
   use e.g. `~/.venv/bin/python -m pytest tests/test_cpg_builder.py` (single test: append
   `::Class::method`).
-- `go.work` spans three workspace modules (`taa`, `teeaudit`, `tools/sdk`); `teellm/teetls` is a
-  replace target rather than a member, because both `taa` and `teeaudit` replace it.
+- `go.work` spans three workspace modules (`taa`, `teeaudit`, `tools/sdk`); `teeaudit/teetls` is a
+  replace target rather than a member, because every module that needs it replaces it. Resolving
+  teetls through teeaudit keeps `teellm/` (22 GB, deployment only) out of the build path.
 - `teellm/` and `teeaudit/` are submodules. A fresh clone needs
   `git submodule update --init --recursive` before any build; the deploy scripts do not do it.
+  Only `teeaudit/` (with its nested `teetls`) is required to build and test TAA.
 
 ## Architecture (essentials)
 
