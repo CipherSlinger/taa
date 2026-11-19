@@ -157,3 +157,25 @@ func TestFrontendTaaTerminalRowsAreWired(t *testing.T) {
 		t.Fatal("pollTaaTerminals must reach fetchTaaLogsFor only through the expanded/paused guard")
 	}
 }
+
+// TestFrontendPageWideTaaLogIsGone pins the cleanup: the old card's functions,
+// its page-wide flags and its element ids must not survive anywhere, or two
+// implementations of the TAA log would drift apart.
+func TestFrontendPageWideTaaLogIsGone(t *testing.T) {
+	for _, gone := range []string{
+		"taaLogPaused",
+		"currentLogFilter",
+		"currentSearchKeyword",
+		"autoScrollLocked",
+		"function fetchTaaLogs(",
+		"function setLogFilter(",
+		"function handleLogSearch(",
+		"function applyLogFilteringAndHighlight(",
+		"function toggleTaaLogPause(",
+		"function clearTaaLogs(",
+	} {
+		if strings.Contains(frontendBundle, gone) {
+			t.Fatalf("frontendBundle still contains %q", gone)
+		}
+	}
+}

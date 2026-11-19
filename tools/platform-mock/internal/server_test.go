@@ -2368,35 +2368,35 @@ func TestReportResHistoryPersistenceAndReset(t *testing.T) {
 
 func TestTaaLogConsoleRendering(t *testing.T) {
 	html := frontendBundle
-	required := []string{
+	// The TAA log is a per-instance terminal inside the instance list now; the
+	// page-wide card and every element id it carried are gone.
+	for _, gone := range []string{
 		`id="card-taaLog"`,
-		`id="taaLogStatusDot"`,
-		`id="taaLogCount"`,
-		`id="taaLogLastSeq"`,
 		`id="taaLogOutput"`,
-		`fetchTaaLogs()`,
-		`clearTaaLogs()`,
+		`id="terminalSearchInput"`,
+		`class="log-panels-grid"`,
+	} {
+		if strings.Contains(html, gone) {
+			t.Errorf("frontendBundle still contains %q", gone)
+		}
+	}
+	for _, want := range []string{
+		"function buildTaaTerminal(item)",
+		"instance-log-toggle",
+		"taa-terminal-output",
+		"taa-terminal-search",
 		`/api/taaLog/status`,
 		`/api/taaLog/reset`,
 		`(/v1/taa/taaLog)`,
-	}
-	for _, s := range required {
-		if !strings.Contains(html, s) {
-			t.Errorf("frontendBundle missing %q", s)
+		`id="card-modelLog"`,
+	} {
+		if !strings.Contains(html, want) {
+			t.Errorf("frontendBundle missing %q", want)
 		}
 	}
 
-	// The model log and the TAA log are read against each other, so both cards
-	// must sit inside the same two-column grid.
-	gridIdx := strings.Index(html, `class="log-panels-grid"`)
-	taaIdx := strings.Index(html, `id="card-taaLog"`)
-	modelIdx := strings.Index(html, `id="card-modelLog"`)
-	if gridIdx == -1 || taaIdx < gridIdx || modelIdx < gridIdx {
-		t.Errorf("both log cards should sit inside .log-panels-grid: grid=%d taa=%d model=%d", gridIdx, taaIdx, modelIdx)
-	}
-
-	// The card titles live inside their cards now, so neither label is emitted as
-	// a standalone heading above the section anymore.
+	// The card titles live inside their cards, so neither label is emitted as a
+	// standalone heading above the section anymore.
 	if strings.Contains(html, `<h2>模型终端日志</h2>`) || strings.Contains(html, `<h2>TAA 运行日志</h2>`) {
 		t.Error("log card titles should be rendered inside the card header, not above the section")
 	}
@@ -2405,8 +2405,16 @@ func TestTaaLogConsoleRendering(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to read static/css/layout.css: %v", err)
 	}
-	if !strings.Contains(string(layoutBytes), ".log-panels-grid") {
-		t.Error("layout.css should define the .log-panels-grid two-column layout")
+	if strings.Contains(string(layoutBytes), ".log-panels-grid") {
+		t.Error("layout.css still defines the removed two-column log grid")
+	}
+
+	componentBytes, err := staticFS.ReadFile("static/css/components.css")
+	if err != nil {
+		t.Fatalf("failed to read static/css/components.css: %v", err)
+	}
+	if !strings.Contains(string(componentBytes), ".instance-terminal") {
+		t.Error("components.css does not style the inline instance terminal")
 	}
 }
 
@@ -2577,9 +2585,6 @@ func TestAdvancedUIPolishVisualDashboardAndStepperComponents(t *testing.T) {
 		`src="/static/js/toast.js"`,
 		`id="drawerViewModeBtn"`,
 		`id="drawerVisualContainer"`,
-		`class="log-filter-group"`,
-		`id="terminalSearchInput"`,
-		`id="searchMatchCount"`,
 		`id="instanceList"`,
 		`id="taaPublicKeyModal"`,
 		`id="copyPubKeyBtn"`,
@@ -2621,9 +2626,12 @@ func TestAdvancedUIPolishVisualDashboardAndStepperComponents(t *testing.T) {
 		"toggleAccordion",
 		"getAuditReportFromInteraction",
 		"toggleDrawerViewMode",
-		"setLogFilter",
-		"handleLogSearch",
-		"applyLogFilteringAndHighlight",
+		// The page-wide log controls became the per-instance terminal's own
+		// state writers; the old names are pinned gone in
+		// TestFrontendPageWideTaaLogIsGone.
+		"setTaaTerminalFilter",
+		"onTaaTerminalSearch",
+		"applyTaaTerminalView",
 		"detectLogLevel",
 		"highlightSearchMatches",
 	}
@@ -2693,7 +2701,7 @@ func TestUILayoutKeyModalAndSideBySideInputs(t *testing.T) {
 		t.Fatal("indexHTML missing id=\"card-import\"")
 	}
 	importSection := indexHTML[cardImportStartIdx:]
-	cardLogIdx := strings.Index(importSection, `id="card-taaLog"`)
+	cardLogIdx := strings.Index(importSection, `id="card-modelLog"`)
 	if cardLogIdx != -1 {
 		importSection = importSection[:cardLogIdx]
 	}
@@ -3029,12 +3037,13 @@ func TestFrontendInstanceSelector(t *testing.T) {
 		}
 	}
 	// The instance-scoped calls must go through mockFetch, otherwise switching
-	// the selector would still show the default instance's data.
+	// the selector would still show the default instance's data. The TAA log is
+	// not one of them: it is a per-instance terminal addressed by dockerId, and
+	// deliberately does not follow the selection.
 	for _, want := range []string{
 		"mockFetch('/api/register/status'",
 		"mockFetch('/api/reportRes/status'",
 		"mockFetch('/api/modelLog/status'",
-		"mockFetch('/api/taaLog/status'",
 		"mockFetch('/api/dashboard/status'",
 		"mockFetch('/api/dashboard/status', { cache: 'no-store' })",
 		"mockFetch('/api/upload/delete'",
