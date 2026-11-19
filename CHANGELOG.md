@@ -9,6 +9,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 ## [Unreleased]
 
 ### Added
+- **platform-mock：TAA 日志改为每实例独立终端。** 底部「TAA 运行日志」卡片只跟随选中实例，
+  切换行会把操作者正在看的日志整个换掉，且暂停/级别过滤/搜索/滚动锁都是页面级变量，无法同时
+  对照两个实例。现在每个实例行带 `日志 (N)` 按钮，在该行下方展开独立终端；状态按 dockerId 保存，
+  日志请求始终显式带 `?dockerId=`，收起或暂停的终端不再轮询。底部只保留「模型终端日志」并改为整行
+  全宽。
 - **The Code-Audit Runtime Is Now Its Own Module and Repository (`teeaudit`)**: the audit path is
   no longer a private package of the daemon. `internal/codeaudit` (with `cpg/`), `internal/llmclient`,
   `pkg/crypto`, `pkg/archiveentry`, `internal/hctclient` and `internal/hctproto` moved into the

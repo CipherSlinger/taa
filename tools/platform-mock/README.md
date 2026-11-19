@@ -130,7 +130,7 @@ The platform mock provides an embedded single-page Web console accessible by ope
   IP field is display/copy only — it is pre-filled with the detected address of the machine
   being read, and it never changes how the mock addresses TAA.
 - **Model Ingress & Audit**: Upload model packages, inspect static AST rule violations, and observe Ollama LLM semantic verification outcomes. The console shows the platform SM2 key pair the mock generated and persisted at startup (the same pair its envelopes use), and the regenerate button rotates that pair and overwrites the key file; loading the page never rotates it.
-- **Real-Time Progress & Logs**: Displays real-time progress bars, streamed terminal logs (`modelLog`), and TAA daemon operational logs (`taaLog`).
+- **Real-Time Progress & Logs**: Displays real-time progress bars, streamed terminal logs (`modelLog`), and one inline TAA log terminal per instance (`taaLog`). Each terminal is addressed by its own `dockerId`, so two instances can be watched side by side with independent pause, level filter, search and scroll; a collapsed or paused terminal sends no requests. The `日志 (N)` row button shows the instance's retained line count.
 - **Execution Control**: Send graceful stop commands (`/v1/taa/stopTraining`) to interrupt running workloads.
 - **API Tester**: Pick a TAA business endpoint from a dropdown, edit its example JSON body,
   and the card generates a ready-to-paste `curl` command with a copy button. TAA accepts only
@@ -288,8 +288,9 @@ flag: instance identity is the registration's `dockerId`.
   registration: nothing in the mock polls an instance, so an accepted registration is a
   historical fact, not evidence of a live link. A passing check expires after 90 seconds and
   the row falls back to `已注册`; a failed one is kept until the operator retries. It carries its
-  own actions (公钥, 注册返回, 检查连通性, 查看结果 for the row whose check produced the held
-  result, 获取证明报告 for TEE). Those buttons address their row's `dockerId` directly; there is
+  own actions (日志, 公钥, 注册返回, 检查连通性, 查看结果 for the row whose check produced the held
+  result, 获取证明报告 for TEE). 日志 toggles an inline terminal under that row; it belongs to the
+  row's `dockerId`, not to the selection, and carries its own pause, filter, search and scroll. Those buttons address their row's `dockerId` directly; there is
   no separate detail row under the list and no delete action: the list is the configured
   inventory, so a row is not removed from here. An instance whose Pod is gone keeps its `已注册`
   row until a check marks it `未连接`, and comes back on its own when a Pod registers under the
