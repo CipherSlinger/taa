@@ -209,6 +209,10 @@ func TestShippedTemplatesCarryOneCryptoAnchor(t *testing.T) {
 			if got := bytes.Count(raw, anchor); got != 1 {
 				t.Fatalf("%s contains %d crypto anchors, want exactly 1", rel, got)
 			}
+			// TAA_HCT_ACCEL=ccp needs the same kind of anchor.
+			if got := bytes.Count(raw, []byte(`"accel": "sw"`)); got != 1 {
+				t.Fatalf("%s contains %d accel anchors, want exactly 1", rel, got)
+			}
 			if !bytes.Contains(raw, []byte(`"crypto": {`)) {
 				t.Fatalf("%s has a backend value but no crypto block", rel)
 			}

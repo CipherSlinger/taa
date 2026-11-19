@@ -32,3 +32,9 @@ dist/
 
 # Python bytecode from the renderer (render/render.py).
 __pycache__/
+
+# HCT 3.0.10 payload and its build cache (the fetched deb, the unpacked
+# package, and the helper built in a container). Rebuilt with
+# build-hct-helper.sh; the library alone is 12 MiB and the deb is fetched.
+hct/
+hct-payload/

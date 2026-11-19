@@ -29,7 +29,10 @@
     }
   },
   "crypto": {
-    "backend": "builtin"
+    "backend": "builtin",
+    "hct": {
+      "accel": "sw"
+    }
   },
   "codeAudit": {
     "enabled": true,

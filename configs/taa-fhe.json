@@ -24,7 +24,10 @@
     }
   },
   "crypto": {
-    "backend": "builtin"
+    "backend": "builtin",
+    "hct": {
+      "accel": "sw"
+    }
   },
   "fhe": {
     "endpoint": "http://127.0.0.1:58996",

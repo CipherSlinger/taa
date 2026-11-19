@@ -16,9 +16,10 @@
 #      enforces `gzip -t` and refuses it; use `fetch-base` to pull the real one.
 #      For the same reason the historical out/kata-containers-initrd-taa-csv.initrd
 #      had a git blob identical to the base: it was a copy, not a build product.
-#   2. The injected TAA must be statically linked. The base initrd has no glibc, so
-#      a dynamically linked binary cannot start. bin/taa used to be dynamic, which
-#      disagreed with the CGO_ENABLED=0 used by the production image.
+#   2. The injected TAA must be statically linked. That is a contract of its own
+#      (the production image and the initrd run the same binary), and the base
+#      initrd's glibc 2.35 is for the optional HCT helper, not for TAA. bin/taa
+#      used to be dynamic, which disagreed with the CGO_ENABLED=0 production image.
 set -euo pipefail
 
 # 流程：先 build，再按需 deploy 和 launch，最后校验 Ready 和 QEMU initrd。
@@ -332,6 +333,16 @@ RENDER_DIR="${RENDER_DIR:-$SCRIPT_DIR/render}"
 # has neither python3 nor semgrep, and TAA resolves the semgrep CLI through PATH.
 # Build it with build-semgrep-payload.sh; it is gitignored because of its size.
 TAA_SEMGREP_PAYLOAD_DIR="${TAA_SEMGREP_PAYLOAD_DIR:-$SCRIPT_DIR/semgrep-payload}"
+
+# Optional HCT crypto payload. With TAA_CRYPTO_BACKEND=hct the guest runs the
+# SM2/SM3/SM4 operations on libhct 3.0.10 through taa-hct-helper; the helper is
+# dynamic, so the payload is only usable because the base initrd carries glibc.
+# Build it with build-hct-helper.sh; it is gitignored because of the fetched deb
+# and the 12 MiB library. Left at the default (builtin) the payload is not
+# injected, which keeps one initrd usable as the gray-rollout baseline.
+HCT_PAYLOAD_DIR="${HCT_PAYLOAD_DIR:-$SCRIPT_DIR/hct-payload}"
+TAA_CRYPTO_BACKEND="${TAA_CRYPTO_BACKEND:-}"
+TAA_HCT_ACCEL="${TAA_HCT_ACCEL:-sw}"
 
 # DCU driver payload. The hycu modules and their firmware exist only inside the
 # DCU guest image's rootfs, and the base initrd has neither them nor kmod, so a
@@ -668,6 +679,9 @@ Environment overrides:
   TAA_MODULES=${TAA_MODULES:-(none)}
   DCU_PAYLOAD_DIR=$DCU_PAYLOAD_DIR
   DCU_REMOTE_IMAGE=$DCU_REMOTE_IMAGE
+  HCT_PAYLOAD_DIR=$HCT_PAYLOAD_DIR
+  TAA_CRYPTO_BACKEND=${TAA_CRYPTO_BACKEND:-(builtin)}
+  TAA_HCT_ACCEL=$TAA_HCT_ACCEL
   ALLOW_MISSING_TAA_ENV=$ALLOW_MISSING_TAA_ENV
   SKIP_KATA_TEMPLATE_CHECK=$SKIP_KATA_TEMPLATE_CHECK
   CONTAINERD_CONFIG=$CONTAINERD_CONFIG
@@ -691,6 +705,13 @@ synthetic archive):
   TAA_CONFIG_SRC=$TAA_CONFIG_SRC
 
 Notes:
+  TAA_CRYPTO_BACKEND=hct injects the HCT payload and rewrites the injected
+  config's crypto.backend from "builtin" to "hct"; the template must carry that
+  literal anchor (configs/taa-production.json does). Build the payload with
+  build-hct-helper.sh (fetch, build, payload) and point HCT_PAYLOAD_DIR at it.
+  A payload without the backend switch is allowed: that is the gray-rollout
+  shape, where one image still runs builtin. TAA_HCT_ACCEL=ccp writes the ccp
+  accel; the CSV2 guest has no /dev/ccp, so TAA refuses that at startup.
   TAA starts whenever /etc/taa/taa-config.json is readable: the config is a hard
   dependency (TAA exits 1 without it). PLATFORM_IP and DOCKER_ID are optional and
   only affect platform registration, which is a warning inside TAA. Set both to
@@ -774,6 +795,13 @@ initrd_wants_semgrep() {
   role_wants_semgrep && taa_config_wants_semgrep
 }
 
+# The crypto backend is a build input, not a role property: every role uses it.
+# Unlike the scan engine it cannot be read from the template, because the
+# template ships "builtin" and the build rewrites it (stage_taa_config).
+initrd_wants_hct() {
+  [[ "$TAA_CRYPTO_BACKEND" == "hct" ]]
+}
+
 # Validate every local build input before any temporary state is created.
 # TAA needs PLATFORM_IP and DOCKER_ID to appear as a pair: supplying only one
 # leaves the registration USERDATA inconsistent with the platform notify
@@ -785,9 +813,10 @@ check_build_inputs() {
     exit 1
   fi
 
-  # The base initrd has no glibc, so a dynamically linked TAA cannot start. It
-  # would not fail the build, only the boot -- long after the measurement has
-  # been taken -- so it is asserted here instead.
+  # TAA is static by contract, and a dynamically linked one would only fail at
+  # boot -- long after the measurement has been taken -- so it is asserted here.
+  # (The base initrd does carry glibc 2.35; that serves the optional HCT helper,
+  # which is dynamically linked on purpose. See stage_hct_payload.
   local taa_file_type
   taa_file_type="$(file -b "$TAA_SRC" 2>/dev/null || true)"
   if [[ "$taa_file_type" != *"statically linked"* ]]; then
@@ -863,6 +892,44 @@ check_build_inputs() {
     done
   fi
 
+  # The crypto backend travels into the image, so a value the guest cannot use
+  # has to be refused here rather than turned into a boot-time fatal.
+  case "$TAA_CRYPTO_BACKEND" in
+    ""|builtin|hct) ;;
+    *)
+      echo "error: TAA_CRYPTO_BACKEND must be builtin or hct, got '$TAA_CRYPTO_BACKEND'" >&2
+      exit 1
+      ;;
+  esac
+  case "$TAA_HCT_ACCEL" in
+    sw|ccp) ;;
+    *)
+      echo "error: TAA_HCT_ACCEL must be sw or ccp, got '$TAA_HCT_ACCEL'" >&2
+      exit 1
+      ;;
+  esac
+
+  # An initrd that configures hct without the helper and libraries boots, then
+  # TAA exits at startup: selectCryptoBackend is fail-closed by design. The
+  # reverse (payload present, backend builtin) is allowed -- that is exactly the
+  # gray-rollout shape, where one payload serves both paths.
+  if initrd_wants_hct; then
+    local hct_entry
+    for hct_entry in \
+      "usr/local/bin/taa-hct-helper" \
+      "opt/hygon/hct/lib64/libhct.so" \
+      "opt/hygon/hct/lib64/libnuma.so.1" \
+      "opt/hygon/hct/MANIFEST" \
+      "etc/hct_config"; do
+      if [[ ! -e "$HCT_PAYLOAD_DIR/$hct_entry" ]]; then
+        echo "error: TAA_CRYPTO_BACKEND=hct but the HCT payload is incomplete" >&2
+        echo "       missing: $HCT_PAYLOAD_DIR/$hct_entry" >&2
+        echo "hint: run '$SCRIPT_DIR/build-hct-helper.sh fetch', then 'build', then 'payload'" >&2
+        exit 1
+      fi
+    done
+  fi
+
   # A DCU initrd without the driver tree boots fine and then has no card: the
   # hycu modules exist only in the DCU guest image, so the only fix is a fetch.
   if role_wants_dcu_payload; then
@@ -916,6 +983,33 @@ stage_semgrep_payload() {
   echo "semgrep 载荷（未压缩，按文件大小计）: ${payload_mib} MiB / ${payload_files} 个文件"
 }
 
+# Copy the HCT payload into the TAA member. The helper is deliberately dynamic:
+# TAA keeps its static-link contract, and the base initrd's glibc 2.35 is what
+# lets the helper run. Modes are pinned with install -m because everything here
+# lands in the measured image.
+stage_hct_payload() {
+  local stage_dir="$1"
+  echo "注入 HCT 密码载荷"
+
+  install -d "$stage_dir/usr/local/bin" "$stage_dir/opt/hygon/hct/lib64" "$stage_dir/etc"
+  install -m 0755 "$HCT_PAYLOAD_DIR/usr/local/bin/taa-hct-helper" \
+    "$stage_dir/usr/local/bin/taa-hct-helper"
+  install -m 0755 "$HCT_PAYLOAD_DIR/opt/hygon/hct/lib64/libhct.so" \
+    "$stage_dir/opt/hygon/hct/lib64/libhct.so"
+  install -m 0755 "$HCT_PAYLOAD_DIR/opt/hygon/hct/lib64/libnuma.so.1" \
+    "$stage_dir/opt/hygon/hct/lib64/libnuma.so.1"
+  install -m 0644 "$HCT_PAYLOAD_DIR/opt/hygon/hct/MANIFEST" \
+    "$stage_dir/opt/hygon/hct/MANIFEST"
+  install -m 0644 "$HCT_PAYLOAD_DIR/etc/hct_config" "$stage_dir/etc/hct_config"
+
+  local payload_files payload_mib
+  read -r payload_files payload_mib < <(
+    find "$HCT_PAYLOAD_DIR" -mindepth 1 -type f -printf '%s\n' |
+      awk '{n++; s += $1} END {printf "%d %.1f\n", n, s / 1048576}'
+  )
+  echo "HCT 载荷（未压缩，按文件大小计）: ${payload_mib} MiB / ${payload_files} 个文件"
+}
+
 # Copy the DCU driver tree into the staging tree. The payload mirrors the guest
 # rootfs (usr/lib/modules, usr/lib/firmware, usr/bin/kmod, usr/local/hyhal and
 # opt/hyhal -> /usr/local/hyhal), so this is one copy plus the two kmod applet
@@ -946,37 +1040,72 @@ stage_dcu_payload() {
 
 # Install the injected TAA config into the staging tree.
 #
-# The training role takes the production template verbatim. The other two carry
-# a copy whose `codeAudit.codeScan.engine` is "regex": they ship no semgrep
-# payload, so leaving the template's "semgrep" in place would make every boot
-# resolve an engine that cannot be constructed, log the fallback warning, and
-# run regex anyway. A role that never audits is not worth a per-boot warning; a
-# role whose config claims an engine it cannot run is a defect, not a warning.
+# The training role takes the production template verbatim except for the crypto
+# backend. A non-training role additionally gets `codeAudit.codeScan.engine`
+# rewritten to "regex": it ships no semgrep payload, so leaving the template's
+# "semgrep" in place would make every boot resolve an engine that cannot be
+# constructed, log the fallback warning, and run regex anyway.
 #
-# Only the engine is rewritten. Everything else stays as the production
-# template says, so the operator reads one file shape whatever the role.
+# Every rewrite is a byte-level sed, never a JSON re-encode: this file is inside
+# the measured image, and a parse/re-dump would silently normalise key order and
+# spacing, changing MEASURED for a config that means the same thing.
 stage_taa_config() {
   local dst="$1/etc/taa/taa-config.json"
-  if role_wants_semgrep; then
-    install -m 0644 "$TAA_CONFIG_SRC" "$dst"
+  install -m 0644 "$TAA_CONFIG_SRC" "$dst"
+
+  if ! role_wants_semgrep; then
+    # The pattern is anchored on the key so only the engine's value changes.
+    sed -E -i 's/("engine"[[:space:]]*:[[:space:]]*)"semgrep"/\1"regex"/' "$dst"
+
+    if grep -qE '"engine"[[:space:]]*:[[:space:]]*"semgrep"' "$dst"; then
+      echo "error: $TAA_ROLE does not carry the semgrep payload but the injected config still selects it" >&2
+      echo "       file: $TAA_CONFIG_SRC" >&2
+      exit 1
+    fi
+    echo "注入配置: $TAA_ROLE 角色，扫描引擎改写为 regex（本角色不带 semgrep 载荷）"
+  else
+    echo "注入配置: $TAA_ROLE 角色"
+  fi
+
+  if ! initrd_wants_hct; then
     return 0
   fi
 
-  # A substitution rather than a JSON re-encode: the template may carry keys and
-  # formatting (comments never, but ordering and spacing do) that a parse and
-  # re-dump would silently normalise, and this file is inside the measured image.
-  # The pattern is anchored on the key so only the engine's value changes.
-  sed -E 's/("engine"[[:space:]]*:[[:space:]]*)"semgrep"/\1"regex"/' \
-    "$TAA_CONFIG_SRC" > "$dst.tmp"
-  install -m 0644 "$dst.tmp" "$dst"
-  rm -f "$dst.tmp"
-
-  if grep -qE '"engine"[[:space:]]*:[[:space:]]*"semgrep"' "$dst"; then
-    echo "error: $TAA_ROLE does not carry the semgrep payload but the injected config still selects it" >&2
-    echo "       file: $TAA_CONFIG_SRC" >&2
+  # The template ships the builtin backend, and the initrd sed needs exactly one
+  # literal anchor. A missing anchor would produce an image whose config still
+  # says builtin while the build believes it asked for hct -- the guest would be
+  # healthy and slower than intended, with nothing in the logs to show it. Two
+  # anchors would make the rewrite ambiguous. Refuse both.
+  local anchors
+  anchors="$(grep -cE '"backend"[[:space:]]*:[[:space:]]*"builtin"' "$dst" || true)"
+  if [[ "$anchors" != "1" ]]; then
+    echo "error: $TAA_CONFIG_SRC must carry exactly one literal '"backend": "builtin"' for TAA_CRYPTO_BACKEND=hct (found $anchors)" >&2
     exit 1
   fi
-  echo "注入配置: $TAA_ROLE 角色，扫描引擎改写为 regex（本角色不带 semgrep 载荷）"
+  sed -E -i 's/("backend"[[:space:]]*:[[:space:]]*)"builtin"/\1"hct"/' "$dst"
+  if ! grep -qE '"backend"[[:space:]]*:[[:space:]]*"hct"' "$dst" ||
+    grep -qE '"backend"[[:space:]]*:[[:space:]]*"builtin"' "$dst"; then
+    echo "error: failed to rewrite crypto.backend to hct in the injected config" >&2
+    exit 1
+  fi
+
+  # accel defaults to sw both in the template and in TAA, so only an explicit
+  # ccp needs a rewrite. The CSV2 guest has no /dev/ccp; TAA refuses that at
+  # startup, but the image is still allowed to be built for a host that has one.
+  if [[ "$TAA_HCT_ACCEL" != "sw" ]]; then
+    anchors="$(grep -cE '"accel"[[:space:]]*:[[:space:]]*"sw"' "$dst" || true)"
+    if [[ "$anchors" != "1" ]]; then
+      echo "error: $TAA_CONFIG_SRC must carry exactly one literal '"accel": "sw"' for TAA_HCT_ACCEL=$TAA_HCT_ACCEL (found $anchors)" >&2
+      exit 1
+    fi
+    sed -E -i 's/("accel"[[:space:]]*:[[:space:]]*)"sw"/\1"ccp"/' "$dst"
+    if ! grep -qE '"accel"[[:space:]]*:[[:space:]]*"ccp"' "$dst"; then
+      echo "error: failed to rewrite crypto.hct.accel to ccp in the injected config" >&2
+      exit 1
+    fi
+  fi
+
+  echo "注入配置: 密码后端改写为 hct（accel=$TAA_HCT_ACCEL）"
 }
 
 # 远程部署前检查输出镜像是否包含 TAA 所需的注册环境，并核对其中烘焙的注册身份。
@@ -1328,7 +1457,10 @@ build_initrd() {
   # 拒绝把已经注入过的镜像当作 base。重复执行具备幂等性，
   # 因为每次都从 BASE_INITRD 开始并覆盖 INITRD_OUT；这个保护用于防止误把
   # 已注入输出文件当作新的 base。
-  for injected in usr/local/bin/taa usr/local/bin/taa-init etc/taa/taa-config.json opt/taa/semgrep/MANIFEST; do
+  for injected in \
+    usr/local/bin/taa usr/local/bin/taa-init etc/taa/taa-config.json opt/taa/semgrep/MANIFEST \
+    usr/local/bin/taa-hct-helper opt/hygon/hct/lib64/libhct.so \
+    opt/hygon/hct/lib64/libnuma.so.1 opt/hygon/hct/MANIFEST etc/hct_config; do
     if manifest_has_entry "$BASE_MANIFEST" "$injected"; then
       echo "error: base initrd already contains TAA payload path $injected; refusing to append a duplicate" >&2
       echo "hint: use the original remote Kata CSV initrd as $BASE_INITRD" >&2
@@ -1373,6 +1505,13 @@ build_initrd() {
   # Left selecting semgrep, the guest would log a fallback warning at every boot
   # and run the weaker engine anyway -- the config should say what runs.
   stage_taa_config "$stage"
+
+  # The helper payload is staged per build rather than folded into the seed: it
+  # is a few megabytes, and keeping it out of the seed leaves one warm seed for
+  # both the builtin and the hct rollouts.
+  if initrd_wants_hct; then
+    stage_hct_payload "$stage"
+  fi
 
   # The guest kata-agent runs every executable under the runtime config's
   # `guest_hook_path` (/usr/share/oci/hooks) in prestart/, which is how the
@@ -1489,6 +1628,24 @@ build_initrd() {
     echo "error: TAA member entries do not match the planned list" >&2
     diff -u "$BUILD_WORK_DIR/taa.expected" "$BUILD_WORK_DIR/taa.actual" | head -n 40 >&2 || true
     exit 1
+  fi
+
+  # The output is byte-for-byte seed + this member, so an entry proven present
+  # in the member is present in the image the kernel will unpack. Asserting the
+  # payload paths here keeps a partial stage from becoming a boot-time failure.
+  if initrd_wants_hct; then
+    local required
+    for required in \
+      usr/local/bin/taa-hct-helper \
+      opt/hygon/hct/lib64/libhct.so \
+      opt/hygon/hct/lib64/libnuma.so.1 \
+      opt/hygon/hct/MANIFEST \
+      etc/hct_config; do
+      if ! manifest_has_entry "$member_manifest" "$required"; then
+        echo "error: built TAA member is missing $required" >&2
+        exit 1
+      fi
+    done
   fi
 
   local seed_count out_count
@@ -2327,6 +2484,7 @@ case "$cmd" in
                TEST_NODE_NAME TEST_POD_NAME TEST_IMAGE TEST_IMAGE_ARCHIVE TEST_POD_ANNOTATIONS \
                TEST_POD_RUN_AS_USER TEST_POD_DEVICE_RESOURCE \
                DCU_PAYLOAD_DIR DCU_REMOTE_IMAGE \
+               HCT_PAYLOAD_DIR TAA_CRYPTO_BACKEND TAA_HCT_ACCEL \
                OUT_DIR INITRD_OUT SEED_DIR BASE_INITRD; do
       printf '%s=%q\n' "$key" "${!key}"
     done
