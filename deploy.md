@@ -600,6 +600,30 @@ semgrep 载荷；`-dcu` 角色还含 DCU 驱动载荷）+ 只装 TAA 的成员�
 几 MiB 的 TAA（秒级），而不是整份镜像（分钟级）。内核逐个读取 gzip member，行为与单
 member 等价。
 
+**实例角色与镜像**
+
+| 角色 | `CONTRACT_TYPE` | Pod 容器镜像 | 镜像体积 | 宿主交付包中的 initrd | initrd 大小 | 镜像内 TAA |
+|---|---|---|---|---|---|---|
+| `taa-train` | 1 | `172.16.10.178:31313/taa-env:v1-train-infer` | 2.17 GB（2170275081 B） | `/root/taa-images/package-train/bundle/initramfs.img` | 165 MB | 无 |
+| `taa-infer` | 2 | 同 `taa-train` | 同 `taa-train` | `/root/taa-images/package-infer/bundle/initramfs.img` | 78 MB | 无 |
+| `taa-analysis` | 3 | `172.16.10.178:31313/jupyter-nologin-full:v2.2` | 7.41 GB（7411037667 B） | `/root/taa-images/package-analysis/bundle/initramfs.img` | 69 MB | 无 |
+| `taa-train-dcu` | 1 | `172.16.10.178:31313/vllm:ubuntu-dtk-hyhal` | 25.6 GB（25611144188 B） | `/root/taa-images/package-train-dcu/bundle/initramfs.img` | 244 MB | 无 |
+| `taa-infer-dcu` | 2 | 同 `taa-train-dcu` | 同 `taa-train-dcu` | `/root/taa-images/package-infer-dcu/bundle/initramfs.img` | 110 MB | 无 |
+
+镜像体积取 `docker image inspect .Size`（也是 guest 内解压到 tmpfs 的体积，直接决定
+`role_default_memory` 的下限）；initrd 大小取本机 `deploy/guest-build/out/` 现有产物，
+随 semgrep/HCT/DCU 载荷是否注入而变化。交付包根目录由 `TAA_IMAGES_DIR` 决定（默认
+`/root/taa-images`），`REMOTE_PACKAGE_DIR` 被覆盖时前缀随之改变；`bundle/` 下还有
+`vmlinuz` 与 `OVMF.fd`，QEMU 实际启动用的就是表中的 `initramfs.img`。
+
+三个 Pod 镜像的最终文件系统都不含 TAA（2026-11-19 在 178 上检查：无 `*taa*` 文件、无
+taa 相关 ENV，Entrypoint 不引用 TAA；jupyter 与 vllm 的少量命中是 `ditaa`、`Comfortaa`、
+`DataAPI`、`libgstaasink.so`、`DeltaAlgorithm.h` 等无关名）。`taa-env:v1-train-infer`
+的构建历史里是 `COPY taa/ /root/taa/` 后接 `rm -rf /root/taa /opt/taa /root/.bash_history`，
+最终 Entrypoint 已清空、Cmd 为 `/bin/bash`：可见文件系统与启动配置都干净，但被删内容仍留在
+下层 blob 中（`docker save` 会带上），容器内不可见也不执行。analysis 用的是
+`jupyter-nologin-full:v2.2`，不是仓库里另一个带 TAA 的 `v2.2-taa-20261020` 变体。
+
 **DCU 全机密角色（`taa-train-dcu` / `taa-infer-dcu`）** 面向海光 DCU 全机密运行时：
 guest 内核换成 `vmlinuz-hycu-confidential-csv.container`（release
 `6.6.0-hycu-confidential-csv+`），Kata 模板换成 `configuration-qemu-hygon-dcu-csv2.toml`，
