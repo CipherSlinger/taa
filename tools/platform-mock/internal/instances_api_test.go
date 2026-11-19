@@ -381,3 +381,65 @@ func TestInstancesDeleteRouteIsGone(t *testing.T) {
 		t.Fatalf("the instance directory disappeared: %v", err)
 	}
 }
+
+// TestRegisterStatusShowsTheEffectiveTarget pins the register card to the
+// address outbound calls actually use. The stored record keeps the address the
+// registration arrived from -- and behind NAT that is the relay, not the
+// instance -- so a mock started with -instance-targets must not go on
+// displaying the stored one as though it were in use. SourceAddr still names
+// where the registration came from, so nothing the record knew is lost.
+func TestRegisterStatusShowsTheEffectiveTarget(t *testing.T) {
+	ks, err := newMemoryKeystore(nil)
+	if err != nil {
+		t.Fatalf("create the keystore: %v", err)
+	}
+	prev := currentPlatformKeys()
+	setPlatformKeys(ks)
+	defer setPlatformKeys(prev)
+
+	const override = "http://172.16.10.178:31121"
+	mgr := newInstanceManager(t.TempDir(), Config{
+		TAAPort:         "6001",
+		InstanceTargets: "docker-a=" + override,
+	})
+	keyA, err := crypto.GenerateSM2KeyPair()
+	if err != nil {
+		t.Fatalf("generate docker-a's key: %v", err)
+	}
+	keyB, err := crypto.GenerateSM2KeyPair()
+	if err != nil {
+		t.Fatalf("generate docker-b's key: %v", err)
+	}
+	registerInstanceForTest(t, mgr, "docker-a", keyA)
+	registerInstanceForTest(t, mgr, "docker-b", keyB)
+
+	registerStatus := func(dockerID string) registerState {
+		t.Helper()
+		req := httptest.NewRequest(http.MethodGet, "/api/register/status?dockerId="+dockerID, nil)
+		w := httptest.NewRecorder()
+		registerStatusHandler(mgr).ServeHTTP(w, req)
+		var payload struct {
+			Result registerState `json:"result"`
+		}
+		if err := json.Unmarshal(w.Body.Bytes(), &payload); err != nil {
+			t.Fatalf("decode %s's register status: %v", dockerID, err)
+		}
+		return payload.Result
+	}
+
+	withOverride := registerStatus("docker-a")
+	if withOverride.TaaTarget != override {
+		t.Fatalf("overridden instance taaTarget = %q, want %q", withOverride.TaaTarget, override)
+	}
+	if withOverride.SourceAddr == "" {
+		t.Fatal("the overridden instance lost the registration's source address")
+	}
+
+	withoutOverride := registerStatus("docker-b")
+	if withoutOverride.TaaTarget == override {
+		t.Fatalf("docker-b picked up docker-a's override: %q", withoutOverride.TaaTarget)
+	}
+	if withoutOverride.TaaTarget == "" {
+		t.Fatal("an instance without an override lost its derived target")
+	}
+}

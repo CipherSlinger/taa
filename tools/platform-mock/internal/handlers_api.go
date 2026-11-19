@@ -198,6 +198,22 @@ func targetForDisplay(mgr *instanceManager, dockerID string) string {
 	return target
 }
 
+// withEffectiveTarget rewrites the registration record's TaaTarget to the
+// address the platform would actually dial. The record stores the address the
+// registration arrived from, derived from r.RemoteAddr at registration time;
+// when the mock runs outside the cluster network that is the NAT that relayed
+// it, and an -instance-targets override replaces it for every outbound call.
+// Showing the stored value beside the list's effective one made the console
+// disagree with itself, and read as if the NodePort had been ignored. The
+// stored value is not discarded: SourceAddr still names where the registration
+// came from, and removing the override falls back to it.
+func withEffectiveTarget(mgr *instanceManager, state registerState) registerState {
+	if target := targetForDisplay(mgr, state.DockerID); target != "" {
+		state.TaaTarget = target
+	}
+	return state
+}
+
 func dashboardStatusHandler(mgr *instanceManager) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		setCORS(w)
@@ -210,7 +226,7 @@ func dashboardStatusHandler(mgr *instanceManager) http.HandlerFunc {
 		}
 		items, defaultID := instanceListPayload(mgr)
 		res := map[string]any{
-			"register":        b.register.get(),
+			"register":        withEffectiveTarget(mgr, b.register.get()),
 			"modelImport":     reportStateResult(b.reportModelImport.get()),
 			"audit":           reportStateResult(b.reportAudit.get()),
 			"progress":        b.progress.get(),
@@ -240,7 +256,7 @@ func registerStatusHandler(mgr *instanceManager) http.HandlerFunc {
 		if writeInstanceError(w, err) {
 			return
 		}
-		state := b.register.get()
+		state := withEffectiveTarget(mgr, b.register.get())
 		writeEnvelope(w, http.StatusOK, state.Message, state, state.StatusCode)
 	}
 }
