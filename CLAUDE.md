@@ -83,6 +83,21 @@ Large production-shaped Bash scripts; there is no Makefile.
 `CHANGELOG.md` — changelog entries explain the *why* behind most non-obvious code comments, so
 read the relevant entry before changing a subsystem.
 
+**Vendor reference — `docs/c86-devkit/`** — an offline mirror of the Hygon C86 DevKit docs site
+(`https://c86.sourcefind.cn/documents/2/`, SSO-gated), 184 upstream Markdown pages plus their
+images. Start at `docs/c86-devkit/README.md`, which indexes the whole tree. Read the relevant
+page before changing anything that depends on vendor behaviour:
+
+- `01. 机密计算/` — CSV/CSV2/CSV3 white papers (architecture, attestation, sealing, disk
+  encryption, Confidential_AI, 1G hugetlb), plus step-by-step host setup and test guides
+  including the QEMU parameters for encrypted VMs, DCU passthrough and Kata confidential
+  containers.
+- `03. 密码技术/` — HCT and TKM, i.e. the interface `internal/hct` speaks.
+- `02. 可信计算/` — TPM / TCM / TDM / TSB.
+
+It is vendor prose, not a contract: where the doc disagrees with what the hardware or the guest
+actually does, the observation wins — note the divergence in the code comment or CHANGELOG.
+
 Outward-facing documents (HTML manuals, DOCX/PDF, reports):
 
 - Put the 纽创信安 / OSR logo in the page header's top-left corner.
