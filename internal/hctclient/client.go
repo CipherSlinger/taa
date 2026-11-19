@@ -46,6 +46,10 @@ type Hello struct {
 	Version string
 	Accel   string
 	BuildID string
+	// Engines maps each operation group to the engine that serves it, as the
+	// helper reports it ("sm2=sw sm3=sw sm4-gcm=sw"). Helpers built before the
+	// field existed leave it empty.
+	Engines string
 }
 
 // StatusError is a failed response carrying a protocol status. Stream and
@@ -428,13 +432,23 @@ func parseHello(payload []byte) (Hello, error) {
 	accel := string(r.Bytes(accLen))
 	buildLen := int(r.U8())
 	build := string(r.Bytes(buildLen))
+	// The engine map is appended after the original three fields; an older
+	// helper sends nothing here and that is not an error.
+	engines := ""
+	if r.Remaining() > 0 {
+		engLen := int(r.U8())
+		engines = string(r.Bytes(engLen))
+	}
 	if err := r.Err(); err != nil {
 		return Hello{}, fmt.Errorf("malformed hello: %w", err)
+	}
+	if r.Remaining() != 0 {
+		return Hello{}, fmt.Errorf("malformed hello: %d trailing bytes", r.Remaining())
 	}
 	if version == "" {
 		return Hello{}, errors.New("empty libhct version")
 	}
-	return Hello{Version: version, Accel: accel, BuildID: build}, nil
+	return Hello{Version: version, Accel: accel, BuildID: build, Engines: engines}, nil
 }
 
 // boundedBuffer keeps the last max bytes written to it.

@@ -18,6 +18,8 @@ type fakeHCTBackend struct {
 	failWith      error  // a non-availability error to return instead
 	streamFailsAt string // "init" or "write" for NewSM3Stream
 	gcmPatch      bool   // make Seal/Open return ErrBackendUnavailable
+	accel         string // reported by Accel
+	engines       string // reported by Engines
 }
 
 func (f *fakeHCTBackend) fail() error {
@@ -32,6 +34,8 @@ func (f *fakeHCTBackend) fail() error {
 
 func (f *fakeHCTBackend) Name() string    { return BackendHCT }
 func (f *fakeHCTBackend) Version() string { return "fake-3.0.10" }
+func (f *fakeHCTBackend) Accel() string   { return f.accel }
+func (f *fakeHCTBackend) Engines() string { return f.engines }
 
 func (f *fakeHCTBackend) Check(context.Context) error { return f.fail() }
 
@@ -141,6 +145,21 @@ func installFakeHCT(t *testing.T, fake Backend) {
 	})
 	if err := SelectBackend(BackendConfig{Backend: BackendHCT}); err != nil {
 		t.Fatalf("SelectBackend(hct) error = %v", err)
+	}
+}
+
+// TestFallbackForwardsEngineReport keeps the startup log honest: the fallback
+// wrapper is the active backend, so it must forward the helper's effective
+// accel and engine map instead of letting them read as empty.
+func TestFallbackForwardsEngineReport(t *testing.T) {
+	const engines = "sm2=ccp sm3=ccp hmac-sm3=ccp sm4-gcm=ccp"
+	installFakeHCT(t, &fakeHCTBackend{accel: "ccp", engines: engines})
+
+	if got := BackendAccel(); got != "ccp" {
+		t.Fatalf("BackendAccel() = %q, want the helper's effective mode", got)
+	}
+	if got := BackendEngines(); got != engines {
+		t.Fatalf("BackendEngines() = %q, want %q", got, engines)
 	}
 }
 

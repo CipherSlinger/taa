@@ -55,6 +55,9 @@ func runFakeHelper() {
 			b.Bytes([]byte("sw"))
 			b.U8(4)
 			b.Bytes([]byte("test"))
+			engines := "sm2=sw sm3=sw hmac-sm3=sw sm4-gcm=sw"
+			b.U8(uint8(len(engines)))
+			b.Bytes([]byte(engines))
 			respond(hctproto.StatusOK, b.Payload())
 		case hctproto.OpPing:
 			respond(hctproto.StatusOK, nil)
@@ -105,10 +108,68 @@ func TestStartAndHello(t *testing.T) {
 	if !strings.Contains(h.Version, "3.0.10") || h.Accel != "sw" || h.BuildID != "test" {
 		t.Fatalf("hello = %+v", h)
 	}
+	if h.Engines != "sm2=sw sm3=sw hmac-sm3=sw sm4-gcm=sw" {
+		t.Fatalf("hello engines = %q", h.Engines)
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 	if err := c.Ping(ctx); err != nil {
 		t.Fatalf("Ping: %v", err)
+	}
+}
+
+// helloPayload builds a handshake body. appendEngines controls whether the
+// engine map field is present, so the old three-field format stays covered.
+func helloPayload(t *testing.T, appendEngines bool) []byte {
+	t.Helper()
+	var b hctproto.Builder
+	for _, s := range []string{"hct-3.0.10-x", "sw", "test"} {
+		b.U8(uint8(len(s)))
+		b.Bytes([]byte(s))
+	}
+	if appendEngines {
+		b.U8(9)
+		b.Bytes([]byte("sm2=ccp x"))
+	}
+	return b.Payload()
+}
+
+func TestParseHelloWithoutEngineMap(t *testing.T) {
+	// A helper built before the field existed must still handshake.
+	h, err := parseHello(helloPayload(t, false))
+	if err != nil {
+		t.Fatalf("parseHello: %v", err)
+	}
+	if h.Engines != "" {
+		t.Fatalf("Engines = %q, want empty", h.Engines)
+	}
+	if h.Version != "hct-3.0.10-x" || h.Accel != "sw" || h.BuildID != "test" {
+		t.Fatalf("hello = %+v", h)
+	}
+}
+
+func TestParseHelloWithEngineMap(t *testing.T) {
+	h, err := parseHello(helloPayload(t, true))
+	if err != nil {
+		t.Fatalf("parseHello: %v", err)
+	}
+	if h.Engines != "sm2=ccp x" {
+		t.Fatalf("Engines = %q", h.Engines)
+	}
+}
+
+func TestParseHelloRejectsTrailingBytes(t *testing.T) {
+	payload := append(helloPayload(t, true), 0xff)
+	if _, err := parseHello(payload); err == nil {
+		t.Fatal("expected an error for trailing bytes")
+	}
+}
+
+func TestParseHelloRejectsTruncatedEngineMap(t *testing.T) {
+	payload := helloPayload(t, false)
+	payload = append(payload, 9) // declares nine bytes, supplies none
+	if _, err := parseHello(payload); err == nil {
+		t.Fatal("expected an error for a truncated engine map")
 	}
 }
 

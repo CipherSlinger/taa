@@ -61,6 +61,14 @@ func (b *hctBackend) Name() string { return BackendHCT }
 // Version reports the libhct version string the helper handshake returned.
 func (b *hctBackend) Version() string { return b.client.Hello().Version }
 
+// Accel reports the acceleration mode the helper actually started with. It can
+// differ from the configured mode when the helper degrades.
+func (b *hctBackend) Accel() string { return b.client.Hello().Accel }
+
+// Engines reports which engine serves each operation group, as the helper
+// reported it in the handshake.
+func (b *hctBackend) Engines() string { return b.client.Hello().Engines }
+
 func (b *hctBackend) Check(ctx context.Context) error {
 	if err := b.client.Ping(ctx); err != nil {
 		return wrapUnavailable(err)

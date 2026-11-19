@@ -236,6 +236,15 @@ func (r *Reader) U64() uint64 {
 // Bytes returns n bytes (a copy is not made; the slice aliases the payload).
 func (r *Reader) Bytes(n int) []byte { return r.take(n) }
 
+// Remaining reports how many bytes are left unread. Unlike Rest it does not
+// consume them, so a caller can treat a trailing field as optional.
+func (r *Reader) Remaining() int {
+	if r.err != nil {
+		return 0
+	}
+	return len(r.b) - r.off
+}
+
 // Rest returns everything not yet consumed. It is only meaningful when Err is
 // nil.
 func (r *Reader) Rest() []byte {

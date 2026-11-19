@@ -24,9 +24,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
   `hct` that cannot start — missing helper or loader, missing `libhct`/`libnuma`, version
   mismatch, failed known-answer tests, or `accel=ccp` without a `/dev/ccp*` — **does not stop
   TAA**. The original software implementation takes over and the log records both the reason and
-  the interface now in use: `crypto backend: hct (Hygon HCT interface; libhct …, accel=…)`,
+  the interface now in use: `crypto backend: hct (Hygon HCT interface; libhct …, accel=…;
+  software implementation; engines: sm2=sw sm3=sw hmac-sm3=sw sm4-gcm=sw)`,
   `crypto backend: builtin (original software implementation, gmsm)`, or a `degraded from hct to
-  builtin` line carrying the helper error. A helper that dies while TAA is running degrades the
+  builtin` line carrying the helper error. The helper, not the configuration, is the authority on
+  that report: the handshake carries the accel it actually started with plus a per-operation
+  engine map, and each operation is dispatched through a capability-selecting router. The router
+  is the seam a future CCP engine plugs into — an engine that covers only part of the interface is
+  skipped for the operations it cannot serve instead of being reported as the whole backend. A helper that dies while TAA is running degrades the
   same way: stateless operations (SM2 key generation/encrypt/decrypt/sign/verify, SM3, HMAC,
   whole Seal/Open) are replayed once on the software implementation because no output has
   escaped, while a stream already consumed by the helper fails that one operation and leaves the

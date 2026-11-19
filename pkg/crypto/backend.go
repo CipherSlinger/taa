@@ -170,6 +170,37 @@ func BackendVersion() string {
 	return ""
 }
 
+// backendAccelReporter is implemented by backends whose acceleration mode is
+// decided below the configuration layer, so the reported value is the one
+// actually in use.
+type backendAccelReporter interface {
+	Accel() string
+}
+
+// BackendAccel reports the acceleration mode the active backend is using, or
+// "" when it has none to report.
+func BackendAccel() string {
+	if v, ok := currentBackend().(backendAccelReporter); ok {
+		return v.Accel()
+	}
+	return ""
+}
+
+// backendEngineReporter is implemented by backends that can say which engine
+// serves each operation group.
+type backendEngineReporter interface {
+	Engines() string
+}
+
+// BackendEngines reports the per-operation engine map of the active backend,
+// or "" when it has none to report.
+func BackendEngines() string {
+	if v, ok := currentBackend().(backendEngineReporter); ok {
+		return v.Engines()
+	}
+	return ""
+}
+
 // CheckBackend re-probes the active backend. A built-in backend never fails.
 func CheckBackend(ctx context.Context) error {
 	if checker, ok := currentBackend().(backendChecker); ok {

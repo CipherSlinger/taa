@@ -33,6 +33,15 @@ type engine interface {
 	NewGCM(key, iv []byte, enc bool) (gcmStream, error)
 }
 
+// engineDescriber is implemented by an engine that can report which HCT
+// backend it actually binds to and which engine serves each operation group.
+// The handshake carries both so TAA can log what is doing the work rather than
+// what the configuration asked for.
+type engineDescriber interface {
+	Accel() string
+	Describe() string
+}
+
 // sm3Stream is an incremental SM3 (or HMAC-SM3) context.
 type sm3Stream interface {
 	Write(p []byte) error
@@ -397,7 +406,14 @@ func (s *server) handle(op uint16, payload []byte) (uint16, []byte) {
 
 func (s *server) handleHello() (uint16, []byte) {
 	version := s.eng.Version()
-	accel := "sw"
+	// The helper, not the configuration, is the authority on what is in use:
+	// a requested accelerator can be unavailable, and a mixed engine chain can
+	// serve different operations from different implementations.
+	accel, engines := "sw", ""
+	if d, ok := s.eng.(engineDescriber); ok {
+		accel = d.Accel()
+		engines = d.Describe()
+	}
 	build := buildID
 	var b hctproto.Builder
 	b.U8(uint8(len(version)))
@@ -406,6 +422,10 @@ func (s *server) handleHello() (uint16, []byte) {
 	b.Bytes([]byte(accel))
 	b.U8(uint8(len(build)))
 	b.Bytes([]byte(build))
+	// Appended after the fields every helper has always sent, so a client built
+	// before the engine map existed still parses the three it knows.
+	b.U8(uint8(len(engines)))
+	b.Bytes([]byte(engines))
 	return okResp(b.Payload())
 }
 

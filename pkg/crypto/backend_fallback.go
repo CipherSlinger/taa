@@ -42,6 +42,24 @@ func (b *fallbackBackend) Version() string {
 	return ""
 }
 
+// Accel reports the acceleration mode of the helper underneath. The wrapper is
+// the active backend, so without this forwarding the startup log would fall back
+// to the configured mode instead of the one the helper actually selected.
+func (b *fallbackBackend) Accel() string {
+	if v, ok := b.hct.(backendAccelReporter); ok {
+		return v.Accel()
+	}
+	return ""
+}
+
+// Engines reports the per-operation engine map of the helper underneath.
+func (b *fallbackBackend) Engines() string {
+	if v, ok := b.hct.(backendEngineReporter); ok {
+		return v.Engines()
+	}
+	return ""
+}
+
 // Check re-probes the helper. A failure degrades to the built-in backend and
 // reports success, because the built-in backend is always usable.
 func (b *fallbackBackend) Check(ctx context.Context) error {

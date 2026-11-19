@@ -61,8 +61,25 @@ func selectCryptoBackend(cfg config.StartupConfig) error {
 		return fallbackToBuiltinCryptoBackend(err)
 	}
 
-	log.Printf("crypto backend: hct (Hygon HCT interface; libhct %s, accel=%s)",
-		teecrypto.BackendVersion(), accel)
+	// Report what the helper actually started with, not what was configured:
+	// the two can differ if the helper degrades, and the operator's question is
+	// "which interface is doing the crypto". accel names the HCT backend; the
+	// engine map (when the helper sends one) is the per-operation truth.
+	effective := accel
+	if got := teecrypto.BackendAccel(); got != "" {
+		effective = got
+	}
+	kind := "software implementation"
+	if effective == teecrypto.HCTAccelCCP {
+		kind = "hardware CCP"
+	}
+	if engines := teecrypto.BackendEngines(); engines != "" {
+		log.Printf("crypto backend: hct (Hygon HCT interface; libhct %s, accel=%s; %s; engines: %s)",
+			teecrypto.BackendVersion(), effective, kind, engines)
+	} else {
+		log.Printf("crypto backend: hct (Hygon HCT interface; libhct %s, accel=%s; %s)",
+			teecrypto.BackendVersion(), effective, kind)
+	}
 	return nil
 }
 
