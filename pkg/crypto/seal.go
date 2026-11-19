@@ -184,7 +184,10 @@ func DeriveSealingKeyFromCSV(hwKey []byte) ([]byte, error) {
 	material = append(material, label...)
 	material = append(material, counter...)
 
-	sum := SM3Sum(material)
+	sum, err := SM3SumChecked(material)
+	if err != nil {
+		return nil, fmt.Errorf("derive sealing key: %w", err)
+	}
 	key := make([]byte, 16)
 	copy(key, sum[:16])
 	return key, nil

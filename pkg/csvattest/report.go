@@ -29,7 +29,10 @@ func VerifySessionMAC(report, nonce []byte) error {
 	}
 
 	macInput := report[OffsetPEKCert:OffsetMAC]
-	got := taacrypto.HMACSM3(nonce, macInput)
+	got, err := taacrypto.HMACSM3Checked(nonce, macInput)
+	if err != nil {
+		return fmt.Errorf("verify session MAC: %w", err)
+	}
 	want := report[OffsetMAC : OffsetMAC+HashSize]
 	if !hmac.Equal(got[:], want) {
 		return ErrSessionMAC

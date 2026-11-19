@@ -101,7 +101,10 @@ func (c *Client) fetchReportIOCTL(nonce []byte) ([]byte, error) {
 	copy(page[:UserDataSize], userData)
 	copy(page[UserDataSize:UserDataSize+NonceSize], nonce)
 	hashInputEnd := UserDataSize + NonceSize
-	hash := taacrypto.SM3Sum(page[:hashInputEnd])
+	hash, err := taacrypto.SM3SumChecked(page[:hashInputEnd])
+	if err != nil {
+		return nil, fmt.Errorf("hash attestation request: %w", err)
+	}
 	copy(page[hashInputEnd:hashInputEnd+HashSize], hash[:])
 
 	dev, err := c.ops.openDevice(c.DevicePath)

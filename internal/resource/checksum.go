@@ -41,7 +41,11 @@ func BuildDirectoryChecksum(dir, algorithm string) (map[string]any, error) {
 		return nil, fmt.Errorf("path is not a directory: %s", dir)
 	}
 
-	h := teecrypto.NewSM3()
+	stream, err := teecrypto.NewSM3Stream()
+	if err != nil {
+		return nil, fmt.Errorf("init sm3 stream: %w", err)
+	}
+	defer stream.Close()
 	files := make([]string, 0)
 	err = filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
@@ -65,8 +69,12 @@ func BuildDirectoryChecksum(dir, algorithm string) (map[string]any, error) {
 		if err != nil {
 			return nil, fmt.Errorf("resolve relative path for %s: %w", fpath, err)
 		}
-		h.Write([]byte(filepath.ToSlash(rel)))
-		h.Write([]byte{0})
+		if _, err := stream.Write([]byte(filepath.ToSlash(rel))); err != nil {
+			return nil, fmt.Errorf("hash path %s: %w", rel, err)
+		}
+		if _, err := stream.Write([]byte{0}); err != nil {
+			return nil, fmt.Errorf("hash path %s: %w", rel, err)
+		}
 
 		info, err := os.Lstat(fpath)
 		if err != nil {
@@ -84,7 +92,7 @@ func BuildDirectoryChecksum(dir, algorithm string) (map[string]any, error) {
 		for {
 			n, readErr := f.Read(buf)
 			if n > 0 {
-				if _, writeErr := h.Write(buf[:n]); writeErr != nil {
+				if _, writeErr := stream.Write(buf[:n]); writeErr != nil {
 					_ = f.Close()
 					return nil, fmt.Errorf("hash file %s: %w", fpath, writeErr)
 				}
@@ -102,9 +110,13 @@ func BuildDirectoryChecksum(dir, algorithm string) (map[string]any, error) {
 		}
 	}
 
+	sum, err := stream.Sum()
+	if err != nil {
+		return nil, fmt.Errorf("finalize sm3: %w", err)
+	}
 	return map[string]any{
 		"size":      totalSize,
 		"algorithm": algorithm,
-		"value":     fmt.Sprintf("%x", h.Sum(nil)),
+		"value":     fmt.Sprintf("%x", sum[:]),
 	}, nil
 }

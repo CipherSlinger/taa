@@ -175,7 +175,11 @@ func computeDirectorySM3(dir string) (*ChecksumInfo, error) {
 	}
 	sort.Slice(files, func(i, j int) bool { return files[i].path < files[j].path })
 
-	h := teecrypto.NewSM3()
+	stream, err := teecrypto.NewSM3Stream()
+	if err != nil {
+		return nil, fmt.Errorf("init sm3 stream: %w", err)
+	}
+	defer stream.Close()
 	var totalSize int64
 	buf := make([]byte, 64*1024)
 
@@ -184,8 +188,12 @@ func computeDirectorySM3(dir string) (*ChecksumInfo, error) {
 		if err != nil {
 			return nil, fmt.Errorf("resolve rel path for %s: %w", file.path, err)
 		}
-		h.Write([]byte(filepath.ToSlash(rel)))
-		h.Write([]byte{0})
+		if _, err := stream.Write([]byte(filepath.ToSlash(rel))); err != nil {
+			return nil, fmt.Errorf("hash rel path %s: %w", rel, err)
+		}
+		if _, err := stream.Write([]byte{0}); err != nil {
+			return nil, fmt.Errorf("hash rel path %s: %w", rel, err)
+		}
 		totalSize += file.size
 
 		f, err := os.Open(file.path)
@@ -195,7 +203,10 @@ func computeDirectorySM3(dir string) (*ChecksumInfo, error) {
 		for {
 			n, rerr := f.Read(buf)
 			if n > 0 {
-				h.Write(buf[:n])
+				if _, werr := stream.Write(buf[:n]); werr != nil {
+					f.Close()
+					return nil, fmt.Errorf("hash file %s: %w", file.path, werr)
+				}
 			}
 			if rerr == io.EOF {
 				break
@@ -208,10 +219,14 @@ func computeDirectorySM3(dir string) (*ChecksumInfo, error) {
 		f.Close()
 	}
 
+	sum, err := stream.Sum()
+	if err != nil {
+		return nil, fmt.Errorf("finalize sm3: %w", err)
+	}
 	return &ChecksumInfo{
 		Size:      totalSize,
 		Algorithm: "sm3",
-		Value:     fmt.Sprintf("%x", h.Sum(nil)),
+		Value:     fmt.Sprintf("%x", sum[:]),
 	}, nil
 }
 

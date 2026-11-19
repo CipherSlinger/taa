@@ -1,13 +1,10 @@
 package crypto
 
 import (
-	"crypto/cipher"
 	"crypto/rand"
 	"errors"
 	"fmt"
 	"io"
-
-	"github.com/tjfoc/gmsm/sm4"
 )
 
 const (
@@ -69,7 +66,11 @@ func encryptGCM(dst, key, plaintext []byte) ([]byte, error) {
 	}
 
 	// Seal 将 nonce 作为前缀写入,并在末尾追加认证标签。
-	return gcm.Seal(dst, nonce, plaintext, nil), nil
+	sealed, err := gcm.Seal(dst, nonce, plaintext, nil)
+	if err != nil {
+		return nil, fmt.Errorf("teecrypto: 加密失败: %w", err)
+	}
+	return sealed, nil
 }
 
 // Decrypt 使用指定的 SM4 密钥解密由 Encrypt 生成的密文。
@@ -93,20 +94,4 @@ func Decrypt(key, ciphertext []byte) ([]byte, error) {
 		return nil, fmt.Errorf("teecrypto: 解密失败(密钥错误或数据被篡改): %w", err)
 	}
 	return plaintext, nil
-}
-
-// newGCM 校验密钥长度并构造 SM4-GCM 实例。
-func newGCM(key []byte) (cipher.AEAD, error) {
-	if len(key) != SM4KeySize {
-		return nil, ErrInvalidKeySize
-	}
-	block, err := sm4.NewCipher(key)
-	if err != nil {
-		return nil, fmt.Errorf("teecrypto: 初始化 SM4 失败: %w", err)
-	}
-	gcm, err := cipher.NewGCM(block)
-	if err != nil {
-		return nil, fmt.Errorf("teecrypto: 初始化 GCM 失败: %w", err)
-	}
-	return gcm, nil
 }

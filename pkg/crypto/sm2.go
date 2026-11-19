@@ -2,7 +2,6 @@ package crypto
 
 import (
 	"crypto/elliptic"
-	"crypto/rand"
 	"encoding/asn1"
 	"encoding/hex"
 	"encoding/pem"
@@ -40,38 +39,10 @@ type SM2PrivateKey struct {
 	D         *big.Int
 }
 
-// ─── 类型桥接 ────────────────────────────────────────────────────────
-
-func toGmsmPublicKey(pub *SM2PublicKey) *gmsmsm2.PublicKey {
-	return &gmsmsm2.PublicKey{
-		Curve: sm2Curve,
-		X:     pub.X,
-		Y:     pub.Y,
-	}
-}
-
-func toGmsmPrivateKey(priv *SM2PrivateKey) *gmsmsm2.PrivateKey {
-	return &gmsmsm2.PrivateKey{
-		PublicKey: gmsmsm2.PublicKey{
-			Curve: sm2Curve,
-			X:     priv.PublicKey.X,
-			Y:     priv.PublicKey.Y,
-		},
-		D: priv.D,
-	}
-}
-
 // ─── 密钥生成 ────────────────────────────────────────────────────────
 
 func GenerateSM2KeyPair() (*SM2PrivateKey, error) {
-	priv, err := gmsmsm2.GenerateKey(rand.Reader)
-	if err != nil {
-		return nil, fmt.Errorf("teecrypto: 生成 SM2 密钥对失败: %w", err)
-	}
-	return &SM2PrivateKey{
-		PublicKey: SM2PublicKey{X: priv.X, Y: priv.Y},
-		D:         priv.D,
-	}, nil
+	return currentBackend().GenerateSM2KeyPair()
 }
 
 // NewSM2PrivateKeyFromScalar builds a private key from a fixed 32-byte
@@ -218,11 +189,7 @@ func EncryptSM2(pub *SM2PublicKey, plaintext []byte) ([]byte, error) {
 	if len(plaintext) == 0 {
 		return nil, errors.New("teecrypto: SM2 明文不能为空")
 	}
-	ciphertext, err := gmsmsm2.Encrypt(toGmsmPublicKey(pub), plaintext, rand.Reader, gmsmsm2.C1C3C2)
-	if err != nil {
-		return nil, fmt.Errorf("teecrypto: SM2 加密失败: %w", err)
-	}
-	return ciphertext, nil
+	return currentBackend().EncryptSM2(pub, plaintext)
 }
 
 // SM2MinCiphertextSize is the shortest well-formed C1C3C2 ciphertext: the
@@ -243,11 +210,7 @@ func DecryptSM2(priv *SM2PrivateKey, ciphertext []byte) ([]byte, error) {
 	if len(ciphertext) < SM2MinCiphertextSize+1 {
 		return nil, fmt.Errorf("teecrypto: SM2 密文长度无效: %d", len(ciphertext))
 	}
-	plaintext, err := gmsmsm2.Decrypt(toGmsmPrivateKey(priv), ciphertext, gmsmsm2.C1C3C2)
-	if err != nil {
-		return nil, fmt.Errorf("teecrypto: SM2 解密失败: %w", err)
-	}
-	return plaintext, nil
+	return currentBackend().DecryptSM2(priv, ciphertext)
 }
 
 // ─── SM2 签名（委托 gmsm）───────────────────────────────────────────
@@ -270,11 +233,7 @@ func SignSM2Signature(priv *SM2PrivateKey, userID, msg []byte) (*big.Int, *big.I
 	if err := validateSM2PrivateKey(priv); err != nil {
 		return nil, nil, err
 	}
-	r, s, err := gmsmsm2.Sm2Sign(toGmsmPrivateKey(priv), msg, userID, rand.Reader)
-	if err != nil {
-		return nil, nil, fmt.Errorf("teecrypto: SM2 签名失败: %w", err)
-	}
-	return r, s, nil
+	return currentBackend().SignSM2(priv, userID, msg)
 }
 
 // VerifySM2Signature 使用 SM2 公钥验证 SM2 数字签名。
@@ -282,7 +241,7 @@ func VerifySM2Signature(pub *SM2PublicKey, userID, msg []byte, r, s *big.Int) bo
 	if validateSM2PublicKey(pub) != nil || r == nil || s == nil {
 		return false
 	}
-	return gmsmsm2.Sm2Verify(toGmsmPublicKey(pub), msg, userID, r, s)
+	return currentBackend().VerifySM2(pub, userID, msg, r, s)
 }
 
 // sm2DERSignature is the ASN.1 SEQUENCE { r INTEGER, s INTEGER } encoding SM2
