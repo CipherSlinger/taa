@@ -129,8 +129,9 @@ Consequences:
   (`SDF_*`, no separate psp/sdf package). It is not a drop-in transport: keys are used by
   handle and cannot be exported, so the key operations and `DeriveSealingKey`
   (`internal/store/sealed_state.go:107`, derived from the private scalar) would need
-  redesign. Whether our host meets the hardware, firmware and kernel requirements has not
-  been checked.
+  redesign. Host 178 meets the hardware, firmware and kernel requirements and vTKM was
+  verified end-to-end in a plain CSV2 VM, including key survival across VM restarts — see
+  `2026-11-19-vtkm-csv2-feasibility.md`.
 
 ## Host state after the experiment
 
