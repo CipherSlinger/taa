@@ -69,9 +69,9 @@ func TestVerifyReport_ShortBuffer(t *testing.T) {
 // useCertDirs points the chain lookup at an explicit directory for one test.
 func useCertDirs(t *testing.T, dirs ...string) {
 	t.Helper()
-	old := CertificateChainDirs
-	CertificateChainDirs = dirs
-	t.Cleanup(func() { CertificateChainDirs = old })
+	old := certificateChainDirs
+	certificateChainDirs = dirs
+	t.Cleanup(func() { certificateChainDirs = old })
 }
 
 // copyFixtureCerts copies the repository's vendor certificate fixtures into a
@@ -139,9 +139,9 @@ func TestCertificateChainPathsPrefersInstalledDirectory(t *testing.T) {
 	checkout := copyFixtureCerts(t)
 	useCertDirs(t, installed, checkout)
 
-	hrk, hskCek, err := CertificateChainPaths()
+	hrk, hskCek, err := certificateChainPaths()
 	if err != nil {
-		t.Fatalf("CertificateChainPaths() error = %v", err)
+		t.Fatalf("certificateChainPaths() error = %v", err)
 	}
 	if hrk != filepath.Join(installed, "hrk.cert") {
 		t.Errorf("hrk path = %q, want %q", hrk, filepath.Join(installed, "hrk.cert"))
@@ -161,9 +161,9 @@ func TestCertificateChainPathsSkipsIncompleteDirectory(t *testing.T) {
 	complete := copyFixtureCerts(t)
 	useCertDirs(t, incomplete, complete)
 
-	hrk, _, err := CertificateChainPaths()
+	hrk, _, err := certificateChainPaths()
 	if err != nil {
-		t.Fatalf("CertificateChainPaths() error = %v", err)
+		t.Fatalf("certificateChainPaths() error = %v", err)
 	}
 	if hrk != filepath.Join(complete, "hrk.cert") {
 		t.Errorf("hrk path = %q, want the complete directory %q", hrk, filepath.Join(complete, "hrk.cert"))

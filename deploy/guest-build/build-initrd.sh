@@ -813,18 +813,12 @@ check_build_inputs() {
   fi
 
   local input
-  for input in "$TAA_INIT_SRC" "$TAA_CONFIG_SRC"; do
+  # TAA verifies the attestation certificate chain at boot, so its pair is a
+  # build input like the binary and the config.
+  for input in "$TAA_INIT_SRC" "$TAA_CONFIG_SRC" \
+    "$TAA_CERTS_SRC_DIR/hrk.cert" "$TAA_CERTS_SRC_DIR/hsk_cek.cert"; do
     if [[ ! -f "$input" ]]; then
       echo "error: missing build input: $input" >&2
-      exit 1
-    fi
-  done
-
-  local cert
-  for cert in "$TAA_CERTS_SRC_DIR/hrk.cert" "$TAA_CERTS_SRC_DIR/hsk_cek.cert"; do
-    if [[ ! -f "$cert" ]]; then
-      echo "error: missing vendor attestation certificate: $cert" >&2
-      echo "hint: TAA verifies the attestation certificate chain at boot; restore deploy/certs/hrk.cert and deploy/certs/hsk_cek.cert" >&2
       exit 1
     fi
   done

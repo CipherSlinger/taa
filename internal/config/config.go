@@ -10,6 +10,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"taa/pkg/csvattest"
 )
 
 const (
@@ -977,13 +979,13 @@ func validateCodeScanEngine(cfg StartupConfig) error {
 }
 
 func defaultStartupConfig() StartupConfig {
-	hrkDefault := "/root/taa/certs/hrk.cert"
-	hskDefault := "/root/taa/certs/hsk_cek.cert"
-	if _, err := os.Stat(hrkDefault); err != nil {
-		if _, localErr := os.Stat("deploy/certs/hrk.cert"); localErr == nil {
-			hrkDefault = "deploy/certs/hrk.cert"
-			hskDefault = "deploy/certs/hsk_cek.cert"
-		}
+	// Use the same chain lookup as the startup self-check, so both name the
+	// same pair. When none is installed the canonical paths stand, and the
+	// handshake reports the missing chain.
+	hrkDefault := filepath.Join(csvattest.DefaultCertDirs[0], "hrk.cert")
+	hskDefault := filepath.Join(csvattest.DefaultCertDirs[0], "hsk_cek.cert")
+	if hrk, hskCek, ok := csvattest.ResolveLocalCertChain(csvattest.DefaultCertDirs); ok {
+		hrkDefault, hskDefault = hrk, hskCek
 	}
 
 	return StartupConfig{

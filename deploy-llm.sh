@@ -3030,6 +3030,10 @@ require_dir "ollama offline package" "$OLLAMA_LOCAL_DIR"
 require_file "ollama executable" "$OLLAMA_LOCAL_DIR/ollama"
 require_file "start-ollama.sh script" "$OLLAMA_LOCAL_DIR/start-ollama.sh"
 require_file "TEE-LLM Pod supervisor script" "$TEELLM_SUPERVISOR_SCRIPT"
+# The service anchors client attestation on this chain, and it is uploaded on every update, so a
+# missing file must fail before the supervisor is paused.
+require_file "Hygon HRK certificate" "$TEELLM_CERTS_SRC_DIR/hrk.cert"
+require_file "Hygon HSK-CEK certificate" "$TEELLM_CERTS_SRC_DIR/hsk_cek.cert"
 require_dir "ollama models directory" "$OLLAMA_LOCAL_DIR/models/models"
 require_dir "ollama lib directory" "$OLLAMA_LOCAL_DIR/lib/ollama"
 verify_ollama_binary "$OLLAMA_LOCAL_DIR/ollama"
@@ -3313,10 +3317,6 @@ deploy_teellm() {
 
     # Deploy the binary and configuration to the remote host, then into the Pod
     step "preparing and uploading configuration and binary"
-    # The vendor chain is part of what the service needs to start with mutual attestation enabled.
-    # Checked before anything is uploaded or written, so a missing file fails the run here.
-    require_file "Hygon HRK certificate" "$TEELLM_CERTS_SRC_DIR/hrk.cert"
-    require_file "Hygon HSK-CEK certificate" "$TEELLM_CERTS_SRC_DIR/hsk_cek.cert"
     local cfg_template="${TEELLM_CONFIG_PATH:-$TEELLM_DIR/configs/teellm-production.json}"
     local tmp_cfg
     tmp_cfg="$(mktemp /tmp/teellm_cfg.XXXXXX)"
