@@ -19,11 +19,11 @@ func main() {
 	serve := flag.Bool("serve", false, "serve the HCT request protocol on stdin/stdout")
 	selftest := flag.Bool("selftest", false, "run known-answer tests against libhct and exit")
 	showVersion := flag.Bool("version", false, "print the libhct version and exit")
-	accel := flag.String("accel", "sw", "HCT acceleration backend: sw or ccp")
+	accel := flag.String("accel", "sw", "HCT acceleration backend: sw or ccp (ccp falls back to sw when unavailable)")
 	flag.Parse()
 
 	if !*serve && !*selftest && !*showVersion {
-		fmt.Fprintln(os.Stderr, "usage: taa-hct-helper --serve | --selftest | --version [--accel sw]")
+		fmt.Fprintln(os.Stderr, "usage: taa-hct-helper --serve | --selftest | --version [--accel sw|ccp]")
 		os.Exit(2)
 	}
 
@@ -75,8 +75,15 @@ func watchParentDeath() {
 	if f == nil {
 		return
 	}
-	if _, err := f.Stat(); err != nil {
+	fi, err := f.Stat()
+	if err != nil {
 		return // fd 3 is not open (manual run)
+	}
+	// TAA always hands us a pipe. Require one explicitly: initialising the CCP
+	// backend can leave an unrelated fd open, and watching that would make the
+	// helper exit as soon as the descriptor reads EOF.
+	if fi.Mode()&os.ModeNamedPipe == 0 {
+		return
 	}
 	go func() {
 		var b [1]byte

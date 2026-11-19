@@ -1,6 +1,8 @@
 package main
 
 import (
+	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -187,5 +189,161 @@ func TestHelloCarriesEngineMap(t *testing.T) {
 	}
 	if engines != "sm2=sw sm3=sw hmac-sm3=sw sm4-gcm=sw" {
 		t.Fatalf("hello engines = %q", engines)
+	}
+}
+
+// ccpCaps mirrors what the hardware CCP header can serve incrementally:
+// every SM2 operation, streaming and burst SM3, and SM4-GCM, but no HMAC-SM3.
+const ccpCaps = capSM2Keygen | capSM2Encrypt | capSM2Decrypt | capSM2Sign |
+	capSM2Verify | capSM3Stream | capSM3Sum | capGCM
+
+func captureLog(logs *[]string) func(string, ...any) {
+	return func(format string, args ...any) {
+		*logs = append(*logs, fmt.Sprintf(format, args...))
+	}
+}
+
+// TestBuildEngineCCPRoutesByCapability pins the mixed-engine contract: the
+// CCP backend serves what it claims, the software backend serves HMAC-SM3,
+// and the reported map matches the routing.
+func TestBuildEngineCCPRoutesByCapability(t *testing.T) {
+	sw := &fakeEngine{}
+	ccp := &cappedEngine{fakeEngine: &fakeEngine{}, caps: ccpCaps}
+	var logs []string
+
+	eng, err := buildEngine("ccp", engineBuild{
+		sw:   sw,
+		ccp:  func() (engine, error) { return ccp, nil },
+		logf: captureLog(&logs),
+	})
+	if err != nil {
+		t.Fatalf("buildEngine: %v", err)
+	}
+	r, ok := eng.(*router)
+	if !ok {
+		t.Fatalf("buildEngine returned %T, want *router", eng)
+	}
+	if r.Accel() != "ccp" {
+		t.Fatalf("Accel() = %q, want ccp", r.Accel())
+	}
+	const want = "sm2=ccp sm3=ccp hmac-sm3=sw sm4-gcm=ccp"
+	if got := r.Describe(); got != want {
+		t.Fatalf("Describe() = %q, want %q", got, want)
+	}
+	if len(logs) != 0 {
+		t.Fatalf("unexpected fallback logs: %q", logs)
+	}
+
+	if _, _, err := r.KeyGen(); err != nil {
+		t.Fatalf("KeyGen: %v", err)
+	}
+	if ccp.last != "keygen" {
+		t.Fatalf("KeyGen went to %q, want ccp", ccp.last)
+	}
+	if _, err := r.SM3Sum(nil); err != nil {
+		t.Fatalf("SM3Sum: %v", err)
+	}
+	if ccp.last != "sm3-sum" {
+		t.Fatalf("SM3Sum went to %q, want ccp", ccp.last)
+	}
+	if _, err := r.NewGCM(nil, nil, true); err != nil {
+		t.Fatalf("NewGCM: %v", err)
+	}
+	if ccp.last != "gcm" {
+		t.Fatalf("NewGCM went to %q, want ccp", ccp.last)
+	}
+	if _, err := r.NewHMACSM3(nil); err != nil {
+		t.Fatalf("NewHMACSM3: %v", err)
+	}
+	if sw.last != "hmac-sm3" {
+		t.Fatalf("NewHMACSM3 went to %q, want sw (ccp is burst-only)", sw.last)
+	}
+	if ccp.last != "gcm" {
+		t.Fatalf("ccp served HMAC-SM3, which it does not support: %q", ccp.last)
+	}
+}
+
+// TestBuildEngineCCPFallsBackToSW covers the start-up degradation path: when
+// the CCP device cannot be opened the helper keeps running on sw and says so,
+// both in the log and in the handshake.
+func TestBuildEngineCCPFallsBackToSW(t *testing.T) {
+	sw := &fakeEngine{}
+	var logs []string
+
+	eng, err := buildEngine("ccp", engineBuild{
+		sw:   sw,
+		ccp:  func() (engine, error) { return nil, errors.New("hct_ccp_init rc=-1") },
+		logf: captureLog(&logs),
+	})
+	if err != nil {
+		t.Fatalf("buildEngine: %v", err)
+	}
+	r, ok := eng.(*router)
+	if !ok {
+		t.Fatalf("buildEngine returned %T, want *router", eng)
+	}
+	if r.Accel() != "sw" {
+		t.Fatalf("Accel() = %q, want the degraded value sw", r.Accel())
+	}
+	if got, want := r.Describe(), "sm2=sw sm3=sw hmac-sm3=sw sm4-gcm=sw"; got != want {
+		t.Fatalf("Describe() = %q, want %q", got, want)
+	}
+	if len(logs) != 1 || !strings.Contains(logs[0], "falling back to sw") ||
+		!strings.Contains(logs[0], "hct_ccp_init rc=-1") {
+		t.Fatalf("fallback log = %q, want the reason", logs)
+	}
+	if _, err := r.SM3Sum(nil); err != nil {
+		t.Fatalf("SM3Sum: %v", err)
+	}
+	if sw.last != "sm3-sum" {
+		t.Fatalf("SM3Sum went to %q, want sw after fallback", sw.last)
+	}
+
+	// The handshake must carry the effective accel, not the requested one.
+	srv := newServer(eng, func(hctproto.Header, []byte) error { return nil })
+	status, payload := srv.handle(hctproto.OpHello, nil)
+	if status != hctproto.StatusOK {
+		t.Fatalf("hello status = %d", status)
+	}
+	rd := hctproto.NewReader(payload)
+	_ = rd.Bytes(int(rd.U8())) // version
+	accel := string(rd.Bytes(int(rd.U8())))
+	_ = rd.Bytes(int(rd.U8())) // build id
+	engines := string(rd.Bytes(int(rd.U8())))
+	if err := rd.Err(); err != nil {
+		t.Fatalf("parse hello: %v", err)
+	}
+	if accel != "sw" || engines != "sm2=sw sm3=sw hmac-sm3=sw sm4-gcm=sw" {
+		t.Fatalf("hello accel=%q engines=%q, want the degraded sw map", accel, engines)
+	}
+}
+
+// TestBuildEngineCCPNotCompiledFallsBack covers a binary built without the CCP
+// backend; asking for ccp degrades instead of failing startup.
+func TestBuildEngineCCPNotCompiledFallsBack(t *testing.T) {
+	sw := &fakeEngine{}
+	eng, err := buildEngine("ccp", engineBuild{sw: sw})
+	if err != nil {
+		t.Fatalf("buildEngine: %v", err)
+	}
+	if got := eng.(*router).Accel(); got != "sw" {
+		t.Fatalf("Accel() = %q, want sw", got)
+	}
+}
+
+func TestBuildEngineDefaultAndUnknownAccel(t *testing.T) {
+	for _, accel := range []string{"", "sw"} {
+		eng, err := buildEngine(accel, engineBuild{sw: &fakeEngine{}})
+		if err != nil {
+			t.Fatalf("buildEngine(%q): %v", accel, err)
+		}
+		if got := eng.(*router).Accel(); got != "sw" {
+			t.Fatalf("buildEngine(%q).Accel() = %q, want sw", accel, got)
+		}
+	}
+	if _, err := buildEngine("gpu", engineBuild{sw: &fakeEngine{}}); err == nil {
+		t.Fatal("expected an error for an unknown accel")
+	} else if !strings.Contains(err.Error(), "want sw or ccp") {
+		t.Fatalf("err = %v, want it to name the accepted values", err)
 	}
 }

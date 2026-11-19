@@ -33,29 +33,30 @@ import "C"
 
 import (
 	"fmt"
+	"os"
 	"unsafe"
 )
 
 // hctEngine binds the engine interface to the CAE direct C API (hct_sw_*).
-// Only the SW backend is implemented; there is no CCP device in a CSV2 guest.
-// The engine is returned wrapped in a router even though it is the only route:
-// the router is the seam a CCP engine will plug into, and it is what feeds the
-// per-operation engine report in the handshake.
+// It is the software backend and the fallback for every operation the
+// hardware CCP engine cannot serve. The engine is always returned wrapped in
+// a router: even a single route feeds the per-operation engine report in the
+// handshake.
 type hctEngine struct{}
 
 func newEngine(accel string) (engine, error) {
-	if accel == "" {
-		accel = "sw"
-	}
-	if accel != "sw" {
-		return nil, fmt.Errorf("unsupported HCT accel %q (only sw is available)", accel)
-	}
 	e := &hctEngine{}
 	// Fail early if the library cannot even be queried.
 	if e.Version() == "" {
 		return nil, fmt.Errorf("libhct did not report a version")
 	}
-	return newRouter(accel, route{name: "sw", eng: e}), nil
+	return buildEngine(accel, engineBuild{
+		sw:  e,
+		ccp: func() (engine, error) { return newCCPEngine() },
+		logf: func(format string, args ...any) {
+			fmt.Fprintf(os.Stderr, "taa-hct-helper: "+format+"\n", args...)
+		},
+	})
 }
 
 func (e *hctEngine) Version() string {
