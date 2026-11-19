@@ -216,12 +216,17 @@ func NewServer(cfg Config) *Server {
 	mux.HandleFunc("/api/taa-target", taaTargetHandler(mgr))
 	mux.HandleFunc("/api/taa/open-response", taOpenResponseHandler)
 	// The host panel describes one machine: its address, the memory left and the
-	// Pods that exist. Which machine is newHostProbe's choice — by default the
-	// one the mock runs on, or a host named by -host-ssh. The snapshot is behind
-	// a short TTL and collected off the request path, because every open console
-	// tab polls it.
+	// Pods that exist. Which machine is the probe's choice — the one the mock
+	// runs on by default, a host named by -host-ssh, or one the console names at
+	// runtime. The snapshot is behind a short TTL and collected off the request
+	// path, because every open console tab polls it.
 	hostStatus := newHostStatusCache(newHostProbe(cfg), hostStatusTTL)
 	mux.HandleFunc("/api/host/status", hostStatusHandler(hostStatus))
+	// The machine behind the panel can also be chosen while the mock runs: the
+	// console's own address/user/password fields post here, because the operator
+	// holding the Hygon host's credentials is the one who knows what to read.
+	// The target is runtime state, not configuration.
+	mux.HandleFunc("/api/host/target", hostTargetHandler(hostStatus, cfg.HostSSHOptions))
 	mux.HandleFunc("/api/upload", uploadHandler(cfg.Addr, uploadDir, mgr))
 	// Resumable variant of the same upload: a large file is sent as a series of
 	// short requests, and the server's record of which chunks arrived is what a

@@ -35,18 +35,27 @@
   <div id="workspaceFlow" class="workspace-panel" role="tabpanel" aria-labelledby="tabBtnFlow">
 
   <!-- The host the panel describes. By default that is the machine the mock
-       itself runs on; started with -host-ssh it is that host, read over SSH.
-       The address is detected and remembered per browser: retyping it affects
-       what the page shows and what the copy actions hand out, never how the
-       mock addresses TAA - that stays derived from each instance. The label
-       beside the title says which machine the numbers actually came from. -->
+       itself runs on; started with -host-ssh it is that host. The address,
+       user and password fields switch it at runtime: the mock opens an SSH
+       connection with them and reads the same /proc/meminfo and kubectl there.
+       The label beside the title says which machine the numbers actually came
+       from, so the fields can never be mistaken for a display-only address.
+       The password is used for the connection and not stored by the mock. -->
   <section class="card host-bar" id="card-host">
     <div class="host-bar-head">
       <span class="host-bar-title">远程海光服务器</span>
       <span id="hostTargetLabel" class="host-bar-target muted"></span>
       <label for="hostIpInput" class="host-bar-label">IP</label>
       <input id="hostIpInput" class="host-bar-ip" spellcheck="false" autocomplete="off"
-             onchange="onHostIpEdit(this.value)" placeholder="检测中…">
+             onchange="onHostIpEdit(this.value)" placeholder="172.16.10.178">
+      <label for="hostUserInput" class="host-bar-label">用户</label>
+      <input id="hostUserInput" class="host-bar-user" spellcheck="false" autocomplete="username"
+             onchange="onHostUserEdit(this.value)" placeholder="root">
+      <label for="hostPasswordInput" class="host-bar-label">密码</label>
+      <input id="hostPasswordInput" class="host-bar-pass" type="password"
+             autocomplete="current-password" placeholder="留空用密钥">
+      <button type="button" class="secondary btn-sm" id="hostConnectBtn" onclick="onHostConnect()">连接</button>
+      <button type="button" class="secondary btn-sm" id="hostUseLocalBtn" onclick="onHostUseLocal()">本机</button>
       <span id="hostDetectedHint" class="muted host-bar-hint"></span>
       <span class="host-bar-sep"></span>
       <span class="host-bar-label">内存余量</span>

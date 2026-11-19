@@ -62,7 +62,8 @@ they are passed to the remote process through the environment, so the password d
 up in its command line. `--host-ssh [user@]host[:port]` points the host panel at a machine other
 than the one the mock runs on: the panel then reads `/proc/meminfo` and runs `kubectl` there over
 SSH, so its numbers and its label agree. It needs non-interactive SSH from the mock's user (a key
-or `--host-ssh-password`, which reaches `sshpass` through the environment). Run
+or `--host-ssh-password`, which reaches `sshpass` through the environment). The same switch is
+available in the console's IP / 用户 / 密码 fields without restarting the mock. Run
 `./deploy-platform-mock.sh --help` for the full list.
 
 ## Command-Line Flags
@@ -126,9 +127,13 @@ The platform mock provides an embedded single-page Web console accessible by ope
 - **Host Panel**: the top bar shows the memory left on the machine the Pods run on and a
   namespace-filtered Pod table, read from `/proc/meminfo` plus `kubectl get pods -A`. Which
   machine that is comes from `-host-ssh`: empty reads the machine the mock runs on, a target
-  runs the same two reads there over SSH (the label beside the title says which). The editable
-  IP field is display/copy only — it is pre-filled with the detected address of the machine
-  being read, and it never changes how the mock addresses TAA.
+  runs the same two reads there over SSH (the label beside the title says which). The bar's
+  IP / 用户 / 密码 fields change it while the mock runs: 连接 posts them to
+  `POST /api/host/target`, which builds an SSH probe from them and answers with that host's
+  first read, so a wrong host or password reports its error immediately; 本机 switches back to
+  the local machine. The password is used for the connection only — never written to disk,
+  never echoed back, held in memory just as long as that target is active. The mock still
+  addresses TAA from each instance's registration, never from these fields.
 - **Model Ingress & Audit**: Upload model packages, inspect static AST rule violations, and observe Ollama LLM semantic verification outcomes. The console shows the platform SM2 key pair the mock generated and persisted at startup (the same pair its envelopes use), and the regenerate button rotates that pair and overwrites the key file; loading the page never rotates it.
 - **Real-Time Progress & Logs**: Displays real-time progress bars, streamed terminal logs (`modelLog`), and one inline TAA log terminal per instance (`taaLog`). Each terminal is addressed by its own `dockerId`, so two instances can be watched side by side with independent pause, level filter, search and scroll; a collapsed or paused terminal sends no background polls (an explicit 刷新 still fetches). The `日志 (N)` row button shows the instance's retained line count.
 - **Execution Control**: Send graceful stop commands (`/v1/taa/stopTraining`) to interrupt running workloads.
@@ -325,7 +330,7 @@ tools/platform-mock/
 │   ├── keystore.go              # Platform SM2 key pair + registered TAA public key (persisted)
 │   ├── proxy.go                 # TAA reverse proxy and Kubernetes pod discovery
 │   ├── store.go                 # Thread-safe in-memory state and log ring buffer
-│   ├── host_status.go           # Host panel: snapshot cache and /api/host/status
+│   ├── host_status.go           # Host panel: snapshot cache, /api/host/status, /api/host/target
 │   ├── host_probe.go            # Where the panel reads: this machine or a host over SSH
 │   ├── host_terminal.go         # API tester's shell, always on the mock's own machine
 │   └── static/                  # Embedded Web console assets (embed.FS)

@@ -2323,8 +2323,9 @@ textarea.api-tester-key {
   white-space: nowrap;
 }
 
-.host-bar-ip {
-  width: 160px;
+.host-bar-ip,
+.host-bar-user,
+.host-bar-pass {
   margin: 0;
   padding: 5px 9px;
   font-size: 12.5px;
@@ -2332,6 +2333,18 @@ textarea.api-tester-key {
   border-radius: 6px;
   border: 1px solid var(--line);
   background: var(--bg);
+}
+
+.host-bar-ip {
+  width: 160px;
+}
+
+.host-bar-user {
+  width: 90px;
+}
+
+.host-bar-pass {
+  width: 110px;
 }
 
 .host-bar-hint {

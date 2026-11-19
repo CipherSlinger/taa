@@ -1,20 +1,24 @@
 // ── Host bar ──
 //
 // The machine the panel describes. Everything shown here comes from
-// GET /api/host/status. Where that number was read is the mock's choice at
-// startup: on this machine by default, or on the host named by -host-ssh, where
-// the same /proc/meminfo and the same kubectl run over SSH. The server's
-// `target` field says which, and the label beside the title shows it — a panel
+// GET /api/host/status. Which machine that is can be changed from this bar:
+// filling in IP / 用户 / 密码 and pressing 连接 posts them to
+// /api/host/target, and the mock then reads /proc/meminfo and runs kubectl on
+// that host over SSH. 本机 switches back. The server's `target` field says
+// which machine answered, and the label beside the title shows it — a panel
 // whose numbers came from somewhere other than its label is exactly the
 // confusion that field prevents.
 //
-// The address field is the one value an operator can edit. It is detected once
-// and then remembered per browser, because the detected address of a machine
-// with several interfaces is often not the one the operator uses. Editing it
-// only changes what is displayed and what the copy actions hand out: the mock
-// addresses TAA from each instance's registration, never from this field.
+// The IP and user fields are remembered per browser; the password is not
+// stored anywhere on this side, and the mock keeps it only in memory for as
+// long as that connection is the active one.
+//
+// Editing the address no longer changes anything displayed by itself: it is the
+// destination the 连接 button dials. How the mock addresses TAA is unrelated —
+// that stays derived from each instance's registration.
 
 const HOST_IP_STORAGE_KEY = 'pm.host.ip';
+const HOST_USER_STORAGE_KEY = 'pm.host.user';
 const HOST_NS_STORAGE_KEY = 'pm.host.namespace';
 const HOST_POLL_MS = 5000;
 
@@ -44,9 +48,23 @@ function hostStoreSet(key, value) {
   }
 }
 
-// hostDisplayedIP is the address the bar shows: the operator's saved choice
-// when there is one, otherwise the detected address.
-function hostDisplayedIP() {
+// hostTargetParts splits a target's "user@host" into the two fields.
+function hostTargetParts(target) {
+  const raw = String((target && target.host) || '');
+  const at = raw.lastIndexOf('@');
+  if (at < 0) return { user: '', host: raw };
+  return { user: raw.slice(0, at), host: raw.slice(at + 1) };
+}
+
+// hostDestinationShown is the address the field shows: the machine the server
+// is actually reading when that is a remote one, otherwise the operator's saved
+// destination, otherwise the detected local address.
+function hostDestinationShown() {
+  const target = (hostStatusLast && hostStatusLast.target) || {};
+  if (target.mode === 'ssh') {
+    const parts = hostTargetParts(target);
+    if (parts.host) return parts.host;
+  }
   const saved = (hostStoreGet(HOST_IP_STORAGE_KEY) || '').trim();
   if (saved) return saved;
   return (hostStatusLast && hostStatusLast.hostIp) || '';
@@ -89,8 +107,17 @@ function renderHostStatus(status) {
   }
   const ipInput = document.getElementById('hostIpInput');
   if (ipInput && document.activeElement !== ipInput) {
-    const shown = hostDisplayedIP();
-    if (shown) ipInput.value = shown;
+    ipInput.value = hostDestinationShown();
+  }
+  // The user field follows the machine actually in use. It is filled from the
+  // target rather than from the entry box so a page reload still shows who the
+  // server is connected as, and switching back to 本机 clears it.
+  const userInput = document.getElementById('hostUserInput');
+  if (userInput && document.activeElement !== userInput) {
+    const parts = hostTargetParts(target);
+    userInput.value = target.mode === 'ssh'
+      ? parts.user
+      : (hostStoreGet(HOST_USER_STORAGE_KEY) || '').trim();
   }
   const hint = document.getElementById('hostDetectedHint');
   if (hint) {
@@ -243,16 +270,80 @@ function toggleHostPodTable() {
   if (btn) btn.textContent = hostPodTableCollapsed ? '展开' : '收起';
 }
 
-// onHostIpEdit records the operator's address. An empty value clears the memory
-// rather than saving "", so the field can go back to the detected address.
+// onHostIpEdit and onHostUserEdit remember what this browser last typed. They
+// change nothing until 连接 is pressed: a typed address is a destination, not a
+// statement about what the panel is currently showing.
 function onHostIpEdit(value) {
-  const trimmed = String(value || '').trim();
-  if (trimmed) hostStoreSet(HOST_IP_STORAGE_KEY, trimmed);
-  else hostStoreSet(HOST_IP_STORAGE_KEY, '');
-  if (!trimmed) {
-    const detected = hostStatusLast && hostStatusLast.hostIp ? hostStatusLast.hostIp : '';
-    const input = document.getElementById('hostIpInput');
-    if (input && detected) input.value = detected;
+  hostStoreSet(HOST_IP_STORAGE_KEY, String(value || '').trim());
+}
+
+function onHostUserEdit(value) {
+  hostStoreSet(HOST_USER_STORAGE_KEY, String(value || '').trim());
+}
+
+// onHostConnect asks the mock to read the named host with these credentials.
+// The password is sent once to this server and never persisted.
+async function onHostConnect() {
+  const hostEl = document.getElementById('hostIpInput');
+  const userEl = document.getElementById('hostUserInput');
+  const passEl = document.getElementById('hostPasswordInput');
+  const host = (hostEl ? hostEl.value : '').trim();
+  if (!host) {
+    showToast({ type: 'warning', title: '未填写主机', message: '请填写远程主机的 IP 或主机名' });
+    return;
+  }
+  const user = (userEl ? userEl.value : '').trim();
+  hostStoreSet(HOST_IP_STORAGE_KEY, host);
+  hostStoreSet(HOST_USER_STORAGE_KEY, user);
+  await submitHostTarget({ host, user, password: passEl ? passEl.value : '' });
+}
+
+// onHostUseLocal points the panel back at the machine the mock runs on. The
+// saved destination is cleared too, so the field shows the detected address
+// instead of a host that is no longer in use.
+function onHostUseLocal() {
+  hostStoreSet(HOST_IP_STORAGE_KEY, '');
+  hostStoreSet(HOST_USER_STORAGE_KEY, '');
+  submitHostTarget({ host: '' });
+}
+
+// submitHostTarget posts a source change and renders the answer. The server
+// reads the new source before responding, so this one call says whether the
+// SSH login worked and what the host reported.
+async function submitHostTarget(body) {
+  const btn = document.getElementById('hostConnectBtn');
+  const original = btn ? btn.textContent : '';
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = '连接中…';
+  }
+  try {
+    const res = await fetch('/api/host/target', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    const payload = await res.json().catch(() => null);
+    if (!payload || payload.error !== 0) {
+      showToast({ type: 'error', title: '切换主机失败', message: (payload && payload.msg) || '请求未完成' });
+      return;
+    }
+    hostStatusLast = payload.result || {};
+    renderHostStatus(hostStatusLast);
+    const failure = hostStatusLast.memoryError || hostStatusLast.podsError;
+    if (failure) {
+      showToast({ type: 'error', title: 'SSH 采集失败', message: failure });
+    } else {
+      const label = (hostStatusLast.target || {}).label || '';
+      showToast({ type: 'success', title: '已连接', message: label + ' 的内存与 Pod 列表已读取' });
+    }
+  } catch (_) {
+    showToast({ type: 'error', title: '切换主机失败', message: '请求未完成' });
+  } finally {
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = original || '连接';
+    }
   }
 }
 
@@ -284,6 +375,9 @@ function initHostBar() {
   const saved = (hostStoreGet(HOST_IP_STORAGE_KEY) || '').trim();
   const input = document.getElementById('hostIpInput');
   if (input && saved) input.value = saved;
+  const savedUser = (hostStoreGet(HOST_USER_STORAGE_KEY) || '').trim();
+  const userInput = document.getElementById('hostUserInput');
+  if (userInput && savedUser) userInput.value = savedUser;
   // A saved empty string is a real choice (全部命名空间); only the absence of a
   // saved value falls back to the default namespace.
   const savedNS = hostStoreGet(HOST_NS_STORAGE_KEY);

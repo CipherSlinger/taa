@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os/exec"
 	"strconv"
 	"strings"
@@ -220,6 +222,23 @@ func TestParseSSHTargetAcceptsWhatAnOperatorTypes(t *testing.T) {
 	}
 }
 
+// The console feeds the destination from a form now, so an entry that ssh would
+// read as an option — or that would split into more arguments — is refused
+// before it can become anything but a destination.
+func TestParseSSHTargetRejectsOptionInjection(t *testing.T) {
+	for _, bad := range []string{
+		"-oProxyCommand=touch /tmp/pwned",
+		"root@-oProxyCommand=touch",
+		"172.16.10.178 extra",
+		"root name@172.16.10.178",
+		"--help",
+	} {
+		if _, _, _, err := parseSSHTarget(bad); err == nil {
+			t.Fatalf("%q should be rejected", bad)
+		}
+	}
+}
+
 // A malformed target must fail loudly on the panel instead of quietly reading
 // the local machine under a "remote" label.
 func TestBrokenTargetDoesNotFallBackToTheLocalMachine(t *testing.T) {
@@ -256,6 +275,78 @@ func TestSnapshotShowsTheRemoteAddressNotTheLocalOne(t *testing.T) {
 	}
 	if snapshot.Memory.TotalBytes != 1000*1024 {
 		t.Fatalf("memory = %+v", snapshot.Memory)
+	}
+}
+
+// ── console-driven target ───────────────────────────────────────────────
+
+// Pointing the panel at another machine must switch what it serves at once, and
+// going back to 本机 must drop the remote snapshot the same way.
+func TestSetProbeSwitchesTheSourceImmediately(t *testing.T) {
+	remote := &sshHostProbe{user: "root", host: "172.16.10.178",
+		exec: func(_ context.Context, _ string, args []string, _ []string) ([]byte, error) {
+			if strings.Contains(args[len(args)-1], "/proc/meminfo") {
+				return []byte("MemTotal: 2000 kB\nMemAvailable: 1000 kB\n"), nil
+			}
+			return []byte(`{"items":[]}`), nil
+		}}
+	cache := newHostStatusCache(localHostProbe{}, hostStatusTTL)
+	cache.now = func() time.Time { return timeFixed }
+
+	status := cache.setProbe(remote)
+	if status.Target.Mode != "ssh" || status.Target.Host != "root@172.16.10.178" {
+		t.Fatalf("target = %+v", status.Target)
+	}
+	if status.Memory.TotalBytes != 2000*1024 || status.HostIP != "172.16.10.178" {
+		t.Fatalf("status = %+v", status)
+	}
+	// The next poll serves this snapshot: it falls back to neither the local
+	// probe nor the one before it.
+	if got := cache.get(); got.Target.Mode != "ssh" || got.Memory.TotalBytes != 2000*1024 {
+		t.Fatalf("get() = %+v", got)
+	}
+
+	back := cache.setProbe(localHostProbe{})
+	if back.Target.Mode != "local" {
+		t.Fatalf("local target = %+v", back.Target)
+	}
+	if got := cache.get(); got.Target.Mode != "local" {
+		t.Fatalf("get() after 本机 = %+v", got.Target)
+	}
+}
+
+// The endpoint takes the console's credentials, refuses a request from another
+// origin, rejects a destination that would read as an ssh option, and treats an
+// empty host as 本机.
+func TestHostTargetHandlerRoutesTheConsoleForm(t *testing.T) {
+	cache := newHostStatusCache(localHostProbe{}, hostStatusTTL)
+	cache.now = func() time.Time { return timeFixed }
+	handler := hostTargetHandler(cache, "")
+
+	post := func(body string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodPost, "/api/host/target", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		handler(w, req)
+		return w
+	}
+
+	if w := post(`{"host":"-oProxyCommand=touch /tmp/x","user":"root"}`); w.Code != http.StatusBadRequest {
+		t.Fatalf("option injection: status = %d, body = %s", w.Code, w.Body.String())
+	}
+
+	foreign := httptest.NewRequest(http.MethodPost, "/api/host/target", strings.NewReader(`{"host":"10.0.0.5"}`))
+	foreign.Host = "mock.local:8080"
+	foreign.Header.Set("Origin", "http://evil.example")
+	w := httptest.NewRecorder()
+	handler(w, foreign)
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("foreign origin: status = %d, body = %s", w.Code, w.Body.String())
+	}
+
+	// An empty host is the 本机 button.
+	if w := post(`{"host":""}`); w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"mode":"local"`) {
+		t.Fatalf("本机: %d %s", w.Code, w.Body.String())
 	}
 }
 

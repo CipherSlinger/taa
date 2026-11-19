@@ -217,23 +217,36 @@ func (p brokenHostProbe) Pods(context.Context, string) ([]hostPod, error) {
 	return nil, &hostStatusError{msg: p.reason}
 }
 
-// newHostProbe picks the source from the config. An empty HostSSH keeps the
-// original behaviour: the panel describes the machine the mock runs on.
+// newHostProbe picks the starting source from the config. An empty HostSSH
+// keeps the original behaviour: the panel describes the machine the mock runs
+// on. The console can point the panel elsewhere at runtime; see setProbe.
 func newHostProbe(cfg Config) hostProbe {
 	spec := strings.TrimSpace(cfg.HostSSH)
 	if spec == "" {
 		return localHostProbe{}
 	}
-	user, host, port, err := parseSSHTarget(spec)
+	probe, err := newSSHHostProbe(spec, cfg.HostSSHPassword, cfg.HostSSHOptions)
 	if err != nil {
 		return brokenHostProbe{reason: "-host-ssh 配置无效: " + err.Error()}
+	}
+	return probe
+}
+
+// newSSHHostProbe builds a probe for one destination. The extra options come
+// from the deployment — they name the key or the jump host that someone typing
+// a password into the console cannot know — and are applied to every target,
+// configured or entered, so both paths reach the host the same way.
+func newSSHHostProbe(spec, password, options string) (hostProbe, error) {
+	user, host, port, err := parseSSHTarget(spec)
+	if err != nil {
+		return nil, err
 	}
 	return &sshHostProbe{
 		user:     user,
 		host:     host,
 		port:     port,
-		password: cfg.HostSSHPassword,
-		extra:    strings.Fields(cfg.HostSSHOptions),
+		password: password,
+		extra:    strings.Fields(options),
 		exec: func(ctx context.Context, name string, args []string, env []string) ([]byte, error) {
 			cmd := exec.CommandContext(ctx, name, args...)
 			if len(env) > 0 {
@@ -241,11 +254,16 @@ func newHostProbe(cfg Config) hostProbe {
 			}
 			return cmd.Output()
 		},
-	}
+	}, nil
 }
 
 // parseSSHTarget accepts the forms an operator actually types: "host",
 // "user@host", "host:port", "user@host:port", and bracketed IPv6 destinations.
+//
+// It also refuses the two shapes that would turn the destination into something
+// other than a destination. The console now feeds this from a form, and ssh has
+// no reliable end-of-options marker: a host starting with "-" would be read as
+// an ssh option, and whitespace would split into more arguments.
 func parseSSHTarget(spec string) (user, host, port string, err error) {
 	spec = strings.TrimSpace(spec)
 	if spec == "" {
@@ -255,6 +273,9 @@ func parseSSHTarget(spec string) (user, host, port string, err error) {
 	if at >= 0 {
 		user = spec[:at]
 		spec = spec[at+1:]
+	}
+	if strings.HasPrefix(user, "-") || strings.ContainsAny(user, " \t\r\n") {
+		return "", "", "", fmt.Errorf("用户名 %q 无效", user)
 	}
 	if spec == "" {
 		return "", "", "", fmt.Errorf("destination %q 没有主机名", spec)
@@ -269,6 +290,9 @@ func parseSSHTarget(spec string) (user, host, port string, err error) {
 	host = strings.Trim(host, "[]")
 	if host == "" {
 		return "", "", "", fmt.Errorf("destination %q 没有主机名", spec)
+	}
+	if strings.HasPrefix(host, "-") || strings.ContainsAny(host, " \t\r\n") {
+		return "", "", "", fmt.Errorf("主机名 %q 无效", host)
 	}
 	if port != "" {
 		if _, convErr := strconv.Atoi(port); convErr != nil {

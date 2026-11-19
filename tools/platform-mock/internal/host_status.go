@@ -105,6 +105,46 @@ type hostSnapshot struct {
 	CollectedAt string
 }
 
+// hostProbeSource is the one place the active probe changes. The config picks
+// the starting probe; the console can point the panel at another host with its
+// own credentials while the mock runs. Readers take the probe and its
+// generation together: a snapshot is only valid for the generation that
+// produced it, so numbers read from the previous machine are never served under
+// the new machine's label.
+type hostProbeSource struct {
+	mu         sync.RWMutex
+	probe      hostProbe
+	generation uint64
+}
+
+func newHostProbeSource(probe hostProbe) *hostProbeSource {
+	if probe == nil {
+		probe = localHostProbe{}
+	}
+	return &hostProbeSource{probe: probe}
+}
+
+func (s *hostProbeSource) current() (hostProbe, uint64) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.probe, s.generation
+}
+
+func (s *hostProbeSource) currentGeneration() uint64 {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.generation
+}
+
+// swap installs a probe and returns the generation that now identifies it.
+func (s *hostProbeSource) swap(probe hostProbe) uint64 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.probe = probe
+	s.generation++
+	return s.generation
+}
+
 // hostStatusCache keeps the probe off the polling path. The console polls every
 // few seconds and each browser tab polls independently, so without a short TTL
 // one page left open would fork a kubectl process per viewer per interval.
@@ -115,12 +155,15 @@ type hostSnapshot struct {
 // A poll past the TTL gets the last good snapshot and starts one background
 // refresh; the next poll picks up the result.
 type hostStatusCache struct {
-	mu       sync.Mutex
-	probe    hostProbe
-	grace    time.Duration
-	ttl      time.Duration
-	at       time.Time
-	last     hostSnapshot
+	mu     sync.Mutex
+	source *hostProbeSource
+	grace  time.Duration
+	ttl    time.Duration
+	at     time.Time
+	last   hostSnapshot
+	// gen is the source generation last describes. A fresh cache has never
+	// published anything, and at is zero then, so the pair is unambiguous.
+	gen      uint64
 	now      func() time.Time
 	inFlight bool
 	// refresh is a field so a test can make collection synchronous.
@@ -132,24 +175,32 @@ type hostStatusCache struct {
 const hostStatusGrace = 30 * time.Second
 
 func newHostStatusCache(probe hostProbe, ttl time.Duration) *hostStatusCache {
-	if probe == nil {
-		probe = localHostProbe{}
-	}
-	c := &hostStatusCache{probe: probe, ttl: ttl, grace: hostStatusGrace, now: time.Now}
+	c := &hostStatusCache{source: newHostProbeSource(probe), ttl: ttl, grace: hostStatusGrace, now: time.Now}
 	c.refresh = c.collect
 	return c
 }
 
 func (c *hostStatusCache) get() hostSnapshot {
 	c.mu.Lock()
+	probe, gen := c.source.current()
+	// A snapshot from another source is not a slow answer to this one: it
+	// describes a different machine. Read the new source now instead of serving
+	// the old machine's numbers under the new label.
+	if gen != c.gen {
+		c.inFlight = true
+		c.mu.Unlock()
+		return c.collectNow(probe, gen)
+	}
 	age := c.now().Sub(c.at)
-	// Fresh enough, or stale but still inside the grace window: answer now.
-	if !c.at.IsZero() && age < c.ttl {
+	switch {
+	case !c.at.IsZero() && age < c.ttl:
+		// Fresh enough: answer now.
 		snapshot := c.last
 		c.mu.Unlock()
 		return snapshot
-	}
-	if !c.at.IsZero() && age < c.ttl+c.grace {
+	case !c.at.IsZero() && age < c.ttl+c.grace:
+		// Stale but still inside the grace window: answer now and refresh
+		// behind the answer.
 		c.startRefreshLocked()
 		snapshot := c.last
 		c.mu.Unlock()
@@ -186,12 +237,48 @@ func (c *hostStatusCache) startRefreshLocked() {
 // publish, so a request reading the previous snapshot is never blocked behind
 // an SSH handshake.
 func (c *hostStatusCache) collect() {
-	snapshot := collectHostSnapshot(c.probe)
+	probe, gen := c.source.current()
+	snapshot := collectHostSnapshot(probe)
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.last = snapshot
-	c.at = c.now()
 	c.inFlight = false
+	if gen != c.source.currentGeneration() {
+		// The source changed while this read ran. Publishing it would put one
+		// machine's numbers under another machine's label, which is the whole
+		// failure this seam exists to prevent.
+		return
+	}
+	c.last = snapshot
+	c.gen = gen
+	c.at = c.now()
+}
+
+// collectNow reads the source synchronously and publishes the result if the
+// source is still the one that was asked for. It is used when no snapshot may
+// be served — a cold start, a source that has just changed — and by the handler
+// that changes the source, so the click that switches hosts gets the new
+// machine's numbers, or the reason they could not be read, in its own response.
+func (c *hostStatusCache) collectNow(probe hostProbe, gen uint64) hostSnapshot {
+	snapshot := collectHostSnapshot(probe)
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.inFlight = false
+	if gen == c.source.currentGeneration() {
+		c.last = snapshot
+		c.gen = gen
+		c.at = c.now()
+	}
+	return snapshot
+}
+
+// setProbe points the panel at another machine and reads it immediately. The
+// previous snapshot is dropped rather than kept as a fallback: it belongs to a
+// machine the panel no longer names.
+func (c *hostStatusCache) setProbe(probe hostProbe) hostSnapshot {
+	if probe == nil {
+		probe = localHostProbe{}
+	}
+	return c.collectNow(probe, c.source.swap(probe))
 }
 
 // hostStatusHandler serves the host panel. It is a plain console endpoint, not
@@ -209,6 +296,75 @@ func hostStatusHandler(cache *hostStatusCache) http.HandlerFunc {
 		namespace := strings.TrimSpace(r.URL.Query().Get("namespace"))
 		writeEnvelope(w, http.StatusOK, "success", cache.get().forNamespace(namespace), 0)
 	}
+}
+
+// hostTargetRequest is the console's SSH connection form. The password is
+// accepted here and nowhere else: it is not logged, not stored on disk, not
+// echoed back, and lives only inside the probe it was used to build until
+// another target replaces that probe.
+type hostTargetRequest struct {
+	Host     string `json:"host"`
+	User     string `json:"user"`
+	Password string `json:"password"`
+}
+
+// hostTargetHandler points the host panel at the machine named in the request,
+// or back at this machine when no host is given.
+//
+// The endpoint exists because the mock and the Hygon host are not always the
+// same machine, and the person holding that host's credentials is the one
+// looking at the page. The source is runtime state on purpose: it is not
+// persisted, so a restart returns to the configured target.
+//
+// Same-origin only: another page open in the operator's browser must not be
+// able to make this process open an SSH connection.
+func hostTargetHandler(cache *hostStatusCache, extraOptions string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if !sameOriginRequest(r) {
+			writeEnvelope(w, http.StatusForbidden, "只接受控制台页面的请求", nil, 1)
+			return
+		}
+		if !requireMethod(w, r, http.MethodPost) {
+			return
+		}
+		var req hostTargetRequest
+		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096)).Decode(&req); err != nil {
+			writeEnvelope(w, http.StatusBadRequest, "请求体不是有效的 JSON", nil, 1)
+			return
+		}
+		host := strings.TrimSpace(req.Host)
+		var probe hostProbe
+		if host == "" {
+			probe = localHostProbe{}
+		} else {
+			spec := host
+			if user := strings.TrimSpace(req.User); user != "" {
+				spec = user + "@" + host
+			}
+			built, err := newSSHHostProbe(spec, req.Password, extraOptions)
+			if err != nil {
+				writeEnvelope(w, http.StatusBadRequest, "SSH 目标无效: "+err.Error(), nil, 1)
+				return
+			}
+			probe = built
+		}
+		// The response carries the first read from the new source, so the click
+		// that switched gets either the new numbers or the reason they are
+		// unreadable without waiting for the next poll.
+		writeEnvelope(w, http.StatusOK, "success", cache.setProbe(probe).forNamespace(""), 0)
+	}
+}
+
+// sameOriginRequest accepts a request that did not come from another origin. A
+// non-browser client sends no Origin and is allowed: the mock is an operator
+// tool on a trusted network, and the check is aimed at a page in the operator's
+// own browser, not at curl.
+func sameOriginRequest(r *http.Request) bool {
+	origin := r.Header.Get("Origin")
+	if origin == "" {
+		return true
+	}
+	return originMatchesHost(origin, r.Host)
 }
 
 // forNamespace projects the snapshot onto one namespace. An empty or unknown
