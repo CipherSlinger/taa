@@ -11,9 +11,10 @@ import tempfile
 from unittest.mock import MagicMock
 from pathlib import Path
 
-# Add models/examples to sys.path to import code_security_analyzer
+# The analyzer now lives in the teeaudit submodule with the rest of the audit
+# tooling, so point at that copy.
 REPO_ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(REPO_ROOT / "models" / "examples"))
+sys.path.insert(0, str(REPO_ROOT / "teeaudit" / "models" / "examples"))
 
 import code_security_analyzer
 from code_security_analyzer import (

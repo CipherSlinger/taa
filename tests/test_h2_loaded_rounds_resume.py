@@ -34,7 +34,7 @@ import unittest
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-DRIVER = REPO_ROOT / "models" / "audit" / "tools" / "h2_loaded_rounds.sh"
+DRIVER = REPO_ROOT / "teeaudit" / "models" / "audit" / "tools" / "h2_loaded_rounds.sh"
 
 STUB_EVALUATOR = '''\
 import argparse, json, os, pathlib

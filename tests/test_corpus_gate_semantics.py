@@ -48,9 +48,9 @@ if str(REPO_ROOT) not in sys.path:
 from models.audit.tools.audit_benchmark_eval import RegexScannerAdapter  # noqa: E402
 from models.examples.code_security_analyzer import SUSPICIOUS_PATTERNS  # noqa: E402
 
-CORPUS_ROOT = REPO_ROOT / "models" / "audit" / "benchmarks" / "audit-100"
+CORPUS_ROOT = REPO_ROOT / "teeaudit" / "models" / "audit" / "benchmarks" / "audit-100"
 RECORD_PATH = (
-    REPO_ROOT / "models" / "audit" / "audit-results" / "engine-compare" / "gate-semantics-audit.json"
+    REPO_ROOT / "teeaudit" / "models" / "audit" / "audit-results" / "engine-compare" / "gate-semantics-audit.json"
 )
 
 SEVERITY_BY_RULE = {rule["id"]: rule["severity"] for rule in SUSPICIOUS_PATTERNS}

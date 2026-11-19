@@ -70,7 +70,7 @@ class TestSeedCliAndSummary(unittest.TestCase):
 
     def test_benchmark_summary_records_the_seed(self):
         summary_path = (
-            REPO_ROOT / "models" / "audit" / "audit-results" / "test_run" / "summary.json"
+            REPO_ROOT / "teeaudit" / "models" / "audit" / "audit-results" / "test_run" / "summary.json"
         )
         args = ev.parse_args(
             ["--llm-seed", "1234", "--results-dir", str(summary_path.parent)]

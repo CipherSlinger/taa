@@ -7,7 +7,7 @@ class TestSemgrepRuleSchema(unittest.TestCase):
     """Validates the schema and completeness of canonical Semgrep rule definitions."""
 
     def setUp(self):
-        self.rules_dir = Path(__file__).resolve().parents[1] / "models" / "audit" / "semgrep" / "rules"
+        self.rules_dir = Path(__file__).resolve().parents[1] / "teeaudit" / "models" / "audit" / "semgrep" / "rules"
 
     def test_rules_exist_and_valid_yaml(self):
         yaml_files = list(self.rules_dir.rglob("*.yaml"))

@@ -24,6 +24,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
   `.go` files written as Semgrep fixtures that import packages this project does not depend on,
   and the boundary both keeps `go build ./...` from walking them — which is what previously forced
   every root build to be scoped — and keeps the data out of the module zip a `go get` downloads.
+  The move also restores `models/examples/code_security_analyzer.py`, the regex reference
+  implementation that `audit_benchmark_eval.py` and three test modules import but which had been
+  dropped from the tree; it now ships as `teeaudit/models/examples/`, and the tests that build
+  paths by hand point at the new location.
 - **platform-mock：实例连通性改为自动定时检查，失效进入重连/断开状态。** 实例行上的
   「检查连通性」按钮取消——连通行不行不该靠操作者记得去点。平台接受实例注册、控制台观察到后（列
   表每 5 秒拉取一次 `/api/instances`），该行立刻开始检查，此后每 30 秒 `GET /v1/taa/health` 一次；

@@ -11,7 +11,7 @@ import unittest
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-BASE_PROJECTS_DIR = REPO_ROOT / "models" / "audit" / "benchmarks" / "base-projects"
+BASE_PROJECTS_DIR = REPO_ROOT / "teeaudit" / "models" / "audit" / "benchmarks" / "base-projects"
 
 # 13 production static security rules (mirrored from teeaudit/codeaudit/rules.go)
 PRODUCTION_STATIC_RULES = [
@@ -277,7 +277,7 @@ class TestBenchmarkBaseProjects(unittest.TestCase):
             self.assertEqual(len(total_findings), 0, msg)
 
         # Also verify with models/examples/code_security_analyzer.py StaticScanner
-        analyzer_path = REPO_ROOT / "models" / "examples"
+        analyzer_path = REPO_ROOT / "teeaudit" / "models" / "examples"
         import sys
         if str(analyzer_path) not in sys.path:
             sys.path.insert(0, str(analyzer_path))

@@ -84,8 +84,8 @@ class TestAuditEvalThreeTrack(unittest.TestCase):
             relative_path="p1_xgboost_finance/M1-01",
         )
 
-        sample_dir = REPO_ROOT / "models" / "audit" / "benchmarks" / "audit-100" / sample.relative_path
-        results_dir = REPO_ROOT / "models" / "audit" / "audit-results" / "test_run"
+        sample_dir = REPO_ROOT / "teeaudit" / "models" / "audit" / "benchmarks" / "audit-100" / sample.relative_path
+        results_dir = REPO_ROOT / "teeaudit" / "models" / "audit" / "audit-results" / "test_run"
 
         with patch.object(
             LLMSecurityAnalyzer,

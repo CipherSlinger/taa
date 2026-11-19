@@ -36,8 +36,8 @@ from models.audit.tools.audit_benchmark_eval import (  # noqa: E402
 )
 from models.examples.code_security_analyzer import SUSPICIOUS_PATTERNS  # noqa: E402
 
-CORPUS_ROOT = REPO_ROOT / "models" / "audit" / "benchmarks" / "audit-100"
-RECORD_PATH = REPO_ROOT / "models" / "audit" / "audit-results" / "engine-compare" / "rule-parity-audit.json"
+CORPUS_ROOT = REPO_ROOT / "teeaudit" / "models" / "audit" / "benchmarks" / "audit-100"
+RECORD_PATH = REPO_ROOT / "teeaudit" / "models" / "audit" / "audit-results" / "engine-compare" / "rule-parity-audit.json"
 
 BASELINE_ORDER = {rule["id"]: i for i, rule in enumerate(SUSPICIOUS_PATTERNS)}
 

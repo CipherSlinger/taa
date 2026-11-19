@@ -59,7 +59,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 # old gather line restored and the alignment test must fail. Without that, the
 # assertions below are only claims about the current file.
 WATCH = Path(
-    os.environ.get("H2_WATCH_SCRIPT", REPO_ROOT / "models" / "audit" / "tools" / "h2_matrix_watch.sh")
+    os.environ.get("H2_WATCH_SCRIPT", REPO_ROOT / "teeaudit" / "models" / "audit" / "tools" / "h2_matrix_watch.sh")
 )
 
 MiB = 1048576
